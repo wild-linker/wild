@@ -98,6 +98,9 @@
 //!   max=N: Asserts the memory has the specified maximum size.
 //!   shared=true|false: Asserts the memory is shared.
 //!
+//! ExpectFuncTypeCount:{count} (Wasm) Asserts the type section has exactly {count} function types.
+//!
+
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -834,6 +837,25 @@ impl WasmModuleInfo {
                 found()
             );
         }
+        Ok(())
+    }
+
+    fn ensure_func_type_count(&self, expected: Option<usize>, linker_name: &str) -> Result {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        ensure!(
+            self.func_types.len() == expected,
+            "Expected {expected} function type(s) in {linker_name} output ({}), found {}: [{}]",
+            self.path.display(),
+            self.func_types.len(),
+            self.func_types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{i}:{t}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         Ok(())
     }
 
@@ -2001,6 +2023,9 @@ struct Assertions {
     expect_shared_memory: bool,
     /// Wasm: require the linear memory to be imported as `module/name`.
     expected_memory_import: Option<ExpectedMemoryImport>,
+    /// Wasm: total number of function types in the type section.
+    expected_func_type_count: Option<usize>,
+
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -2625,6 +2650,13 @@ fn process_directive(
                 name: name.to_owned(),
                 assertions,
             });
+        }
+        "ExpectFuncTypeCount" => {
+            config.assertions.expected_func_type_count = Some(
+                arg.trim()
+                    .parse()
+                    .with_context(|| format!("Invalid ExpectFuncTypeCount: `{arg}`"))?,
+            );
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -5185,6 +5217,7 @@ impl Assertions {
             expected_func_import_count: self.expected_func_import_count,
             expect_shared_memory: self.expect_shared_memory,
             expected_memory_import: self.expected_memory_import.clone(),
+            expected_func_type_count: self.expected_func_type_count,
             ..Default::default()
         };
         ensure!(
@@ -5214,6 +5247,7 @@ impl Assertions {
             self.expected_func_import_count,
             linker_name,
         )?;
+        info.ensure_func_type_count(self.expected_func_type_count, linker_name)?;
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
