@@ -5221,13 +5221,11 @@ fn live_local_types(
         if !input.live_function_imports.get(i).copied().unwrap_or(false) {
             continue;
         }
-        match resolutions.function_resolutions.get(i) {
-            Some(
-                ImportResolution::Unresolved
-                | ImportResolution::WeakUndefStub { .. }
-                | ImportResolution::LinkerDefined(_),
-            ) => mark_local_type_live(&mut live, import.type_index)?,
-            _ => {}
+        if matches!(
+            resolutions.function_resolutions.get(i),
+            Some(ImportResolution::Unresolved)
+        ) {
+            mark_local_type_live(&mut live, import.type_index)?;
         }
     }
     for reloc in input
