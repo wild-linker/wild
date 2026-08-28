@@ -1,3 +1,4 @@
+//#Config:default
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 //#Relocatable:relocatable-1.c,relocatable-2.c
@@ -5,6 +6,17 @@
 //#ExpectSym:add
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
+
+//#Config:reloc_output
+//#CompArgs:-fPIE -ffunction-sections
+//#SkipArch:riscv64
+//#ReferenceLinkers:bfd,lld
+//#Relocatable:relocatable-1.c,relocatable-2.c
+//#RunEnabled:false
+//#LinkArgs:-r
+//#DiffEnabled:false
+//#ExpectSection:.text._start
+//#ExpectSection:.rela.text._start
 
 #include "../common/runtime.h"
 
