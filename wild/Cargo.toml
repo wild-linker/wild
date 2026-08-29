@@ -77,3 +77,7 @@ lld_tests = []
 
 [lints]
 workspace = true
+
+[[test]]
+name = "only_keep_debug_test"
+path = "tests/only_keep_debug_test.rs"
