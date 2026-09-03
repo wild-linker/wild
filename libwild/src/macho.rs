@@ -2,8 +2,8 @@ use crate::FileSystem;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
+use crate::bail;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
@@ -12,6 +12,7 @@ use crate::file_writer::copy_section_data;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::layout;
+use crate::layout::CommonGroupState;
 use crate::layout::HandlerData as _;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
@@ -53,7 +54,10 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use anyhow::Context;
 use itertools::Itertools;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use object::Endianness;
+use object::SectionIndex;
 use object::SymbolIndex;
 use object::macho;
 use object::macho::N_ABS;
@@ -172,7 +176,7 @@ pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 pub(crate) const MAX_SEGMENT_COUNT: usize = 6;
 pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHeader>()
     + size_of::<u32>() * (MAX_SEGMENT_COUNT + /* leading segment count */ 1)
-    + size_of::<ChainedStartsInSegment>())
+    + size_of::<ChainedStartsInSegment>() * MAX_SEGMENT_COUNT)
     as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
@@ -271,6 +275,7 @@ pub(crate) struct LayoutExt {
     pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution>,
     /// Final addresses of initializer functions, in input relocation order.
     pub(crate) init_function_addresses: Vec<u64>,
+    pub(crate) fixups: Vec<Fixup>,
 }
 
 #[derive(Debug, Default)]
@@ -278,6 +283,7 @@ pub(crate) struct FinaliseSizesExt {
     imported_libraries: Vec<FileId>,
     imported_symbols: Vec<SymbolId>,
     init_functions: Vec<SymbolId>,
+    pending_fixups: Vec<PendingFixup>,
 }
 
 #[derive(Debug, Default)]
@@ -295,8 +301,22 @@ pub(crate) struct PreludeLayoutExt {
 #[derive(derive_more::Debug, Clone, Copy)]
 pub(crate) struct ImportedSymbolWithResolution {
     pub(crate) symbol_id: SymbolId,
-    pub(crate) got_address: NonZeroU64,
+    pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+}
+
+#[derive(Debug)]
+struct PendingFixup {
+    file_id: FileId,
+    section_index: SectionIndex,
+    offset_in_section: u64,
+    symbol_id: SymbolId,
+}
+
+#[derive(Debug)]
+pub(crate) struct Fixup {
+    pub(crate) ordinal: u64,
+    pub(crate) fixup_address: u64,
 }
 
 #[derive(derive_more::Debug)]
@@ -1071,7 +1091,7 @@ impl platform::Platform for MachO {
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = ();
-    type CommonGroupStateExt = ();
+    type CommonGroupStateExt = CommonGroupStateExt;
     type StubLibraryLayoutStateExt = DynamicLayoutStateExt;
     type StubLibraryLayoutExt = DynamicLayoutExt;
     type ArchIdentifier = ();
@@ -1268,7 +1288,7 @@ impl platform::Platform for MachO {
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
         state: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        common: &mut crate::layout::CommonGroupState<'data, Self>,
         queue: &mut crate::layout::LocalWorkQueue<Self>,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         _section: crate::layout::Section,
@@ -1277,7 +1297,7 @@ impl platform::Platform for MachO {
     ) -> Result {
         // TODO
         for rel in state.relocations(section_index)?.relocations {
-            process_relocation::<A>(state, rel, section_index, resources, queue, scope)?;
+            process_relocation::<A>(state, common, rel, section_index, resources, queue, scope)?;
         }
         Ok(())
     }
@@ -1372,8 +1392,10 @@ impl platform::Platform for MachO {
         let mut imported_libraries = Vec::new();
         let mut imported_symbols = Vec::new();
         let mut init_functions = Vec::new();
+        let mut pending_fixups = Vec::new();
 
         for group in groups {
+            pending_fixups.append(&mut group.common.format_specific.pending_fixups);
             for file in &group.files {
                 match file {
                     layout::FileLayoutState::Object(state) => {
@@ -1408,12 +1430,14 @@ impl platform::Platform for MachO {
             imported_libraries,
             imported_symbols,
             init_functions,
+            pending_fixups,
         })
     }
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
         resolutions: &SymbolResolutions<Self>,
+        group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>> {
         let mut layout_ext = LayoutExt::default();
 
@@ -1425,22 +1449,18 @@ impl platform::Platform for MachO {
                     .get(symbol_id)
                     .with_context(|| "missing resolution for a stub library symbol".to_string())?;
 
-                let got_address = resolution
-                    .format_specific
-                    .got_address
-                    .ok_or_else(|| error!("missing GOT entry for a stub library symbol"))?;
-
                 Ok(ImportedSymbolWithResolution {
                     symbol_id,
-                    got_address,
+                    got_address: resolution.format_specific.got_address,
                     plt_address: resolution.format_specific.plt_address,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // Tiebreak by both `got_address` and `symbol_id` for imports that don't have a GOT entry.
         layout_ext.imported_symbols = imported_symbols
             .into_iter()
-            .sorted_by_key(|symbol| symbol.got_address)
+            .sorted_by_key(|symbol| (symbol.got_address, symbol.symbol_id))
             .collect();
         layout_ext.init_function_addresses = finalise_sizes_ext
             .init_functions
@@ -1455,6 +1475,43 @@ impl platform::Platform for MachO {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let mut fixups = Vec::with_capacity(finalise_sizes_ext.pending_fixups.len());
+
+        for (ordinal, import) in layout_ext.imported_symbols.iter().enumerate() {
+            if let Some(got_address) = import.got_address {
+                fixups.push(Fixup {
+                    ordinal: ordinal as u64,
+                    fixup_address: got_address.get(),
+                });
+            }
+        }
+
+        for pending in finalise_sizes_ext.pending_fixups {
+            let group = &group_layouts[pending.file_id.group()];
+            let layout::FileLayout::Object(object) = &group.files[pending.file_id.file()] else {
+                bail!("Fixup location belongs to a non-object input");
+            };
+
+            let section_address = object.section_resolutions[pending.section_index.0]
+                .address()
+                .context("Invalid section address for fixup")?;
+            let fixup_address = section_address
+                .checked_add(pending.offset_in_section)
+                .context("Invalid fixup address")?;
+            let ordinal = layout_ext
+                .imported_symbols
+                .iter()
+                .position(|import| import.symbol_id == pending.symbol_id)
+                .context("Invalid import ordinal for fixup")?;
+
+            fixups.push(Fixup {
+                ordinal: ordinal as u64,
+                fixup_address,
+            });
+        }
+
+        fixups.sort_unstable_by_key(|fixup| fixup.fixup_address);
+        layout_ext.fixups = fixups;
         Ok(layout_ext)
     }
 
@@ -1471,7 +1528,7 @@ impl platform::Platform for MachO {
 
     fn process_init_func_section<'data, 'scope, A: platform::Arch<Platform = Self>>(
         object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        common: &mut crate::layout::CommonGroupState<'data, Self>,
         section_index: object::SectionIndex,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         queue: &mut crate::layout::LocalWorkQueue<Self>,
@@ -1502,7 +1559,7 @@ impl platform::Platform for MachO {
                     .symbol_id_range
                     .input_to_id(SymbolIndex(info.r_symbolnum as usize)),
             );
-            process_relocation::<A>(object, rel, section_index, resources, queue, scope)?;
+            process_relocation::<A>(object, common, rel, section_index, resources, queue, scope)?;
         }
 
         Ok(())
@@ -1580,10 +1637,10 @@ impl platform::Platform for MachO {
             })
             .sum::<u64>();
 
-        // Chained fixups record start information per page. At this point the final GOT size is
-        // known, so reserve the fixup table entries needed to describe the GOT pages.
-        fixup_table_size += CHAINED_FIXUP_PAGE_START_SIZE
-            * (state.imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value());
+        // TODO: Since we currently only support one page per segment, this is fine as a cap. But
+        // once we support multiple pages, we should figure out how to find exactly how many
+        // `page_start`s were emitted.
+        fixup_table_size += CHAINED_FIXUP_PAGE_START_SIZE * MAX_SEGMENT_COUNT as u64;
 
         mem_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
@@ -2172,6 +2229,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 };
 
 #[derive(Debug, Default)]
+pub(crate) struct CommonGroupStateExt {
+    pending_fixups: Vec<PendingFixup>,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
 }
@@ -2295,6 +2357,7 @@ fn add_sections_in_segment<'data>(
 #[inline(always)]
 fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     object: &layout::ObjectLayoutState<'data, MachO>,
+    common: &mut CommonGroupState<'data, MachO>,
     rel: &Relocation,
     section_index: object::SectionIndex,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,
@@ -2329,17 +2392,28 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             A::relocation_from_raw(rel_info)?
         };
         let mut flags_to_add = layout::resolution_flags(relocation.kind);
-        if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
-            flags_to_add |= ValueFlags::GOT;
+        if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)))
+            && rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26
+        {
             // TODO: classify symbols more reliably, likely by checking whether their section is
             // __text.
-            if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
-                flags_to_add |= ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
-            }
+            flags_to_add |= ValueFlags::GOT | ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+        if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)))
+            && relocation.kind == RelocationKind::Absolute
+            && relocation.size == RelocationSize::ByteSize(8)
+        {
+            common.format_specific.pending_fixups.push(PendingFixup {
+                file_id: object.file_id,
+                section_index,
+                offset_in_section: u64::from(rel_info.r_address),
+                symbol_id,
+            });
+        }
 
         layout::check_for_undefined::<A>(
             object,

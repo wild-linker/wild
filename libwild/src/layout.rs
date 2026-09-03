@@ -471,7 +471,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     let num_sections = output_sections.num_sections();
 
-    let format_specific = P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions)?;
+    let format_specific =
+        P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
 
     let mut layout = Layout {
         symbol_db,
