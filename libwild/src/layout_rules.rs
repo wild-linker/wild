@@ -167,7 +167,7 @@ pub(crate) struct SectionOutputInfo {
 }
 
 impl SectionOutputInfo {
-    const fn regular(section_id: OutputSectionId) -> Self {
+    pub(crate) const fn regular(section_id: OutputSectionId) -> Self {
         Self {
             section_id,
             must_keep: false,

@@ -119,6 +119,9 @@ bitflags! {
 
         /// The symbol is weak and remained undefined after symbol resolution.
         const UNDEFINED_WEAK = 1 << 20;
+
+        /// A surviving partial-link group uses this symbol's raw name as its signature.
+        const GROUP_SIGNATURE = 1 << 21;
     }
 }
 

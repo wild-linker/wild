@@ -1035,6 +1035,7 @@ impl<P: Platform> SymbolResolutions<P> {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // Object is large, but also the most common by far.
 pub(crate) enum FileLayout<'data, P: Platform> {
     Prelude(PreludeLayout<'data, P>),
     Object(ObjectLayout<'data, P>),
@@ -1164,6 +1165,7 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) object: &'data P::File<'data>,
+    pub(crate) section_groups: crate::comdat::ObjectSectionGroups<'data>,
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: P::RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
@@ -1584,6 +1586,8 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) section_id_range: SectionIdRange,
     pub(crate) object: &'data P::File<'data>,
+
+    pub(crate) section_groups: crate::comdat::ObjectSectionGroups<'data>,
 
     /// Info about each of our sections. Indexed the same as the sections in the input object.
     pub(crate) sections: Vec<SectionSlot>,
@@ -3374,9 +3378,16 @@ impl Section {
     fn create<'data, P: Platform>(
         header: &P::SectionHeader,
         object_state: &ObjectLayoutState<'data, P>,
-        _part_id: PartId,
+        part_id: PartId,
     ) -> Result<Section> {
-        let size = object_state.object.section_size(header)?;
+        // Relocatable NOBITS singletons need a section header, but no space in the file.
+        let size = if header.is_no_bits()
+            && Some(part_id.output_section_id::<P>()) == P::PARTIAL_SINGLETONS_ID
+        {
+            0
+        } else {
+            object_state.object.section_size(header)?
+        };
         let section = Section {
             size,
             maximal_padding: 0,
@@ -4436,6 +4447,7 @@ fn new_object_layout_state<P: Platform>(
         section_id_range: input_state.section_id_range,
         input: input_state.common.input,
         object: input_state.common.object,
+        section_groups: input_state.section_groups,
         sections: input_state.sections,
         relocations: input_state.relocations,
         format_specific: P::new_object_layout_state_ext(input_state.format_specific),
@@ -4531,9 +4543,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
 
         for (i, section) in self.sections.iter().enumerate() {
             match section {
-                SectionSlot::MustLoad(..)
-                | SectionSlot::UnloadedDebugInfo
-                | SectionSlot::MergeStrings(_) => {
+                SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo { must_load: true } => {
                     queue.send_gc_unit_request::<A>(
                         self.file_id,
                         SectionGcUnit::new(object::SectionIndex(i)),
@@ -4541,7 +4551,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                         scope,
                     );
                 }
-                SectionSlot::Unloaded(_) => {
+                SectionSlot::Unloaded(_) | SectionSlot::UnloadedDebugInfo { must_load: false } => {
                     if no_gc {
                         queue.send_gc_unit_request::<A>(
                             self.file_id,
@@ -4550,6 +4560,17 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                             scope,
                         );
                     }
+                }
+                SectionSlot::MergeStrings(_) => {
+                    // We currently always load everything in merge-string sections. i.e. we don't
+                    // GC unreferenced data. So the only thing we need to do here is propagate
+                    // section flags.
+                    let index = object::SectionIndex(i);
+                    let header = self.object.section(index)?;
+                    let part_id =
+                        self.section_part_id(index, &resources.symbol_db.section_part_ids);
+
+                    common.store_section_attributes(part_id, header);
                 }
                 SectionSlot::FrameData(index) => {
                     frame_section_indices.push(*index);
@@ -4641,16 +4662,51 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         section_index: SectionIndex,
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
+        // Live merged strings don't retain other members of their section group.
+        if matches!(
+            self.sections[section_index.0],
+            SectionSlot::MergeStrings(_)
+                | SectionSlot::Loaded(_)
+                | SectionSlot::Sorted(_)
+                | SectionSlot::LoadedDebugInfo(_)
+        ) {
+            return Ok(());
+        }
+
+        self.section_groups
+            .visit_group_once(section_index, |member| {
+                if member != section_index
+                    && matches!(
+                        self.sections[member.0],
+                        SectionSlot::Unloaded(_)
+                            | SectionSlot::MustLoad(_)
+                            | SectionSlot::UnloadedDebugInfo { .. }
+                    )
+                {
+                    queue
+                        .local_work
+                        .push(WorkItem::LoadGcUnit(GcLoadRequest::new(
+                            self.file_id,
+                            P::gc_unit_for_section(member),
+                        )));
+                }
+            });
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                 self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
             }
-            SectionSlot::UnloadedDebugInfo => {
+            SectionSlot::UnloadedDebugInfo { .. } => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
                 self.load_debug_section::<A>(common, section_index, resources)?;
             }
             SectionSlot::Discard => {
+                if self.section_groups.is_discarded(section_index) {
+                    bail!(
+                        "{self}: reference to discarded COMDAT section `{}`",
+                        self.object.section_display_name(section_index)
+                    );
+                }
                 bail!(
                     "{self}: Don't know what segment to put `{}` in, but it's referenced",
                     self.object.section_display_name(section_index),
@@ -4665,16 +4721,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             | SectionSlot::RiscvVAttributes(..)
             | SectionSlot::AArch64Attributes(..)
             | SectionSlot::InitFunc(..)
-            | SectionSlot::CompactUnwind(..) => {}
-            SectionSlot::MergeStrings(_) => {
-                // We currently always load everything in merge-string sections. i.e. we don't GC
-                // unreferenced data. So the only thing we need to do here is propagate section
-                // flags.
-                let header = self.object.section(section_index)?;
-                let part_id =
-                    self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
-                common.store_section_attributes(part_id, header);
-            }
+            | SectionSlot::CompactUnwind(..)
+            | SectionSlot::MergeStrings(_) => {}
         }
 
         Ok(())
@@ -4924,7 +4972,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
         }
 
+        self.section_groups.release_gc_phase_resources();
+
         Ok(ObjectLayout {
+            section_groups: self.section_groups,
             input: self.input,
             file_id: self.file_id,
             object: self.object,
@@ -5157,10 +5208,10 @@ impl<'data> SymbolCopyInfo<'data> {
         symbol_state: ValueFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
-        let is_referenced_by_reloc =
-            symbol_db.args.should_output_partial_object() && symbol_state.has_resolution();
+        let must_keep = symbol_state.contains(ValueFlags::GROUP_SIGNATURE)
+            || (symbol_db.args.should_output_partial_object() && symbol_state.has_resolution());
 
-        if !is_referenced_by_reloc && symbol_db.args.discard_all() && sym.is_local() {
+        if !must_keep && symbol_db.args.discard_all() && sym.is_local() {
             return None;
         }
 
@@ -5184,18 +5235,49 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (!is_referenced_by_reloc
-                && !symbol_db.args.discard_none()
-                && sym.is_default_strippable(name))
+            || (!must_keep && !symbol_db.args.discard_none() && sym.is_default_strippable(name))
         {
             return None;
         }
 
-        if symbol_db.args.should_strip_symbol_named(name) {
+        if !symbol_state.contains(ValueFlags::GROUP_SIGNATURE)
+            && symbol_db.args.should_strip_symbol_named(name)
+        {
             return None;
         }
 
         Some(SymbolCopyInfo { name })
+    }
+
+    #[inline(always)]
+    pub(crate) fn for_undefined<P: Platform>(
+        object: &P::File<'data>,
+        sym_index: object::SymbolIndex,
+        sym: &P::SymtabEntry,
+        symbol_id: SymbolId,
+        symbol_db: &SymbolDb<'data, P>,
+        section_groups: &crate::comdat::ObjectSectionGroups,
+    ) -> Option<Self> {
+        if !symbol_db.is_canonical(symbol_id) {
+            return None;
+        }
+
+        let is_discarded_definition = !sym.is_local()
+            && object
+                .symbol_section(sym, sym_index)
+                .ok()
+                .flatten()
+                .is_some_and(|section| section_groups.is_discarded(section));
+        if !sym.is_undefined() && !is_discarded_definition {
+            return None;
+        }
+
+        let name = object.symbol_name(sym).ok()?;
+        if name.is_empty() {
+            return None;
+        }
+
+        Some(Self { name })
     }
 }
 
