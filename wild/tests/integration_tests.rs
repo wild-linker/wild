@@ -6636,14 +6636,20 @@ impl Compiler {
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let build_features = match self.config.platform {
+            PlatformKind::MachO => "--features macho",
+            PlatformKind::Wasm => "--features wasm",
+            PlatformKind::Elf => "",
+        };
+
         if let Some(save_dir) = self.opt_save_dir.as_ref()
             && save_dir.exists()
             && self.linker == Linker::Wild
         {
             write!(
                 f,
-                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
-                     --bin wild -- --",
+                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} \
+                    {}/run-with cargo run {build_features} --bin wild -- --",
                 self.output_path.display(),
                 save_dir.display()
             )?;
@@ -6681,10 +6687,19 @@ impl Display for LinkCommand {
 
         match (self.invocation_mode, &self.linker) {
             (LinkerInvocationMode::Cc, Linker::Wild) => {
-                write!(f, "cargo build; {} {}", command_str, args.join(" "))
+                write!(
+                    f,
+                    "cargo build {build_features}; {} {}",
+                    command_str,
+                    args.join(" ")
+                )
             }
             (LinkerInvocationMode::Direct, Linker::Wild) => {
-                write!(f, "cargo run --bin wild -- {}", args.join(" "))
+                write!(
+                    f,
+                    "cargo run {build_features} --bin wild -- {}",
+                    args.join(" ")
+                )
             }
             (LinkerInvocationMode::Script, Linker::Wild) => {
                 // The first argument is the linker, which we're replacing with `cargo run --`.
@@ -6692,7 +6707,7 @@ impl Display for LinkCommand {
 
                 write!(
                     f,
-                    "{} cargo run --bin wild -- -- {}",
+                    "{} cargo run {build_features} --bin wild -- -- {}",
                     command_str,
                     args.join(" ")
                 )
