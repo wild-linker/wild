@@ -178,6 +178,14 @@ pub(crate) trait Arch: Send + Sync + 'static {
         unreachable!();
     }
 
+    /// Input symbols that `collect_relaxation_deltas` may resolve for this section.
+    fn collect_relaxation_referenced_symbols<'data>(
+        _relocations: <Self::Platform as Platform>::RelocationList<'data>,
+        _existing_deltas: Option<&SectionRelaxDeltas>,
+    ) -> Vec<object::SymbolIndex> {
+        Vec::new()
+    }
+
     fn is_symbol_variant_pcs(
         _object: &<Self::Platform as Platform>::File<'_>,
         _symbol_index: object::SymbolIndex,

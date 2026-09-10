@@ -321,6 +321,22 @@ impl crate::platform::Arch for ElfRiscV64 {
         }
     }
 
+    fn collect_relaxation_referenced_symbols(
+        relocations: RelocationList64,
+        existing_deltas: Option<&SectionRelaxDeltas>,
+    ) -> Vec<object::SymbolIndex> {
+        match relocations {
+            RelocationList64::Rela(rela_list) => collect_relaxation_referenced_symbols(
+                rela_list.iter().copied().map(ElfRela::new),
+                existing_deltas,
+            ),
+            RelocationList64::Crel(crel_iter) => collect_relaxation_referenced_symbols(
+                crel_iter.flatten().map(ElfCrel::new),
+                existing_deltas,
+            ),
+        }
+    }
+
     fn get_source_info<'data>(
         object: &<Self::Platform as Platform>::File<'data>,
         relocations: &<Self::Platform as Platform>::RelocationSections,
@@ -536,4 +552,54 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
     }
 
     (raw_deltas, min_unrelaxed_margin)
+}
+
+/// Symbols that `collect_relaxation_deltas` may resolve.
+fn collect_relaxation_referenced_symbols<R: Relocation<Platform = Elf64>>(
+    relocations: impl Iterator<Item = R>,
+    existing_deltas: Option<&SectionRelaxDeltas>,
+) -> Vec<object::SymbolIndex> {
+    let mut symbols = Vec::new();
+    let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
+    let mut prev_hi20: Option<(u64, object::SymbolIndex)> = None;
+
+    for rel in relocations {
+        match rel.raw_type() {
+            object::elf::R_RISCV_ALIGN => {
+                prev_call = None;
+                prev_hi20 = None;
+            }
+            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
+                prev_call = rel.symbol().map(|sym_idx| (rel.offset(), sym_idx));
+                prev_hi20 = None;
+            }
+            object::elf::R_RISCV_HI20 => {
+                prev_hi20 = rel.symbol().map(|sym_idx| (rel.offset(), sym_idx));
+                prev_call = None;
+            }
+            object::elf::R_RISCV_RELAX => {
+                if let Some((call_offset, sym_idx)) = prev_call
+                    && rel.offset() == call_offset
+                    && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
+                {
+                    symbols.push(sym_idx);
+                } else if let Some((hi20_offset, sym_idx)) = prev_hi20
+                    && rel.offset() == hi20_offset
+                    && !existing_deltas.is_some_and(|d| {
+                        d.has_delta_at(hi20_offset) || d.has_delta_at(hi20_offset + 2)
+                    })
+                {
+                    symbols.push(sym_idx);
+                }
+                prev_call = None;
+                prev_hi20 = None;
+            }
+            _ => {
+                prev_call = None;
+                prev_hi20 = None;
+            }
+        }
+    }
+
+    symbols
 }

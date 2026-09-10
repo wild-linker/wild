@@ -5338,39 +5338,17 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                             // While we have the section addresses, also resolve symbol
                             // output addresses for this file's canonical definitions.
                             for sym_offset in 0..obj.symbol_id_range.len() {
-                                let sym_input_idx = object::SymbolIndex(sym_offset);
-                                let Ok(sym) = obj.object.symbol(sym_input_idx) else {
-                                    continue;
-                                };
-                                let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
-                                let def_id = symbol_db.definition(sym_id);
-                                // Only record the address for the canonical definition.
-                                if def_id != sym_id {
+                                let sym_id = obj
+                                    .symbol_id_range
+                                    .input_to_id(object::SymbolIndex(sym_offset));
+                                if symbol_db.definition(sym_id) != sym_id {
                                     continue;
                                 }
-
-                                let addr = match obj.object.symbol_section(sym, sym_input_idx) {
-                                    Ok(Some(section)) => {
-                                        let Some(sec_addr) =
-                                            positions.get(section.0).copied().flatten()
-                                        else {
-                                            continue;
-                                        };
-                                        let Ok(input_offset) =
-                                            obj.object.symbol_offset_in_section(sym, section)
-                                        else {
-                                            continue;
-                                        };
-                                        let output_offset = opt_input_to_output(
-                                            obj.section_relax_deltas.get(section.0),
-                                            input_offset,
-                                        );
-                                        sec_addr.address + output_offset
-                                    }
-                                    Ok(None) if sym.is_absolute() => sym.value(),
-                                    _ => continue,
-                                };
-                                shard[sym_id.as_usize() - range_start] = addr;
+                                if let Some(addr) =
+                                    canonical_symbol_output_address(obj, sym_id, &positions)
+                                {
+                                    shard[sym_id.as_usize() - range_start] = addr;
+                                }
                             }
 
                             positions
@@ -5381,6 +5359,121 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
             })
             .collect()
     };
+
+    (section_positions, SymbolOutputInfos { addresses })
+}
+
+fn canonical_symbol_output_address<P: Platform>(
+    obj: &ObjectLayoutState<P>,
+    canonical_id: SymbolId,
+    positions: &[Option<InputSectionPosition>],
+) -> Option<u64> {
+    let local = canonical_id.to_input(obj.symbol_id_range);
+    let sym = obj.object.symbol(local).ok()?;
+    match obj.object.symbol_section(sym, local) {
+        Ok(Some(section)) => {
+            let sec_addr = positions.get(section.0).copied().flatten()?;
+            let input_offset = obj.object.symbol_offset_in_section(sym, section).ok()?;
+            let output_offset =
+                opt_input_to_output(obj.section_relax_deltas.get(section.0), input_offset);
+            Some(sec_addr.address + output_offset)
+        }
+        Ok(None) if sym.is_absolute() => Some(sym.value()),
+        _ => None,
+    }
+}
+
+fn collect_needed_relaxation_symbols<A: Arch>(
+    group_states: &[GroupState<A::Platform>],
+    rescan: &RescanSections,
+    symbol_db: &SymbolDb<A::Platform>,
+) -> Vec<Vec<SymbolId>> {
+    let referenced: Vec<SymbolId> = group_states
+        .par_iter()
+        .enumerate()
+        .flat_map(|(group_idx, group)| {
+            let mut ids = Vec::new();
+            for (file_idx, file) in group.files.iter().enumerate() {
+                let FileLayoutState::Object(obj) = file else {
+                    continue;
+                };
+                let Some(sections) = rescan.get(group_idx).and_then(|files| files.get(file_idx))
+                else {
+                    continue;
+                };
+                for &sec_idx in sections {
+                    let Ok(relocs) = obj
+                        .object
+                        .relocations(SectionIndex(sec_idx), &obj.relocations)
+                    else {
+                        continue;
+                    };
+                    for sym_idx in A::collect_relaxation_referenced_symbols(
+                        relocs,
+                        obj.section_relax_deltas.get(sec_idx),
+                    ) {
+                        let local_id = obj.symbol_id_range.input_to_id(sym_idx);
+                        ids.push(symbol_db.definition(local_id));
+                    }
+                }
+            }
+            ids
+        })
+        .collect();
+
+    // Bucket by the defining group so each shard is written only by its owner.
+    let mut by_group = vec![Vec::new(); group_states.len()];
+    for id in referenced {
+        let group_idx = symbol_db.file_id_for_symbol(id).group();
+        if let Some(bucket) = by_group.get_mut(group_idx) {
+            bucket.push(id);
+        }
+    }
+    by_group
+}
+
+fn compute_selected_symbol_addresses<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<'data, P>,
+    address_buf: &mut Vec<u64>,
+    needed_by_group: &[Vec<SymbolId>],
+) -> (InputSectionPositions, SymbolOutputInfos) {
+    timing_phase!("Compute section and symbol addresses");
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+    let section_positions =
+        compute_input_section_positions(group_states, mem_offsets, symbol_db, output_sections);
+
+    let mut addresses = std::mem::take(address_buf);
+    addresses.clear();
+    addresses.resize(symbol_db.num_symbols(), SYMBOL_ADDRESS_UNRESOLVED);
+
+    let shards = split_symbol_addresses_by_group(&mut addresses, symbol_db, group_states.len());
+    group_states
+        .par_iter()
+        .zip(shards.into_par_iter())
+        .zip(needed_by_group.par_iter())
+        .for_each(|((group, (range_start, shard)), needed)| {
+            verbose_timing_phase!("Compute addresses for group");
+            for &sym_id in needed {
+                let file_id = symbol_db.file_id_for_symbol(sym_id);
+                let Some(FileLayoutState::Object(obj)) = group.files.get(file_id.file()) else {
+                    continue;
+                };
+                let Some(positions) = section_positions
+                    .get(file_id.group())
+                    .and_then(|files| files.get(file_id.file()))
+                else {
+                    continue;
+                };
+                if let Some(addr) = canonical_symbol_output_address(obj, sym_id, positions) {
+                    debug_assert!(sym_id.as_usize() >= range_start);
+                    let idx = sym_id.as_usize() - range_start;
+                    shard[idx] = addr;
+                }
+            }
+        });
 
     (section_positions, SymbolOutputInfos { addresses })
 }
@@ -5518,13 +5611,25 @@ fn relaxation_scan_pass<'data, A: Arch>(
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
-    let (section_addresses, symbol_infos) = compute_section_and_symbol_addresses(
-        group_states,
-        section_part_layouts,
-        symbol_db,
-        output_sections,
-        address_buf,
-    );
+    let (section_addresses, symbol_infos) = if let Some(rescan) = prev_rescan {
+        let needed = collect_needed_relaxation_symbols::<A>(group_states, rescan, symbol_db);
+        compute_selected_symbol_addresses(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            output_sections,
+            address_buf,
+            &needed,
+        )
+    } else {
+        compute_section_and_symbol_addresses(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            output_sections,
+            address_buf,
+        )
+    };
 
     // Scan each group.
     #[expect(clippy::type_complexity)]
