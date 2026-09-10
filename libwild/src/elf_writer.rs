@@ -2071,7 +2071,7 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
             (group_map, range.start().as_usize())
         })
         .collect::<Vec<_>>();
-    debug_assert!(remaining.is_empty());
+    debug_assert_eq!(remaining, []);
 
     // The epilogue group has no input symbols.
     layout.group_layouts[..work.len()]
