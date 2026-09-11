@@ -768,6 +768,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         Ok(())
     }
 
+    #[inline(always)]
     fn process_resolution<'data, A: Arch<Platform = elf::Elf<C>>>(
         &mut self,
         layout: Option<&ElfLayout<'data, C>>,
