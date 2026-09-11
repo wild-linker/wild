@@ -1529,6 +1529,7 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         }
     }
 
+    #[inline(always)]
     fn copy_object_symbol(
         &mut self,
         sym: &elf::SymtabEntry<C>,
@@ -1578,6 +1579,7 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         Ok(())
     }
 
+    #[inline(always)]
     fn copy_symbol_with_section(
         &mut self,
         sym: &elf::SymtabEntry<C>,
