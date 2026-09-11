@@ -1446,6 +1446,7 @@ struct VersionedDynsymWriter<'layout, 'out, C: ElfClass> {
     versym: Option<&'out mut [Versym]>,
 }
 
+#[inline(always)]
 fn object_symbol_size<C: ElfClass>(
     sym: &elf::SymtabEntry<C>,
     sym_index: SymbolIndex,
