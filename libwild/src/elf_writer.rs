@@ -3058,6 +3058,7 @@ struct SectionInfo<S: platform::SectionFlags> {
     part_id: PartId,
 }
 
+#[inline(always)]
 fn get_resolution<'data, C: ElfClass, R: Relocation>(
     rel: &R,
     object_layout: &ObjectLayout<'data, elf::Elf<C>>,
