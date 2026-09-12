@@ -2958,14 +2958,11 @@ impl ProgramInputs {
         Ok(())
     }
 
-    /// When `TestOnlyKeepDebug:true`, re-links the same inputs without `--only-keep-debug` and
+    /// When `TestOnlyKeepDebug:true`, re-links the same inputs with `--strip-debug` and
     /// compares the two outputs to verify the invariants of the `--only-keep-debug` feature.
     ///
-    /// Note: The reference build is unstripped (identical arguments minus `--only-keep-debug`)
-    /// rather than `--strip-debug`. Stripping debug sections prior to linking alters section GC
-    /// reachability (as DWARF relocations to functions are discarded), which can change the layout.
-    /// The unstripped build accurately preserves the exact layout and symbols that
-    /// `--only-keep-debug` is designed to retain.
+    /// The core invariant is that `--strip-debug` and `--only-keep-debug` must produce
+    /// identical virtual-address layouts for all allocatable sections and symbols.
     fn run_only_keep_debug_test(
         &self,
         inputs: &[LinkerInput],
@@ -2973,13 +2970,18 @@ impl ProgramInputs {
         cross_arch: Option<Architecture>,
         debug_output: &LinkOutput,
     ) -> Result {
-        // Build a reference config: same as current, but without --only-keep-debug.
+        // Build a reference config: same inputs, but with --strip-debug instead of
+        // --only-keep-debug.
         let mut ref_config = config.clone();
         ref_config.config_name = format!("{}-reference", config.config_name);
         ref_config
             .linker_args
             .args
             .retain(|a| a != "--only-keep-debug");
+        ref_config
+            .linker_args
+            .args
+            .push("--strip-debug".to_string());
         ref_config.test_only_keep_debug = false;
 
         // Create the build directory for the reference config.
@@ -5931,24 +5933,32 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
 
 /// Verifies that `--only-keep-debug` output preserves symbols, section addresses, and build ID from
 /// the normal link, while converting allocatable non-NOTE sections to SHT_NOBITS.
-fn verify_only_keep_debug(normal_path: &Path, debug_path: &Path) -> Result {
-    let normal_bytes = std::fs::read(normal_path)
-        .with_context(|| format!("Failed to read normal output: {}", normal_path.display()))?;
+fn verify_only_keep_debug(stripped_path: &Path, debug_path: &Path) -> Result {
+    let stripped_bytes = std::fs::read(stripped_path).with_context(|| {
+        format!(
+            "Failed to read stripped output: {}",
+            stripped_path.display()
+        )
+    })?;
     let debug_bytes = std::fs::read(debug_path)
         .with_context(|| format!("Failed to read debug output: {}", debug_path.display()))?;
 
-    let normal_obj =
-        object::File::parse(normal_bytes.as_slice()).context("Failed to parse normal output")?;
+    let stripped_obj = object::File::parse(stripped_bytes.as_slice())
+        .context("Failed to parse stripped output")?;
     let debug_obj =
         object::File::parse(debug_bytes.as_slice()).context("Failed to parse debug output")?;
 
+    // Compare symbol addresses. --strip-debug retains .symtab (only removes .debug_*
+    // sections), and --only-keep-debug retains the full symbol table. Empirically, across
+    // Wild, ld.bfd, and ld.lld, both outputs have identical .symtab entries. Every symbol
+    // in the stripped output must exist in the debug output with the same address.
     let debug_symbols: HashMap<Vec<u8>, u64> = debug_obj
         .symbols()
         .filter(|s| !s.name_bytes().unwrap_or_default().is_empty())
         .map(|s| (s.name_bytes().unwrap_or_default().to_vec(), s.address()))
         .collect();
 
-    for sym in normal_obj.symbols() {
+    for sym in stripped_obj.symbols() {
         let name = sym.name_bytes().unwrap_or_default();
         if name.is_empty() || sym.is_undefined() {
             continue;
@@ -5956,58 +5966,64 @@ fn verify_only_keep_debug(normal_path: &Path, debug_path: &Path) -> Result {
         if let Some(&debug_addr) = debug_symbols.get(name) {
             ensure!(
                 sym.address() == debug_addr,
-                "Symbol `{}` address mismatch: normal=0x{:x}, debug=0x{:x}",
+                "Symbol `{}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
                 String::from_utf8_lossy(name),
                 sym.address(),
                 debug_addr,
             );
         } else {
             bail!(
-                "Symbol `{}` present in normal output but missing from debug output",
+                "Symbol `{}` present in stripped output but missing from debug output",
                 String::from_utf8_lossy(name),
             );
         }
     }
 
+    // Compare section addresses. The debug output is a strict superset of the stripped
+    // output's sections (it additionally has .debug_* sections). Every section in the
+    // stripped output must exist in the debug output at the same address. Non-alloc
+    // sections (.comment, .symtab, etc.) have sh_addr=0 in both, so they match trivially.
     let debug_sections: HashMap<String, u64> = debug_obj
         .sections()
         .filter_map(|s| s.name().ok().map(|n| (n.to_string(), s.address())))
         .collect();
 
-    for sec in normal_obj.sections() {
+    for sec in stripped_obj.sections() {
         let name = sec.name().unwrap_or_default();
         if name.is_empty() {
             continue;
         }
         let debug_addr = debug_sections.get(name).ok_or_else(|| {
-            error!("Section `{name}` present in normal output but missing from debug output")
+            error!("Section `{name}` present in stripped output but missing from debug output")
         })?;
         ensure!(
             sec.address() == *debug_addr,
-            "Section `{name}` address mismatch: normal=0x{:x}, debug=0x{:x}",
+            "Section `{name}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
             sec.address(),
             debug_addr,
         );
     }
 
-    let normal_build_id = normal_obj.section_by_name(".note.gnu.build-id");
+    // Build-id validation: both outputs should have matching build-id content.
+    let stripped_build_id = stripped_obj.section_by_name(".note.gnu.build-id");
     let debug_build_id = debug_obj.section_by_name(".note.gnu.build-id");
-    match (normal_build_id, debug_build_id) {
-        (Some(normal_sec), Some(debug_sec)) => {
+    match (stripped_build_id, debug_build_id) {
+        (Some(stripped_sec), Some(debug_sec)) => {
             ensure!(
-                normal_sec.data()? == debug_sec.data()?,
-                ".note.gnu.build-id content mismatch between normal and debug output"
+                stripped_sec.data()? == debug_sec.data()?,
+                ".note.gnu.build-id content mismatch between stripped and debug output"
             );
         }
         (None, None) => {}
         (Some(_), None) => {
-            bail!(".note.gnu.build-id present in normal output but missing from debug output");
+            bail!(".note.gnu.build-id present in stripped output but missing from debug output");
         }
         (None, Some(_)) => {
-            bail!(".note.gnu.build-id present in debug output but absent from normal output");
+            bail!(".note.gnu.build-id present in debug output but absent from stripped output");
         }
     }
 
+    // Verify alloc non-NOTE sections in debug output are NOBITS (hollowed out).
     for sec in debug_obj.sections() {
         let flags = sec.flags();
         if let object::SectionFlags::Elf { sh_flags, sh_type } = flags {
@@ -6024,6 +6040,7 @@ fn verify_only_keep_debug(normal_path: &Path, debug_path: &Path) -> Result {
         }
     }
 
+    // Verify debug sections are retained and non-empty.
     for debug_section_name in &[".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"] {
         let sec = debug_obj
             .section_by_name(debug_section_name)
@@ -6034,16 +6051,10 @@ fn verify_only_keep_debug(normal_path: &Path, debug_path: &Path) -> Result {
         );
     }
 
+    // Verify .symtab is retained in the debug output.
     ensure!(
         debug_obj.section_by_name(".symtab").is_some(),
         ".symtab section missing from debug output",
-    );
-
-    ensure!(
-        debug_bytes.len() < normal_bytes.len(),
-        "Debug output ({} bytes) should be smaller than normal output ({} bytes)",
-        debug_bytes.len(),
-        normal_bytes.len(),
     );
 
     Ok(())
