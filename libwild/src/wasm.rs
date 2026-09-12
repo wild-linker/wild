@@ -2317,7 +2317,12 @@ fn tls_reloc_value(abs_addr: u32, tls_base: u32, addend: i64) -> Result<u32> {
     let offset = abs_addr.checked_sub(tls_base).ok_or_else(|| {
         crate::error!("TLS relocation address 0x{abs_addr:x} is before TLS base 0x{tls_base:x}")
     })?;
-    reloc_value_with_addend(offset, addend)
+    let value = i64::from(offset)
+        .checked_add(addend)
+        .ok_or_else(|| crate::error!("Wasm TLS relocation value overflow"))?;
+    let value = i32::try_from(value)
+        .map_err(|_| crate::error!("Wasm TLS relocation value out of range"))?;
+    Ok(value as u32)
 }
 
 fn layout_object_data<'data>(
