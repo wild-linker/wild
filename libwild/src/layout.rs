@@ -1779,13 +1779,19 @@ impl<'data, P: Platform> Layout<'data, P> {
 
     #[inline(always)]
     pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution<P>> {
+        self.symbol_resolution_with_flags(symbol_id, self.flags_for_symbol(symbol_id))
+    }
+
+    #[inline(always)]
+    pub(crate) fn symbol_resolution_with_flags(
+        &self,
+        symbol_id: SymbolId,
+        flags: ValueFlags,
+    ) -> Option<Resolution<P>> {
         self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
             .copied()
             .map(|mut res| {
-                res.flags.merge(
-                    self.symbol_db
-                        .flags_for_symbol(&self.per_symbol_flags, symbol_id),
-                );
+                res.flags.merge(flags);
                 res
             })
     }
