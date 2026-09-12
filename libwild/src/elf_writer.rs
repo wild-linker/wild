@@ -2664,6 +2664,12 @@ fn apply_relocations<
     let object_section = object.object.section(section_index)?;
     let section_flags = object_section.sh_flags(LittleEndian);
     let mut modifier = RelocationModifier::Normal;
+    let section_info = SectionInfo {
+        section_address,
+        is_writable: object_section.is_writable(),
+        section_flags,
+        part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
+    };
 
     let mut relocation_count = 0;
     let mut relocation_cache = RelocationCache::<R>::default();
@@ -2696,12 +2702,7 @@ fn apply_relocations<
             object,
             offset_in_section,
             &rel,
-            SectionInfo {
-                section_address,
-                is_writable: object_section.is_writable(),
-                section_flags,
-                part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
-            },
+            section_info,
             layout,
             out,
             table_writer,
