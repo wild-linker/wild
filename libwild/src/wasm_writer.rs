@@ -45,9 +45,11 @@ fn apply_resolved_reloc(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    tls_base: u32,
     buf: &mut [u8],
 ) -> Result<()> {
-    let base = index_map.resolve_reloc(reloc, symbols, function_table_slots, memory_base)?;
+    let base =
+        index_map.resolve_reloc(reloc, symbols, function_table_slots, memory_base, tls_base)?;
     apply_relocation(buf, reloc, finalize_reloc_value(reloc, base)?)
 }
 
@@ -64,6 +66,7 @@ fn apply_section_reloc(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    tls_base: u32,
     buf: &mut [u8],
 ) -> Result<()> {
     let mut reloc = *reloc;
@@ -76,6 +79,7 @@ fn apply_section_reloc(
         symbols,
         function_table_slots,
         memory_base,
+        tls_base,
         buf,
     )
 }
@@ -200,6 +204,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
+    let tls_base = wasm_layout.tls_base;
 
     if bodies.is_empty() {
         ensure!(
@@ -279,6 +284,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                         symbols,
                         function_table_slots,
                         memory_base,
+                        tls_base,
                         body_bytes,
                     )?;
                 }
@@ -334,6 +340,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
+    let tls_base = wasm_layout.tls_base;
 
     let mut segment_slots: Vec<(&mut [u8], usize, &WasmDataSegmentLayout<'_>)> =
         Vec::with_capacity(flat.len());
@@ -374,6 +381,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                     per_object_symbols[obj_idx],
                     function_table_slots,
                     memory_base,
+                    tls_base,
                 )
             })?;
     }
@@ -389,6 +397,7 @@ fn write_active_data_segment(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    tls_base: u32,
 ) -> Result<()> {
     ensure!(
         out.len() == segment.encoded_output_size as usize,
@@ -432,6 +441,7 @@ fn write_active_data_segment(
             symbols,
             function_table_slots,
             memory_base,
+            tls_base,
             payload,
         )?;
     }

@@ -205,7 +205,7 @@ const UNREACHABLE_FUNCTION_BODY: &[u8] = &[0x00, 0x00, 0x0b];
 /// `i32.const` body for `LINKER_MEMORY_BASE`.
 const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
-/// `i32.const 0`. Used for immutable `__tls_base` when no TLS segment is laid out.
+/// `i32.const 0` for `__tls_base` and GOT slots.
 const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 
 /// `i32.const 1` for `DEFAULT_TABLE_BASE`.
@@ -252,7 +252,6 @@ pub(crate) struct File<'data> {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[expect(unused)]
 pub(crate) struct WasmSegmentInfo<'data> {
     pub(crate) name: &'data str,
     pub(crate) alignment: Alignment,
@@ -260,7 +259,6 @@ pub(crate) struct WasmSegmentInfo<'data> {
 }
 
 impl WasmSegmentInfo<'_> {
-    #[expect(unused)]
     fn is_tls(self) -> bool {
         self.flags.contains(wasmparser::SegmentFlags::TLS)
             || self.name.starts_with(".tdata")
@@ -479,6 +477,7 @@ impl WasmRelocation {
             | RelocationType::MemoryAddrLeb
             | RelocationType::MemoryAddrSleb
             | RelocationType::MemoryAddrRelSleb
+            | RelocationType::MemoryAddrTlsSleb
             | RelocationType::TypeIndexLeb
             | RelocationType::GlobalIndexLeb
             | RelocationType::EventIndexLeb
@@ -555,7 +554,8 @@ pub(crate) fn apply_relocation(
         RelocationType::TableIndexSleb
         | RelocationType::TableIndexRelSleb
         | RelocationType::MemoryAddrSleb
-        | RelocationType::MemoryAddrRelSleb => {
+        | RelocationType::MemoryAddrRelSleb
+        | RelocationType::MemoryAddrTlsSleb => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_sleb128_5(buf, value as i32);
         }
@@ -1583,6 +1583,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) element_functions: Vec<u32>,
     pub(crate) function_table_slots: Vec<u32>,
     pub(crate) memory_base: u32,
+    pub(crate) tls_base: u32,
     pub(crate) data_end: u32,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
@@ -2256,30 +2257,90 @@ fn ensure_stack_size_aligned(stack_size: u32) -> Result {
     Ok(())
 }
 
+fn data_segment_original_index(input: &WasmObjectLayoutInput<'_>, filtered_idx: usize) -> u32 {
+    input
+        .data_segment_original_indices
+        .get(filtered_idx)
+        .copied()
+        .unwrap_or(filtered_idx as u32)
+}
+
+fn data_segment_alignment(input: &WasmObjectLayoutInput<'_>, original_index: u32) -> Alignment {
+    input
+        .segment_infos
+        .get(original_index as usize)
+        .map_or(crate::alignment::MIN, |info| info.alignment)
+}
+
+fn data_segment_is_tls(input: &WasmObjectLayoutInput<'_>, original_index: u32) -> bool {
+    if input
+        .segment_infos
+        .get(original_index as usize)
+        .is_some_and(|info| info.is_tls())
+    {
+        return true;
+    }
+    input.symbols.iter().any(|sym| {
+        sym.kind == WasmSymbolKind::Data
+            && !sym.is_undefined()
+            && sym.index == original_index
+            && sym.raw_flags().contains(SymbolFlags::TLS)
+    })
+}
+
+fn input_has_tls_segments(input: &WasmObjectLayoutInput<'_>) -> bool {
+    (0..input.data_segments.len())
+        .any(|i| data_segment_is_tls(input, data_segment_original_index(input, i)))
+}
+
+fn max_tls_alignment(inputs: &[WasmObjectLayoutInput<'_>]) -> Alignment {
+    inputs
+        .iter()
+        .flat_map(|input| {
+            (0..input.data_segments.len()).filter_map(|i| {
+                let original_index = data_segment_original_index(input, i);
+                data_segment_is_tls(input, original_index)
+                    .then(|| data_segment_alignment(input, original_index))
+            })
+        })
+        .max()
+        .unwrap_or(crate::alignment::MIN)
+}
+
+/// `R_WASM_MEMORY_ADDR_TLS_*` is an offset from `__tls_base`. `abs_addr == 0` means the symbol is
+/// weak-undefined or its segment was GC'd. So do not use the local symbol's `UNDEFINED` flag, which
+/// is also set on cross-object references to a defined TLS symbol.
+fn tls_reloc_value(abs_addr: u32, tls_base: u32, addend: i64) -> Result<u32> {
+    if abs_addr == 0 {
+        return Ok(0);
+    }
+    let offset = abs_addr.checked_sub(tls_base).ok_or_else(|| {
+        crate::error!("TLS relocation address 0x{abs_addr:x} is before TLS base 0x{tls_base:x}")
+    })?;
+    reloc_value_with_addend(offset, addend)
+}
+
 fn layout_object_data<'data>(
     input: &WasmObjectLayoutInput<'data>,
     index_map: &WasmObjectIndexMap,
     memory_cursor: &mut u32,
+    want_tls: bool,
 ) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
     let segment_reloc_ranges =
         classify_data_reloc_ranges(&input.data_segments, &input.data_relocations);
     let mut segments = Vec::with_capacity(input.data_segments.len());
     for (filtered_idx, segment) in input.data_segments.iter().enumerate() {
+        let original_index = data_segment_original_index(input, filtered_idx);
+        if data_segment_is_tls(input, original_index) != want_tls {
+            continue;
+        }
         let DataKind::Active { memory_index, .. } = segment.kind else {
             bail!("passive data segments are not emitted");
         };
         let output_memory_index =
             remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
-        let original_index = input
-            .data_segment_original_indices
-            .get(filtered_idx)
-            .copied()
-            .unwrap_or(filtered_idx as u32);
         // Linking `SegmentInfo.alignment` is a power-of-two exponent.
-        let align = input
-            .segment_infos
-            .get(original_index as usize)
-            .map_or(crate::alignment::MIN, |info| info.alignment);
+        let align = data_segment_alignment(input, original_index);
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
             .map_err(|_| crate::error!("Wasm data segment alignment overflow"))?;
         let output_memory_offset = *memory_cursor;
@@ -2373,6 +2434,7 @@ impl WasmObjectIndexMap {
         symbols: &[WasmSymbol],
         function_table_slots: &[u32],
         memory_base: u32,
+        tls_base: u32,
     ) -> Result<u32> {
         if reloc.ty == RelocationType::TypeIndexLeb {
             return remap_wasm_index(&self.type_indices, reloc.index, "type");
@@ -2430,7 +2492,8 @@ impl WasmObjectIndexMap {
             RelocationType::MemoryAddrLeb
             | RelocationType::MemoryAddrSleb
             | RelocationType::MemoryAddrI32
-            | RelocationType::MemoryAddrRelSleb => {
+            | RelocationType::MemoryAddrRelSleb
+            | RelocationType::MemoryAddrTlsSleb => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Data,
                     "R_WASM_MEMORY_ADDR_* references non-data symbol"
@@ -2447,6 +2510,8 @@ impl WasmObjectIndexMap {
                     let relative = i32::try_from(relative)
                         .map_err(|_| crate::error!("Wasm REL_SLEB relocation out of range"))?;
                     Ok(relative as u32)
+                } else if reloc.ty == RelocationType::MemoryAddrTlsSleb {
+                    tls_reloc_value(addr, tls_base, reloc.addend)
                 } else {
                     Ok(addr)
                 }
@@ -3914,7 +3979,8 @@ impl LinkerImportAbsorption {
             WasmLinkerSymbol::MemoryBase => self.needs_memory_base = true,
             WasmLinkerSymbol::TableBase => self.needs_table_base = true,
             WasmLinkerSymbol::StackPointer => self.needs_stack_pointer = true,
-            // Single-threaded. Immutable base (no TLS segment yet).
+            // TODO(wasm): Single-threaded and immutable `__tls_base`. Shared-memory TLS is not
+            // implemented yet.
             WasmLinkerSymbol::TlsBase => self.needs_tls_base = true,
             _ => {}
         }
@@ -3963,6 +4029,8 @@ struct LinkerDefinedIndices {
     /// Index of `__stack_pointer` among the defined globals prepended by
     /// `emit_reserved_linker_definitions` (not the Wasm module global index).
     stack_pointer_defined_slot: Option<u32>,
+    /// Defined-global slot of `__tls_base` in the same prepended list.
+    tls_base_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
     weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
@@ -4966,6 +5034,11 @@ impl LinkerDefinedIndices {
         // Defined-global slot before `__stack_pointer` (used for its init expression).
         let stack_pointer_defined_slot = needs_stack_pointer
             .then_some(u32::from(needs_memory_base) + u32::from(needs_table_base));
+        let tls_base_defined_slot = needs_tls_base.then_some(
+            u32::from(needs_memory_base)
+                + u32::from(needs_table_base)
+                + u32::from(needs_stack_pointer),
+        );
         let memory_base_global = needs_memory_base.then(|| {
             let idx = next_global;
             next_global += 1;
@@ -5033,6 +5106,7 @@ impl LinkerDefinedIndices {
             stack_pointer_global,
             tls_base_global,
             stack_pointer_defined_slot,
+            tls_base_defined_slot,
             call_ctors_func,
             weak_undef_stubs,
             num_defined_globals,
@@ -5585,6 +5659,23 @@ fn fill_stack_pointer_init(
     Ok(())
 }
 
+/// Write `__tls_base` init after TLS layout.
+fn fill_tls_base_init(layout: &mut WasmLayout<'_>, indices: &LinkerDefinedIndices) -> Result {
+    let Some(defined_slot) = indices.tls_base_defined_slot else {
+        return Ok(());
+    };
+    let global = layout
+        .globals
+        .get_mut(defined_slot as usize)
+        .ok_or_else(|| crate::error!("Wasm TLS base global missing"))?;
+    ensure!(
+        !global.ty.mutable && global.ty.content_type == wasmparser::ValType::I32,
+        "Wasm TLS base global has unexpected type"
+    );
+    global.init_expr_body = Cow::Owned(encode_i32_const_u32(layout.tls_base));
+    Ok(())
+}
+
 fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>], shared: bool) -> MemoryType {
     let mut initial = 2u64;
     for input in inputs {
@@ -5860,6 +5951,9 @@ where
 
     if symbol_db.args.shared_memory {
         validate_shared_memory_features(&layout_inputs, symbol_db)?;
+        if layout_inputs.iter().any(input_has_tls_segments) {
+            bail!("shared-memory TLS is not supported yet");
+        }
     }
 
     let file_id_to_index = layout_file_id_to_index(&layout_inputs);
@@ -6000,12 +6094,32 @@ where
         }
         {
             timing_phase!("Layout Wasm data segments");
+            let n_objects = layout_inputs.len();
+            layout.object_data_layouts = (0..n_objects).map(|_| Vec::new()).collect();
             for (obj_idx, input) in layout_inputs.iter().enumerate() {
-                layout.object_data_layouts.push(layout_object_data(
+                layout.object_data_layouts[obj_idx] = layout_object_data(
                     input,
                     &layout.object_index_maps[obj_idx],
                     &mut memory_cursor,
-                )?);
+                    false,
+                )?;
+            }
+            if layout_inputs.iter().any(input_has_tls_segments) {
+                let tls_align = max_tls_alignment(&layout_inputs);
+                memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
+                    .map_err(|_| crate::error!("Wasm TLS alignment overflow"))?;
+                layout.tls_base = memory_cursor;
+                for (obj_idx, input) in layout_inputs.iter().enumerate() {
+                    let tls_segments = layout_object_data(
+                        input,
+                        &layout.object_index_maps[obj_idx],
+                        &mut memory_cursor,
+                        true,
+                    )?;
+                    layout.object_data_layouts[obj_idx].extend(tls_segments);
+                }
+            } else {
+                layout.tls_base = data_start;
             }
             for input in &mut layout_inputs {
                 layout
@@ -6094,6 +6208,7 @@ where
             stack_first,
         )?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
+        fill_tls_base_init(&mut layout, &indices)?;
         ensure_entry_export(&mut layout.exports, entry.as_ref());
         ensure_force_exports(
             &mut layout.exports,
@@ -6229,6 +6344,7 @@ fn is_memory_addr_relocation(ty: RelocationType) -> bool {
             | RelocationType::MemoryAddrSleb
             | RelocationType::MemoryAddrI32
             | RelocationType::MemoryAddrRelSleb
+            | RelocationType::MemoryAddrTlsSleb
     )
 }
 
@@ -6264,7 +6380,9 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
 pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
     if matches!(
         reloc.ty,
-        RelocationType::MemoryAddrRelSleb | RelocationType::TableIndexRelSleb
+        RelocationType::MemoryAddrRelSleb
+            | RelocationType::TableIndexRelSleb
+            | RelocationType::MemoryAddrTlsSleb
     ) {
         Ok(base)
     } else {
