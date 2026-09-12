@@ -2306,10 +2306,10 @@ fn max_tls_alignment(inputs: &[WasmObjectLayoutInput<'_>]) -> Alignment {
 /// `R_WASM_MEMORY_ADDR_TLS_*` is an offset from `__tls_base`. `abs_addr == 0` means the symbol is
 /// weak-undefined or its segment was GC'd. So do not use the local symbol's `UNDEFINED` flag, which
 /// is also set on cross-object references to a defined TLS symbol.
-fn tls_reloc_value(abs_addr: u32, tls_base: u32, addend: i64) -> Result<u32> {
-    if abs_addr == 0 {
+fn tls_reloc_value(abs_addr: Option<u32>, tls_base: u32, addend: i64) -> Result<u32> {
+    let Some(abs_addr) = abs_addr else {
         return Ok(0);
-    }
+    };
     let offset = abs_addr.checked_sub(tls_base).ok_or_else(|| {
         crate::error!("TLS relocation address 0x{abs_addr:x} is before TLS base 0x{tls_base:x}")
     })?;
@@ -2420,7 +2420,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) global_indices: Vec<u32>,
     pub(crate) memory_indices: Vec<u32>,
     pub(crate) table_indices: Vec<u32>,
-    pub(crate) data_addresses: Vec<u32>,
+    pub(crate) data_addresses: Vec<Option<u32>>,
     pub(crate) got_mem_globals: Vec<Option<u32>>,
     pub(crate) got_func_globals: Vec<Option<u32>>,
     pub(crate) function_symbol_redirects: Vec<Option<u32>>,
@@ -2507,14 +2507,15 @@ impl WasmObjectIndexMap {
                         crate::error!("data address for symbol index {} out of range", reloc.index)
                     })?;
                 if reloc.ty == RelocationType::MemoryAddrRelSleb {
-                    let relative = i64::from(addr) - i64::from(memory_base) + reloc.addend;
+                    let relative =
+                        i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.addend;
                     let relative = i32::try_from(relative)
                         .map_err(|_| crate::error!("Wasm REL_SLEB relocation out of range"))?;
                     Ok(relative as u32)
                 } else if reloc.ty == RelocationType::MemoryAddrTlsSleb {
                     tls_reloc_value(addr, tls_base, reloc.addend)
                 } else {
-                    Ok(addr)
+                    Ok(addr.unwrap_or(0))
                 }
             }
             RelocationType::TableIndexSleb
@@ -4852,7 +4853,8 @@ fn fill_got_mem_inits(
                 .data_addresses
                 .get(symbol_offset)
                 .copied()
-                .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?,
+                .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?
+                .unwrap_or(0),
             GotMemDef::LinkerDefined(known) => known
                 .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
                 .ok_or_else(|| {
@@ -6544,7 +6546,7 @@ fn compute_data_addresses(
         .zip(per_object_symbols.iter())
         .enumerate()
     {
-        let mut data_addresses = vec![0u32; symbols.len()];
+        let mut data_addresses = vec![None; symbols.len()];
         for (sym_idx, sym) in symbols.iter().enumerate() {
             if sym.kind != WasmSymbolKind::Data {
                 continue;
@@ -6555,7 +6557,7 @@ fn compute_data_addresses(
                 if let Some(addr) =
                     try_data_symbol_memory_address(&segment_offsets_by_object[obj_idx], sym)?
                 {
-                    data_addresses[sym_idx] = addr;
+                    data_addresses[sym_idx] = Some(addr);
                 }
                 continue;
             }
@@ -6572,7 +6574,7 @@ fn compute_data_addresses(
                         &segment_offsets_by_object[def_obj_idx],
                         &def_sym,
                     )? {
-                        data_addresses[sym_idx] = addr;
+                        data_addresses[sym_idx] = Some(addr);
                     }
                     continue;
                 }
@@ -6584,7 +6586,7 @@ fn compute_data_addresses(
                 && let Some(address) =
                     known.data_address(data_start, data_end, stack_size, heap_end, stack_first)?
             {
-                data_addresses[sym_idx] = address;
+                data_addresses[sym_idx] = Some(address);
             }
         }
         index_map.data_addresses = data_addresses;
