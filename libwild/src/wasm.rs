@@ -2273,12 +2273,8 @@ fn data_segment_alignment(input: &WasmObjectLayoutInput<'_>, original_index: u32
 }
 
 fn data_segment_is_tls(input: &WasmObjectLayoutInput<'_>, original_index: u32) -> bool {
-    if input
-        .segment_infos
-        .get(original_index as usize)
-        .is_some_and(|info| info.is_tls())
-    {
-        return true;
+    if let Some(info) = input.segment_infos.get(original_index as usize) {
+        return info.is_tls();
     }
     input.symbols.iter().any(|sym| {
         sym.kind == WasmSymbolKind::Data
