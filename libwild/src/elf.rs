@@ -4383,7 +4383,7 @@ impl LayoutExt {
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
-        let gnu_property_notes = merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa)?;
+        let gnu_property_notes = merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa);
         let riscv_attributes = merge_riscv_attributes::<C, A>(states)?;
         let eflags = merge_eflags::<C, A>(objects_iter(groups).map(|o| o.object))?;
         let has_eh_frame_input = objects_iter(groups).any(|o| o.format_specific.has_eh_frame_input);
@@ -4409,7 +4409,7 @@ impl LayoutExt {
 fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
     states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data, C>>,
     isa_needed: Option<NonZeroU32>,
-) -> Result<Vec<GnuProperty>> {
+) -> Vec<GnuProperty> {
     timing_phase!("Merge GNU property notes");
 
     let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
@@ -4423,8 +4423,9 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
         // First OR within file to accumulate all features this file has.
         let mut file_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
         for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype.0)
-                .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
+            let Some(property_class) = A::get_property_class(prop.ptype.0) else {
+                continue;
+            };
             file_map
                 .entry(prop.ptype)
                 .and_modify(|entry: &mut (u32, PropertyClass)| {
@@ -4456,7 +4457,8 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
     }
 
     // Iterate the properties sorted by property_type so that we have a stable output!
-    let output_properties = property_map
+
+    property_map
         .into_iter()
         .sorted_by_key(|x| x.0)
         .filter_map(|(property_type, (property_value, property_class))| {
@@ -4478,9 +4480,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
                 None
             }
         })
-        .collect_vec();
-
-    Ok(output_properties)
+        .collect_vec()
 }
 
 fn merge_eflags<'files, 'data: 'files, C: ElfClass, A: Arch<Platform = Elf<C>>>(
