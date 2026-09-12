@@ -3080,8 +3080,9 @@ fn get_resolution<'data, C: ElfClass, R: Relocation>(
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let flags = layout.flags_for_symbol(local_symbol_id);
     let resolution = layout
-        .merged_symbol_resolution(local_symbol_id)
+        .symbol_resolution_with_flags(local_symbol_id, flags)
         .or_else(|| {
             section_index.and_then(|section_index| {
                 let section_address =
@@ -3109,7 +3110,7 @@ fn get_resolution<'data, C: ElfClass, R: Relocation>(
         resolution,
         symbol_index,
         local_symbol_id,
-        flags: layout.flags_for_symbol(local_symbol_id),
+        flags,
     })
 }
 
