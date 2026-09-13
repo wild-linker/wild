@@ -65,6 +65,7 @@ use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Relaxation;
+use crate::platform::SectionAttributes;
 use crate::platform::Symbol;
 use crate::resolution::SectionSlot;
 use crate::symbol_db::SymbolId;
@@ -492,10 +493,17 @@ fn populate_file_header(
     header
         .sizeofcmds
         .set(LE, load_commands_info.file_size as u32);
-    header.flags.set(
-        LE,
-        macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL,
-    );
+
+    let mut flags = macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL;
+    let has_tlv_descriptors = layout.output_sections.ids_with_info().any(|(id, info)| {
+        layout.output_sections.will_emit_section(id)
+            && info.section_attributes.ty() == S_THREAD_LOCAL_VARIABLES
+    });
+    if has_tlv_descriptors {
+        flags |= macho::MH_HAS_TLV_DESCRIPTORS;
+    }
+
+    header.flags.set(LE, flags);
     header.reserved.set(LE, 0);
 }
 

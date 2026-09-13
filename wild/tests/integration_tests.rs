@@ -363,6 +363,7 @@ use object::ObjectSymbol as _;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::MH_HAS_TLV_DESCRIPTORS;
 use object::macho::S_THREAD_LOCAL_REGULAR;
 use object::macho::S_THREAD_LOCAL_VARIABLES;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
@@ -370,6 +371,7 @@ use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
 use object::read::macho::ExportData;
+use object::read::macho::Fixup;
 use object::read::macho::LoadCommandVariant;
 use object::read::macho::Segment;
 use regex::Regex;
@@ -4983,6 +4985,7 @@ impl Assertions {
         verify_macho_tlv_template_layout(obj)?;
 
         if linker_used.is_wild() {
+            verify_macho_tlv_descriptor_bindings(obj, bytes)?;
             verify_uuid(obj, bytes)?;
         }
         Ok(())
@@ -6023,7 +6026,7 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
 }
 
 fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
-    let object::File::MachO64(_) = obj else {
+    let object::File::MachO64(file) = obj else {
         return Ok(());
     };
 
@@ -6048,6 +6051,15 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
         .copied()
         .filter(|(_, ty, _, _)| *ty == S_THREAD_LOCAL_VARIABLES)
         .collect_vec();
+
+    ensure!(
+        file.macho_header()
+            .flags
+            .get(file.endianness())
+            .contains(MH_HAS_TLV_DESCRIPTORS)
+            != descriptors.is_empty(),
+        "MH_HAS_TLV_DESCRIPTORS must be set in Mach-O header flag for S_THREAD_LOCAL_VARIABLES"
+    );
 
     ensure!(
         descriptors
@@ -6119,6 +6131,116 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
             .join(", ")
     );
 
+    Ok(())
+}
+
+fn verify_macho_tlv_descriptor_bindings(obj: &object::File, bytes: &[u8]) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    const DESCRIPTOR_SIZE: u64 = 24;
+    let mut pending = HashSet::new();
+    for section in obj.sections() {
+        if !matches!(section.flags(), object::SectionFlags::MachO { flags, .. }
+            if flags.typ() == S_THREAD_LOCAL_VARIABLES)
+        {
+            continue;
+        }
+
+        ensure!(
+            section.size().is_multiple_of(DESCRIPTOR_SIZE),
+            "Invalid TLV descriptor section size for `{}`: {}",
+            section.name()?,
+            section.size()
+        );
+
+        for offset in (0..section.size()).step_by(DESCRIPTOR_SIZE as usize) {
+            pending.insert(
+                section
+                    .address()
+                    .checked_add(offset)
+                    .context("TLV descriptor thunk address overflow")?,
+            );
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+    let mut segments = Vec::new();
+    let mut dylibs = Vec::new();
+    let mut chained_fixups = None;
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::Segment64(segment, _) => segments.push(segment),
+            LoadCommandVariant::Dylib(dylib) => {
+                dylibs.push(load_command.string(e, dylib.dylib.name)?);
+            }
+            LoadCommandVariant::LinkeditData(linkedit)
+                if linkedit.cmd.get(e) == LC_DYLD_CHAINED_FIXUPS =>
+            {
+                chained_fixups = Some(linkedit.chained_fixups(e, bytes)?);
+            }
+            _ => {}
+        }
+    }
+
+    let chained_fixups = chained_fixups.context("Missing chained fixups for TLV descriptors")?;
+    let imports: Vec<_> = chained_fixups.imports(e)?.try_collect()?;
+    let load_addr = segments
+        .iter()
+        .find(|segment| segment.name() == SEG_TEXT.as_bytes())
+        .map(|segment| segment.vmaddr.get(e))
+        .context("Missing __TEXT segment")?;
+
+    // dyld overwrites these pointers during TLV setup with `__tlv_get_addr`, so let's explicitly
+    // check for `__tlv_bootstrap` since execution can't verify the binds themselves.
+    for chained_segment in chained_fixups.segments(e)? {
+        let chained_segment = chained_segment?;
+        let segment = segments
+            .get(chained_segment.index() as usize)
+            .context("Invalid chained fixups segment index")?;
+        let segment_data = segment
+            .data(e, bytes)
+            .map_err(|()| error!("Invalid Mach-O segment data"))?;
+        for fixup in chained_segment.fixups(e, load_addr, segment_data) {
+            let (offset, fixup) = fixup?;
+            let address = segment
+                .vmaddr
+                .get(e)
+                .checked_add(offset)
+                .context("Chained fixup address overflow")?;
+            if !pending.remove(&address) {
+                continue;
+            }
+            let Fixup::Bind(bind) = fixup else {
+                bail!("Expected TLV descriptor thunk bind at {address:#x}");
+            };
+            let import = imports
+                .get(bind.ordinal as usize)
+                .context("Invalid TLV descriptor thunk import ordinal")?;
+            let dylib = import
+                .dylib
+                .index()
+                .and_then(|ordinal| dylibs.get(ordinal as usize - 1))
+                .context("Invalid TLV descriptor thunk library ordinal")?;
+            let addend = import.addend.checked_add(i64::from(bind.addend));
+            ensure!(
+                import.name == b"__tlv_bootstrap"
+                    && *dylib == b"/usr/lib/libSystem.B.dylib"
+                    && addend == Some(0),
+                "Expected __tlv_bootstrap from libSystem with zero addend at {address:#x}"
+            );
+        }
+    }
+
+    if let Some(address) = pending.iter().min() {
+        bail!("Missing TLV descriptor thunk bind at {address:#x}");
+    }
     Ok(())
 }
 
