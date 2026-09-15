@@ -116,6 +116,7 @@ enum SinglePartSectionId {
     ChainedFixupTable,
     ExportsTrie,
     InitOffsets,
+    ThreadPtrs,
 
     // Must be last.
     Count,
@@ -134,6 +135,7 @@ pub(crate) mod part_id {
     pub(crate) const CHAINED_FIXUP_TABLE: PartId = SinglePartSectionId::ChainedFixupTable.part_id();
     pub(crate) const EXPORTS_TRIE: PartId = SinglePartSectionId::ExportsTrie.part_id();
     pub(crate) const INIT_OFFSETS: PartId = SinglePartSectionId::InitOffsets.part_id();
+    pub(crate) const THREAD_PTRS: PartId = SinglePartSectionId::ThreadPtrs.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -157,6 +159,8 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::ExportsTrie.output_section_id();
     pub(crate) const INIT_OFFSETS: OutputSectionId =
         SinglePartSectionId::InitOffsets.output_section_id();
+    pub(crate) const THREAD_PTRS: OutputSectionId =
+        SinglePartSectionId::ThreadPtrs.output_section_id();
 }
 
 const LE: Endianness = Endianness::Little;
@@ -183,6 +187,7 @@ pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = 12;
 pub(crate) const INIT_OFFSET_ENTRY_SIZE: u64 = size_of::<u32>() as u64;
+pub(crate) const THREAD_PTRS_ENTRY_SIZE: u64 = 8;
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -303,6 +308,7 @@ pub(crate) struct ImportedSymbolWithResolution {
     pub(crate) symbol_id: SymbolId,
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+    pub(crate) thread_ptrs_address: Option<NonZeroU64>,
 }
 
 #[derive(Debug)]
@@ -1453,6 +1459,7 @@ impl platform::Platform for MachO {
                     symbol_id,
                     got_address: resolution.format_specific.got_address,
                     plt_address: resolution.format_specific.plt_address,
+                    thread_ptrs_address: resolution.format_specific.thread_ptrs_address,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1482,6 +1489,11 @@ impl platform::Platform for MachO {
                 fixups.push(Fixup {
                     ordinal: ordinal as u64,
                     fixup_address: got_address.get(),
+                });
+            } else if let Some(thread_ptr_address) = import.thread_ptrs_address {
+                fixups.push(Fixup {
+                    ordinal: ordinal as u64,
+                    fixup_address: thread_ptr_address.get(),
                 });
             }
         }
@@ -1816,6 +1828,9 @@ impl platform::Platform for MachO {
         if flags.is_dynamic() && flags.needs_got() {
             mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE);
         }
+        if flags.is_dynamic() && flags.needs_thread_ptrs_entry() {
+            mem_sizes.increment(part_id::THREAD_PTRS, THREAD_PTRS_ENTRY_SIZE);
+        }
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -1895,6 +1910,7 @@ impl platform::Platform for MachO {
             format_specific: ResolutionExt {
                 got_address: None,
                 plt_address: None,
+                thread_ptrs_address: None,
             },
             flags,
         };
@@ -1908,6 +1924,10 @@ impl platform::Platform for MachO {
             let got_address = allocate_got(memory_offsets);
             resolution.raw_value = got_address.get();
             resolution.format_specific.got_address = Some(got_address);
+        } else if flags.needs_thread_ptrs_entry() {
+            let thread_ptrs_address = allocate_thread_ptrs(memory_offsets);
+            resolution.raw_value = thread_ptrs_address.get();
+            resolution.format_specific.thread_ptrs_address = Some(thread_ptrs_address);
         }
 
         resolution
@@ -1999,6 +2019,7 @@ impl platform::Platform for MachO {
             add_sections_in_segment(&mut builder, output_sections, &custom.ro, segment);
             add_sections_in_segment(&mut builder, output_sections, &custom.data, segment);
             if segment == SegmentName::DATA {
+                builder.add_section(output_section_id::THREAD_PTRS);
                 add_sections_in_segment(&mut builder, output_sections, &custom.tdata, segment);
                 add_sections_in_segment(&mut builder, output_sections, &custom.tbss, segment);
             }
@@ -2224,6 +2245,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         section_flags: macho::S_INIT_FUNC_OFFSETS.to_flags(),
         min_alignment: Alignment { exponent: 2 },
     };
+    defs[output_section_id::THREAD_PTRS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(b"__thread_ptrs"),
+            Some(SegmentName::DATA),
+        )),
+        section_flags: macho::S_THREAD_LOCAL_VARIABLE_POINTERS.to_flags(),
+        min_alignment: Alignment { exponent: 3 },
+    };
 
     defs
 };
@@ -2253,6 +2282,7 @@ pub(crate) struct DynamicLayoutExt {
 pub(crate) struct ResolutionExt {
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+    pub(crate) thread_ptrs_address: Option<NonZeroU64>,
 }
 
 fn allocate_got(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
@@ -2265,6 +2295,12 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let plt_address = NonZeroU64::new(memory_offsets.get(part_id::PLT_GOT)).unwrap();
     memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
     plt_address
+}
+
+fn allocate_thread_ptrs(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let thread_ptrs_address = NonZeroU64::new(memory_offsets.get(part_id::THREAD_PTRS)).unwrap();
+    memory_offsets.increment(part_id::THREAD_PTRS, THREAD_PTRS_ENTRY_SIZE);
+    thread_ptrs_address
 }
 
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
@@ -2398,6 +2434,15 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             // TODO: classify symbols more reliably, likely by checking whether their section is
             // __text.
             flags_to_add |= ValueFlags::GOT | ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
+        }
+        if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)))
+            && matches!(
+                rel_info.r_type,
+                object::macho::ARM64_RELOC_TLVP_LOAD_PAGE21
+                    | object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12
+            )
+        {
+            flags_to_add |= ValueFlags::THREAD_PTRS_ENTRY;
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);

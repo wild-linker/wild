@@ -83,7 +83,6 @@ use object::U16;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho;
-use object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12;
 use object::macho::CPU_SUBTYPE_ARM64_ALL;
 use object::macho::CPU_TYPE_ARM64;
 use object::macho::CS_ADHOC;
@@ -738,12 +737,6 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
         Some(relaxation) => {
             relaxation.apply(out, &mut offset_in_section, &mut 0);
             relaxation.rel_info()
-        }
-        None if rel.r_type == ARM64_RELOC_TLVP_LOAD_PAGEOFF12 => {
-            bail!(
-                "TLV relocations are currently only supported for locally-defined, strong, and \
-                non-interposable symbols in executables"
-            )
         }
         None => rel_info,
     };

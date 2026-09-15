@@ -113,6 +113,10 @@ bitflags! {
         /// We need a second GOT entry. i.e GOT->PLT->GOT. This is only used in conjunction with
         /// canonical PLT entries.
         const GOT_FOR_PLT_ENTRY = 1 << 18;
+
+        /// We need an entry in `__thread_ptrs` because the TLV descriptor address for an imported
+        /// TLV symbol is only known at runtime.
+        const THREAD_PTRS_ENTRY = 1 << 19;
     }
 }
 
@@ -144,7 +148,8 @@ impl ValueFlags {
                 | ValueFlags::COPY_RELOCATION
                 | ValueFlags::IFUNC_GOT_FOR_ADDRESS
                 | ValueFlags::CANONICAL_PLT
-                | ValueFlags::GOT_FOR_PLT_ENTRY,
+                | ValueFlags::GOT_FOR_PLT_ENTRY
+                | ValueFlags::THREAD_PTRS_ENTRY,
         )
     }
 
@@ -259,6 +264,11 @@ impl ValueFlags {
         self.contains(ValueFlags::GOT_TLS_OFFSET)
             || self.contains(ValueFlags::GOT_TLS_MODULE)
             || self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_thread_ptrs_entry(self) -> bool {
+        self.contains(ValueFlags::THREAD_PTRS_ENTRY)
     }
 
     #[must_use]
