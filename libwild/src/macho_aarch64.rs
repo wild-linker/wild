@@ -167,6 +167,13 @@ impl crate::platform::Arch for MachOAArch64 {
                     1,
                 )
             }
+            object::macho::ARM64_RELOC_ADDEND => (
+                RelocationKind::MachoAddition,
+                RelocationSize::ByteSize(0),
+                None,
+                AllowedRange::no_check(),
+                1,
+            ),
             _ => bail!("Unknown relocation: {}", rel.r_type),
         };
         Ok(RelocationKindInfo {

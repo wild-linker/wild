@@ -546,6 +546,10 @@ pub enum RelocationKind {
 
     /// The address must fulfill the alignment requirement.
     Alignment,
+
+    /// A Macho-O specific relocation where the relocation holds a constant offset that is added
+    /// to the subsequent relocation (ARM64_RELOC_UNSIGNED).
+    MachoAddition,
 }
 
 impl RelocationKind {

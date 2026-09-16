@@ -3686,7 +3686,7 @@ fn apply_relocation<
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
-        RelocationKind::Alignment => unreachable!(),
+        RelocationKind::Alignment | RelocationKind::MachoAddition => unreachable!(),
     };
 
     let offset_in_section = offset_in_section as usize;
