@@ -2267,6 +2267,16 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     plt_address
 }
 
+impl Resolution<MachO> {
+    pub(crate) fn got_address(&self) -> Result<u64> {
+        Ok(self
+            .format_specific
+            .got_address
+            .context("Missing GOT address")?
+            .get())
+    }
+}
+
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(b"__mod_init_func", SectionRuleOutcome::InitFunc),
     // TODO: Add a Mach-O output section ID and rule for `__compact_unwind`.

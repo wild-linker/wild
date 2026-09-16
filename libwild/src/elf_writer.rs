@@ -10,6 +10,7 @@ use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
+use crate::elf::Elf;
 use crate::elf::ElfClass;
 use crate::elf::ElfWord as _;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
@@ -3162,7 +3163,11 @@ fn write_got_plt_syms<C: ElfClass>(
             Ok(())
         };
 
-    write_sym(b"$got", output_section_id::GOT, Resolution::got_address)?;
+    write_sym(
+        b"$got",
+        output_section_id::GOT,
+        Resolution::<Elf<_>>::got_address,
+    )?;
     if current_res_flags.needs_plt() {
         write_sym(b"$plt", output_section_id::PLT_GOT, Resolution::plt_address)?;
     }

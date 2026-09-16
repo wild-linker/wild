@@ -785,12 +785,12 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelative => resolution
-            .raw_value
+            .got_address()?
             .wrapping_add(addend)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::Got => resolution
-            .raw_value
+            .got_address()?
             .wrapping_add(addend)
             .bitand(mask.symbol_plus_addend),
         _ => todo!(),
