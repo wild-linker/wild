@@ -9,7 +9,9 @@
 //#Config:shared
 //#CompArgs: -matomics
 //#LinkArgs: --import-memory --shared-memory --initial-memory=131072 --max-memory=196608
-//#ExpectErrorWild: --import-memory with --shared-memory is not yet supported
+// wasm-ld accepts this combination; Wild doesn't support it yet, so only run Wild.
+//#ReferenceLinkers:
+//#ExpectError: --import-memory with --shared-memory is not yet supported
 
 //#Config:import-max
 //#LinkArgs: --import-memory --initial-memory=131072 --max-memory=196608 -z stack-size=65536 --stack-first
