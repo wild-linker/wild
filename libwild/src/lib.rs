@@ -122,6 +122,8 @@ use input_data::InputFile as LoadedInputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use std::io::BufWriter;
 use std::io::IsTerminal;
 use std::io::Write;
@@ -199,7 +201,10 @@ pub struct LinkerOutput<'layout_inputs> {
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<Box<dyn Drop + 'layout_inputs>>,
+    layout: Option<Box<dyn Drop + Send + 'layout_inputs>>,
+
+    /// Input mmaps, released in parallel on drop so later unmap is cheap.
+    input_file_data: Vec<&'layout_inputs dyn InputFileData>,
 }
 
 impl Linker<OsFileSystem> {
@@ -241,14 +246,14 @@ impl<F: FileSystem> Linker<F> {
             args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{identity}")?;
-                return Ok(LinkerOutput { layout: None });
+                return Ok(LinkerOutput::empty());
             }
             args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{identity}")?;
                 // Continue linking if object files are specified
                 if args.common().inputs.is_empty() {
-                    return Ok(LinkerOutput { layout: None });
+                    return Ok(LinkerOutput::empty());
                 }
             }
             args::VersionMode::VerboseWithEmulations => {
@@ -257,7 +262,7 @@ impl<F: FileSystem> Linker<F> {
                 args.print_emulation_info(&mut stdout)?;
                 // Continue linking if object files are specified
                 if args.common().inputs.is_empty() {
-                    return Ok(LinkerOutput { layout: None });
+                    return Ok(LinkerOutput::empty());
                 }
             }
             args::VersionMode::None => {
@@ -423,8 +428,15 @@ impl<F: FileSystem> Linker<F> {
         let (g1, g2) = timing_guard!("Shutdown");
         self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
+        let input_file_data = file_loader
+            .loaded_files
+            .iter()
+            .filter_map(|file| Some(file.storage()? as &dyn InputFileData))
+            .collect();
+
         Ok(LinkerOutput {
             layout: Some(Box::new(layout)),
+            input_file_data,
         })
     }
 }
@@ -446,7 +458,28 @@ impl<F: FileSystem> Drop for Linker<F> {
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
         timing_phase!("Drop layout");
-        self.layout.take();
+
+        let input_file_data = std::mem::take(&mut self.input_file_data);
+
+        rayon::join(
+            || {
+                input_file_data
+                    .par_iter()
+                    .for_each(|file| file.release_memory());
+            },
+            || {
+                self.layout.take();
+            },
+        );
+    }
+}
+
+impl LinkerOutput<'_> {
+    fn empty() -> Self {
+        LinkerOutput {
+            layout: None,
+            input_file_data: Vec::new(),
+        }
     }
 }
 

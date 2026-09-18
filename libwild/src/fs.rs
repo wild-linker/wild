@@ -62,6 +62,9 @@ pub trait InputFileData: Send + Sync + std::fmt::Debug {
     fn verify_unchanged(&self) -> std::io::Result<bool> {
         Ok(true)
     }
+
+    /// Hint that the file will not be read again.
+    fn release_memory(&self) {}
 }
 
 /// A sized, random-access linker output.
@@ -353,6 +356,18 @@ impl InputFileData for OsInputFile {
 
     fn verify_unchanged(&self) -> std::io::Result<bool> {
         Ok(std::fs::metadata(&self.path)?.modified()? == self.modification_time)
+    }
+
+    fn release_memory(&self) {
+        #[cfg(all(unix, not(target_family = "wasm")))]
+        {
+            // Safety: read-only file-backed mapping. Discarded pages can be faulted back in.
+            let _ = unsafe {
+                self.bytes
+                    .0
+                    .unchecked_advise(memmap2::UncheckedAdvice::DontNeed)
+            };
+        }
     }
 }
 
