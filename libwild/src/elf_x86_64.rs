@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::malfunction_point_ret;
 use crate::platform::Platform;
 use crate::platform::PreviousRelocationInfo;
+use crate::platform::write_debug_abs_bytes;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -66,6 +67,37 @@ impl crate::platform::Arch for ElfX86_64 {
                 Self::rel_type_to_string(r_type)
             )
         })
+    }
+
+    #[inline(always)]
+    fn write_simple_debug_absolute(
+        r_type: object::elf::RelocationType,
+        value: u64,
+        dest: &mut [u8],
+    ) -> Result<bool> {
+        match r_type {
+            object::elf::R_X86_64_64 => write_debug_abs_bytes(dest, &value.to_le_bytes()),
+            object::elf::R_X86_64_32 => {
+                if value > u64::from(u32::MAX) {
+                    return Err(error!(
+                        "Relocation {value} outside of bounds [0, 4294967296)"
+                    ));
+                }
+                write_debug_abs_bytes(dest, &(value as u32).to_le_bytes())
+            }
+            object::elf::R_X86_64_32S => {
+                let signed = value as i64;
+                if signed < i64::from(i32::MIN) || signed > i64::from(i32::MAX) {
+                    return Err(error!(
+                        "Relocation {value} outside of bounds [{}, {})",
+                        i32::MIN,
+                        i64::from(i32::MAX) + 1
+                    ));
+                }
+                write_debug_abs_bytes(dest, &(value as u32).to_le_bytes())
+            }
+            _ => Ok(false),
+        }
     }
 
     fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {

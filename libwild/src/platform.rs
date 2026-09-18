@@ -5,6 +5,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::env;
+use crate::error;
 use crate::error::Warning;
 use crate::fs::FileReplacementMode;
 use crate::grouping::Group;
@@ -256,6 +257,27 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn fill_section_padding(buf: &mut [u8], _section_flags: object::elf::SectionFlags) {
         buf.fill(0);
     }
+
+    /// Write an absolute integer reloc. `Ok(false)` means this arch does not handle `r_type` here.
+    fn write_simple_debug_absolute(
+        _r_type: <Self::Platform as Platform>::RelocationInfo,
+        _value: u64,
+        _dest: &mut [u8],
+    ) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[inline(always)]
+pub(crate) fn write_debug_abs_bytes<const N: usize>(
+    dest: &mut [u8],
+    bytes: &[u8; N],
+) -> Result<bool> {
+    let out = dest
+        .get_mut(..N)
+        .ok_or_else(|| error!("Relocation outside of bounds of section"))?;
+    out.copy_from_slice(bytes);
+    Ok(true)
 }
 
 pub(crate) trait Relaxation: Send + Sync + 'static {

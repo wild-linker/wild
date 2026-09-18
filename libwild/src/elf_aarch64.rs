@@ -76,6 +76,28 @@ impl crate::platform::Arch for ElfAArch64 {
         })
     }
 
+    #[inline(always)]
+    fn write_simple_debug_absolute(
+        r_type: object::elf::RelocationType,
+        value: u64,
+        dest: &mut [u8],
+    ) -> Result<bool> {
+        match r_type {
+            object::elf::R_AARCH64_ABS64 => {
+                crate::platform::write_debug_abs_bytes(dest, &value.to_le_bytes())
+            }
+            object::elf::R_AARCH64_ABS32 => {
+                if value > u64::from(u32::MAX) {
+                    return Err(error!(
+                        "Relocation {value} outside of bounds [0, 4294967296)"
+                    ));
+                }
+                crate::platform::write_debug_abs_bytes(dest, &(value as u32).to_le_bytes())
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
