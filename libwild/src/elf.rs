@@ -4418,7 +4418,6 @@ impl LayoutExt {
 }
 
 fn check_cet_properties(filename: &str, props: &[GnuProperty], args: &ElfArgs) -> Result {
-    // Get the feature bits for this file
     let feature_bits = props
         .iter()
         .find(|p| p.ptype == object::elf::GNU_PROPERTY_X86_FEATURE_1_AND)
