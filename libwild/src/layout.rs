@@ -578,7 +578,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                 }
             }
             Group::Objects(_) | Group::StubLibraries(_) | Group::SyntheticSymbols(_) => {}
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(_) => {}
         }
     }
@@ -5151,7 +5151,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
                 section_id_range: s.section_id_range,

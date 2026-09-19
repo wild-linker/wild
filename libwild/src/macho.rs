@@ -1048,11 +1048,12 @@ impl platform::Platform for MachO {
     // The macOS kernel caches code signature state by vnode. Reusing a previously executed output's
     // inode after changing its contents can therefore cause the new executable to SIGKILL, even
     // though its new signature verifies successfully.
-    const DEFAULT_FILE_REPLACEMENT_MODE: crate::FileReplacementMode = if cfg!(target_os = "macos") {
-        crate::FileReplacementMode::UnlinkAndReplace
-    } else {
-        crate::FileReplacementMode::UpdateInPlaceWithFallback
-    };
+    const DEFAULT_FILE_REPLACEMENT_MODE: crate::FileReplacementMode =
+        if crate::platforms::host::IS_MACOS {
+            crate::FileReplacementMode::UnlinkAndReplace
+        } else {
+            crate::FileReplacementMode::UpdateInPlaceWithFallback
+        };
 
     const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
     const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =

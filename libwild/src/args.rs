@@ -239,7 +239,7 @@ enum PlatformKind {
 
 impl PlatformKind {
     fn host() -> Self {
-        if cfg!(target_os = "macos") {
+        if crate::platforms::host::IS_MACOS {
             PlatformKind::MachO
         } else {
             PlatformKind::Elf
