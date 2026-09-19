@@ -1783,7 +1783,7 @@ int main(void) {
         .arg("-c")
         .arg("-O0")
         .arg("-fomit-frame-pointer")
-        .arg("-Wa,--gsframe")
+        .arg("-Wa,--gsframe-3")
         .arg(&source_path)
         .arg("-o")
         .arg(&obj_path);
