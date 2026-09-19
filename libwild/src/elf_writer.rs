@@ -768,6 +768,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         Ok(())
     }
 
+    #[inline(always)]
     fn process_resolution<'data, A: Arch<Platform = elf::Elf<C>>>(
         &mut self,
         layout: Option<&ElfLayout<'data, C>>,
@@ -1445,6 +1446,7 @@ struct VersionedDynsymWriter<'layout, 'out, C: ElfClass> {
     versym: Option<&'out mut [Versym]>,
 }
 
+#[inline(always)]
 fn object_symbol_size<C: ElfClass>(
     sym: &elf::SymtabEntry<C>,
     sym_index: SymbolIndex,
@@ -1528,6 +1530,7 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         }
     }
 
+    #[inline(always)]
     fn copy_object_symbol(
         &mut self,
         sym: &elf::SymtabEntry<C>,
@@ -1577,6 +1580,7 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         Ok(())
     }
 
+    #[inline(always)]
     fn copy_symbol_with_section(
         &mut self,
         sym: &elf::SymtabEntry<C>,
@@ -2660,6 +2664,12 @@ fn apply_relocations<
     let object_section = object.object.section(section_index)?;
     let section_flags = object_section.sh_flags(LittleEndian);
     let mut modifier = RelocationModifier::Normal;
+    let section_info = SectionInfo {
+        section_address,
+        is_writable: object_section.is_writable(),
+        section_flags,
+        part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
+    };
 
     let mut relocation_count = 0;
     let mut relocation_cache = RelocationCache::<R>::default();
@@ -2692,12 +2702,7 @@ fn apply_relocations<
             object,
             offset_in_section,
             &rel,
-            SectionInfo {
-                section_address,
-                is_writable: object_section.is_writable(),
-                section_flags,
-                part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
-            },
+            section_info,
             layout,
             out,
             table_writer,
@@ -3058,17 +3063,26 @@ struct SectionInfo<S: platform::SectionFlags> {
     part_id: PartId,
 }
 
+struct RelocationResolution<C: ElfClass> {
+    resolution: Resolution<elf::Elf<C>>,
+    symbol_index: SymbolIndex,
+    local_symbol_id: SymbolId,
+    flags: ValueFlags,
+}
+
+#[inline(always)]
 fn get_resolution<'data, C: ElfClass, R: Relocation>(
     rel: &R,
     object_layout: &ObjectLayout<'data, elf::Elf<C>>,
     layout: &ElfLayout<C>,
-) -> Result<(Resolution<elf::Elf<C>>, SymbolIndex, SymbolId)> {
+) -> Result<RelocationResolution<C>> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let flags = layout.flags_for_symbol(local_symbol_id);
     let resolution = layout
-        .merged_symbol_resolution(local_symbol_id)
+        .symbol_resolution_with_flags(local_symbol_id, flags)
         .or_else(|| {
             section_index.and_then(|section_index| {
                 let section_address =
@@ -3092,7 +3106,12 @@ fn get_resolution<'data, C: ElfClass, R: Relocation>(
                 layout.symbol_debug(local_symbol_id)
             )
         })?;
-    Ok((resolution, symbol_index, local_symbol_id))
+    Ok(RelocationResolution {
+        resolution,
+        symbol_index,
+        local_symbol_id,
+        flags,
+    })
 }
 
 /// Returns the `st_other` byte of the canonical definition of `symbol_id`, or 0 if it isn't
@@ -3201,7 +3220,11 @@ fn get_pair_subtraction_relocation_value<
         A::rel_type_to_string(expected_r_type),
         A::rel_type_to_string(set_rel.raw_type())
     );
-    let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
+    let RelocationResolution {
+        resolution: set_resolution,
+        symbol_index: set_symbol_index,
+        ..
+    } = get_resolution(set_rel, object_layout, layout)?;
 
     let set_resolution_val = set_resolution.value_with_addend(
         set_rel.addend(),
@@ -3295,8 +3318,12 @@ fn apply_relocation<
         }
         _ => {}
     }
-    let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
-    let flags = layout.flags_for_symbol(local_symbol_id);
+    let RelocationResolution {
+        resolution,
+        symbol_index,
+        local_symbol_id,
+        flags,
+    } = get_resolution(rel, object_layout, layout)?;
     if layout.symbol_db.output_kind.is_position_independent()
         && (flags.is_interposable() || flags.is_dynamic())
         && !flags.needs_copy_relocation()
@@ -3456,10 +3483,13 @@ fn apply_relocation<
 
             let hi_rel_info = A::relocation_from_raw(hi_rel.raw_type())?;
             let addend = hi_rel.addend();
-            let (resolution, symbol_index, _) = get_resolution(&hi_rel, object_layout, layout)
-                .with_context(|| {
-                    "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
-                })?;
+            let RelocationResolution {
+                resolution,
+                symbol_index,
+                ..
+            } = get_resolution(&hi_rel, object_layout, layout).with_context(|| {
+                "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
+            })?;
             let place = section_address + hi_offset_in_section;
 
             // Only a subset of relocations is referenced by R_RISCV_PCREL_LO12 relocations.

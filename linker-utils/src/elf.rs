@@ -1118,7 +1118,13 @@ impl RelocationKindInfo {
                         "Relocation outside of bounds of section"
                     );
                     let value_bytes = value.to_le_bytes();
-                    output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+                    // Note, the following match is an optimisation that allows the compiler to
+                    // produce specialised code for each of these cases.
+                    match byte_size {
+                        4 => output[..4].copy_from_slice(&value_bytes[..4]),
+                        8 => output[..8].copy_from_slice(&value_bytes),
+                        _ => output[..byte_size].copy_from_slice(&value_bytes[..byte_size]),
+                    }
                 }
                 RelocationSize::BitMasking(BitMask {
                     range,

@@ -145,14 +145,11 @@ pub trait Context<T> {
 }
 
 impl<T, E: Into<Error>> Context<T> for Result<T, E> {
+    #[inline(always)]
     fn with_context(self, callback: impl FnOnce() -> String) -> Result<T> {
         match self {
             Ok(v) => Ok(v),
-            Err(error) => {
-                let mut error: Error = error.into();
-                error.0.messages.push(callback());
-                Err(error)
-            }
+            Err(error) => Err(result_context_error(error, callback)),
         }
     }
 
@@ -169,10 +166,11 @@ impl<T, E: Into<Error>> Context<T> for Result<T, E> {
 }
 
 impl<T> Context<T> for Option<T> {
+    #[inline(always)]
     fn with_context(self, callback: impl FnOnce() -> String) -> Result<T> {
         match self {
             Some(v) => Ok(v),
-            None => Err(Error::with_message(callback())),
+            None => Err(option_context_error(callback)),
         }
     }
 
@@ -182,6 +180,20 @@ impl<T> Context<T> for Option<T> {
             None => Err(Error::with_message(message)),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn result_context_error<E: Into<Error>>(error: E, callback: impl FnOnce() -> String) -> Error {
+    let mut error: Error = error.into();
+    error.0.messages.push(callback());
+    error
+}
+
+#[cold]
+#[inline(never)]
+fn option_context_error(callback: impl FnOnce() -> String) -> Error {
+    Error::with_message(callback())
 }
 
 impl std::fmt::Debug for Error {
