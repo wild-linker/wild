@@ -14,7 +14,7 @@
 // of --exclude-libs.
 //#Config:whole-archive:default
 //#SkipArch: ppc64le
-//#LinkArgs:-z now -Bshareable --whole-archive --exclude-libs exclude-libs-selective-excluded.a
+//#LinkArgs:--whole-archive
 
 extern int excluded_fn(void);
 extern int included_fn(void);

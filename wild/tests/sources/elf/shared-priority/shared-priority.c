@@ -3,6 +3,7 @@
 
 //#AbstractConfig:default
 //#CompArgs:-fPIC
+//#CompSoArgs:-fPIC
 //#Object:runtime.c
 //#Mode:dynamic
 //#DiffIgnore:.dynamic.DT_NEEDED

@@ -1,6 +1,5 @@
-//#Config:default
+//#AbstractConfig:default-base
 //#SkipArch: ppc64le
-//#LinkArgs:--nmagic -z relro
 //#Object:runtime.c
 //#NoProgramHeader:PHDR
 //#NoProgramHeader:INTERP
@@ -11,7 +10,10 @@
 //#RunEnabled:false
 //#ExpectLoadAlignment:0x8 0x20
 
-//#Config:warn-max-page-size:default
+//#Config:default:default-base
+//#LinkArgs:--nmagic -z relro
+
+//#Config:warn-max-page-size:default-base
 //#SkipArch: ppc64le
 //#LinkArgs:--nmagic -z max-page-size=65536
 //#ExpectWarningWild:-z max-page-size is incompatible with --nmagic

@@ -2,6 +2,7 @@
 
 //#Object:runtime.c
 //#CompArgs:-fno-PIC
+//#CompSoArgs:-fno-PIC
 //#Mode:dynamic
 //#Shared:force-dynamic-linking.c
 //#DiffIgnore:section.got

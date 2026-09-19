@@ -9,7 +9,6 @@
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.data.alignment
 //#DiffIgnore:section.rela.dyn
-//#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 //#DiffMatchAny:true
 
@@ -22,6 +21,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:clang-static:default
+//#CompArgs:-g -ftls-model=global-dynamic
 //#SkipArch: ppc64le
 //#LinkerDriver:clang
 //#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
@@ -43,6 +43,7 @@
 //#Cross: false
 
 //#Config:gcc-static:default
+//#CompArgs:-g -ftls-model=global-dynamic
 //#LinkerDriver:gcc
 //#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
@@ -66,6 +67,7 @@
 //#Config:clang-initial-exec:shared
 //#SkipArch: ppc64le
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
+//#CompSoArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkerDriver:clang
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#ReferenceLinkers:bfd,lld
@@ -76,6 +78,7 @@
 //#SkipArch: ppc64le
 //#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
+//#CompSoArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkerDriver:clang
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#ReferenceLinkers:bfd,lld

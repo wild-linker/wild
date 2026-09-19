@@ -1,6 +1,7 @@
 //#AbstractConfig:default
 //#RequiresGlibc:true
 //#CompArgs:-fno-pie
+//#CompSoArgs:-fno-pie
 //#Mode:dynamic
 //#Object:runtime.c
 //#Object:canonical-plt-pic.c:-fPIC

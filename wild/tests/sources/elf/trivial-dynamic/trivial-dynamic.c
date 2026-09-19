@@ -18,17 +18,17 @@
 
 //#Config:origin:default
 //#SkipArch: ppc64le
-//#LinkArgs:-z now -z origin
+//#LinkArgs:-z origin
 //#ExpectDynamic:DT_FLAGS
 
 //#Config:nodelete:default
 //#SkipArch: ppc64le
-//#LinkArgs:-z now -z nodelete
+//#LinkArgs:-z nodelete
 //#ExpectDynamic:DT_FLAGS_1
 
 //#Config:symbolic:default
 //#SkipArch: ppc64le
-//#LinkArgs:-z now -Bsymbolic
+//#LinkArgs:-Bsymbolic
 // TODO: Set these
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC

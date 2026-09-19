@@ -6,10 +6,10 @@
 //#LinkArgs:-shared -z now
 
 //#Config:ignore-in-object-files:default
-//#LinkArgs:-shared -z now --unresolved-symbols=ignore-in-object-files
+//#LinkArgs:--unresolved-symbols=ignore-in-object-files
 
 //#Config:ignore-in-shared-libs:default
-//#LinkArgs:-shared -z now --unresolved-symbols=ignore-in-shared-libs
+//#LinkArgs:--unresolved-symbols=ignore-in-shared-libs
 
 int foo();
 

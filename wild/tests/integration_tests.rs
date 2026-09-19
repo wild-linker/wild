@@ -18,8 +18,8 @@
 //! `none` means that we invoke the linker directly. For the other options, we invoke it via the
 //! specified compiler. This option doesn't apply to Rust code, which always uses the Rust compiler.
 //!
-//! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
-//! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
+//! LinkArgs:... Appends arguments to pass to the linker. If using a LinkerDriver, these arguments
+//! should be whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
 //! `./<filename>` will be replaced with the path to the input file. `$OUT_DIR` will be replaced
 //! with the path to the test's build directory. `$WASI_SYSROOT` will be replaced with the wasi-libc
 //! sysroot (see RequiresWasiLibc). These arguments are passed before input objects.
@@ -27,7 +27,8 @@
 //! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
 //! such as `-lc` that need to appear after objects that reference them.
 //!
-//! LinkSoArgs:... Arguments to pass when linking a shared object.
+//! LinkSoArgs:... Appends additional arguments when linking a shared object. Note that LinkArgs
+//! is still applied. LinkSoArgs is applied after LinkArgs.
 //!
 //! SoSingleLinker:{linker name} If specified, we will use the named linker for liking shared
 //! objects regardless of the linker under test.
@@ -36,9 +37,10 @@
 //!
 //! Env:NAME=value Adds an environment variable to linker invocations.
 //!
-//! CompArgs:... Arguments to be passed to the compiler when building object files.
+//! CompArgs:... Appends arguments to be passed to the compiler when building object files other
+//! than shared-object inputs.
 //!
-//! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
+//! CompSoArgs:... Appends arguments to be passed to the compiler when building shared objects.
 //!
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
@@ -2224,7 +2226,7 @@ impl Config {
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: platform.default_args_for_linking(),
             post_linker_args: ArgumentSet::empty(),
-            linker_so_args: platform.default_args_for_linking(),
+            linker_so_args: ArgumentSet::empty(),
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
@@ -2492,9 +2494,15 @@ fn process_directive(
                 config.tracked_files.push(src_path.clone());
                 let with_replaced_path =
                     arg.replace(&format!("./{filename}"), &src_path.display().to_string());
-                config.linker_args = ArgumentSet::parse(&with_replaced_path);
+                config
+                    .linker_args
+                    .args
+                    .extend(ArgumentSet::parse(&with_replaced_path).args);
             } else {
-                config.linker_args = ArgumentSet::parse(&arg);
+                config
+                    .linker_args
+                    .args
+                    .extend(ArgumentSet::parse(&arg).args);
             }
         }
         "PostLinkArgs" => {
@@ -2502,13 +2510,19 @@ fn process_directive(
                 bail!("PostLinkArgs is not used when building Rust code");
             }
             let arg = expand_test_arg_placeholders(arg, config);
-            config.post_linker_args = ArgumentSet::parse(&arg);
+            config
+                .post_linker_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "LinkSoArgs" => {
             if is_rust {
                 bail!("LinkSoArgs is not used when building Rust code");
             }
-            config.linker_so_args = ArgumentSet::parse(arg);
+            config
+                .linker_so_args
+                .args
+                .extend(ArgumentSet::parse(arg).args);
         }
         "SoSingleLinker" => {
             config.so_single_linker = Some(
@@ -2538,11 +2552,17 @@ fn process_directive(
         }
         "CompArgs" => {
             let arg = expand_test_arg_placeholders(arg, config);
-            config.compiler_args = ArgumentSet::parse(&arg);
+            config
+                .compiler_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "CompSoArgs" => {
             let arg = expand_test_arg_placeholders(arg, config);
-            config.compiler_so_args = ArgumentSet::parse(&arg);
+            config
+                .compiler_so_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "ExpectSym" => config
             .assertions
@@ -3721,12 +3741,11 @@ fn build_obj(
     // writes temporary files to the working directory, they won't collide.
     command.current_dir(config.build_dir());
 
-    let mut compiler_args =
-        if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
-            config.compiler_so_args.args.clone()
-        } else {
-            config.compiler_args.args.clone()
-        };
+    let mut compiler_args = if input_type == InputType::SharedObject {
+        config.compiler_so_args.args.clone()
+    } else {
+        config.compiler_args.args.clone()
+    };
 
     compiler_args.extend_from_slice(&file.args.args);
 

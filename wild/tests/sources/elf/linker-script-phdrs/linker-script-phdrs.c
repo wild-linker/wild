@@ -6,8 +6,7 @@
 // Skip the .custom section, since it is forcefully excluded from any segments.
 //#DiffIgnore:section-diff-failed..custom
 
-//#Config:nophdrs:default
-//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
+//#AbstractConfig:nophdrs-base:default
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text]
 //#ExpectProgramHeader:DYNAMIC flags=RW,sections=[.dynamic,*]
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*]
@@ -20,7 +19,10 @@
 //#NoProgramHeader:GNU_PROPERTY
 //#SkipArch:riscv64
 
-//#Config:riscv:nophdrs
+//#Config:nophdrs:nophdrs-base
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
+
+//#Config:riscv:nophdrs-base
 //#Arch:riscv64
 //#ExpectProgramHeader:RISCV_ATTRIBUTES flags=R,sections=[.riscv.attributes]
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=1

@@ -18,18 +18,20 @@
 //#LinkArgs:-o elf -z now
 //#RunEnabled:true
 
-//#Config:command-line-override-x86_64:base
+//#AbstractConfig:command-line-override-x86_64-base:base
 //#Arch:x86_64
 //#Env:LDEMULATION=not-an-emulation
+
+//#Config:command-line-override-x86_64:command-line-override-x86_64-base
 //#LinkArgs:-m elf_x86_64 -z now
 
-//#Config:repeated-command-line-override-x86_64:command-line-override-x86_64
+//#Config:repeated-command-line-override-x86_64:command-line-override-x86_64-base
 //#LinkArgs:-melf_x86_64 -m elf_x86_64 -z now
 
-//#Config:invalid-then-valid-x86_64:command-line-override-x86_64
+//#Config:invalid-then-valid-x86_64:command-line-override-x86_64-base
 //#LinkArgs:-m invalid-emulation -m elf_x86_64 -z now
 
-//#Config:invalid-then-valid-attached-x86_64:command-line-override-x86_64
+//#Config:invalid-then-valid-attached-x86_64:command-line-override-x86_64-base
 //#LinkArgs:-minvalid-emulation -melf_x86_64 -z now
 
 //#Config:valid-then-invalid-x86_64:valid-x86_64

@@ -6,7 +6,7 @@
 //#DoesNotContain: env
 
 //#Config:shared-memory:default
-//#LinkArgs: --export=__tls_base --shared-memory --max-memory=131072
+//#LinkArgs: --shared-memory --max-memory=131072
 //#ReferenceLinkers:
 //#ExpectErrorWild: shared-memory TLS is not supported yet
 
