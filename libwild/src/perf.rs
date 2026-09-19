@@ -1,36 +1,39 @@
 use crate::args::CounterKind;
+use crate::timing::CounterSnapshot;
 
 pub(crate) struct CounterList {
-    counters: Vec<perf_event::Counter>,
+    counters: Vec<Option<perf_event::Counter>>,
 }
 
 impl CounterList {
     pub(crate) fn from_kinds(opts: &[CounterKind]) -> Self {
         let counters = opts
             .iter()
-            .filter_map(|kind| {
-                perf_event::Builder::new()
+            .map(|kind| {
+                let mut counter = perf_event::Builder::new()
                     .inherit(true)
                     .kind(counter_to_perf_event(*kind))
                     .build()
-                    .ok()
+                    .ok()?;
+                counter.enable().ok()?;
+                Some(counter)
             })
             .collect();
 
         CounterList { counters }
     }
 
-    pub(crate) fn start(&mut self) {
-        for counter in &mut self.counters {
-            let _ = counter.reset();
-            let _ = counter.enable();
-        }
-    }
-
-    pub(crate) fn disable_and_read(&mut self) -> Vec<u64> {
+    pub(crate) fn read(&mut self) -> Vec<Option<CounterSnapshot>> {
         self.counters
             .iter_mut()
-            .filter_map(|counter| counter.disable().ok().and_then(|()| counter.read().ok()))
+            .map(|counter| {
+                let reading = counter.as_mut()?.read_count_and_time().ok()?;
+                Some(CounterSnapshot {
+                    count: reading.count,
+                    time_enabled: reading.time_enabled,
+                    time_running: reading.time_running,
+                })
+            })
             .collect()
     }
 }

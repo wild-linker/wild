@@ -7,13 +7,8 @@ impl CounterList {
         CounterList {}
     }
 
-    pub(crate) fn start(&self) {
-        let _ = self;
-    }
-
-    #[allow(clippy::unused_self)]
-    pub(crate) fn disable_and_read(&self) -> Vec<u64> {
-        let _ = self;
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    pub(crate) fn read(&mut self) -> Vec<Option<crate::timing::CounterSnapshot>> {
         Vec::new()
     }
 }
