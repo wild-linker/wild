@@ -1,11 +1,13 @@
 //#AbstractConfig:default
 //#RunEnabled:false
 
-//#Config:symbol_alias:default
-//#LinkArgs:--defsym=bar=foo
+//#AbstractConfig:symbol_alias-base:default
 //#ExpectSym:bar section=".text"
 
-//#Config:symbol_alias_lto:symbol_alias
+//#Config:symbol_alias:symbol_alias-base
+//#LinkArgs:--defsym=bar=foo
+
+//#Config:symbol_alias_lto:symbol_alias-base
 //#RequiresLinkerPlugin:true
 //#ReferenceLinkers:
 //#LinkerDriver:gcc

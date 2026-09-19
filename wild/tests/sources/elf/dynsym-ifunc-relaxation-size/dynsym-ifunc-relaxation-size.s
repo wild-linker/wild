@@ -3,6 +3,7 @@
 //#Arch:riscv64
 //#LinkerDriver:gcc
 //#CompArgs:-march=rv64gc
+//#CompSoArgs:-march=rv64gc
 //#Shared:dynsym-ifunc-relaxation-size-shared.s
 //#RunEnabled:false
 //#DiffEnabled:false

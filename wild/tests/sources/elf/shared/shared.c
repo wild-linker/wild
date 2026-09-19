@@ -16,7 +16,7 @@
 
 //#Config:symbolic:default
 //#SkipArch: ppc64le
-//#LinkArgs:-shared -z now -Bsymbolic
+//#LinkArgs:-Bsymbolic
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
 //#DiffIgnore:section.got
@@ -25,22 +25,22 @@
 
 //#Config:symbolic-functions:default
 //#SkipArch: ppc64le
-//#LinkArgs:-shared -z now -Bsymbolic-functions
+//#LinkArgs:-Bsymbolic-functions
 
 //#Config:nosymbolic:default
 //#SkipArch: ppc64le
-//#LinkArgs:-shared -z now -Bno-symbolic
+//#LinkArgs:-Bno-symbolic
 
 //#Config:symbolic-non-weak:default
 //#SkipArch: ppc64le
-//#LinkArgs:-shared -z now -Bsymbolic-non-weak
+//#LinkArgs:-Bsymbolic-non-weak
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.relro_padding
 
 //#Config:symbolic-non-weak-functions:default
 //#SkipArch: ppc64le
-//#LinkArgs:-shared -z now -Bsymbolic-non-weak-functions
+//#LinkArgs:-Bsymbolic-non-weak-functions
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.got.plt.entsize

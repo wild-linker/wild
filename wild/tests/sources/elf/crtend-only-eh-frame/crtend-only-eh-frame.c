@@ -4,6 +4,7 @@
 //#AbstractConfig:default
 //#Shared:shared.c
 //#CompArgs:-fPIC
+//#CompSoArgs:-fPIC
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data

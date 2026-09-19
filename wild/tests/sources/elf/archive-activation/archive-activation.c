@@ -1,21 +1,23 @@
 //#AbstractConfig:default
-//#CompArgs:-ffunction-sections
 //#DiffIgnore:section.relro_padding
 //#ReferenceLinkers:bfd,lld
 
 //#Config:regular:default
+//#CompArgs:-ffunction-sections
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
 //#Archive:runtime.c
 //#Archive:empty.a
 
 //#Config:thin:default
+//#CompArgs:-ffunction-sections
 //#ThinArchive:archive_activation0.c
 //#ThinArchive:archive_activation1.c
 //#ThinArchive:runtime.c
 //#ThinArchive:empty.a
 
 //#Config:lib:default
+//#CompArgs:-ffunction-sections
 // GNU ld doesn't yet support --start-lib
 //#ReferenceLinkers:lld
 //#LinkArgs:--start-lib
@@ -26,6 +28,7 @@
 //#DiffIgnore:segment.GNU_STACK.alignment
 
 //#Config:bsd:default
+//#CompArgs:-ffunction-sections
 //#ReferenceLinkers:lld
 //#BsdArchive:archive_activation0.c
 //#BsdArchive:archive_activation1.c
@@ -42,7 +45,7 @@
 //#Compiler:gcc
 //#LinkerDriver:gcc
 //#ReferenceLinkers:bfd
-//#CompArgs:-flto -DNO_GC_UNDEF_CHECK
+//#CompArgs:-DNO_GC_UNDEF_CHECK
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
 //#Archive:runtime.c
