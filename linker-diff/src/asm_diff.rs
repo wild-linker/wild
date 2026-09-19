@@ -3708,7 +3708,9 @@ impl<'data> GotIndex<'data> {
                         Ok(Referent::UnmatchedTlsOffset(rel.addend()))
                     }
                 }
-                DynamicRelocationKind::JumpSlot if symbol.is_some_and(|s| s.is_ifunc) => {
+                DynamicRelocationKind::JumpSlot | DynamicRelocationKind::GotEntry
+                    if symbol.is_some_and(|s| s.is_ifunc) =>
+                {
                     let symbol = symbol.unwrap();
                     Ok(Referent::IFunc(Some(symbol.name)))
                 }
