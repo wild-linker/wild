@@ -3108,6 +3108,22 @@ fn callee_st_other<C: ElfClass>(layout: &ElfLayout<C>, symbol_id: SymbolId) -> u
     0
 }
 
+fn canonical_symbol_size<C: ElfClass>(layout: &ElfLayout<C>, symbol_id: SymbolId) -> Result<u64> {
+    let canonical = layout.symbol_db.definition(symbol_id);
+    let file_id = layout.symbol_db.file_id_for_symbol(canonical);
+
+    if let FileLayout::Object(obj) = layout.file_layout(file_id) {
+        let symbol_index = canonical.to_input(obj.symbol_id_range);
+        let sym = obj.object.symbol(symbol_index)?;
+        return object_symbol_size(sym, symbol_index, obj);
+    }
+
+    bail!(
+        "Cannot determine size of symbol `{}`",
+        layout.symbol_db.symbol_name_for_display(canonical)
+    );
+}
+
 fn write_got_plt_syms<C: ElfClass>(
     layout: &ElfLayout<C>,
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
@@ -3368,6 +3384,23 @@ fn apply_relocation<
             object_layout,
             layout,
         )?,
+        RelocationKind::SymbolSize => {
+            if section_info.section_flags.is_alloc()
+                && resolution.flags.is_interposable()
+                && section_info.is_writable
+            {
+                table_writer.write_rela_dyn_general(
+                    place,
+                    resolution.dynamic_symbol_index()?,
+                    r_type,
+                    addend,
+                )?;
+
+                0
+            } else {
+                canonical_symbol_size(layout, local_symbol_id)?.wrapping_add(addend as u64)
+            }
+        }
         RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition

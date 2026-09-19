@@ -3295,6 +3295,7 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
             ValueFlags::empty()
         }
         RelocationKind::Absolute
+        | RelocationKind::SymbolSize
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition

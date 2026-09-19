@@ -408,6 +408,9 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The size of a symbol rather than its address.
+    SymbolSize,
+
     /// The absolute address of a symbol or section related to EH section.
     AbsoluteSet,
 

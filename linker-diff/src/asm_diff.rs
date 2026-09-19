@@ -2541,6 +2541,7 @@ impl<'data> RelaxationTester<'data> {
                 .got_base_address
                 .context("Missing GOT base address")?,
             RelocationKind::Absolute
+            | RelocationKind::SymbolSize
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
@@ -2778,7 +2779,8 @@ fn value_kind_for_relocation<A: Arch>(
             // Same as above.
             ValueKind::Got(BasicValueKind::TlsGd)
         }
-        RelocationKind::TlsDescCall
+        RelocationKind::SymbolSize
+        | RelocationKind::TlsDescCall
         | RelocationKind::None
         | RelocationKind::PairSubtractionULEB128(..)
         | RelocationKind::Alignment
@@ -3738,6 +3740,7 @@ impl<'data> GotIndex<'data> {
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
+                | RelocationKind::SymbolSize
                 | RelocationKind::AbsoluteLowPart
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
