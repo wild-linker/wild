@@ -2451,6 +2451,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .object
             .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
 
+        if symbol.visibility() == Visibility::Protected {
+            bail!(
+                "Cannot create copy relocation for protected symbol: {}",
+                resources.symbol_debug(symbol_id)
+            );
+        }
+
         // Note, we're a shared object, so this is the address relative to the load address of the
         // shared object, not an offset within a section like with regular input objects. That means
         // that we don't need to take the section into account.
