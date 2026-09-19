@@ -698,6 +698,18 @@ pub(crate) trait Platform:
         Ok(())
     }
 
+    /// Processes an input section containing compact unwind format (Mach-O specific).
+    fn process_compact_unwind_section<'data, 'scope, A: Arch<Platform = Self>>(
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _section_index: object::SectionIndex,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
@@ -733,7 +745,7 @@ pub(crate) trait Platform:
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &SymbolDb<'data, Self>,
-    );
+    ) -> Result<()>;
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut OutputSectionPartMap<u64>,

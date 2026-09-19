@@ -7141,10 +7141,11 @@ impl platform::Platform for Wasm {
         _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
         properties: &Self::LayoutExt<'data>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-    ) {
+    ) -> Result<()> {
         properties.encoded_sections.add_sizes_to(mem_sizes);
         properties.add_code_section_size(mem_sizes);
         properties.add_data_section_size(mem_sizes);
+        Ok(())
     }
 
     fn finalise_sizes_all<'data>(

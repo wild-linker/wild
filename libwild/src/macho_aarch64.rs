@@ -174,6 +174,16 @@ impl crate::platform::Arch for MachOAArch64 {
                 AllowedRange::no_check(),
                 1,
             ),
+            object::macho::ARM64_RELOC_POINTER_TO_GOT => {
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationKind::GotRelative,
+                    rel_size,
+                    None,
+                    AllowedRange::no_check(),
+                    1,
+                )
+            }
             _ => bail!("Unknown relocation: {}", rel.r_type),
         };
         Ok(RelocationKindInfo {
