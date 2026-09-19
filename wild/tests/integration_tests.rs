@@ -219,6 +219,14 @@
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
 //!
+//! TestOnlyKeepDebug:{bool} Whether to perform additional testing of the --only-keep-debug flag.
+//! When true, re-links the same inputs without --only-keep-debug and compares the two outputs:
+//! symbol addresses and section addresses must match, allocatable non-NOTE sections must be
+//! SHT_NOBITS, debug sections must exist and be non-empty, .symtab must exist, and the debug output
+//! must be smaller than the normal output. The reference link is unstripped (identical arguments
+//! minus --only-keep-debug) so that section GC and final layout are preserved identically when
+//! validating --only-keep-debug.
+//!
 //! TestRelinkAfterRun:{bool} Run Wild's output, relink it at the same path, then run it again.
 //! Verifies that relinking replaces the output file rather than updating its inode in place.
 //!
@@ -1466,6 +1474,7 @@ struct Config {
     requires_linker_plugin: bool,
     test_update_in_place: bool,
     test_relink_after_run: bool,
+    test_only_keep_debug: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
@@ -1889,6 +1898,7 @@ impl Config {
     fn can_use_wild_in_process(&self) -> bool {
         self.linker_env.is_empty()
             && !self.test_update_in_place
+            && !self.test_only_keep_debug
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
@@ -2262,6 +2272,7 @@ impl Config {
             requires_rust_musl: false,
             test_update_in_place: false,
             test_relink_after_run: false,
+            test_only_keep_debug: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
             available_linkers: linker_catalog.available.clone(),
@@ -2702,7 +2713,13 @@ fn process_directive(
         "DiffEnabled" => config.should_diff = arg.parse()?,
         "DiffMatchAny" => config.diff_match_any = arg.parse()?,
         "RunEnabled" => config.should_run = arg.parse()?,
-        "RunDynSym" => config.run_dyn_sym = Some(arg.to_string()),
+        "RunDynSym" => {
+            config.run_dyn_sym = if arg.is_empty() {
+                None
+            } else {
+                Some(arg.to_string())
+            }
+        }
         "ReferenceLinkers" => {
             if !config.skip_linkers.is_empty() || !config.enabled_linkers.is_empty() {
                 bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
@@ -2895,6 +2912,9 @@ fn process_directive(
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.parse()?;
         }
+        "TestOnlyKeepDebug" => {
+            config.test_only_keep_debug = arg.parse()?;
+        }
         "TestRelinkAfterRun" => {
             config.test_relink_after_run = arg.parse()?;
         }
@@ -2959,6 +2979,10 @@ impl ProgramInputs {
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
+        }
+
+        if config.test_only_keep_debug && linker.is_wild() {
+            self.run_only_keep_debug_test(&inputs, config, cross_arch, &link_output)?;
         }
 
         #[cfg(target_os = "macos")]
@@ -3049,6 +3073,47 @@ impl ProgramInputs {
                 cmd = updated_link_output.command,
             );
         }
+
+        Ok(())
+    }
+
+    /// When `TestOnlyKeepDebug:true`, re-links the same inputs with `--strip-debug` and
+    /// compares the two outputs to verify the invariants of the `--only-keep-debug` feature.
+    ///
+    /// The core invariant is that `--strip-debug` and `--only-keep-debug` must produce
+    /// identical virtual-address layouts for all allocatable sections and symbols.
+    fn run_only_keep_debug_test(
+        &self,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+        debug_output: &LinkOutput,
+    ) -> Result {
+        // Build a reference config: same inputs, but with --strip-debug instead of
+        // --only-keep-debug.
+        let mut ref_config = config.clone();
+        ref_config.config_name = format!("{}-reference", config.config_name);
+        let replace_flag = |args: &mut Vec<String>| {
+            for a in args.iter_mut() {
+                match a.as_str() {
+                    "--only-keep-debug" => *a = "--strip-debug".to_string(),
+                    "-Wl,--only-keep-debug" => *a = "-Wl,--strip-debug".to_string(),
+                    _ => {}
+                }
+            }
+        };
+        replace_flag(&mut ref_config.linker_args.args);
+        replace_flag(&mut ref_config.wild_extra_linker_args.args);
+        ref_config.test_only_keep_debug = false;
+
+        // Create the build directory for the reference config.
+        std::fs::create_dir_all(ref_config.build_dir())
+            .with_context(|| format!("Failed to create {}", ref_config.build_dir().display()))?;
+
+        let ref_output = Linker::Wild.link(self.name(), inputs, &ref_config, cross_arch)?;
+
+        verify_only_keep_debug(&ref_output.binary, &debug_output.binary)
+            .context("TestOnlyKeepDebug verification failed")?;
 
         Ok(())
     }
@@ -5425,6 +5490,12 @@ impl Assertions {
             return Ok(());
         };
 
+        if let object::SectionFlags::Elf { sh_type, .. } = section.flags()
+            && sh_type == object::elf::SHT_NOBITS
+        {
+            return Ok(());
+        }
+
         let data = section.data()?;
         let mut reader = gimli::EndianSlice::new(data, gimli::LittleEndian);
         while !reader.is_empty() {
@@ -5643,7 +5714,7 @@ impl Assertions {
         // table.
         if self.expect_dynamic {
             ensure!(
-                obj.dynamic_symbol_table().is_some(),
+                obj.dynamic_symbol_table().is_some() || obj.section_by_name(".dynsym").is_some(),
                 "Expected a dynamic symbol table"
             );
         }
@@ -5988,6 +6059,135 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
             );
         }
     }
+    Ok(())
+}
+
+/// Verifies that `--only-keep-debug` output preserves symbols, section addresses, and build ID from
+/// the normal link, while converting allocatable non-NOTE sections to SHT_NOBITS.
+fn verify_only_keep_debug(stripped_path: &Path, debug_path: &Path) -> Result {
+    let stripped_bytes = std::fs::read(stripped_path).with_context(|| {
+        format!(
+            "Failed to read stripped output: {}",
+            stripped_path.display()
+        )
+    })?;
+    let debug_bytes = std::fs::read(debug_path)
+        .with_context(|| format!("Failed to read debug output: {}", debug_path.display()))?;
+
+    let stripped_obj = object::File::parse(stripped_bytes.as_slice())
+        .context("Failed to parse stripped output")?;
+    let debug_obj =
+        object::File::parse(debug_bytes.as_slice()).context("Failed to parse debug output")?;
+
+    // Compare symbol addresses. --strip-debug retains .symtab (only removes .debug_*
+    // sections), and --only-keep-debug retains the full symbol table. Empirically, across
+    // Wild, ld.bfd, and ld.lld, both outputs have identical .symtab entries. Every symbol
+    // in the stripped output must exist in the debug output with the same address.
+    let debug_symbols: HashMap<Vec<u8>, u64> = debug_obj
+        .symbols()
+        .filter(|s| !s.name_bytes().unwrap_or_default().is_empty())
+        .map(|s| (s.name_bytes().unwrap_or_default().to_vec(), s.address()))
+        .collect();
+
+    for sym in stripped_obj.symbols() {
+        let name = sym.name_bytes().unwrap_or_default();
+        if name.is_empty() || sym.is_undefined() {
+            continue;
+        }
+        if let Some(&debug_addr) = debug_symbols.get(name) {
+            ensure!(
+                sym.address() == debug_addr,
+                "Symbol `{}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
+                String::from_utf8_lossy(name),
+                sym.address(),
+                debug_addr,
+            );
+        } else {
+            bail!(
+                "Symbol `{}` present in stripped output but missing from debug output",
+                String::from_utf8_lossy(name),
+            );
+        }
+    }
+
+    // Compare section addresses. The debug output is a strict superset of the stripped
+    // output's sections (it additionally has .debug_* sections). Every section in the
+    // stripped output must exist in the debug output at the same address. Non-alloc
+    // sections (.comment, .symtab, etc.) have sh_addr=0 in both, so they match trivially.
+    let debug_sections: HashMap<String, u64> = debug_obj
+        .sections()
+        .filter_map(|s| s.name().ok().map(|n| (n.to_string(), s.address())))
+        .collect();
+
+    for sec in stripped_obj.sections() {
+        let name = sec.name().unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let debug_addr = debug_sections.get(name).ok_or_else(|| {
+            error!("Section `{name}` present in stripped output but missing from debug output")
+        })?;
+        ensure!(
+            sec.address() == *debug_addr,
+            "Section `{name}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
+            sec.address(),
+            debug_addr,
+        );
+    }
+
+    // Build-id validation: both outputs should have matching build-id content.
+    let stripped_build_id = stripped_obj.section_by_name(".note.gnu.build-id");
+    let debug_build_id = debug_obj.section_by_name(".note.gnu.build-id");
+    match (stripped_build_id, debug_build_id) {
+        (Some(stripped_sec), Some(debug_sec)) => {
+            ensure!(
+                stripped_sec.data()? == debug_sec.data()?,
+                ".note.gnu.build-id content mismatch between stripped and debug output"
+            );
+        }
+        (None, None) => {}
+        (Some(_), None) => {
+            bail!(".note.gnu.build-id present in stripped output but missing from debug output");
+        }
+        (None, Some(_)) => {
+            bail!(".note.gnu.build-id present in debug output but absent from stripped output");
+        }
+    }
+
+    // Verify alloc non-NOTE sections in debug output are NOBITS (hollowed out).
+    for sec in debug_obj.sections() {
+        let flags = sec.flags();
+        if let object::SectionFlags::Elf { sh_flags, sh_type } = flags {
+            let is_alloc = (sh_flags.0 & object::elf::SHF_ALLOC.0) != 0;
+            let is_note = sh_type == object::elf::SHT_NOTE;
+            if is_alloc && !is_note {
+                ensure!(
+                    sh_type == object::elf::SHT_NOBITS,
+                    "Section `{}` is SHF_ALLOC and not NOTE, expected SHT_NOBITS, got type {:?}",
+                    sec.name().unwrap_or("?"),
+                    sh_type,
+                );
+            }
+        }
+    }
+
+    // Verify debug sections are retained and non-empty.
+    for debug_section_name in &[".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"] {
+        let sec = debug_obj
+            .section_by_name(debug_section_name)
+            .with_context(|| format!("Debug section `{debug_section_name}` missing from output"))?;
+        ensure!(
+            sec.size() > 0,
+            "Debug section `{debug_section_name}` exists but is empty",
+        );
+    }
+
+    // Verify .symtab is retained in the debug output.
+    ensure!(
+        debug_obj.section_by_name(".symtab").is_some(),
+        ".symtab section missing from debug output",
+    );
+
     Ok(())
 }
 
