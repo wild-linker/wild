@@ -5,6 +5,9 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::env;
+use crate::erratum::ErratumFixes;
+use crate::erratum::ErratumPatchConfig;
+use crate::erratum::PatchSite;
 use crate::error::Warning;
 use crate::fs::FileReplacementMode;
 use crate::grouping::Group;
@@ -241,6 +244,29 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn write_thunk(_thunk_address: u64, _target_address: u64, _buf: &mut [u8]) {
         // Should only be called if thunk_config returns Some, in which case this must be
         // overridden.
+        unimplemented!();
+    }
+
+    fn erratum_patch_config() -> Option<ErratumPatchConfig> {
+        None
+    }
+
+    /// Only called if [`erratum_patch_config`](Self::erratum_patch_config) returns [`Some`].
+    fn scan_for_errata<'data>(
+        _fixes: ErratumFixes,
+        _object: &<Self::Platform as Platform>::File<'data>,
+        _sections: &[(object::SectionIndex, u64)],
+    ) -> Result<Vec<PatchSite>> {
+        unimplemented!();
+    }
+
+    fn write_erratum_patch(
+        _site: PatchSite,
+        _section_address: u64,
+        _section_out: &mut [u8],
+        _patch_base: u64,
+        _patch: &mut [u8],
+    ) -> Result {
         unimplemented!();
     }
 
@@ -1566,6 +1592,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_relax(&self) -> bool {
         false
+    }
+
+    fn erratum_fixes(&self) -> ErratumFixes {
+        ErratumFixes::default()
     }
 
     fn sort_sections_by_name(&self) -> bool {

@@ -16,6 +16,8 @@ pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;
 pub(crate) mod elf_x86_64;
 pub(crate) mod env;
+pub(crate) mod erratum;
+pub(crate) mod erratum_aarch64;
 pub mod error;
 pub(crate) mod export_list;
 pub(crate) mod expression_eval;
@@ -406,18 +408,26 @@ impl<F: FileSystem> Linker<F> {
 
         let layout_rules = layout_rules_builder.build::<P>(args);
 
-        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
-            &mut symbol_db,
-            &mut per_symbol_flags,
-            &mut output_sections,
-            &layout_rules,
-        )?;
+        let erratum_patch_config = (!args.erratum_fixes().is_empty()
+            && !args.should_output_partial_object())
+        .then(A::erratum_patch_config)
+        .flatten();
+
+        let (resolved, erratum_patch_parts) = resolver
+            .resolve_sections_and_canonicalise_undefined(
+                &mut symbol_db,
+                &mut per_symbol_flags,
+                &mut output_sections,
+                &layout_rules,
+                erratum_patch_config,
+            )?;
 
         let layout = layout::compute::<P, A, F>(
             symbol_db,
             per_symbol_flags,
             resolved,
             output_sections,
+            erratum_patch_parts.as_ref(),
             &mut output,
         )?;
 

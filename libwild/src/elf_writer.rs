@@ -144,6 +144,7 @@ use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelBridge as _;
 use rayon::iter::ParallelIterator as _;
 use rayon::slice::ParallelSliceMut as _;
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::Cursor;
@@ -1884,6 +1885,17 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
+    let mut patch_bufs: SmallVec<[&mut [u8]; 1]> = SmallVec::new();
+    for area in object.erratum_patches.areas() {
+        let patch_buf = buffers
+            .get_mut(area.part_id)
+            .split_off_mut(..area.size() as usize)
+            .ok_or_else(|| crate::file_writer::insufficient_allocation("erratum patch"))?;
+
+        patch_buf[(area.size() - area.padding()) as usize..].fill(0);
+        patch_bufs.push(patch_buf);
+    }
+
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
@@ -1913,6 +1925,7 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                         buffers,
                         table_writer,
                         trace,
+                        &mut patch_bufs,
                     )?;
                 }
             }
@@ -2305,6 +2318,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
+    patch_bufs: &mut [&mut [u8]],
 ) -> Result {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout.args().should_output_partial_object() {
@@ -2367,6 +2381,39 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             object.input
         )
     })?;
+
+    apply_erratum_patches::<C, A>(object, section_index, out, patch_bufs)
+}
+
+/// Runs after relocations so the moved instruction is already final and no relocation has to
+/// follow it into the patch.
+fn apply_erratum_patches<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    section_index: object::SectionIndex,
+    out: &mut [u8],
+    patch_bufs: &mut [&mut [u8]],
+) -> Result {
+    let Some((area_index, sites)) = object.erratum_patches.in_section(section_index) else {
+        return Ok(());
+    };
+
+    let patch_base = object.erratum_patches.areas()[area_index].base();
+    let patch_buf = &mut *patch_bufs[area_index];
+
+    let section_address = object.section_resolutions[section_index.0]
+        .address()
+        .context("Erratum patch in a section that wasn't assigned an address")?;
+
+    for site in sites {
+        A::write_erratum_patch(
+            *site,
+            section_address,
+            out,
+            patch_base,
+            &mut patch_buf[site.patch_range()],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -4529,6 +4576,7 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 buffers,
                 table_writer,
                 trace,
+                Default::default(),
             )?;
         }
     }

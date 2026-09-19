@@ -6,6 +6,8 @@ use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
+use crate::erratum::ErratumPatchConfig;
+use crate::erratum::ErratumPatchParts;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -97,7 +99,8 @@ impl<'data, P: Platform> Resolver<'data, P> {
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data, P>,
         layout_rules: &LayoutRules<'data>,
-    ) -> Result<Vec<ResolvedGroup<'data, P>>> {
+        erratum_patch_config: Option<ErratumPatchConfig>,
+    ) -> Result<(Vec<ResolvedGroup<'data, P>>, Option<ErratumPatchParts>)> {
         timing_phase!("Section resolution");
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
@@ -108,6 +111,15 @@ impl<'data, P: Platform> Resolver<'data, P> {
             output_sections,
             symbol_db.args,
         );
+
+        let erratum_patch_parts = erratum_patch_config.map(|config| {
+            let primaries = executable_output_sections(
+                &self.resolved_groups,
+                &symbol_db.section_part_ids,
+                output_sections,
+            );
+            ErratumPatchParts::create(output_sections, config, &primaries)
+        });
 
         let start_stop_sections =
             P::NEEDS_START_STOP_SECTION_GC.then(|| output_sections.new_section_map());
@@ -137,7 +149,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
             files: vec![ResolvedFile::SyntheticSymbols(syn)],
         });
 
-        Ok(self.resolved_groups)
+        Ok((self.resolved_groups, erratum_patch_parts))
     }
 }
 
@@ -893,6 +905,45 @@ fn assign_section_ids<'data, P: Platform>(
             }
         }
     }
+}
+
+/// Output sections that executable input sections map to, and so may need erratum patches.
+fn executable_output_sections<'data, P: Platform>(
+    resolved: &[ResolvedGroup<'data, P>],
+    section_part_ids: &[PartId],
+    output_sections: &OutputSections<'data, P>,
+) -> Vec<OutputSectionId> {
+    let mut marks: OutputSectionMap<bool> = output_sections.new_section_map();
+
+    for group in resolved {
+        for file in &group.files {
+            let ResolvedFile::Object(obj) = file else {
+                continue;
+            };
+
+            let obj_part_ids = &section_part_ids[obj.section_id_range.as_usize()];
+
+            for (index, slot) in obj.sections.iter().enumerate() {
+                if matches!(slot, SectionSlot::Discard) {
+                    continue;
+                }
+
+                let Ok(header) = obj.common.object.section(SectionIndex(index)) else {
+                    continue;
+                };
+
+                if header.is_executable() {
+                    let section_id = obj_part_ids[index].output_section_id::<P>();
+                    *marks.get_mut(output_sections.primary_output_section(section_id)) = true;
+                }
+            }
+        }
+    }
+
+    marks
+        .iter()
+        .filter_map(|(section_id, &marked)| marked.then_some(section_id))
+        .collect()
 }
 
 fn populate_start_stop_sections<'data, P: Platform>(

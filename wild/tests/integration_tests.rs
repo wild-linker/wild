@@ -4416,6 +4416,9 @@ impl LinkCommand {
                         // Provide a workaround for ld.lld: error: unknown argument
                         // '--fix-cortex-a53-835769' Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
+                        // Some distro toolchains enable 843419 by default, and linker-diff reports
+                        // a patched instruction as a relaxation mismatch.
+                        command.arg("-mno-fix-cortex-a53-843419");
                     }
 
                     command.args(&linker_args.args);
