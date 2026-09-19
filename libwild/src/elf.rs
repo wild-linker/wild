@@ -2022,10 +2022,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             if flags.needs_plt() {
                 mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
             }
-            if flags.is_ifunc() || flags.needs_canonical_plt() {
+            if flags.needs_canonical_plt() {
                 mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+            } else if flags.is_ifunc() {
+                mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if flags.has_link_time_address() && output_kind.is_position_independent() {
                 if args.is_relr_enabled() && !is_got_relr {
                     // Flat RELR for section boundary symbols (not bitmap-packed)

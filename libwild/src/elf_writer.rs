@@ -817,10 +817,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         if res.flags.needs_canonical_plt() {
             *got_entry = elf::Word::<C>::from_u64(0)?;
             self.write_jump_slot_relocation::<A>(got_address, res.dynamic_symbol_index()?)?;
-        } else if res.flags.is_dynamic()
-            || (flags.needs_export_dynamic() && res.flags.is_interposable())
-                && !res.flags.is_ifunc()
-        {
+        } else if has_dynamic_symbol {
             *got_entry = elf::Word::<C>::from_u64(0)?;
             debug_assert_bail!(
                 compute_allocations::<elf::Elf<C>>(res, self.output_kind, args)
