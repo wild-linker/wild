@@ -21,10 +21,7 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
     let target_subdir = report_dir.join(IMAGES_SUBDIR_NAME).join(&config.name);
     std::fs::create_dir_all(&target_subdir)
         .with_context(|| format!("Failed to create directory `{}`", target_subdir.display()))?;
-    let bytes = std::fs::read(&input_path)
-        .with_context(|| format!("Failed to read `{}`", input_path.display()))?;
-    let results: Benchmarks = postcard::from_bytes(&bytes)
-        .with_context(|| format!("Failed to parse `{}`", input_path.display()))?;
+    let results = Benchmarks::load(&input_path)?;
 
     let markdown_path = report_dir.join(format!("{}.md", config.name));
 
@@ -40,9 +37,10 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
 
     const UNGROUPED_HEADER: &str = "## UNGROUPED\n";
 
+    let expanded = config.expanded()?;
     for mode in [ReportMode::Time, ReportMode::Memory] {
         for benchmark in &results.benchmarks {
-            let Some(bench_config) = config.benches.get(&benchmark.config.name) else {
+            let Some((_, bench_config)) = expanded.get(&benchmark.config.name) else {
                 continue;
             };
             if bench_config.skip {
@@ -53,7 +51,7 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
             if benchmark.batches.is_empty() {
                 continue;
             }
-            let svg_filename = produce_chart(report_dir, &benchmark, mode, config)?;
+            let svg_filename = produce_chart(report_dir, &benchmark, mode, config, args.absolute)?;
             existing_images.remove(&report_dir.join(&svg_filename));
 
             // Check to see if the markdown already has a link to this file. If it doesn't, add one.
@@ -95,13 +93,17 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReportMode {
+pub(crate) enum ReportMode {
     Time,
     Memory,
 }
 
 impl ReportMode {
-    fn filter(self, benchmark: &BenchmarkResult, config: &BenchConfig) -> BenchmarkResult {
+    pub(crate) fn filter(
+        self,
+        benchmark: &BenchmarkResult,
+        config: &BenchConfig,
+    ) -> BenchmarkResult {
         let mut benchmark = benchmark.clone();
 
         benchmark
@@ -117,17 +119,17 @@ impl ReportMode {
     }
 
     fn should_keep_run(self, run: &crate::Run) -> bool {
-        run.extra_flags.iter().any(|f| f == "--no-fork") == (self == ReportMode::Memory)
+        run.memory == (self == ReportMode::Memory)
     }
 
-    fn unit_name(self) -> &'static str {
+    pub(crate) fn unit_name(self) -> &'static str {
         match self {
             ReportMode::Time => "ms",
             ReportMode::Memory => "MiB",
         }
     }
 
-    fn unit_multiplier(self) -> f64 {
+    pub(crate) fn unit_multiplier(self) -> f64 {
         match self {
             ReportMode::Time => 1000_f64,
             ReportMode::Memory => 1_f64 / f64::from(1024 * 1024),
@@ -156,7 +158,7 @@ fn alt_text(mode: ReportMode, benchmark: &BenchmarkResult) -> String {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn mean(batch_result: &BatchResult, mode: ReportMode) -> f64 {
+pub(crate) fn mean(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     let total: f64 = batch_result.runs.iter().map(|r| mode.raw_value(r)).sum();
     total / batch_result.runs.len() as f64
 }
@@ -181,7 +183,7 @@ fn std_err(batch_result: &BatchResult, mode: ReportMode) -> f64 {
 }
 
 /// Returns the 99% confidence interval.
-fn confidence_interval(batch_result: &BatchResult, mode: ReportMode) -> f64 {
+pub(crate) fn confidence_interval(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     std_err(batch_result, mode) * 2.5758
 }
 
@@ -194,9 +196,12 @@ impl Display for BenchmarkDisplay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{} {}:", self.benchmark.config.name, self.mode)?;
         for r in &self.benchmark.batches {
+            let threads = r
+                .threads
+                .map_or_else(String::new, |n| format!(" ({n} threads)"));
             writeln!(
                 f,
-                "  {bin}: {val:.2} ± {conf:.2} {units}",
+                "  {bin}{threads}: {val:.2} ± {conf:.2} {units}",
                 bin = r.bin,
                 val = mean(r, self.mode) * self.mode.unit_multiplier(),
                 conf = confidence_interval(r, self.mode) * self.mode.unit_multiplier(),
@@ -212,13 +217,33 @@ fn produce_chart(
     benchmark: &BenchmarkResult,
     mode: ReportMode,
     config: &Config,
+    absolute: bool,
 ) -> Result<String> {
+    let svg = if benchmark
+        .batches
+        .iter()
+        .any(|batch| batch.threads.is_some())
+    {
+        crate::scaling::produce_chart(benchmark, mode, config)?
+    } else {
+        produce_bar_chart(benchmark, mode, config, absolute)?
+    };
     let svg_name = format!(
         "{}/{}/{}-{mode}.svg",
         IMAGES_SUBDIR_NAME, config.name, benchmark.config.name
     );
     let svg_path = report_dir.join(&svg_name);
+    std::fs::write(&svg_path, svg)
+        .with_context(|| format!("Failed to write `{}`", svg_path.display()))?;
+    Ok(svg_name)
+}
 
+fn produce_bar_chart(
+    benchmark: &BenchmarkResult,
+    mode: ReportMode,
+    config: &Config,
+    absolute: bool,
+) -> Result<String> {
     let max_value = max_positive_f64(
         benchmark
             .batches
@@ -234,7 +259,10 @@ fn produce_chart(
     let chart_height = 600;
     let bg = "#000000";
     let fg = "#FFFFFF";
-    let title = format!("{} - {} - {mode}", config.name, benchmark.config.name);
+    let title = crate::scaling::escape(&format!(
+        "{} - {} - {mode}",
+        config.name, benchmark.config.name
+    ));
     let unit_label_y = chart_height / 2;
     let unit = mode.unit_name();
 
@@ -309,7 +337,11 @@ font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
         let x = bar_width * i as u32 + left + bar_width / 2;
         let mut y = bottom + 6;
         let line_spacing = 18;
-        for line in b.bin.identifier.name_parts() {
+        for line in b.bin.label.as_ref().map_or_else(
+            || b.bin.identifier.name_parts(),
+            |label| vec![label.clone()],
+        ) {
+            let line = crate::scaling::escape(&line);
             y += line_spacing;
             writeln!(
                 &mut svg,
@@ -317,22 +349,23 @@ font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
             )?;
         }
 
-        // Draw the percent change relative to the baseline (the last linker).
         let y = chart_height - 20;
-        let baseline = benchmark.batches.last().map_or(0.0, |b| mode.get_value(b));
-        let extra = ((value / baseline) * 100_f64).round() as i32 - 100;
+        let label = if absolute {
+            format!("{value:.0}")
+        } else {
+            let baseline = benchmark.batches.last().map_or(0.0, |b| mode.get_value(b));
+            let extra = ((value / baseline) * 100_f64).round() as i32 - 100;
+            format!("{extra:+.0}%")
+        };
         writeln!(
             &mut svg,
-            r#"<text x="{x}" y="{y}" fill="{fg}" text-anchor="middle">{extra:+.0}%</text>"#
+            r#"<text x="{x}" y="{y}" fill="{fg}" text-anchor="middle">{label}</text>"#
         )?;
     }
 
     writeln!(&mut svg, r"</svg>")?;
 
-    std::fs::write(&svg_path, &svg)
-        .with_context(|| format!("Failed to write `{}`", svg_path.display()))?;
-
-    Ok(svg_name)
+    Ok(svg)
 }
 
 fn format_number(mut val: u32) -> String {
@@ -380,23 +413,19 @@ fn colour_for(linker: LinkerKind) -> &'static str {
     }
 }
 
-fn merge_batches(benchmark: &mut BenchmarkResult) {
-    let num_bins = benchmark
-        .batches
-        .iter()
-        .map(|b| b.bin.index + 1)
-        .max()
-        .unwrap_or(0) as usize;
-
-    let mut by_bin: Vec<Option<BatchResult>> = vec![None; num_bins];
-    for mut b in std::mem::take(&mut benchmark.batches) {
-        match &mut by_bin[b.bin.index as usize] {
-            Some(existing) => existing.runs.append(&mut b.runs),
-            n => *n = Some(b),
+pub(crate) fn merge_batches(benchmark: &mut BenchmarkResult) {
+    let mut groups = std::collections::BTreeMap::<_, BatchResult>::new();
+    for mut batch in std::mem::take(&mut benchmark.batches) {
+        match groups.entry((batch.bin.index, batch.threads)) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().runs.append(&mut batch.runs);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(batch);
+            }
         }
     }
-
-    benchmark.batches = by_bin.into_iter().flatten().collect();
+    benchmark.batches = groups.into_values().collect();
 }
 
 impl Display for ReportMode {
