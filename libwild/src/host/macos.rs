@@ -1,5 +1,34 @@
 //! macOS host tree.
 
+pub(crate) mod fs {
+    pub(crate) use crate::host::common::advise_huge_pages_unsupported as advise_huge_pages;
+    pub(crate) use crate::host::common::filesystem_kind_unknown as filesystem_kind;
+    pub(crate) use crate::host::common::preallocate_unsupported as preallocate;
+    pub(crate) use crate::host::unix::fs::InputBytes;
+    pub(crate) use crate::host::unix::fs::create_symlink;
+    pub(crate) use crate::host::unix::fs::make_executable;
+    pub(crate) use crate::host::unix::fs::path_from_bytes;
+    pub(crate) use crate::host::unix::fs::read_input;
+    pub(crate) use crate::host::unix::fs::release_input_memory;
+
+    /// Invalidates OS caches that may have observed partially written output.
+    pub(crate) fn invalidate_mapped_output(output: &mut memmap2::MmapMut, len: usize) {
+        unsafe {
+            libc::msync(output.as_mut_ptr().cast(), len, libc::MS_INVALIDATE);
+        }
+    }
+}
+
+pub(crate) mod os {
+    pub(crate) use crate::host::common::kernel_version_unknown as kernel_version;
+    #[cfg(test)]
+    pub(crate) use crate::host::unix::os::SANDBOXED;
+
+    pub(crate) const IS_MACOS: bool = true;
+
+    pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &[];
+}
+
 pub(crate) mod perf {
     pub(crate) use crate::host::common::UnsupportedCounterList as CounterList;
 }

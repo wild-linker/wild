@@ -1,6 +1,54 @@
 //! Building blocks shared by every unix host tree. Each unix leaf tree re-exports the items it
 //! doesn't override.
 
+pub(crate) mod fs {
+    use crate::error::Result;
+    use std::fs::File;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    pub(crate) type InputBytes = memmap2::Mmap;
+
+    pub(crate) fn read_input(file: &File, path: &Path, prepopulate: bool) -> Result<InputBytes> {
+        crate::host::common::map_input(file, path, prepopulate)
+    }
+
+    /// Hints that an input won't be read again.
+    pub(crate) fn release_input_memory(bytes: &InputBytes) {
+        // Safety: read-only file-backed mapping. Discarded pages can be faulted back in.
+        let _ = unsafe { bytes.unchecked_advise(memmap2::UncheckedAdvice::DontNeed) };
+    }
+
+    /// Adds execute permission wherever the file currently has read permission.
+    pub(crate) fn make_executable(file: &File) -> Result {
+        use std::os::unix::prelude::PermissionsExt;
+        let mut permissions = file.metadata()?.permissions();
+        let mut mode = PermissionsExt::mode(&permissions);
+        // Set execute permission wherever we currently have read permission.
+        mode = mode | ((mode & 0o444) >> 2);
+        PermissionsExt::set_mode(&mut permissions, mode);
+        file.set_permissions(permissions)?;
+        Ok(())
+    }
+
+    pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+    }
+
+    pub(crate) fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, dest_path)
+    }
+}
+
+pub(crate) mod os {
+    /// Whether the host is a capability sandbox (no temporary directory, no subprocesses, only
+    /// preopened directories).
+    #[cfg(test)]
+    pub(crate) const SANDBOXED: bool = false;
+}
+
 pub(crate) mod process {
     use crate::bail;
     use crate::error::Context as _;
