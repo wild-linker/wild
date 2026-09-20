@@ -4396,7 +4396,6 @@ impl LayoutExt {
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
-        args.report_z_execstack()?;
         let gnu_property_notes =
             merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa, args.force_ibt);
         if args.force_ibt || args.cet_report != crate::args::elf::CetReport::None {

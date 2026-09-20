@@ -508,6 +508,9 @@ impl ElfArgs {
     /// Unlike GNU ld, we never enable an executable stack from input objects. `-z execstack` is
     /// required. The flags only control whether we error, warn, or stay silent about that request.
     pub(crate) fn report_object_execstack(&self, object: &impl std::fmt::Display) -> Result {
+        // `-z execstack` with `--warn-execstack` is reported during argument parsing, so
+        // `self.execstack && matches!(self.warn_execstack, WarnExecstack::Always)` cannot happen
+        // here.
         if self.execstack || matches!(self.warn_execstack, WarnExecstack::None) {
             return Ok(());
         }
@@ -518,21 +521,6 @@ impl ElfArgs {
             bail!("{message}");
         }
         self.warning(message);
-        Ok(())
-    }
-
-    pub(crate) fn report_z_execstack(&self) -> Result {
-        if self.execstack
-            && matches!(self.warn_execstack, WarnExecstack::Always)
-            && !self.should_output_partial_object
-        {
-            let message =
-                "enabling an executable stack because of -z execstack command line option";
-            if self.error_execstack {
-                bail!("{message}");
-            }
-            self.warning(message);
-        }
         Ok(())
     }
 
@@ -599,6 +587,17 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             .inputs
             .iter_mut()
             .for_each(|input| input.modifiers.allow_shared = false);
+    }
+
+    if args.execstack
+        && matches!(args.warn_execstack, WarnExecstack::Always)
+        && !args.should_output_partial_object
+    {
+        let message = "enabling an executable stack because of -z execstack command line option";
+        if args.error_execstack {
+            bail!("{message}");
+        }
+        args.warning(message);
     }
 
     if !args.experimental_sframe {
