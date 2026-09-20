@@ -317,7 +317,8 @@ pub(crate) fn build(
             first_address: u32::try_from(*start - text_segment_start)
                 .context("first address does not fit into u32")?,
             lsda_index_offset: (lsda_data_offset + lsda_offset * size_of::<LsdaEntry>()) as u32,
-            page_offset: u32::try_from(second_level_first_offset + i * size_of::<CompressedPage>())
+            // Right now, we assume fully pickled compressed pages.
+            page_offset: u32::try_from(second_level_first_offset + i * COMPRESSED_PAGE_SIZE)
                 .context("page offset does not fit into u32")?,
         };
         out.extend(record.as_bytes());
