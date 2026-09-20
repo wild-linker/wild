@@ -247,13 +247,13 @@ jobs:
   dependency_cooldown:
     name: Dependency cooldown
     runs-on: ubuntu-24.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@nightly
+      - run: cp -f config.toml.publish-age .cargo/config.toml
       - name: Check for eligible dependency updates
         run: cargo +nightly update
 
