@@ -1078,6 +1078,8 @@ pub struct RelocationKindInfo {
     pub bias: u64,
     /// Whether this relocation type supports range-extension thunks.
     pub thunkable: bool,
+    /// Whether this relocation assumes an implicit addend at the place of the relocation.
+    pub implicit_addend: bool,
 }
 
 impl RelocationKindInfo {

@@ -111,9 +111,10 @@ impl crate::platform::Arch for MachOAArch64 {
             RelocationKind::Absolute
         };
 
-        let (kind, size, mask, range, alignment) = match rel.r_type {
+        // Note the logic which sections have implicit addend is taken from the LLD linker.
+        let (kind, size, mask, range, alignment, implicit_addend) = match rel.r_type {
             object::macho::ARM64_RELOC_UNSIGNED => {
-                (rel_kind, rel_size, None, AllowedRange::no_check(), 1)
+                (rel_kind, rel_size, None, AllowedRange::no_check(), 1, true)
             }
             object::macho::ARM64_RELOC_BRANCH26 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
@@ -123,6 +124,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     None,
                     AllowedRange::from_bit_size(28, Sign::Signed),
                     4,
+                    false,
                 )
             }
             object::macho::ARM64_RELOC_PAGE21 | object::macho::ARM64_RELOC_TLVP_LOAD_PAGE21 => {
@@ -133,6 +135,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
+                    false,
                 )
             }
             object::macho::ARM64_RELOC_PAGEOFF12
@@ -144,6 +147,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     None,
                     AllowedRange::no_check(),
                     1,
+                    false,
                 )
             }
             object::macho::ARM64_RELOC_GOT_LOAD_PAGE21 => {
@@ -155,6 +159,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
+                    false,
                 )
             }
             object::macho::ARM64_RELOC_GOT_LOAD_PAGEOFF12 => {
@@ -165,6 +170,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     None,
                     AllowedRange::no_check(),
                     1,
+                    false,
                 )
             }
             object::macho::ARM64_RELOC_ADDEND => (
@@ -173,6 +179,7 @@ impl crate::platform::Arch for MachOAArch64 {
                 None,
                 AllowedRange::no_check(),
                 1,
+                false,
             ),
             _ => bail!("Unknown relocation: {}", rel.r_type),
         };
@@ -184,6 +191,7 @@ impl crate::platform::Arch for MachOAArch64 {
             range,
             size,
             thunkable: false,
+            implicit_addend,
         })
     }
 

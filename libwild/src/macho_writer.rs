@@ -75,7 +75,9 @@ use crate::verbose_timing_phase;
 use itertools::Itertools;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use linker_utils::utils::slice_from_all_bytes_mut;
+use linker_utils::utils::u64_from_slice;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
@@ -750,6 +752,22 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             }
             _ => {}
         }
+    }
+
+    if rel_info.implicit_addend {
+        let RelocationSize::ByteSize(byte_size @ (4 | 8)) = rel_info.size else {
+            bail!(
+                "Unexpected relocation size for implicit addend read: {}",
+                rel_info.size
+            );
+        };
+        let bytes = out
+            .get(offset_in_section as usize..)
+            .and_then(|bytes| bytes.get(..byte_size))
+            .context("implicit addend read extends beyond section data")?;
+        let mut buffer = [0u8; 8];
+        buffer[..byte_size].copy_from_slice(bytes);
+        addend = addend.wrapping_add(u64_from_slice(&buffer));
     }
 
     let mask = get_page_mask(rel_info.mask);

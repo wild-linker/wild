@@ -1005,6 +1005,7 @@ pub const fn relocation_type_from_raw(
             r_type,
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26
         ),
+        implicit_addend: false,
     })
 }
 
