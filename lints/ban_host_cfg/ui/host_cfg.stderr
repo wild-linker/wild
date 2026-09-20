@@ -1,0 +1,49 @@
+error: host selection outside libwild's host trees: host cfg `cfg(unix)`; only libwild/src/host/mod.rs and the host trees may select the host, everything else goes through crate::host
+  --> $DIR/host_cfg.rs:2:1
+   |
+LL | / fn main() {
+LL | |     let _ = runtime_check();
+LL | |     names_a_tree();
+LL | | }
+   | |_^
+   |
+   = note: `#[deny(ban_host_cfg)]` on by default
+
+error: host selection outside libwild's host trees: host cfg `cfg_attr(target_os=,allow(dead_code))`; only libwild/src/host/mod.rs and the host trees may select the host, everything else goes through crate::host
+  --> $DIR/host_cfg.rs:2:1
+   |
+LL | / fn main() {
+LL | |     let _ = runtime_check();
+LL | |     names_a_tree();
+LL | | }
+   | |_^
+
+error: host selection outside libwild's host trees: host cfg `cfg!(windows)`; only libwild/src/host/mod.rs and the host trees may select the host, everything else goes through crate::host
+  --> $DIR/host_cfg.rs:2:1
+   |
+LL | / fn main() {
+LL | |     let _ = runtime_check();
+LL | |     names_a_tree();
+LL | | }
+   | |_^
+
+error: host selection outside libwild's host trees: native OS reference `std::os::fd`; only libwild/src/host/mod.rs and the host trees may select the host, everything else goes through crate::host
+  --> $DIR/host_cfg.rs:2:1
+   |
+LL | / fn main() {
+LL | |     let _ = runtime_check();
+LL | |     names_a_tree();
+LL | | }
+   | |_^
+
+error: host selection outside libwild's host trees: host tree named directly: `host::linux`; only libwild/src/host/mod.rs and the host trees may select the host, everything else goes through crate::host
+  --> $DIR/host_cfg.rs:2:1
+   |
+LL | / fn main() {
+LL | |     let _ = runtime_check();
+LL | |     names_a_tree();
+LL | | }
+   | |_^
+
+error: aborting due to 5 previous errors
+

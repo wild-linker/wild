@@ -232,6 +232,38 @@ jobs:
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu --no-default-features
 
+  dylint:
+    name: Dylint host boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The lint links against rustc, so it needs the nightly pinned in
+      # lints/ban_host_cfg/rust-toolchain.toml, plus the toolchain the workspace builds with.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-28
+          components: rustc-dev, llvm-tools-preview, rust-src
+      - uses: dtolnay/rust-toolchain@1.97.1
+        id: rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dylint@6.0.3,dylint-link@6.0.3
+      # Sources are read pre-expansion, so one host covers every host. Module files behind a
+      # feature gate only exist in the feature set that enables them, hence both runs.
+      - run: cargo dylint --path lints/ban_host_cfg --workspace -- --all-targets
+      - run: cargo dylint --path lints/ban_host_cfg --workspace -- --all-targets --no-default-features
+      # Run from the lint's directory so rustup picks up its pinned nightly. The workflow-level
+      # RUSTFLAGS would override the crate's .cargo/config.toml, which sets the linker that writes
+      # the toolchain-stamped copy of the library that the UI tests load.
+      - run: cargo test
+        working-directory: lints/ban_host_cfg
+        env:
+          RUSTFLAGS: -C linker=dylint-link
+
   cargo-deny:
     name: Cargo deny
     runs-on: ubuntu-24.04

@@ -1,0 +1,27 @@
+[package]
+name = "ban_host_cfg"
+version = "0.1.0"
+description = "Keep host selection and native OS APIs inside libwild's host trees"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "=6.0.3"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+# Built with its own pinned nightly, so it stays out of the wild workspace.
+[workspace]
+
+[profile.release]
+opt-level = 0
+lto = false
+codegen-units = 16
+strip = "none"

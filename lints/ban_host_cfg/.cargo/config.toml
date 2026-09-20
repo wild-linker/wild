@@ -1,0 +1,4 @@
+[target.'cfg(all())']
+# Dylint requires a toolchain-stamped copy of the cdylib. Its linker wrapper
+# creates that copy after delegating to the platform's real linker.
+rustflags = ["-C", "linker=dylint-link"]
