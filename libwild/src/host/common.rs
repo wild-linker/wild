@@ -60,6 +60,27 @@ pub(crate) fn kernel_version_unknown() -> Option<(u64, u64)> {
     None
 }
 
+/// `PluginLibrary` for hosts or builds that can't load linker plugins. Nothing tries to open one,
+/// since `SUPPORTED` is false on those hosts and the `plugins` feature is off in those builds.
+pub(crate) struct UnsupportedPluginLibrary;
+
+impl UnsupportedPluginLibrary {
+    pub(crate) fn open(_path: &Path) -> Result<Self> {
+        Err(crate::error!(
+            "Linker plugins are not supported on this host"
+        ))
+    }
+
+    /// # Safety
+    /// See `PluginLibrary::symbol` on hosts that support plugins.
+    #[allow(clippy::unused_self)]
+    pub(crate) unsafe fn symbol<T: Copy>(&self, _name: &[u8]) -> Result<T> {
+        Err(crate::error!(
+            "Linker plugins are not supported on this host"
+        ))
+    }
+}
+
 /// `CounterList` for hosts without performance counters. It never reports any counters.
 pub(crate) struct UnsupportedCounterList {}
 

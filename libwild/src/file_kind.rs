@@ -121,7 +121,7 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool
     // If we don't have plugin support, then we skip checking if the file contains GCC IR. If it is,
     // then we'll figure that out later on and report an error. We do this because this code has a
     // measurable performance impact.
-    if !cfg!(all(feature = "plugins", unix)) {
+    if !crate::linker_plugins::ENABLED {
         return Some(false);
     }
     let e = LittleEndian;
@@ -147,7 +147,7 @@ fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<boo
     // If we don't have plugin support, then we skip checking if the file contains LLVM IR. If it
     // is, then we'll figure that out later on and report an error. We do this because this code
     // has a measurable performance impact.
-    if !cfg!(all(feature = "plugins", unix)) {
+    if !crate::linker_plugins::ENABLED {
         return Some(false);
     }
     let e = LittleEndian;

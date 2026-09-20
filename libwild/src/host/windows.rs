@@ -53,6 +53,28 @@ pub(crate) mod os {
     pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &[];
 }
 
+#[cfg(feature = "plugins")]
+pub(crate) mod linker_plugin {
+    use crate::error::Result;
+    pub(crate) use crate::host::common::UnsupportedPluginLibrary as PluginLibrary;
+    use std::ffi::c_int;
+    use std::fs::File;
+
+    /// The linker plugin API passes inputs as file descriptors, which Windows doesn't have.
+    pub(crate) const SUPPORTED: bool = false;
+
+    pub(crate) type OffT = std::ffi::c_long;
+
+    pub(crate) fn file_descriptor(_file: &File) -> c_int {
+        -1
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn increase_file_limit() -> Result {
+        Ok(())
+    }
+}
+
 pub(crate) mod perf {
     pub(crate) use crate::host::common::UnsupportedCounterList as CounterList;
 }

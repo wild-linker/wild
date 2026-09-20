@@ -78,10 +78,13 @@ pub(crate) mod os {
     }
 }
 
-pub(crate) mod process {
-    pub(crate) use crate::host::unix::process::CAN_FORK;
-    pub(crate) use crate::host::unix::process::ParentNotifier;
-    pub(crate) use crate::host::unix::process::fork_linker;
+#[cfg(feature = "plugins")]
+pub(crate) mod linker_plugin {
+    pub(crate) use crate::host::unix::linker_plugin::OffT;
+    pub(crate) use crate::host::unix::linker_plugin::PluginLibrary;
+    pub(crate) use crate::host::unix::linker_plugin::SUPPORTED;
+    pub(crate) use crate::host::unix::linker_plugin::file_descriptor;
+    pub(crate) use crate::host::unix::linker_plugin::increase_file_limit;
 }
 
 cfg_select! {
@@ -97,4 +100,10 @@ cfg_select! {
             pub(crate) use crate::host::common::UnsupportedCounterList as CounterList;
         }
     }
+}
+
+pub(crate) mod process {
+    pub(crate) use crate::host::unix::process::CAN_FORK;
+    pub(crate) use crate::host::unix::process::ParentNotifier;
+    pub(crate) use crate::host::unix::process::fork_linker;
 }

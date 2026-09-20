@@ -49,6 +49,62 @@ pub(crate) mod os {
     pub(crate) const SANDBOXED: bool = false;
 }
 
+#[cfg(feature = "plugins")]
+pub(crate) mod linker_plugin {
+    use crate::error::Result;
+    use std::ffi::c_int;
+    use std::fs::File;
+
+    /// Whether this host can load GCC-compatible LTO linker plugins.
+    pub(crate) const SUPPORTED: bool = true;
+
+    /// C `off_t`, as used by the linker plugin API.
+    pub(crate) type OffT = libc::off_t;
+
+    /// The raw file descriptor handed to the plugin.
+    pub(crate) fn file_descriptor(file: &File) -> c_int {
+        std::os::fd::AsRawFd::as_raw_fd(file)
+    }
+
+    /// Increase the soft file limit to whatever the hard limit is set to.
+    pub(crate) fn increase_file_limit() -> Result {
+        use nix::sys::resource::Resource::RLIMIT_NOFILE;
+
+        let (_, hard_limit) = nix::sys::resource::getrlimit(RLIMIT_NOFILE)?;
+
+        nix::sys::resource::setrlimit(RLIMIT_NOFILE, hard_limit, hard_limit)?;
+
+        Ok(())
+    }
+
+    /// A loaded linker plugin. Dropping it unloads the plugin.
+    pub(crate) struct PluginLibrary(libloading::Library);
+
+    impl PluginLibrary {
+        pub(crate) fn open(path: &std::path::Path) -> Result<Self> {
+            use crate::error::Context as _;
+            // Safety: Truthfully, we don't control the file we're loading. The user gave it to us
+            // and there's nothing we can do to guarantee that loading and running it won't trigger
+            // UB. The best we can say is that we at least try to conform to the expected plugin
+            // API.
+            let lib = unsafe { libloading::Library::new(path) }
+                .map_err(|e| crate::error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+                .context("Failed to open linker plugin")?;
+            Ok(PluginLibrary(lib))
+        }
+
+        /// Looks up `name`, which must be of type `T`.
+        ///
+        /// # Safety
+        /// `T` must match the symbol's actual type, and the result must not be used after this
+        /// library is dropped.
+        pub(crate) unsafe fn symbol<T: Copy>(&self, name: &[u8]) -> Result<T> {
+            let symbol = unsafe { self.0.get::<T>(name) }?;
+            Ok(*symbol)
+        }
+    }
+}
+
 pub(crate) mod process {
     use crate::bail;
     use crate::error::Context as _;

@@ -11,13 +11,15 @@
 //! that isn't listed is a compile error that points here, rather than silently inheriting whatever
 //! the scattered `cfg(not(...))` branches happened to do.
 //!
-//! The facade modules (`fs`, `os`, `perf`, `process`) define host-independent
+//! The facade modules (`fs`, `os`, `linker_plugin`, `perf`, `process`) define host-independent
 //! types and re-export the selected tree's items. Every tree must provide every item, so adding a
 //! host service is a compile error in each tree until it's implemented or explicitly stubbed, and
 //! the rest of the crate never names a host.
 
 mod common;
 pub(crate) mod fs;
+#[cfg(feature = "plugins")]
+pub(crate) mod linker_plugin;
 pub(crate) mod os;
 pub(crate) mod perf;
 pub(crate) mod process;

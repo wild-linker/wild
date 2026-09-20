@@ -30,7 +30,7 @@ pub(crate) enum Group<'data, P: Platform> {
     StubLibraries(Vec<SequencedStubLibrary<'data>>),
     LinkerScripts(Vec<SequencedLinkerScript<'data, P>>),
     SyntheticSymbols(SyntheticSymbols),
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
 }
 
@@ -64,7 +64,7 @@ pub(crate) enum SequencedInput<'db, 'data, P: Platform> {
     StubLibrary(&'db SequencedStubLibrary<'data>),
     LinkerScript(&'db SequencedLinkerScript<'data, P>),
     SyntheticSymbols(&'db SyntheticSymbols),
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
 }
 
@@ -77,7 +77,7 @@ impl<'data, P: Platform> Group<'data, P> {
             Group::StubLibraries(stubs) => stubs[0].file_id.group(),
             Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
             Group::SyntheticSymbols(s) => s.file_id.group(),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(s) => s[0].file_id.group(),
         }
     }
@@ -108,7 +108,7 @@ impl<'data, P: Platform> Group<'data, P> {
                 }
             }
             Group::SyntheticSymbols(o) => o.symbol_id_range,
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(objects) => SymbolIdRange::covering(
                 objects[0].symbol_id_range,
                 objects[objects.len() - 1].symbol_id_range,
@@ -387,7 +387,7 @@ impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
             SequencedInput::StubLibrary(o) => o.symbol_id_range,
             SequencedInput::LinkerScript(o) => o.symbol_id_range,
             SequencedInput::SyntheticSymbols(o) => o.symbol_id_range,
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             SequencedInput::LtoInput(o) => o.symbol_id_range,
         }
     }
@@ -453,7 +453,7 @@ impl<'data, P: Platform> Display for Group<'data, P> {
             Group::StubLibraries(stubs) => write!(f, "{} Mach-O stub library(s)", stubs.len()),
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::SyntheticSymbols(_) => write!(f, "<epilogue>"),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_inputs) => write!(f, "<{} lto inputs>", lto_inputs.len()),
         }
     }
@@ -467,7 +467,7 @@ impl<'db, 'data, P: Platform> std::fmt::Display for SequencedInput<'db, 'data, P
             SequencedInput::StubLibrary(o) => std::fmt::Display::fmt(o, f),
             SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
             SequencedInput::SyntheticSymbols(_) => std::fmt::Display::fmt("<epilogue>", f),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             SequencedInput::LtoInput(o) => std::fmt::Display::fmt(o, f),
         }
     }

@@ -24,6 +24,8 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::host::linker_plugin::OffT;
+use crate::host::linker_plugin::PluginLibrary;
 use crate::input_data::FileId;
 use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
@@ -50,21 +52,22 @@ use crate::verbose_timing_phase;
 use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
-use libloading::Library;
 use rayon::Scope;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::ffi::CString;
-use std::ffi::OsStr;
+use std::ffi::c_char;
+use std::ffi::c_int;
+use std::ffi::c_void;
 use std::fs::File;
 use std::ops::Not as _;
-use std::os::fd::AsRawFd as _;
-use std::os::fd::RawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Whether linker plugins can be used: the `plugins` feature is on and the host can load them.
+pub(crate) const ENABLED: bool = crate::host::linker_plugin::SUPPORTED;
 
 /// Set this environment variable to a directory and we'll write output files produced by the linker
 /// plugin to it. Old outputs will be deleted, but only if the directory looks like one we produced.
@@ -95,7 +98,7 @@ pub(crate) struct LoadedPlugin {
 
     /// Dropping this will unload the plugin, so although we don't make use of this, we need to
     /// keep it alive until we're done.
-    _lib: Library,
+    _lib: PluginLibrary,
 
     version_info: Option<VersionInfo>,
 }
@@ -123,7 +126,7 @@ pub(crate) struct LtoInputInfo<'data> {
 /// requested. Note, that this appears to only be used by the LLVM plugin. See comment on call to
 /// apply_wrapped_symbol_overrides.
 #[derive(Clone, Copy)]
-struct WrapSymbols<'data>(&'data [*const libc::c_char]);
+struct WrapSymbols<'data>(&'data [*const c_char]);
 
 unsafe impl Send for WrapSymbols<'_> {}
 unsafe impl Sync for WrapSymbols<'_> {}
@@ -138,7 +141,7 @@ struct FileHandle<'data> {
     /// This isn't known initially because we allocate file IDs later.
     file_id: AtomicCell<Option<FileId>>,
 
-    fd: RawFd,
+    fd: c_int,
     offset: u64,
     name: &'data CStr,
 }
@@ -154,6 +157,10 @@ impl<'data> LinkerPlugin<'data> {
         arena: &'data Arena<LoadedPlugin>,
         herd: &'data Herd,
     ) -> Result<Option<LinkerPlugin<'data>>> {
+        if !ENABLED {
+            return Ok(None);
+        }
+
         match args.plugin_path.as_ref() {
             Some(path) => {
                 let wrap_symbols = WrapSymbols::new(&args.wrap, herd)?;
@@ -163,7 +170,7 @@ impl<'data> LinkerPlugin<'data> {
                 // attempt to increase the limit. Increasing the file limit is best-effort. If we
                 // can't increase the file limit for some reason, continue without warning and hope
                 // we don't need too many open files.
-                let _ = increase_file_limit();
+                let _ = crate::host::linker_plugin::increase_file_limit();
 
                 Ok(Some(LinkerPlugin {
                     path: PathBuf::from(&path),
@@ -188,7 +195,7 @@ impl<'data> LinkerPlugin<'data> {
     ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
         verbose_timing_phase!("Linker plugin process input");
 
-        let fd = file.as_raw_fd();
+        let fd = crate::host::linker_plugin::file_descriptor(file);
 
         if let Some(info) = self.claim_file(input_ref, fd)? {
             Ok(Some(info))
@@ -281,7 +288,7 @@ impl<'data> LinkerPlugin<'data> {
     fn claim_file(
         &'_ mut self,
         input_ref: InputRef<'data>,
-        fd: RawFd,
+        fd: c_int,
     ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
         self.store.loaded()?.with_callbacks(|callbacks| {
             let data = input_ref.data();
@@ -319,11 +326,11 @@ impl<'data> LinkerPlugin<'data> {
             let file = LdPluginInputFile {
                 name: name.as_ptr(),
                 fd,
-                offset: offset as libc::off_t,
-                file_size: data.len() as libc::off_t,
+                offset: offset as OffT,
+                file_size: data.len() as OffT,
                 // Whatever we store here needs to be valid for 'data, since the plugin might pass
                 // this back to us at a later point. e.g. get_symbols does so.
-                handle: std::ptr::from_ref::<FileHandle>(handle) as *mut libc::c_void,
+                handle: std::ptr::from_ref::<FileHandle>(handle) as *mut c_void,
             };
 
             let mut claimed = 0;
@@ -415,7 +422,7 @@ impl<'data> WrapSymbols<'data> {
                 allocator
                     .alloc_slice_copy(w_cstring.as_bytes())
                     .as_ptr()
-                    .cast::<libc::c_char>(),
+                    .cast::<c_char>(),
             );
         }
         Ok(Self(&*allocator.alloc_slice_copy(wrap_args.as_slice())))
@@ -432,12 +439,7 @@ impl LoadedPlugin {
             );
         }
 
-        // Safety: Truthfully, we don't control the file we're loading. The user gave it to us and
-        // there's nothing we can do to guarantee that loading and running it won't trigger UB. The
-        // best we can say is that we at least try to conform to the expected plugin API.
-        let lib = unsafe { Library::new(plugin_path) }
-            .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
-            .context("Failed to open linker plugin")?;
+        let lib = PluginLibrary::open(plugin_path)?;
 
         timing_phase!("Initialise linker plugin");
 
@@ -445,8 +447,10 @@ impl LoadedPlugin {
         // initialisation.
         CALLBACKS.take();
 
-        let onload_fn: libloading::Symbol<unsafe extern "C" fn(*mut LdPluginTv)> =
-            unsafe { lib.get(b"onload") }
+        // Safety: this is `onload`'s signature in the plugin API, and `lib` outlives the call
+        // below.
+        let onload_fn: unsafe extern "C" fn(*mut LdPluginTv) -> Status =
+            unsafe { lib.symbol(b"onload") }
                 .context("Failed to get `onload` function from linker plugin")?;
 
         let output_name = CString::new(args.common.output.as_os_str().as_encoded_bytes())?;
@@ -518,7 +522,8 @@ impl LoadedPlugin {
 
         transfer_vector.push(LdPluginTv::value(Tag::Null, 0));
 
-        unsafe { onload_fn(transfer_vector.as_mut_ptr()) };
+        // The API defines a status return, which we don't act on yet.
+        let _status = unsafe { onload_fn(transfer_vector.as_mut_ptr()) };
 
         let callbacks = CALLBACKS.take();
         let version_info = VERSION_INFO.take();
@@ -572,10 +577,10 @@ fn check_for_errors() -> Result {
     Ok(())
 }
 
-type ClaimFileHook = unsafe extern "C" fn(*const LdPluginInputFile, *mut libc::c_int) -> Status;
+type ClaimFileHook = unsafe extern "C" fn(*const LdPluginInputFile, *mut c_int) -> Status;
 type CleanupHook = extern "C" fn() -> Status;
 type AllSymbolsReadHook = extern "C" fn() -> Status;
-type GetSymbols = extern "C" fn(*const libc::c_void, libc::c_int, *mut RawPluginSymbol) -> Status;
+type GetSymbols = extern "C" fn(*const c_void, c_int, *mut RawPluginSymbol) -> Status;
 
 #[derive(Default)]
 struct Callbacks {
@@ -660,10 +665,10 @@ thread_local! {
 
     // Holds a ClaimContext. We store this as a void pointer since the actual type has non-static
     // lifetimes that we wouldn't be able to store here.
-    static CLAIM_CONTEXT: Cell<*mut libc::c_void> = const { Cell::new(std::ptr::null_mut()) };
+    static CLAIM_CONTEXT: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
 
     // Same thing, but this one holds an AllSymbolsReadContext.
-    static ALL_SYMBOLS_READ_CONTEXT: Cell<*const libc::c_void> = const { Cell::new(std::ptr::null()) };
+    static ALL_SYMBOLS_READ_CONTEXT: Cell<*const c_void> = const { Cell::new(std::ptr::null()) };
 }
 
 #[repr(C)]
@@ -809,11 +814,11 @@ enum OutputFileType {
 
 #[repr(C)]
 struct LdPluginInputFile {
-    name: *const libc::c_char,
-    fd: libc::c_int,
-    offset: libc::off_t,
-    file_size: libc::off_t,
-    handle: *mut libc::c_void,
+    name: *const c_char,
+    fd: c_int,
+    offset: OffT,
+    file_size: OffT,
+    handle: *mut c_void,
 }
 
 #[allow(dead_code)]
@@ -842,16 +847,16 @@ pub(crate) struct PluginSymbol<'data> {
 
 #[repr(C)]
 struct RawPluginSymbol {
-    name: *const libc::c_char,
-    version: *const libc::c_char,
-    def: libc::c_char,
-    symbol_type: libc::c_char,
-    section_kind: libc::c_char,
-    unused: libc::c_char,
-    visibility: libc::c_int,
+    name: *const c_char,
+    version: *const c_char,
+    def: c_char,
+    symbol_type: c_char,
+    section_kind: c_char,
+    unused: c_char,
+    visibility: c_int,
     size: u64,
-    comdat_key: *const libc::c_char,
-    resolution: libc::c_int,
+    comdat_key: *const c_char,
+    resolution: c_int,
 }
 
 unsafe impl Sync for RawPluginSymbol {}
@@ -873,13 +878,13 @@ extern "C" fn register_all_symbols_read_hook(cb: AllSymbolsReadHook) -> Status {
 }
 
 extern "C" fn get_api_version(
-    plugin_identifier: *const libc::c_char,
-    plugin_version: *const libc::c_char,
-    _minimal_version: libc::c_int,
-    _maximal_version: libc::c_int,
-    _linker_identifier: *mut *const libc::c_char,
-    _linker_version: *mut *const libc::c_char,
-) -> libc::c_int {
+    plugin_identifier: *const c_char,
+    plugin_version: *const c_char,
+    _minimal_version: c_int,
+    _maximal_version: c_int,
+    _linker_identifier: *mut *const c_char,
+    _linker_version: *mut *const c_char,
+) -> c_int {
     if !plugin_identifier.is_null() && !plugin_version.is_null() {
         let identifier = unsafe { CStr::from_ptr(plugin_identifier) };
         let version = unsafe { CStr::from_ptr(plugin_version) };
@@ -890,7 +895,7 @@ extern "C" fn get_api_version(
         VERSION_INFO.replace(Some(version_info));
     }
 
-    API_VERSION as libc::c_int
+    API_VERSION as c_int
 }
 
 extern "C" fn unsupported_api_version() -> Status {
@@ -901,8 +906,8 @@ extern "C" fn unsupported_api_version() -> Status {
 }
 
 extern "C" fn add_symbols(
-    _handle: *const libc::c_void,
-    num_symbols: libc::c_int,
+    _handle: *const c_void,
+    num_symbols: c_int,
     symbols: *const RawPluginSymbol,
 ) -> Status {
     catch_panics(|| {
@@ -933,8 +938,8 @@ extern "C" fn add_symbols(
 }
 
 extern "C" fn get_symbols_v3<C: ElfClass>(
-    handle: *const libc::c_void,
-    num_symbols: libc::c_int,
+    handle: *const c_void,
+    num_symbols: c_int,
     symbols: *mut RawPluginSymbol,
 ) -> Status {
     catch_panics(|| {
@@ -1055,7 +1060,7 @@ fn get_symbol_resolution<'data, C: ElfClass>(
     }
 }
 
-extern "C" fn get_input_file(handle: *const libc::c_void, file: *mut LdPluginInputFile) -> Status {
+extern "C" fn get_input_file(handle: *const c_void, file: *mut LdPluginInputFile) -> Status {
     catch_panics(|| {
         if handle.is_null() || file.is_null() {
             return Status::Err;
@@ -1064,36 +1069,33 @@ extern "C" fn get_input_file(handle: *const libc::c_void, file: *mut LdPluginInp
         let file = unsafe { &mut *file };
 
         file.fd = handle.fd;
-        file.offset = handle.offset as i64;
-        file.file_size = handle.data.len() as i64;
+        file.offset = handle.offset as OffT;
+        file.file_size = handle.data.len() as OffT;
         file.name = handle.name.as_ptr();
 
         Status::Ok
     })
 }
 
-extern "C" fn release_input_file(_handle: *const libc::c_void) -> Status {
+extern "C" fn release_input_file(_handle: *const c_void) -> Status {
     // We don't allocate in `get_input_file`, so there's nothing to free here.
     Status::Ok
 }
 
-extern "C" fn get_view(
-    handle: *const libc::c_void,
-    view_pointer: *mut *const libc::c_void,
-) -> Status {
+extern "C" fn get_view(handle: *const c_void, view_pointer: *mut *const c_void) -> Status {
     catch_panics(|| {
         if handle.is_null() {
             return Status::Err;
         }
         let handle = unsafe { &*handle.cast::<FileHandle>() };
-        unsafe { view_pointer.write(handle.data.as_ptr().cast::<libc::c_void>()) };
+        unsafe { view_pointer.write(handle.data.as_ptr().cast::<c_void>()) };
         Status::Ok
     })
 }
 
 extern "C" fn get_wrap_symbols(
     num_symbols: *mut u64,
-    wrap_symbols_list: *mut *const *const libc::c_char,
+    wrap_symbols_list: *mut *const *const c_char,
 ) -> Status {
     catch_panics(|| {
         ClaimContext::with_current(|ctx| {
@@ -1106,11 +1108,10 @@ extern "C" fn get_wrap_symbols(
     })
 }
 
-extern "C" fn add_input_file(path: *const libc::c_char) -> Status {
+extern "C" fn add_input_file(path: *const c_char) -> Status {
     catch_panics(|| {
         let path = unsafe { CStr::from_ptr(path) };
-        let path = OsStr::from_bytes(path.to_bytes());
-        let path = Box::from(Path::new(path));
+        let path = Box::from(crate::host::fs::path_from_bytes(path.to_bytes()));
         PLUGIN_OUTPUTS.with_borrow_mut(|state| {
             state.generated_inputs.push(Input {
                 spec: crate::args::InputSpec::File(path),
@@ -1125,7 +1126,7 @@ extern "C" fn add_input_file(path: *const libc::c_char) -> Status {
     })
 }
 
-extern "C" fn add_input_library(lib_name: *const libc::c_char) -> Status {
+extern "C" fn add_input_library(lib_name: *const c_char) -> Status {
     let lib_name = unsafe { CStr::from_ptr(lib_name) };
     let Ok(lib_name) = lib_name.to_str() else {
         ERROR.replace(Some(error!(
@@ -1153,13 +1154,13 @@ unsafe extern "C" {
     /// C trampoline that accepts the plugin's printf-style varargs, formats them via vsnprintf,
     /// then calls `wild_handle_plugin_message` with the resulting string. Defined in
     /// `plugin_message_shim.c`.
-    fn wild_plugin_message_callback(level: libc::c_int, fmt: *const libc::c_char, ...);
+    fn wild_plugin_message_callback(level: c_int, fmt: *const c_char, ...);
 }
 
 /// Called by the C shim `wild_plugin_message_callback` with the already-formatted message string.
 /// The `no_mangle` is required so the C shim can link against it by name.
 #[unsafe(no_mangle)]
-extern "C" fn wild_handle_plugin_message(level: libc::c_int, message: *const libc::c_char) {
+extern "C" fn wild_handle_plugin_message(level: c_int, message: *const c_char) {
     let Some(level) = MessageLevel::from_raw(level) else {
         return;
     };
@@ -1202,7 +1203,7 @@ impl ClaimContext<'_> {
     }
 
     fn set_current_while<R>(&mut self, cb: impl FnOnce() -> R) -> R {
-        CLAIM_CONTEXT.set(std::ptr::from_mut(self).cast::<libc::c_void>());
+        CLAIM_CONTEXT.set(std::ptr::from_mut(self).cast::<c_void>());
         let r = cb();
         CLAIM_CONTEXT.take();
         r
@@ -1232,8 +1233,7 @@ impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
 
     fn set_current_while<R>(&self, cb: impl FnOnce() -> R) -> R {
         ALL_SYMBOLS_READ_CONTEXT.set(
-            std::ptr::from_ref::<AllSymbolsReadContext<'scope, 'data, P>>(self)
-                .cast::<libc::c_void>(),
+            std::ptr::from_ref::<AllSymbolsReadContext<'scope, 'data, P>>(self).cast::<c_void>(),
         );
         let r = cb();
         ALL_SYMBOLS_READ_CONTEXT.take();
@@ -1453,17 +1453,6 @@ impl<'data> Store<'data> {
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
         }
     }
-}
-
-/// Increase the soft file limit to whatever the hard limit is set to.
-fn increase_file_limit() -> Result {
-    use nix::sys::resource::Resource::RLIMIT_NOFILE;
-
-    let (_, hard_limit) = nix::sys::resource::getrlimit(RLIMIT_NOFILE)?;
-
-    nix::sys::resource::setrlimit(RLIMIT_NOFILE, hard_limit, hard_limit)?;
-
-    Ok(())
 }
 
 pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(

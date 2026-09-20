@@ -29,6 +29,15 @@ pub(crate) mod os {
     pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &[];
 }
 
+#[cfg(feature = "plugins")]
+pub(crate) mod linker_plugin {
+    pub(crate) use crate::host::unix::linker_plugin::OffT;
+    pub(crate) use crate::host::unix::linker_plugin::PluginLibrary;
+    pub(crate) use crate::host::unix::linker_plugin::SUPPORTED;
+    pub(crate) use crate::host::unix::linker_plugin::file_descriptor;
+    pub(crate) use crate::host::unix::linker_plugin::increase_file_limit;
+}
+
 pub(crate) mod perf {
     pub(crate) use crate::host::common::UnsupportedCounterList as CounterList;
 }
