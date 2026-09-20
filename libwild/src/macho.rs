@@ -179,8 +179,6 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 
 /// Section names
-pub const TEXT_SECTION_NAME: &str = "__text";
-pub const GCC_EXCEPT_TAB_SECTION_NAME: &str = "__gcc_except_tab";
 pub const UNWIND_INFO_SECTION_NAME: &str = "__unwind_info";
 pub const COMPACT_UNWIND_SECTION_NAME: &str = "__compact_unwind";
 
@@ -1664,26 +1662,6 @@ impl platform::Platform for MachO {
         let data = header
             .data(LE, object.object.data, u64::from(header.offset(LE)))
             .context("cannot read compact unwind section data")?;
-        let gcc_except_table_section = object
-            .object
-            .section_by_name(GCC_EXCEPT_TAB_SECTION_NAME)
-            .map(|(section_index, _)| {
-                object
-                    .object
-                    .section(section_index)
-                    .with_context(|| format!("cannot read {GCC_EXCEPT_TAB_SECTION_NAME} section"))
-            })
-            .transpose()?;
-        let text_section = object
-            .object
-            .section_by_name(TEXT_SECTION_NAME)
-            .map(|(section_index, _)| {
-                object
-                    .object
-                    .section(section_index)
-                    .with_context(|| format!("cannot read {TEXT_SECTION_NAME} section"))
-            })
-            .transpose()?;
 
         let chunks = data.as_chunks::<ENTRY_LEN>();
         ensure!(
@@ -1725,8 +1703,6 @@ impl platform::Platform for MachO {
                 scope,
             )?;
 
-            // TODO: add validation for present __text, and __gcc_except_tab relocations
-
             let entry = entries
                 .get_mut(address / ENTRY_LEN)
                 .context("missing unwind info entry for a relocation")?;
@@ -1734,10 +1710,11 @@ impl platform::Platform for MachO {
             match relocation_field_offset {
                 START_FIELD_OFFSET => {
                     entry.start_relocation = Some(info);
-                    let Some(text_addr) = text_section.map(|s| s.addr.get(LE)) else {
-                        bail!("missing {TEXT_SECTION_NAME} section")
-                    };
-                    entry.entry.start -= text_addr;
+                    entry.entry.start -= object
+                        .object
+                        .section(object::SectionIndex((info.r_symbolnum - 1) as usize))?
+                        .addr
+                        .get(LE);
                 }
                 PERSONALITY_FIELD_OFFSET => {
                     ensure!(info.r_extern, "personality symbol missing in relocation");
@@ -1749,12 +1726,11 @@ impl platform::Platform for MachO {
                 }
                 LSDA_FIELD_OFFSET => {
                     entry.lsda_relocation = Some(info);
-                    let Some(gcc_except_table_addr) =
-                        gcc_except_table_section.map(|s| s.addr.get(LE))
-                    else {
-                        bail!("missing {GCC_EXCEPT_TAB_SECTION_NAME} section")
-                    };
-                    entry.entry.lsda -= gcc_except_table_addr;
+                    entry.entry.lsda -= object
+                        .object
+                        .section(object::SectionIndex((info.r_symbolnum - 1) as usize))?
+                        .addr
+                        .get(LE);
                 }
                 _ => bail!("unexpected relocation offset for a compact unwind section"),
             }
