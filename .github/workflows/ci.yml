@@ -253,7 +253,7 @@ jobs:
           persist-credentials: false
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@nightly
-      - run: cp -f config.toml.publish-age .cargo/config.toml
+      - run: cp -f .cargo/config.toml.publish-age .cargo/config.toml
       - name: Check for eligible dependency updates
         run: cargo +nightly update
 
