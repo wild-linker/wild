@@ -115,6 +115,8 @@ pub struct ElfArgs {
 
     pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) execstack: bool,
+    pub(crate) warn_execstack: WarnExecstack,
+    pub(crate) error_execstack: bool,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -207,6 +209,14 @@ pub(crate) enum CetReport {
     None,
     Warning,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum WarnExecstack {
+    None,
+    Always,
+    #[default]
+    Objects,
 }
 
 impl ExcludeLibs {
@@ -366,6 +376,8 @@ impl Default for ElfArgs {
             soname: None,
             enable_new_dtags: true,
             execstack: false,
+            warn_execstack: WarnExecstack::Objects,
+            error_execstack: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             should_write_linker_identity: true,
@@ -489,6 +501,43 @@ impl ElfArgs {
 
     pub(crate) fn architecture(&self) -> Architecture {
         self.emulation.architecture()
+    }
+
+    /// Report that `object` requested an executable stack via `.note.GNU-stack`.
+    ///
+    /// Unlike GNU ld, we never enable an executable stack from input objects. `-z execstack` is
+    /// required. The flags only control whether we error, warn, or stay silent about that request.
+    pub(crate) fn report_object_execstack(&self, object: &impl std::fmt::Display) -> Result {
+        if self.execstack || matches!(self.warn_execstack, WarnExecstack::None) {
+            return Ok(());
+        }
+
+        self.emit_execstack(format!(
+            "{object}: requires executable stack, but -z execstack is not specified"
+        ))
+    }
+
+    pub(crate) fn report_z_execstack(&self) -> Result {
+        if !self.execstack
+            || !matches!(self.warn_execstack, WarnExecstack::Always)
+            || self.should_output_partial_object
+        {
+            return Ok(());
+        }
+
+        if self.error_execstack {
+            bail!("creating an executable stack because of -z execstack command line option");
+        }
+        self.warning("enabling an executable stack because of -z execstack command line option");
+        Ok(())
+    }
+
+    fn emit_execstack(&self, message: String) -> Result {
+        if self.error_execstack {
+            bail!("{message}");
+        }
+        self.warning(message);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1839,6 +1888,53 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Disallow undefined symbol references in shared libraries")
         .execute(|args, _modifier_stack| {
             args.allow_shlib_undefined = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-execstack")
+        .help(
+            "Warn whenever the output has an executable stack, including when -z execstack is used",
+        )
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::Always;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-execstack-objects")
+        .help("Warn only when an input object requests an executable stack (default)")
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::Objects;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-warn-execstack")
+        .help("Do not warn about an executable stack")
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::None;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("error-execstack")
+        .help("Turn executable-stack warnings into errors")
+        .execute(|args, _modifier_stack| {
+            args.error_execstack = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-error-execstack")
+        .help("Keep executable-stack reports as warnings")
+        .execute(|args, _modifier_stack| {
+            args.error_execstack = false;
             Ok(())
         });
 

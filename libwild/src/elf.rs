@@ -1961,8 +1961,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     ) -> Result {
         // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
         // executable stack.
-        if input_section.is_executable() && !args.execstack {
-            bail!("{object}: requires executable stack, but -z execstack is not specified");
+        if input_section.is_executable() {
+            args.report_object_execstack(object)?;
         }
         Ok(())
     }
@@ -4396,6 +4396,7 @@ impl LayoutExt {
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
+        args.report_z_execstack()?;
         let gnu_property_notes =
             merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa, args.force_ibt);
         if args.force_ibt || args.cet_report != crate::args::elf::CetReport::None {
