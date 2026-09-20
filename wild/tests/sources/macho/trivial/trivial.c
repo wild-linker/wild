@@ -4,7 +4,6 @@
 //#NoSection:__cstring
 //#NoSection:__stubs
 //#TestUpdateInPlace:true
-//#DiffIgnore:section.__unwind_info
 
 #include "../common/runtime.h"
 

@@ -2,7 +2,6 @@
 //#Object:initializer.c
 //#ExpectSection:__init_offsets
 //#NoSection:__mod_init_func
-//#DiffIgnore:section.__unwind_info
 
 int state;
 

@@ -5,7 +5,6 @@
 //#ReferenceLinkers:ld
 //#Shared:foo.c
 //#Object:runtime.c
-//#DiffIgnore:section.__unwind_info
 //#ExpectSection:__got
 //#NoSection:__thread_ptrs
 

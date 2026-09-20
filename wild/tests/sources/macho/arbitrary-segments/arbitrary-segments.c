@@ -2,7 +2,6 @@
 //#ExpectSym:_first section="__first",segment="__CUSTOM1"
 //#ExpectSym:_second section="__second",segment="__CUSTOM1"
 //#ExpectSym:_third section="__third",segment="__CUSTOM2"
-//#DiffIgnore:section.__unwind_info
 
 #include "../common/runtime.h"
 

@@ -1,5 +1,4 @@
 //#Object:runtime.c
-//#DiffIgnore:section.__unwind_info
 //#ExpectSection:__thread_data
 //#ExpectSection:__thread_bss
 //#ExpectSection:__thread_vars

@@ -1,7 +1,6 @@
 //#Arch:aarch64
 //#CompArgs:-O2
 //#LinkerDriver:clang
-//#DiffIgnore:section.__unwind_info
 
 int values[4] = {1, 2, 3, 42};
 
