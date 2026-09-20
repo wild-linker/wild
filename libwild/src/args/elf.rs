@@ -512,31 +512,27 @@ impl ElfArgs {
             return Ok(());
         }
 
-        self.emit_execstack(format!(
-            "{object}: requires executable stack, but -z execstack is not specified"
-        ))
-    }
-
-    pub(crate) fn report_z_execstack(&self) -> Result {
-        if !self.execstack
-            || !matches!(self.warn_execstack, WarnExecstack::Always)
-            || self.should_output_partial_object
-        {
-            return Ok(());
-        }
-
-        if self.error_execstack {
-            bail!("creating an executable stack because of -z execstack command line option");
-        }
-        self.warning("enabling an executable stack because of -z execstack command line option");
-        Ok(())
-    }
-
-    fn emit_execstack(&self, message: String) -> Result {
+        let message =
+            format!("{object}: requires executable stack, but -z execstack is not specified");
         if self.error_execstack {
             bail!("{message}");
         }
         self.warning(message);
+        Ok(())
+    }
+
+    pub(crate) fn report_z_execstack(&self) -> Result {
+        if self.execstack
+            && matches!(self.warn_execstack, WarnExecstack::Always)
+            && !self.should_output_partial_object
+        {
+            let message =
+                "enabling an executable stack because of -z execstack command line option";
+            if self.error_execstack {
+                bail!("{message}");
+            }
+            self.warning(message);
+        }
         Ok(())
     }
 

@@ -26,12 +26,12 @@
 //#Config:warn-always-error:default
 //#ReferenceLinkers:
 //#LinkArgs:-z execstack --warn-execstack
-//#ExpectError:creating an executable stack because of -z execstack
+//#ExpectError:enabling an executable stack because of -z execstack
 
 //#Config:warn-always-error-explicit:default
 //#ReferenceLinkers:
 //#LinkArgs:-z execstack --warn-execstack --error-execstack
-//#ExpectError:creating an executable stack because of -z execstack
+//#ExpectError:enabling an executable stack because of -z execstack
 
 //#Config:warn-objects-with-z:default
 //#ReferenceLinkers:bfd
