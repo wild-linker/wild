@@ -27,6 +27,7 @@ pub(crate) mod gdb_index;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
+pub(crate) mod host;
 pub(crate) mod input_data;
 pub(crate) mod input_section_id;
 pub(crate) mod layout;
@@ -49,24 +50,6 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-pub(crate) mod perf;
-#[cfg(any(
-    not(target_os = "linux"),
-    all(
-        target_os = "linux",
-        any(
-            target_arch = "riscv64",
-            target_arch = "loongarch64",
-            target_arch = "powerpc64"
-        )
-    )
-))]
-#[path = "perf_unsupported.rs"]
-pub(crate) mod perf;
 pub(crate) mod platform;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
@@ -74,10 +57,6 @@ pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
 pub(crate) mod string_merging;
-#[cfg(all(feature = "fork", unix))]
-pub(crate) mod subprocess;
-#[cfg(not(all(feature = "fork", unix)))]
-#[path = "subprocess_unsupported.rs"]
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
