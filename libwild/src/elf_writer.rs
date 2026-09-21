@@ -2802,6 +2802,36 @@ struct DebugRelocationShardSummary {
     max_write_end: u64,
 }
 
+#[derive(Clone, Copy)]
+struct DebugSymbolResolution<C: ElfClass> {
+    symbol_index: object::SymbolIndex,
+    section_index: Option<object::SectionIndex>,
+    resolution: Option<Resolution<elf::Elf<C>>>,
+}
+
+#[derive(Default)]
+struct DebugSymbolCache<C: ElfClass> {
+    previous: Option<DebugSymbolResolution<C>>,
+}
+
+impl<C: ElfClass> DebugSymbolCache<C> {
+    #[inline(always)]
+    fn get_or_insert_with(
+        &mut self,
+        symbol_index: object::SymbolIndex,
+        resolve: impl FnOnce() -> Result<DebugSymbolResolution<C>>,
+    ) -> Result<DebugSymbolResolution<C>> {
+        if let Some(previous) = self.previous
+            && previous.symbol_index == symbol_index
+        {
+            return Ok(previous);
+        }
+        let resolved = resolve()?;
+        self.previous = Some(resolved);
+        Ok(resolved)
+    }
+}
+
 fn debug_relocation_write_size<
     C: ElfClass,
     A: Arch<Platform = elf::Elf<C>>,
@@ -3069,6 +3099,7 @@ fn apply_debug_relocations_impl<
         previous,
         ..Default::default()
     };
+    let mut symbol_cache = DebugSymbolCache::default();
 
     for rel in relocations {
         relocation_count += 1;
@@ -3085,6 +3116,7 @@ fn apply_debug_relocations_impl<
             tombstone_value,
             out,
             &relocation_cache,
+            &mut symbol_cache,
         )
         .with_context(|| {
             format!(
@@ -3116,6 +3148,8 @@ fn record_debug_relocations<C: ElfClass>(
 #[cfg(test)]
 mod debug_relocation_shard_tests {
     use super::DebugRelocationShardRange;
+    use super::DebugSymbolCache;
+    use super::DebugSymbolResolution;
     use super::debug_relocation_shard_ranges_parallel;
 
     #[test]
@@ -3197,6 +3231,39 @@ mod debug_relocation_shard_tests {
         .unwrap();
 
         assert!(ranges.is_none());
+    }
+
+    #[test]
+    fn debug_symbol_cache_reuses_only_adjacent_symbols() {
+        let resolve_count = std::cell::Cell::new(0);
+        let mut cache = DebugSymbolCache::<crate::elf::Class64>::default();
+        let resolve = |symbol_index| {
+            resolve_count.set(resolve_count.get() + 1);
+            Ok(DebugSymbolResolution {
+                symbol_index,
+                section_index: Some(object::SectionIndex(symbol_index.0 + 1)),
+                resolution: None,
+            })
+        };
+
+        let first = cache
+            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
+            .unwrap();
+        let repeated = cache
+            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
+            .unwrap();
+        let different = cache
+            .get_or_insert_with(object::SymbolIndex(8), || resolve(object::SymbolIndex(8)))
+            .unwrap();
+        let returned = cache
+            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
+            .unwrap();
+
+        assert_eq!(first.symbol_index, repeated.symbol_index);
+        assert_eq!(first.section_index, repeated.section_index);
+        assert_ne!(first.symbol_index, different.symbol_index);
+        assert_eq!(first.symbol_index, returned.symbol_index);
+        assert_eq!(resolve_count.get(), 3);
     }
 }
 
@@ -4260,39 +4327,48 @@ fn apply_debug_relocation<
     section_tombstone_value: u64,
     out: &mut [u8],
     relocation_cache: &RelocationCache<R>,
+    symbol_cache: &mut DebugSymbolCache<C>,
 ) -> Result<()> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
-    let sym = object_layout.object.symbol(symbol_index)?;
-    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+
+    // Rust debug sections commonly contain long runs of relocations against the same symbol.
+    // Keep the last lookup local to each parallel shard so those runs avoid repeating symbol-table,
+    // section, and merged-resolution work while retaining constant memory usage.
+    let symbol = symbol_cache.get_or_insert_with(symbol_index, || {
+        let sym = object_layout.object.symbol(symbol_index)?;
+        let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+        let resolution = layout
+            .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
+            .or_else(|| {
+                section_index.and_then(|section_index| {
+                    let section_address =
+                        object_layout.section_resolutions[section_index.0].address()?;
+                    let output_offset = opt_input_to_output(
+                        object_layout.section_relax_deltas.get(section_index.0),
+                        crate::platform::Symbol::value(sym),
+                    );
+
+                    Some(Resolution {
+                        raw_value: section_address + output_offset,
+                        dynamic_symbol_index: None,
+                        flags: ValueFlags::empty(),
+                        format_specific: Default::default(),
+                    })
+                })
+            });
+        Ok(DebugSymbolResolution {
+            symbol_index,
+            section_index,
+            resolution,
+        })
+    })?;
+    let section_index = symbol.section_index;
 
     let addend = rel.addend();
     let r_type = rel.raw_type();
     let rel_info = A::relocation_from_raw(r_type)?;
 
-    let resolution = layout
-        .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
-        .or_else(|| {
-            section_index.and_then(|section_index| {
-                let section_address =
-                    object_layout.section_resolutions[section_index.0].address()?;
-                // Include the symbol's offset within the section (adjusted for any relaxation
-                // deltas). This is necessary on architectures like RISC-V and LoongArch64 where
-                // debug info references local symbols (e.g. .LFB0, .LFE0) whose value is their
-                // offset within the section, rather than section symbols where the offset is
-                // encoded in the relocation addend.
-                let output_offset = opt_input_to_output(
-                    object_layout.section_relax_deltas.get(section_index.0),
-                    crate::platform::Symbol::value(sym),
-                );
-
-                Some(Resolution {
-                    raw_value: section_address + output_offset,
-                    dynamic_symbol_index: None,
-                    flags: ValueFlags::empty(),
-                    format_specific: Default::default(),
-                })
-            })
-        });
+    let resolution = symbol.resolution;
 
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
