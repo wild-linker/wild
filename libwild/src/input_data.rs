@@ -528,9 +528,8 @@ fn process_archive<'data, P: Platform, F: FileSystem>(
         }
     }
 
-    let outputs = members
-        .into_par_iter()
-        .map(|(start_offset, end_offset, ident, kind)| {
+    let outputs =
+        process_archive_members_in_order(members, |(start_offset, end_offset, ident, kind)| {
             let member_ref = InputRef {
                 file: parent_file,
                 data: &archive_data[start_offset..end_offset],
@@ -541,10 +540,22 @@ fn process_archive<'data, P: Platform, F: FileSystem>(
                 }),
             };
             state.process_input(member_ref, file, kind)
-        })
-        .collect::<Result<Vec<_>>>()?;
+        })?;
 
     Ok(LoadedFileState::Archive(opened, outputs))
+}
+
+/// Process archive members in parallel without allowing scheduling to change which error wins.
+fn process_archive_members_in_order<T: Send, U: Send>(
+    members: Vec<T>,
+    process: impl Fn(T) -> Result<U> + Sync + Send,
+) -> Result<Vec<U>> {
+    members
+        .into_par_iter()
+        .map(process)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn process_thin_archive<'data, P: Platform, F: FileSystem>(
@@ -567,41 +578,38 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
         }
     }
 
-    let results = entry_paths
-        .into_par_iter()
-        .map(|entry_path| {
-            let (input, file) = state
-                .file_system
-                .open_input(&entry_path, state.args.common().prepopulate_maps)
-                .with_context(|| {
-                    format!("Failed to open file referenced by thin archive `{archive_display}`")
-                })?;
+    let results = process_archive_members_in_order(entry_paths, |entry_path| {
+        let (input, file) = state
+            .file_system
+            .open_input(&entry_path, state.args.common().prepopulate_maps)
+            .with_context(|| {
+                format!("Failed to open file referenced by thin archive `{archive_display}`")
+            })?;
 
-            let member_file = InputFile {
-                filename: entry_path.clone(),
-                original_filename: entry_path,
-                modifiers: Modifiers {
-                    archive_semantics: true,
-                    ..modifiers
-                },
-                data: Some(input),
-            };
+        let member_file = InputFile {
+            filename: entry_path.clone(),
+            original_filename: entry_path,
+            modifiers: Modifiers {
+                archive_semantics: true,
+                ..modifiers
+            },
+            data: Some(input),
+        };
 
-            let member_file = &*state.inputs_arena.alloc(member_file);
+        let member_file = &*state.inputs_arena.alloc(member_file);
 
-            let input_ref = InputRef {
-                file: member_file.as_ref(),
-                data: member_file.data(),
-                entry: None,
-            };
+        let input_ref = InputRef {
+            file: member_file.as_ref(),
+            data: member_file.data(),
+            entry: None,
+        };
 
-            let kind = FileKind::identify_bytes(input_ref.data())
-                .with_context(|| format!("Failed process input `{input_ref}`"))?;
+        let kind = FileKind::identify_bytes(input_ref.data())
+            .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-            let parsed = state.process_input(input_ref, file.as_ref(), kind)?;
-            Ok::<_, Error>((member_file, parsed))
-        })
-        .collect::<Result<Vec<_>>>()?;
+        let parsed = state.process_input(input_ref, file.as_ref(), kind)?;
+        Ok::<_, Error>((member_file, parsed))
+    })?;
 
     let mut files = Vec::with_capacity(results.len());
     let mut parsed_files = Vec::with_capacity(results.len());
@@ -1122,5 +1130,56 @@ impl<'data, P: Platform> InputRecord<'data, P> {
             InputRecord::Object(Ok(obj)) => obj.is_dynamic(),
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_members_process_in_parallel_without_reordering() {
+        let active = AtomicUsize::new(0);
+        let maximum_active = AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+
+        let output = pool
+            .install(|| {
+                process_archive_members_in_order((0..32).collect(), |index| {
+                    let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum_active.fetch_max(now_active, Ordering::SeqCst);
+                    for _ in 0..10_000 {
+                        if maximum_active.load(Ordering::SeqCst) > 1 {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, Error>(index)
+                })
+            })
+            .unwrap();
+
+        assert_eq!(output, (0..32).collect::<Vec<_>>());
+        assert!(
+            maximum_active.load(Ordering::SeqCst) > 1,
+            "archive members did not overlap"
+        );
+    }
+
+    #[test]
+    fn archive_members_report_the_first_error_in_input_order() {
+        let error = process_archive_members_in_order((0..16).collect(), |index| {
+            if index == 3 || index == 7 {
+                return Err(Error::with_message(format!("member {index} failed")));
+            }
+            Ok(index)
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "member 3 failed");
     }
 }
