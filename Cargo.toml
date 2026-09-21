@@ -82,6 +82,7 @@ leb128 = { version = "0.2.7", default-features = false }
 libc = { version = "0.2.180", default-features = false }
 libloading = { version = "0.9.0", default-features = false, features = ["std"] }
 libtest-mimic = { version = "0.8.2", default-features = false }
+md-5 = { version = "0.10.6", default-features = false }
 memchr = { version = "2.7.0", default-features = false }
 memmap2 = { version = "0.9.0", default-features = false }
 mimalloc = { version = "0.1", default-features = false }
@@ -117,6 +118,7 @@ regex = { version = "1.12.0", default-features = false, features = ["std"] }
 serde = { version = "1.0.225", default-features = false, features = ["derive"] }
 serde-keyvalue = { version = "0.1.0", default-features = false }
 serde_yaml = { version = "0.9", default-features = false }
+sha1 = { version = "0.10.6", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 sharded-offset-map = { version = "0.3.0", default-features = false }
 sharded-vec-writer = { version = "0.4.0", default-features = false }

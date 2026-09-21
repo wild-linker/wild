@@ -219,16 +219,21 @@ fn write_gnu_build_id_note<C: ElfClass>(
     layout: &ElfLayout<C>,
 ) -> Result {
     let hash_placeholder;
-    let legacy_hash_placeholder;
+    let md5_placeholder;
+    let sha1_placeholder;
     let uuid_placeholder;
     let build_id = match build_id_option {
         BuildIdOption::Fast => {
             hash_placeholder = compute_fast_hash(sized_output);
             hash_placeholder.as_slice()
         }
-        BuildIdOption::Md5 | BuildIdOption::Sha1 => {
-            legacy_hash_placeholder = compute_legacy_hash(sized_output);
-            legacy_hash_placeholder.as_bytes()
+        BuildIdOption::Md5 => {
+            md5_placeholder = compute_md5_hash(sized_output);
+            md5_placeholder.as_slice()
+        }
+        BuildIdOption::Sha1 => {
+            sha1_placeholder = compute_sha1_hash(sized_output);
+            sha1_placeholder.as_slice()
         }
         BuildIdOption::Hex(hex) => hex.as_slice(),
         BuildIdOption::Uuid => {
@@ -280,16 +285,41 @@ fn fast_build_id(bytes: &[u8]) -> [u8; size_of::<u128>()] {
     twox_hash::XxHash3_128::oneshot(&combined).to_le_bytes()
 }
 
-fn compute_legacy_hash(sized_output: &SizedOutput<impl OutputFileData>) -> blake3::Hash {
+fn compute_md5_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; 16] {
     timing_phase!("Compute build ID");
-    blake3::Hasher::new()
-        .update_rayon(&sized_output.out)
-        .finalize()
+    use md5::Digest as _;
+    md5::Md5::digest(&*sized_output.out).into()
+}
+
+fn compute_sha1_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; 20] {
+    timing_phase!("Compute build ID");
+    use sha1::Digest as _;
+    sha1::Sha1::digest(&*sized_output.out).into()
 }
 
 #[cfg(test)]
 mod build_id_tests {
     use super::fast_build_id;
+
+    #[test]
+    fn named_build_id_algorithms_match_standard_vectors() {
+        use md5::Digest as _;
+
+        let md5: [u8; 16] = md5::Md5::digest(b"abc").into();
+        let sha1: [u8; 20] = sha1::Sha1::digest(b"abc").into();
+        assert_eq!(
+            md5.as_slice(),
+            hex::decode("900150983cd24fb0d6963f7d28e17f72")
+                .unwrap()
+                .as_slice()
+        );
+        assert_eq!(
+            sha1.as_slice(),
+            hex::decode("a9993e364706816aba3e25717850c26c9cd0d89d")
+                .unwrap()
+                .as_slice()
+        );
+    }
 
     #[test]
     fn fast_build_id_hashes_every_output_byte_deterministically() {

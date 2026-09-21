@@ -181,9 +181,8 @@ impl BuildIdOption {
         match self {
             Self::None => None,
             Self::Fast => Some(size_of::<u128>()),
-            // Keep the existing descriptor width for explicitly named modes. Their algorithm
-            // compatibility can be corrected separately without coupling it to the fast path.
-            Self::Md5 | Self::Sha1 => Some(size_of::<blake3::Hash>()),
+            Self::Md5 => Some(16),
+            Self::Sha1 => Some(20),
             Self::Hex(hex) => Some(hex.len()),
             Self::Uuid => Some(size_of::<uuid::Uuid>()),
         }
@@ -2579,14 +2578,8 @@ mod tests {
         );
 
         assert_eq!(BuildIdOption::Fast.descriptor_size(), Some(16));
-        assert_eq!(
-            BuildIdOption::Md5.descriptor_size(),
-            Some(std::mem::size_of::<blake3::Hash>())
-        );
-        assert_eq!(
-            BuildIdOption::Sha1.descriptor_size(),
-            Some(std::mem::size_of::<blake3::Hash>())
-        );
+        assert_eq!(BuildIdOption::Md5.descriptor_size(), Some(16));
+        assert_eq!(BuildIdOption::Sha1.descriptor_size(), Some(20));
     }
 
     #[test]
