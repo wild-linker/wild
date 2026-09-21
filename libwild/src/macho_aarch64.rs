@@ -189,6 +189,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     None,
                     AllowedRange::no_check(),
                     1,
+                    false,
                 )
             }
             _ => bail!("Unknown relocation: {}", rel.r_type),
