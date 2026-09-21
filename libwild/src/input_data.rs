@@ -1137,15 +1137,15 @@ impl<'data, P: Platform> InputRecord<'data, P> {
 mod tests {
     use super::*;
 
-    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn archive_members_process_in_parallel_without_reordering() {
         let active = AtomicUsize::new(0);
         let maximum_active = AtomicUsize::new(0);
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
+        let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(4).build() else {
+            // WASI has no threads. The ordering/error test below remains portable, while this
+            // test is specifically about parallel execution.
+            return;
+        };
 
         let output = pool
             .install(|| {
