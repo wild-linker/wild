@@ -56,13 +56,3 @@ path = [
 precedence = "override"
 SPDX-FileCopyrightText = "Copyright 2024-2026 Wild Linker Contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
-[[annotations]]
-path = ["external_test_suites/mold/**"]
-precedence = "override"
-SPDX-FileCopyrightText = "Copyright 2020-2026 Rui Ueyama"
-SPDX-License-Identifier = "MIT"
-[[annotations]]
-path = ["external_test_suites/lld/**"]
-precedence = "override"
-SPDX-FileCopyrightText = "Copyright 2003-2026 The LLVM Developers"
-SPDX-License-Identifier = "Apache-2.0 WITH LLVM-exception"

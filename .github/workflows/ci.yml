@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ['main']
+    branches: [ 'main' ]
   pull_request:
-    branches: ['**']
+    branches: [ '**' ]
   workflow_dispatch:
 
 permissions:
@@ -368,5 +368,3 @@ jobs:
 
       - name: REUSE Compliance Check
         uses: fsfe/reuse-action@v6
-        with:
-          args: --include-submodules lint
