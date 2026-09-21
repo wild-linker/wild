@@ -849,6 +849,7 @@ dependencies = [
  "thread_local",
  "tracing",
  "tracing-subscriber",
+ "twox-hash",
  "uuid",
  "wasm-encoder",
  "wasmparser",

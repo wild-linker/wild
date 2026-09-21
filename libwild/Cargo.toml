@@ -51,6 +51,7 @@ symbolic-demangle.workspace = true
 thread_local.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+twox-hash.workspace = true
 uuid.workspace = true
 wasm-encoder.workspace = true
 wasmparser.workspace = true

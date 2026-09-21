@@ -143,6 +143,9 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
   "fmt",
   "registry",
 ] }
+twox-hash = { version = "2.1.2", default-features = false, features = [
+  "xxhash3_128",
+] }
 uuid = { version = "1.3.0", default-features = false, features = ["v4"] }
 wait-timeout = { version = "0.2.0", default-features = false }
 wait4 = { version = "0.2.0", default-features = false }
