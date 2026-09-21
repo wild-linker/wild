@@ -6,8 +6,9 @@
 //#Shared:pie-pc32-dso-shared.s
 //#SoSingleLinker:wild
 //#LinkArgs:-pie --no-gc-sections
-//#SkipLinker:ld
 //#RunEnabled:false
+//#ReferenceLinkers:
+
 .global _start
 _start:
     mov zed_fn - ., %eax

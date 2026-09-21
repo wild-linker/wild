@@ -5,7 +5,7 @@
 //#Shared:pie-pc32-dso-shared.s
 //#LinkArgs:-pie --no-gc-sections
 //#ExpectErrorWild:R_X86_64_PC32
-//#SkipLinker:ld
+//#ReferenceLinkers:
 
 .global _start
 _start:
