@@ -141,12 +141,6 @@
 //!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
-//! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
-//! that isn't supported by GNU ld. Deprecated - use ReferenceLinkers instead.
-//!
-//! EnableLinker:{linker-name} Enables a linker that isn't enabled by default. e.g. lld. Deprecated
-//! - use ReferenceLinkers instead.
-//!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
 //! ExpectError:{error regex} Verifies that the link fails and that the error message matches the
@@ -1435,8 +1429,6 @@ struct Config {
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
     reference_linkers: Option<Vec<String>>,
-    skip_linkers: HashSet<String>,
-    enabled_linkers: HashSet<String>,
     cross_enabled: bool,
     section_equiv: Vec<(String, String)>,
     is_abstract: bool,
@@ -1867,14 +1859,6 @@ impl Config {
             }
             return references.iter().any(|n| n == linker.gcc_name());
         }
-        // TODO: Get rid of skip_linkers and enabled_linkers once we're relatively sure that
-        // in-flight PRs aren't using them.
-        if self.skip_linkers.contains(linker.name()) {
-            return false;
-        }
-        if self.enabled_linkers.contains(linker.name()) {
-            return true;
-        }
         linker.enabled_by_default()
     }
 
@@ -2231,8 +2215,6 @@ impl Config {
             linker_env: Default::default(),
             diff_ignore: Default::default(),
             reference_linkers: None,
-            skip_linkers: Default::default(),
-            enabled_linkers: Default::default(),
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
@@ -2704,10 +2686,6 @@ fn process_directive(
         "RunEnabled" => config.should_run = arg.parse()?,
         "RunDynSym" => config.run_dyn_sym = Some(arg.to_string()),
         "ReferenceLinkers" => {
-            if !config.skip_linkers.is_empty() || !config.enabled_linkers.is_empty() {
-                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
-            }
-
             let refs: Vec<String> = arg
                 .split(',')
                 .filter(|n| !n.is_empty())
@@ -2734,15 +2712,6 @@ fn process_directive(
             }
 
             config.reference_linkers = Some(refs);
-        }
-        "SkipLinker" => {
-            if config.reference_linkers.is_some() {
-                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
-            }
-            config.skip_linkers.insert(arg.to_owned());
-        }
-        "EnableLinker" => {
-            config.enabled_linkers.insert(arg.to_owned());
         }
         "Cross" => config.cross_enabled = arg.parse()?,
         "SkipOverlapSegmentsCheck" => {
