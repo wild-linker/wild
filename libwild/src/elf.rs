@@ -4,7 +4,6 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BSymbolicKind;
 use crate::args::RelocationModel;
-use crate::args::elf::BuildIdOption;
 use crate::args::elf::CetReport;
 use crate::args::elf::ElfArgs;
 use crate::bail;
@@ -1637,12 +1636,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
-        let build_id_size = match &args.build_id {
-            BuildIdOption::None => None,
-            BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
-            BuildIdOption::Hex(hex) => Some(hex.len()),
-            BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
-        };
+        let build_id_size = args.build_id.descriptor_size();
 
         EpilogueLayoutExt {
             sysv_hash_layout: Default::default(),

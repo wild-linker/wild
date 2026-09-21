@@ -219,11 +219,16 @@ fn write_gnu_build_id_note<C: ElfClass>(
     layout: &ElfLayout<C>,
 ) -> Result {
     let hash_placeholder;
+    let legacy_hash_placeholder;
     let uuid_placeholder;
     let build_id = match build_id_option {
         BuildIdOption::Fast => {
             hash_placeholder = compute_fast_hash(sized_output);
             hash_placeholder.as_slice()
+        }
+        BuildIdOption::Md5 | BuildIdOption::Sha1 => {
+            legacy_hash_placeholder = compute_legacy_hash(sized_output);
+            legacy_hash_placeholder.as_bytes()
         }
         BuildIdOption::Hex(hex) => hex.as_slice(),
         BuildIdOption::Uuid => {
@@ -249,17 +254,17 @@ fn write_gnu_build_id_note<C: ElfClass>(
     Ok(())
 }
 
-fn compute_fast_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; 32] {
+fn compute_fast_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; size_of::<u128>()] {
     timing_phase!("Compute build ID");
     fast_build_id(&sized_output.out)
 }
 
-fn fast_build_id(bytes: &[u8]) -> [u8; 32] {
+fn fast_build_id(bytes: &[u8]) -> [u8; size_of::<u128>()] {
     const PARALLEL_THRESHOLD: usize = 4 * 1024 * 1024;
     const CHUNK_SIZE: usize = 1024 * 1024;
 
     if bytes.len() < PARALLEL_THRESHOLD {
-        return expand_fast_build_id(twox_hash::XxHash3_128::oneshot(bytes));
+        return twox_hash::XxHash3_128::oneshot(bytes).to_le_bytes();
     }
 
     let chunk_hashes = bytes
@@ -272,13 +277,14 @@ fn fast_build_id(bytes: &[u8]) -> [u8; 32] {
     for hash in chunk_hashes {
         combined.extend_from_slice(&hash.to_le_bytes());
     }
-    expand_fast_build_id(twox_hash::XxHash3_128::oneshot(&combined))
+    twox_hash::XxHash3_128::oneshot(&combined).to_le_bytes()
 }
 
-fn expand_fast_build_id(hash: u128) -> [u8; 32] {
-    let mut build_id = [0; 32];
-    build_id[..size_of::<u128>()].copy_from_slice(&hash.to_le_bytes());
-    build_id
+fn compute_legacy_hash(sized_output: &SizedOutput<impl OutputFileData>) -> blake3::Hash {
+    timing_phase!("Compute build ID");
+    blake3::Hasher::new()
+        .update_rayon(&sized_output.out)
+        .finalize()
 }
 
 #[cfg(test)]
@@ -290,7 +296,7 @@ mod build_id_tests {
         let original = (0_u8..=255).cycle().take(8192).collect::<Vec<_>>();
         let expected = fast_build_id(&original);
 
-        assert_eq!(expected.len(), 32);
+        assert_eq!(expected.len(), size_of::<u128>());
         assert_eq!(expected, fast_build_id(&original));
 
         for index in [0, original.len() / 2, original.len() - 1] {
@@ -2159,9 +2165,11 @@ fn write_monolithic_object_sections<'data, C: ElfClass, A: Arch<Platform = elf::
 
     {
         let _timing = crate::timing_guard!("Populate monolithic object sections");
-        prepared_sections
+        let populate_results = prepared_sections
             .par_iter_mut()
-            .try_for_each(|prepared| prepared.populate::<C, A>(object, layout))?;
+            .map(|prepared| prepared.populate::<C, A>(object, layout))
+            .collect::<Vec<_>>();
+        populate_results.into_iter().collect::<Result<Vec<_>>>()?;
     }
 
     let _timing = crate::timing_guard!("Relocate monolithic object sections");
@@ -3216,8 +3224,9 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
         output_offset = range.output.end;
     }
 
-    shards.into_par_iter().try_for_each(
-        |(range, output_offset, shard_out, previous)| -> Result {
+    let shard_results = shards
+        .into_par_iter()
+        .map(|(range, output_offset, shard_out, previous)| -> Result {
             apply_debug_relocations_impl::<C, A, elf::ElfRela<C>, _>(
                 object,
                 shard_out,
@@ -3232,8 +3241,9 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
                 previous,
             )?;
             Ok(())
-        },
-    )?;
+        })
+        .collect::<Vec<_>>();
+    shard_results.into_iter().collect::<Result<Vec<_>>>()?;
     record_debug_relocations(object, section_index, layout, relocations.len());
     Ok(())
 }
@@ -3390,7 +3400,7 @@ mod debug_relocation_shard_tests {
 
     #[test]
     fn preflight_rejects_unsorted_or_overlapping_ranges() {
-        for offsets in [[0, 8, 4, 12], [0, 4, 12, 8]] {
+        for offsets in [[0, 8, 4, 12], [0, 4, 12, 8], [0, 4, 12, 20], [0, 4, 8, 14]] {
             assert!(
                 debug_relocation_shard_ranges_parallel(
                     offsets.len(),
@@ -3431,6 +3441,28 @@ mod debug_relocation_shard_tests {
         .unwrap();
 
         assert!(ranges.is_none());
+    }
+
+    #[test]
+    fn preflight_only_decodes_boundary_tail_relocation_sizes() {
+        let offsets = (0..32).map(|index| index * 4).collect::<Vec<_>>();
+        let size_queries = std::sync::atomic::AtomicUsize::new(0);
+
+        let ranges = debug_relocation_shard_ranges_parallel(
+            offsets.len(),
+            128,
+            4,
+            |index| offsets[index],
+            |_| {
+                size_queries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(4)
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(size_queries.load(std::sync::atomic::Ordering::Relaxed), 12);
     }
 
     #[test]
