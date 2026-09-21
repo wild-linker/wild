@@ -49,6 +49,7 @@ use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
+use crate::resolution::SectionSlot;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
@@ -364,13 +365,25 @@ struct PendingFixup {
     file_id: FileId,
     section_index: SectionIndex,
     offset_in_section: u64,
-    symbol_id: SymbolId,
+    kind: PendingFixupKind,
+}
+
+#[derive(Debug)]
+enum PendingFixupKind {
+    Rebase,
+    Bind { symbol_id: SymbolId },
 }
 
 #[derive(Debug)]
 pub(crate) struct Fixup {
-    pub(crate) ordinal: u64,
-    pub(crate) fixup_address: u64,
+    pub(crate) address: u64,
+    pub(crate) kind: FixupKind,
+}
+
+#[derive(Debug)]
+pub(crate) enum FixupKind {
+    Rebase,
+    Bind { ordinal: u64 },
 }
 
 #[derive(derive_more::Debug)]
@@ -1554,8 +1567,10 @@ impl platform::Platform for MachO {
         for (ordinal, import) in layout_ext.imported_symbols.iter().enumerate() {
             if let Some(got_address) = import.got_address {
                 fixups.push(Fixup {
-                    ordinal: ordinal as u64,
-                    fixup_address: got_address.get(),
+                    address: got_address.get(),
+                    kind: FixupKind::Bind {
+                        ordinal: ordinal as u64,
+                    },
                 });
             }
         }
@@ -1572,19 +1587,28 @@ impl platform::Platform for MachO {
             let fixup_address = section_address
                 .checked_add(pending.offset_in_section)
                 .context("Invalid fixup address")?;
-            let ordinal = layout_ext
-                .imported_symbols
-                .iter()
-                .position(|import| import.symbol_id == pending.symbol_id)
-                .context("Invalid import ordinal for fixup")?;
+
+            let kind = match pending.kind {
+                PendingFixupKind::Bind { symbol_id } => {
+                    let ordinal = layout_ext
+                        .imported_symbols
+                        .iter()
+                        .position(|import| import.symbol_id == symbol_id)
+                        .context("Invalid ordinal for bind fixup")?;
+                    FixupKind::Bind {
+                        ordinal: ordinal as u64,
+                    }
+                }
+                PendingFixupKind::Rebase => FixupKind::Rebase,
+            };
 
             fixups.push(Fixup {
-                ordinal: ordinal as u64,
-                fixup_address,
+                address: fixup_address,
+                kind,
             });
         }
 
-        fixups.sort_unstable_by_key(|fixup| fixup.fixup_address);
+        fixups.sort_unstable_by_key(|fixup| fixup.address);
         layout_ext.fixups = fixups;
         Ok(layout_ext)
     }
@@ -2632,17 +2656,32 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
 
-        if !is_unwind_personality
-            && from_dynamic_lib
-            && relocation.kind == RelocationKind::Absolute
-            && relocation.size == RelocationSize::ByteSize(8)
-        {
-            common.format_specific.pending_fixups.push(PendingFixup {
-                file_id: object.file_id,
-                section_index,
-                offset_in_section: u64::from(rel_info.r_address),
-                symbol_id,
-            });
+        let is_absolute_pointer = relocation.kind == RelocationKind::Absolute
+            && relocation.size == RelocationSize::ByteSize(8);
+        let from_tlv_descriptor =
+            object.object.section(section_index)?.flags.get(LE).typ() == S_THREAD_LOCAL_VARIABLES;
+        let is_rebase = flags.has_link_time_address() && !from_tlv_descriptor;
+        let is_consumed = matches!(
+            object.sections[section_index.0],
+            SectionSlot::InitFunc(_) | SectionSlot::CompactUnwind(_)
+        );
+
+        if is_absolute_pointer && !is_consumed {
+            let kind = if is_rebase {
+                Some(PendingFixupKind::Rebase)
+            } else if from_dynamic_lib {
+                Some(PendingFixupKind::Bind { symbol_id })
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                common.format_specific.pending_fixups.push(PendingFixup {
+                    file_id: object.file_id,
+                    section_index,
+                    offset_in_section: u64::from(rel_info.r_address),
+                    kind,
+                });
+            }
         }
 
         layout::check_for_undefined::<A>(

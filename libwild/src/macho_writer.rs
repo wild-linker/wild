@@ -37,6 +37,7 @@ use crate::macho::DylibCommand;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
+use crate::macho::FixupKind;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MAX_SEGMENT_COUNT;
@@ -490,23 +491,22 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
 
 fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
     let mut fixups = layout.format_specific.fixups.iter().peekable();
+    let image_base = get_text_segment_layout(layout)?.sizes.mem_offset;
 
     for segment in &layout.segment_layouts.segments {
         let segment_addresses =
             segment.sizes.mem_offset..segment.sizes.mem_offset + segment.sizes.mem_size;
 
-        while let Some(fixup) =
-            fixups.next_if(|fixup| segment_addresses.contains(&fixup.fixup_address))
-        {
-            let offset_in_segment = fixup.fixup_address - segment.sizes.mem_offset;
+        while let Some(fixup) = fixups.next_if(|fixup| segment_addresses.contains(&fixup.address)) {
+            let offset_in_segment = fixup.address - segment.sizes.mem_offset;
             let file_offset = segment.sizes.file_offset + usize::try_from(offset_in_segment)?;
             let page_index = offset_in_segment / MACHO_PAGE_ALIGNMENT.value();
 
             let next_fixup = fixups
                 .peek()
-                .filter(|next| segment_addresses.contains(&next.fixup_address));
+                .filter(|next| segment_addresses.contains(&next.address));
             let next_offset_in_segment =
-                next_fixup.map(|fixup| fixup.fixup_address - segment.sizes.mem_offset);
+                next_fixup.map(|fixup| fixup.address - segment.sizes.mem_offset);
             let next = match next_offset_in_segment {
                 Some(next_offset) if next_offset / MACHO_PAGE_ALIGNMENT.value() == page_index => {
                     let distance = next_offset - offset_in_segment;
@@ -522,7 +522,16 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
                 _ => 0,
             };
 
-            let encoding = write_bind_encoding(fixup.ordinal, next);
+            let encoding = match fixup.kind {
+                FixupKind::Rebase => {
+                    let value = u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?);
+                    let target = value
+                        .checked_sub(image_base)
+                        .context("Rebase target is before the image base")?;
+                    write_rebase_encoding(target, next)?
+                }
+                FixupKind::Bind { ordinal } => write_bind_encoding(ordinal, next),
+            };
             out[file_offset..file_offset + encoding.len()].copy_from_slice(&encoding);
         }
     }
@@ -535,7 +544,7 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
 }
 
 fn write_bind_encoding(ordinal: u64, next: u64) -> [u8; 8] {
-    /* DYLD_CHAINED_PTR_64 format:
+    /* DYLD_CHAINED_PTR_64/DYLD_CHAINED_PTR_64_OFFSET format:
     uint64_t dyld_chained_ptr_64_bind:
       ordinal: 24
       addend: 8 // 0 thru 255
@@ -546,6 +555,25 @@ fn write_bind_encoding(ordinal: u64, next: u64) -> [u8; 8] {
     let bind = 1u64 << 63;
     let next = next << 51;
     (bind | next | ordinal).to_le_bytes()
+}
+
+fn write_rebase_encoding(target: u64, next: u64) -> Result<[u8; 8]> {
+    /*
+    uint64_t dyld_chained_ptr_64_rebase:
+      target: 36 // runtime offset
+      high8: 8 // top 8 bits set to this
+      reserved: 7 // all zeros
+      next: 12 // 4-byte stride
+      bind: 1 // == 0
+    */
+    let low = target & ((1u64 << 36) - 1);
+    let high = target >> 56;
+    let next = next << 51;
+    ensure!(
+        target == (low | (high << 56)),
+        "Rebase target cannot be encoded: {target:#x}"
+    );
+    Ok((low | (high << 36) | next).to_le_bytes())
 }
 
 fn populate_file_header(
@@ -1200,7 +1228,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
             .format_specific
             .fixups
             .iter()
-            .find(|fixup| segment_addresses.contains(&fixup.fixup_address))
+            .find(|fixup| segment_addresses.contains(&fixup.address))
         else {
             continue;
         };
@@ -1226,7 +1254,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         page_starts.set(
             LE,
             u16::try_from(
-                (fixup.fixup_address - segment.sizes.mem_offset) % MACHO_PAGE_ALIGNMENT.value(),
+                (fixup.address - segment.sizes.mem_offset) % MACHO_PAGE_ALIGNMENT.value(),
             )?,
         );
 
