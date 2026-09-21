@@ -1946,46 +1946,12 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
-    for (i, sec) in object.sections.iter().enumerate() {
-        let section_index = object::SectionIndex(i);
-
-        match sec {
-            SectionSlot::Loaded(sec)
-            | SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section: sec, .. }) => {
-                table_writer.reset_relr_run();
-                let input_header = object.object.section(section_index)?;
-
-                if layout.args().should_output_partial_object()
-                    && input_header.sh_type(LittleEndian) == object::elf::SHT_RELA
-                {
-                    write_rela_section(
-                        object,
-                        *sec,
-                        section_index,
-                        buffers,
-                        layout,
-                        sym_index_map,
-                    )?;
-                } else {
-                    write_object_section::<C, A>(
-                        object,
-                        layout,
-                        *sec,
-                        section_index,
-                        buffers,
-                        table_writer,
-                        trace,
-                    )?;
-                }
-            }
-            SectionSlot::LoadedDebugInfo(sec) => {
-                write_debug_section::<C, A>(object, layout, *sec, section_index, buffers)?;
-            }
-            SectionSlot::FrameData(section_index) => {
-                write_eh_frame_data::<C, A>(object, *section_index, layout, table_writer, trace)?;
-            }
-            _ => (),
-        }
+    if !layout.args().should_output_partial_object()
+        && object.sections.len() >= MONOLITHIC_OBJECT_SECTION_THRESHOLD
+    {
+        write_monolithic_object_sections::<C, A>(object, buffers, table_writer, layout, trace)?;
+    } else {
+        write_object_sections::<C, A>(object, buffers, table_writer, layout, trace, sym_index_map)?;
     }
 
     for (symbol_id, resolution) in layout.resolutions_in_range(object.symbol_id_range) {
@@ -2048,6 +2014,196 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 ///
 /// Thunks are sorted by SymbolId for determinism and written consecutively into the primary
 /// function part buffer. Space must already have been reserved during `finalise_sizes`.
+const MONOLITHIC_OBJECT_SECTION_THRESHOLD: usize = 4096;
+
+enum PreparedObjectSection<'out> {
+    Loaded {
+        section: Section,
+        section_index: object::SectionIndex,
+        out: &'out mut [u8],
+        content_len: usize,
+    },
+    Debug {
+        section: Section,
+        section_index: object::SectionIndex,
+        out: &'out mut [u8],
+        content_len: usize,
+    },
+    FrameData(object::SectionIndex),
+}
+
+impl PreparedObjectSection<'_> {
+    fn populate<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+        &mut self,
+        object: &ObjectLayout<elf::Elf<C>>,
+        layout: &ElfLayout<C>,
+    ) -> Result {
+        match self {
+            Self::Loaded {
+                section,
+                section_index,
+                out,
+                content_len,
+            }
+            | Self::Debug {
+                section,
+                section_index,
+                out,
+                content_len,
+            } => {
+                *content_len =
+                    populate_section_output::<C, A>(object, layout, *section, *section_index, out)?;
+            }
+            Self::FrameData(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn write_object_sections<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter<'_, '_, C>,
+    layout: &ElfLayout<'data, C>,
+    trace: &TraceOutput,
+    sym_index_map: &[Option<u32>],
+) -> Result {
+    for (i, sec) in object.sections.iter().enumerate() {
+        let section_index = object::SectionIndex(i);
+        match sec {
+            SectionSlot::Loaded(sec)
+            | SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section: sec, .. }) => {
+                table_writer.reset_relr_run();
+                let input_header = object.object.section(section_index)?;
+                if layout.args().should_output_partial_object()
+                    && input_header.sh_type(LittleEndian) == object::elf::SHT_RELA
+                {
+                    write_rela_section(
+                        object,
+                        *sec,
+                        section_index,
+                        buffers,
+                        layout,
+                        sym_index_map,
+                    )?;
+                } else {
+                    write_object_section::<C, A>(
+                        object,
+                        layout,
+                        *sec,
+                        section_index,
+                        buffers,
+                        table_writer,
+                        trace,
+                    )?;
+                }
+            }
+            SectionSlot::LoadedDebugInfo(sec) => {
+                write_debug_section::<C, A>(object, layout, *sec, section_index, buffers)?;
+            }
+            SectionSlot::FrameData(section_index) => {
+                write_eh_frame_data::<C, A>(object, *section_index, layout, table_writer, trace)?;
+            }
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn write_monolithic_object_sections<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter<'_, '_, C>,
+    layout: &ElfLayout<'data, C>,
+    trace: &TraceOutput,
+) -> Result {
+    let mut prepared_sections = Vec::with_capacity(object.sections.len());
+    {
+        let _timing = crate::timing_guard!("Allocate monolithic object sections");
+        for (i, sec) in object.sections.iter().enumerate() {
+            let section_index = object::SectionIndex(i);
+            match sec {
+                SectionSlot::Loaded(sec)
+                | SectionSlot::PartialLinkSingleton(PartialLinkSingleton {
+                    section: sec, ..
+                }) => {
+                    let out =
+                        allocate_section_output(object, layout, *sec, section_index, buffers)?;
+                    prepared_sections.push(PreparedObjectSection::Loaded {
+                        section: *sec,
+                        section_index,
+                        out,
+                        content_len: 0,
+                    });
+                }
+                SectionSlot::LoadedDebugInfo(sec) => {
+                    if debug_section_is_compressed(object, layout, section_index) {
+                        continue;
+                    }
+                    let out =
+                        allocate_section_output(object, layout, *sec, section_index, buffers)?;
+                    prepared_sections.push(PreparedObjectSection::Debug {
+                        section: *sec,
+                        section_index,
+                        out,
+                        content_len: 0,
+                    });
+                }
+                SectionSlot::FrameData(section_index) => {
+                    prepared_sections.push(PreparedObjectSection::FrameData(*section_index));
+                }
+                _ => (),
+            }
+        }
+    }
+
+    {
+        let _timing = crate::timing_guard!("Populate monolithic object sections");
+        prepared_sections
+            .par_iter_mut()
+            .try_for_each(|prepared| prepared.populate::<C, A>(object, layout))?;
+    }
+
+    let _timing = crate::timing_guard!("Relocate monolithic object sections");
+    for prepared in prepared_sections {
+        match prepared {
+            PreparedObjectSection::Loaded {
+                section_index,
+                out,
+                content_len,
+                ..
+            } => {
+                table_writer.reset_relr_run();
+                finish_object_section::<C, A>(
+                    object,
+                    layout,
+                    section_index,
+                    &mut out[..content_len],
+                    table_writer,
+                    trace,
+                )?;
+            }
+            PreparedObjectSection::Debug {
+                section_index,
+                out,
+                content_len,
+                ..
+            } => {
+                finish_debug_section::<C, A>(
+                    object,
+                    layout,
+                    section_index,
+                    &mut out[..content_len],
+                )?;
+            }
+            PreparedObjectSection::FrameData(section_index) => {
+                write_eh_frame_data::<C, A>(object, section_index, layout, table_writer, trace)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_thunks<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     thunk_addresses: &BTreeMap<crate::symbol_db::SymbolId, u64>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -2368,7 +2524,6 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
-    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout.args().should_output_partial_object() {
         let input_header = object.object.section(section_index)?;
         let input_type = input_header.sh_type(LittleEndian);
@@ -2378,6 +2533,18 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     }
 
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    finish_object_section::<C, A>(object, layout, section_index, out, table_writer, trace)
+}
+
+fn finish_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<'data, C>,
+    section_index: object::SectionIndex,
+    out: &mut [u8],
+    table_writer: &mut TableWriter<'_, '_, C>,
+    trace: &TraceOutput,
+) -> Result {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -2506,15 +2673,31 @@ fn write_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    let section_id = part_id.output_section_id::<elf::Elf<C>>();
-
-    if layout.compressed_debug_sections.get(section_id).is_some() {
+    if debug_section_is_compressed(object, layout, section_index) {
         // Compressed debug sections are written by the epilogue.
         return Ok(());
     }
 
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    finish_debug_section::<C, A>(object, layout, section_index, out)
+}
+
+fn debug_section_is_compressed<C: ElfClass>(
+    object: &ObjectLayout<elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    section_index: object::SectionIndex,
+) -> bool {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let section_id = part_id.output_section_id::<elf::Elf<C>>();
+    layout.compressed_debug_sections.get(section_id).is_some()
+}
+
+fn finish_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<'data, C>,
+    section_index: object::SectionIndex,
+    out: &mut [u8],
+) -> Result {
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
         elf::RelocationList::Rela(rela) => {
@@ -2547,70 +2730,87 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     section_index: object::SectionIndex,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
+    let out = allocate_section_output(object, layout, sec, section_index, buffers)?;
+    let content_len = populate_section_output::<C, A>(object, layout, sec, section_index, out)?;
+    Ok(&mut out[..content_len])
+}
+
+fn allocate_section_output<'out, 'data, C: ElfClass>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    sec: Section,
+    section_index: object::SectionIndex,
+    buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
+) -> Result<&'out mut [u8]> {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    if layout
+    if !layout
         .output_sections
         .has_data_in_file(part_id.output_section_id::<elf::Elf<C>>())
     {
-        let section_buffer = buffers.get_mut(part_id);
-        let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
-        if section_buffer.len() < allocation_size {
-            bail!(
-                "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
-                object.object.section_display_name(section_index),
-                allocation_size,
-                section_buffer.len()
-            );
+        return Ok(&mut []);
+    }
+
+    let section_buffer = buffers.get_mut(part_id);
+    let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
+    if section_buffer.len() < allocation_size {
+        bail!(
+            "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+            object.object.section_display_name(section_index),
+            allocation_size,
+            section_buffer.len()
+        );
+    }
+    Ok(section_buffer.split_off_mut(..allocation_size).unwrap())
+}
+
+fn populate_section_output<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    sec: Section,
+    section_index: object::SectionIndex,
+    out: &mut [u8],
+) -> Result<usize> {
+    if out.is_empty() {
+        return Ok(0);
+    }
+
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let object_section = object.object.section(section_index)?;
+    let relax_deltas = object.section_relax_deltas.get(section_index.0);
+    let section_info = layout
+        .output_sections
+        .output_info(part_id.output_section_id::<elf::Elf<C>>());
+    match relax_deltas {
+        None => {
+            let section_size = object.object.section_size(object_section)? as usize;
+            let (content, padding) = out.split_at_mut(section_size);
+            object.object.copy_section_data(object_section, content)?;
+            fill_section_padding::<C, A>(padding, section_info);
+            Ok(section_size)
         }
-        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
-        let object_section = object.object.section(section_index)?;
-        let relax_deltas = object.section_relax_deltas.get(section_index.0);
-
-        let section_info = layout
-            .output_sections
-            .output_info(part_id.output_section_id::<elf::Elf<C>>());
-        match relax_deltas {
-            None => {
-                let section_size = object.object.section_size(object_section)?;
-                let (out, padding) = out.split_at_mut(section_size as usize);
-                object.object.copy_section_data(object_section, out)?;
-                fill_section_padding::<C, A>(padding, section_info);
-                Ok(out)
-            }
-            Some(deltas) => {
-                let input_data = object.object.raw_section_data(object_section)?;
-                let effective_size = sec.size as usize;
-
-                let mut input_pos: usize = 0;
-                let mut output_pos: usize = 0;
-
-                for delta in deltas.deltas() {
-                    let skip_start = delta.input_offset as usize;
-                    // Copy everything from input_pos up to the deletion point.
-                    let copy_len = skip_start - input_pos;
-                    if copy_len > 0 {
-                        out[output_pos..output_pos + copy_len]
-                            .copy_from_slice(&input_data[input_pos..skip_start]);
-                        output_pos += copy_len;
-                    }
-                    // Skip over the deleted bytes in the input.
-                    input_pos = skip_start + delta.bytes_deleted as usize;
+        Some(deltas) => {
+            let input_data = object.object.raw_section_data(object_section)?;
+            let effective_size = sec.size as usize;
+            let mut input_pos: usize = 0;
+            let mut output_pos: usize = 0;
+            for delta in deltas.deltas() {
+                let skip_start = delta.input_offset as usize;
+                let copy_len = skip_start - input_pos;
+                if copy_len > 0 {
+                    out[output_pos..output_pos + copy_len]
+                        .copy_from_slice(&input_data[input_pos..skip_start]);
+                    output_pos += copy_len;
                 }
-
-                // Copy the remainder after the last deletion.
-                let remaining = input_data.len() - input_pos;
-                if remaining > 0 {
-                    out[output_pos..output_pos + remaining]
-                        .copy_from_slice(&input_data[input_pos..]);
-                    output_pos += remaining;
-                }
-                fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
-
-                Ok(&mut out[..effective_size])
+                input_pos = skip_start + delta.bytes_deleted as usize;
             }
+            let remaining = input_data.len() - input_pos;
+            if remaining > 0 {
+                out[output_pos..output_pos + remaining].copy_from_slice(&input_data[input_pos..]);
+                output_pos += remaining;
+            }
+            fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
+            Ok(effective_size)
         }
-    } else {
-        Ok(&mut [])
     }
 }
 
