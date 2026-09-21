@@ -314,7 +314,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             return (stop, start);
         }
 
-        if self.output_kind.is_partial_object() {
+        if self.output_kind.is_partial_link() {
             return (start, stop);
         }
 
@@ -418,7 +418,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        if !self.output_kind.is_partial_object() && !self.has_custom_phdrs {
+        if !self.output_kind.is_partial_link() && !self.has_custom_phdrs {
             for def in P::unconditional_segment_defs() {
                 let segment_id = self.program_segments.add_segment(*def);
                 self.events.push(OrderEvent::SegmentStart(segment_id));
@@ -456,13 +456,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         self.section_infos.iter()
     }
 
-    pub(crate) fn num_parts(&self) -> usize {
-        crate::part_id::regular_part_base::<P>().as_usize()
-            + (self.num_sections() - regular_section_base::<P>().as_usize()) * NUM_ALIGNMENTS
-    }
-
+    // TODO: Experiment with adjusting the balance between dense and sparse sections. If we decide
+    // not to make it dynamic, then remove this method and construct part maps more directly.
+    #[allow(clippy::unused_self)]
     pub(crate) fn new_part_map<T: Default>(&self) -> OutputSectionPartMap<T> {
-        OutputSectionPartMap::with_size(self.num_parts())
+        OutputSectionPartMap::with_dense_size(
+            P::NUM_SINGLE_PART_SECTIONS as usize
+                + P::NUM_BUILT_IN_REGULAR_SECTIONS * NUM_ALIGNMENTS,
+        )
     }
 
     pub(crate) fn new_section_map<T: Default>(&self) -> OutputSectionMap<T> {
@@ -710,38 +711,37 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
         self.section_infos.get(id).secondary_order
     }
-    pub(crate) fn add_sections(
-        &mut self,
-        custom_sections: &[CustomSectionDetails<'data, P>],
-        section_part_ids: &mut [PartId],
-        args: &P::Args,
-    ) {
-        for custom in custom_sections {
-            let location = args
-                .start_address_for_section(custom.identity.section_name())
-                .map(linker_script::Expression::Number);
-            let location_info = location.map(|loc| SectionLocationInfo {
-                location_counters: (0, 0),
-                location: Some(loc),
-                at_location: None,
-                is_top_level: true,
-            });
-            let section_id = self.add_named_section(
-                custom.identity,
-                custom.alignment,
-                None,
-                location_info.as_ref(),
-                None,
-                Vec::new(),
-                None,
-            );
 
-            let part_id = if section_id.is_regular::<P>() {
-                section_id.part_id_with_alignment::<P>(custom.alignment)
-            } else {
-                section_id.base_part_id::<P>()
-            };
-            section_part_ids[custom.index.0] = part_id;
+    pub(crate) fn get_or_create_custom_section_part(
+        &mut self,
+        args: &<P as Platform>::Args,
+        custom: &CustomSectionDetails<'data, P>,
+    ) -> PartId {
+        let location = args
+            .start_address_for_section(custom.identity.section_name())
+            .map(linker_script::Expression::Number);
+
+        let location_info = location.map(|loc| SectionLocationInfo {
+            location_counters: (0, 0),
+            location: Some(loc),
+            at_location: None,
+            is_top_level: true,
+        });
+
+        let section_id = self.get_or_create_named_section(
+            custom.identity,
+            custom.alignment,
+            None,
+            location_info.as_ref(),
+            None,
+            Vec::new(),
+            None,
+        );
+
+        if section_id.is_regular::<P>() {
+            section_id.part_id_with_alignment::<P>(custom.alignment)
+        } else {
+            section_id.base_part_id::<P>()
         }
     }
 
@@ -774,7 +774,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
-    pub(crate) fn add_named_section(
+    pub(crate) fn get_or_create_named_section(
         &mut self,
         identity: SectionIdentity<'data, P>,
         min_alignment: Alignment,
@@ -785,7 +785,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         attributes: Option<&linker_script::SectionAttributes>,
     ) -> OutputSectionId {
         let mut resolved_id = None;
-        if !self.output_kind.is_partial_object()
+        if !self.output_kind.is_partial_link()
             && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
                 .map(OutputSectionId::from_usize)
                 .find(|&bid| self.identity(bid) == Some(identity))
@@ -1115,12 +1115,11 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf64> {
         use crate::elf::Elf64;
 
-        let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        );
+        let output_kind =
+            crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
         let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
-            output_sections.add_named_section(
+            output_sections.get_or_create_named_section(
                 SectionIdentity::new(SectionName(name.as_bytes()), ()),
                 crate::alignment::MIN,
                 None,

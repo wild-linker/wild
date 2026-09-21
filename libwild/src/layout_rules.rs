@@ -111,6 +111,8 @@ pub(crate) enum SectionRuleOutcome {
     DebugIndex,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
+    InitFunc,
+    CompactUnwind,
 }
 
 impl SectionRuleOutcome {
@@ -159,6 +161,15 @@ impl SectionOutputInfo {
 pub(crate) enum LocationCounter<'data> {
     Absolute(linker_script::Expression<'data>, SymbolLoc),
     Relative(linker_script::Expression<'data>, SymbolLoc, OutputSectionId),
+}
+
+impl<'data> LocationCounter<'data> {
+    pub(crate) fn get_expression(&self) -> &linker_script::Expression<'data> {
+        match self {
+            LocationCounter::Absolute(expr, ..) => expr,
+            LocationCounter::Relative(expr, ..) => expr,
+        }
+    }
 }
 
 fn loc_for_global_expr<'data>(
@@ -282,7 +293,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     SectionName(sec.output_section_name)
                                 )
                             })?;
-                            let primary_section_id = output_sections.add_named_section(
+                            let primary_section_id = output_sections.get_or_create_named_section(
                                 identity,
                                 min_alignment,
                                 sec.region,

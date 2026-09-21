@@ -24,6 +24,7 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_map::OutputSectionMap;
 use crate::parsing;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
@@ -476,7 +477,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     fn create_lto_input_groups(
         &mut self,
         lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
@@ -516,7 +517,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(not(all(feature = "plugins", unix)))]
+    #[cfg(not(feature = "plugins"))]
     #[allow(
         clippy::unused_self,
         clippy::needless_pass_by_value,
@@ -609,7 +610,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     /// Restores name-table entries for wrapped symbols to their original (pre-wrap) definitions.
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     pub(crate) fn restore_wrapped_symbol_names(&mut self) {
         let wrap = self.args.symbol_names_to_wrap();
         if wrap.is_empty() {
@@ -661,7 +662,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::StubLibraries(_) => Visibility::Default,
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => {
                 lto_objects[file_id.file()].symbol_visibility(symbol_id)
             }
@@ -700,7 +701,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => Ok(lto_objects[file_id.file()].symbol_name(symbol_id)),
         }
     }
@@ -759,7 +760,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups
             .iter()
             .map(|group| match group {
-                #[cfg(all(feature = "plugins", unix))]
+                #[cfg(feature = "plugins")]
                 Group::LtoInputs(objects) => objects.len(),
                 _ => 0,
             })
@@ -846,8 +847,33 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::StubLibraries(stubs) => SequencedInput::StubLibrary(&stubs[file_id.file()]),
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => SequencedInput::LtoInput(&lto_objects[file_id.file()]),
+        }
+    }
+
+    pub(crate) fn output_section_id(&self, symbol_id: SymbolId) -> Option<OutputSectionId> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match self.file(file_id) {
+            SequencedInput::Object(obj) => {
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+                let sym = obj.parsed.object.symbol(local_index).ok()?;
+                let sec_idx = obj.parsed.object.symbol_section(sym, local_index).ok()??;
+                let part_id = self
+                    .section_part_ids
+                    .get(obj.section_id_range.start().as_usize() + sec_idx.0)?;
+                Some(part_id.output_section_id::<P>())
+            }
+            SequencedInput::LinkerScript(script) => {
+                let local_index = symbol_id.to_input(script.symbol_id_range);
+                let def_info = script.parsed.symbol_defs.get(local_index.0)?;
+                if let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement {
+                    redirect.loc.relative_section_id()
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -916,7 +942,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
             ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
             ResolvedFile::StubLibrary(stub) => stub.symbol_strength(symbol_id),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             ResolvedFile::LtoInput(obj) => {
                 use crate::linker_plugins::SymbolKind;
 
@@ -991,7 +1017,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         })
     }
 
-    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data, P> {
+    pub(crate) fn new_synthetic_symbols_group(
+        &mut self,
+        start_stop_sections: Option<
+            OutputSectionMap<Vec<crate::resolution::StartStopCandidate<P>>>,
+        >,
+    ) -> ResolvedSyntheticSymbols<'data, P> {
         let file_id = FileId::new(self.groups.len() as u32, 0);
         let start_symbol_id = self.next_symbol_id();
 
@@ -1004,6 +1035,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             file_id,
             start_symbol_id,
             symbol_definitions: Vec::new(),
+            start_stop_sections,
         }
     }
 
@@ -1039,7 +1071,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups.push(group);
     }
 
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     pub(crate) fn disable_lto_inputs(&mut self) {
         for group in &mut self.groups {
             if let Group::LtoInputs(objects) = group {
@@ -1568,7 +1600,7 @@ fn read_symbols_for_group<'data, P: Platform>(
         Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
-        #[cfg(all(feature = "plugins", unix))]
+        #[cfg(feature = "plugins")]
         Group::LtoInputs(lto_objects) => {
             for obj in lto_objects {
                 load_lto_symbols(shard, &mut outputs, obj);
@@ -1597,7 +1629,7 @@ fn load_stub_library_symbols<'data, P: Platform>(
     }
 }
 
-#[cfg(all(feature = "plugins", unix))]
+#[cfg(feature = "plugins")]
 fn load_lto_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
@@ -1901,7 +1933,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_
     fn compute_value_flags(&self, symbol: &P::SymtabEntry) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
         if symbol.is_func() || symbol.is_ifunc() {
-            flags |= ValueFlags::FUNCTION;
+            flags |= ValueFlags::DYNAMIC_FUNCTION;
         }
         if symbol.is_undefined() {
             flags |= ValueFlags::ABSOLUTE;
@@ -1998,7 +2030,7 @@ impl<'a, 'data, P: Platform> std::fmt::Display for SymbolDebug<'a, 'data, P> {
                 SequencedInput::SyntheticSymbols(_) => {
                     write!(f, "<unnamed custom-section symbol>")?;
                 }
-                #[cfg(all(feature = "plugins", unix))]
+                #[cfg(feature = "plugins")]
                 SequencedInput::LtoInput(_) => write!(f, "<unnamed symbol from LTO object>")?,
             }
         } else {
@@ -2135,16 +2167,9 @@ impl std::fmt::Display for SymbolId {
 impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
-            SymbolPlacement::Redirect(Redirect {
-                loc:
-                    SymbolLoc::SectionEnd(i)
-                    | SymbolLoc::SectionStartRelative(i)
-                    | SymbolLoc::SectionEndRelative(i),
-                ..
-            }) => Some(i),
+            SymbolPlacement::Redirect(Redirect { ref loc, .. }) => loc.section_id(),
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
-            | SymbolPlacement::Redirect(_)
             | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),

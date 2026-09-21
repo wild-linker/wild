@@ -3,6 +3,7 @@ pub use args::Args;
 pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
+pub(crate) mod compact_unwind;
 pub(crate) mod compression;
 pub(crate) mod debug_trace;
 pub(crate) mod diagnostics;
@@ -27,14 +28,12 @@ pub(crate) mod gdb_index;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
+pub(crate) mod host;
 pub(crate) mod input_data;
 pub(crate) mod input_section_id;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
-#[cfg_attr(
-    not(all(feature = "plugins", unix)),
-    path = "linker_plugins_disabled.rs"
-)]
+#[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
@@ -49,24 +48,6 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-pub(crate) mod perf;
-#[cfg(any(
-    not(target_os = "linux"),
-    all(
-        target_os = "linux",
-        any(
-            target_arch = "riscv64",
-            target_arch = "loongarch64",
-            target_arch = "powerpc64"
-        )
-    )
-))]
-#[path = "perf_unsupported.rs"]
-pub(crate) mod perf;
 pub(crate) mod platform;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
@@ -74,15 +55,11 @@ pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
 pub(crate) mod string_merging;
-#[cfg(all(feature = "fork", unix))]
-pub(crate) mod subprocess;
-#[cfg(not(all(feature = "fork", unix)))]
-#[path = "subprocess_unsupported.rs"]
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
 pub(crate) mod thunks;
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 mod tidy_tests;
 pub(crate) mod timing;
 pub(crate) mod trie;
@@ -122,6 +99,8 @@ use input_data::InputFile as LoadedInputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use std::io::BufWriter;
 use std::io::IsTerminal;
 use std::io::Write;
@@ -199,7 +178,10 @@ pub struct LinkerOutput<'layout_inputs> {
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<Box<dyn Drop + 'layout_inputs>>,
+    layout: Option<Box<dyn Drop + Send + 'layout_inputs>>,
+
+    /// Input mmaps, released in parallel on drop so later unmap is cheap.
+    input_file_data: Vec<&'layout_inputs dyn InputFileData>,
 }
 
 impl Linker<OsFileSystem> {
@@ -241,14 +223,14 @@ impl<F: FileSystem> Linker<F> {
             args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{identity}")?;
-                return Ok(LinkerOutput { layout: None });
+                return Ok(LinkerOutput::empty());
             }
             args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{identity}")?;
                 // Continue linking if object files are specified
                 if args.common().inputs.is_empty() {
-                    return Ok(LinkerOutput { layout: None });
+                    return Ok(LinkerOutput::empty());
                 }
             }
             args::VersionMode::VerboseWithEmulations => {
@@ -257,7 +239,7 @@ impl<F: FileSystem> Linker<F> {
                 args.print_emulation_info(&mut stdout)?;
                 // Continue linking if object files are specified
                 if args.common().inputs.is_empty() {
-                    return Ok(LinkerOutput { layout: None });
+                    return Ok(LinkerOutput::empty());
                 }
             }
             args::VersionMode::None => {
@@ -336,8 +318,17 @@ impl<F: FileSystem> Linker<F> {
 
         let mut output = file_writer::Output::new::<P>(args, output_kind, self.file_system.clone());
 
-        let mut output_sections =
-            OutputSections::with_base_address(A::start_memory_address(output_kind), output_kind);
+        let mut output_sections = OutputSections::with_base_address(
+            args.image_base()
+                .unwrap_or_else(|| A::start_memory_address(output_kind)),
+            output_kind,
+        );
+        if let Some(base) = args.image_base() {
+            let page_size = args.loadable_segment_alignment().value();
+            if base % page_size != 0 {
+                bail!("--image-base: address isn't multiple of page size: {base:#x}");
+            }
+        }
         output_sections.set_rosegment(args.rosegment());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
@@ -414,8 +405,15 @@ impl<F: FileSystem> Linker<F> {
         let (g1, g2) = timing_guard!("Shutdown");
         self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
+        let input_file_data = file_loader
+            .loaded_files
+            .iter()
+            .filter_map(|file| Some(file.storage()? as &dyn InputFileData))
+            .collect();
+
         Ok(LinkerOutput {
             layout: Some(Box::new(layout)),
+            input_file_data,
         })
     }
 }
@@ -437,7 +435,28 @@ impl<F: FileSystem> Drop for Linker<F> {
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
         timing_phase!("Drop layout");
-        self.layout.take();
+
+        let input_file_data = std::mem::take(&mut self.input_file_data);
+
+        rayon::join(
+            || {
+                input_file_data
+                    .par_iter()
+                    .for_each(|file| file.release_memory());
+            },
+            || {
+                self.layout.take();
+            },
+        );
+    }
+}
+
+impl LinkerOutput<'_> {
+    fn empty() -> Self {
+        LinkerOutput {
+            layout: None,
+            input_file_data: Vec::new(),
+        }
     }
 }
 

@@ -21,7 +21,6 @@ tests = [
   "icf.sh",                                # `--icf`  
   "icf-alignment-bug.sh",
   "icf-preemption.sh",
-  "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
   "library.sh",
@@ -62,7 +61,6 @@ tests = [
 [skipped_groups.z_options]
 reason = "Related to -z"
 tests = [
-  "z-cet-report.sh",
   "z-dynamic-undefined-weak-exe.sh",
   "z-dynamic-undefined-weak.sh",
   "z-nodefaultlib.sh",
@@ -76,7 +74,6 @@ tests = [
 [skipped_groups.arch_x86_64]
 reason = "x86_64 specific tests"
 tests = [
-  "arch-x86_64-address-equality.sh",
   "arch-x86_64-comdat-signatures.sh",
   "arch-x86_64-empty-mergeable-section.sh",
   "arch-x86_64-execstack-if-needed.sh",
@@ -89,7 +86,6 @@ tests = [
   "arch-x86_64-section-name.sh",
   "arch-x86_64-tbss-only.sh",
   "arch-x86_64-unique.sh",
-  "arch-x86_64-warn-execstack.sh",
   "arch-x86_64-warn-shared-textrel.sh",
   "arch-x86_64-warn-textrel.sh",
   "arch-x86_64-z-dynamic-undefined-weak.sh",
@@ -154,6 +150,7 @@ tests = [
   "arch-x86_64-note2.sh",           # The order of sections is different.
   "arch-x86_64-plt.sh",             # We use `.got.plt`, not `.plt.got`.
   "arch-x86_64-reloc-overflow.sh",  # Different message formats
+  "arch-x86_64-warn-execstack.sh",  # Different message formats
   "as-needed-weak.sh",              # Mold-specific behaviour: GNU ld and lld do not activate --as-needed libs for weak refs
   "auxiliary.sh",                   # Different message format
   "build-id.sh",                    # Different build ID data size
@@ -191,10 +188,10 @@ tests = [
   "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
   "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
   "unresolved-symbols.sh",          # Different message formats
-  "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
+  "z-cet-report.sh",                # Different message formats
   "z-defs.sh",                      # Different message formats
   "thin-archive.sh",                # Different `--trace` output formats
   "static-archive.sh",              # Different `--trace` output formats
@@ -233,8 +230,6 @@ tests = [
 reason = "Not grouped yet"
 tests = [
   "as-needed-gc.sh",
-  "bno-symbolic.sh",
-  "canonical-plt.sh",
   "common-archive.sh",
   "common-ref.sh",
   "common-symbols.sh",

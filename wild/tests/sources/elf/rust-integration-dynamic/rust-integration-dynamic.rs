@@ -1,18 +1,22 @@
-//#Config:default
+//#AbstractConfig:default-base
 //#SkipArch: ppc64le
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment
 // TODO: RISC-V BFD linker keeps multiple .dynsym symbols
 //#DiffIgnore:dynsym.*
-//#CompArgs:-C debuginfo=2
 //#Shared:rdyn1.rs
 
-//#Config:lto:default
+//#Config:default:default-base
+//#CompArgs:-C debuginfo=2
+//#CompSoArgs:-C debuginfo=2
+
+//#Config:lto:default-base
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:clang
 //#ReferenceLinkers:lld
 //#CompArgs:-Clinker-plugin-lto -Clink-arg=-flto -Clink-arg=-Wl,-znow
+//#CompSoArgs:-Clinker-plugin-lto -Clink-arg=-flto -Clink-arg=-Wl,-znow
 //#DiffEnabled:false
 
 extern "C" {

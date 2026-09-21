@@ -3,28 +3,34 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:dynsym.foo.section
 
-//#Config:gcc:default
+//#AbstractConfig:gcc-base:default
 //#SkipArch: ppc64le
-//#CompArgs:-ftls-model=local-dynamic -fPIC -O2
 //#LinkerDriver:gcc
-//#LinkArgs:-Wl,-z,now -pie
+//#LinkArgs:-Wl,-z,now
 
-//#Config:gcc-no-relax:gcc
-//#LinkArgs:-Wl,-z,now,--no-relax
+//#AbstractConfig:gcc-local-dynamic:gcc-base
+//#CompArgs:-ftls-model=local-dynamic -fPIC -O2
+
+//#Config:gcc:gcc-local-dynamic
+//#LinkArgs:-pie
+
+//#Config:gcc-no-relax:gcc-local-dynamic
+//#LinkArgs:-Wl,--no-relax
 //#DiffEnabled:false
 // TODO: For some reason, the test fails under QEMU for LoongArch64, even though it runs correctly
 // on a native Alpine Linux system.
 //#SkipArch:loongarch64,ppc64le
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
-//#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad
+//#CompArgs:-mtls-dialect=trad
 //#Arch:aarch64
 
 //#Config:gcc-large-local-dynamic:gcc
-//#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mcmodel=large
+//#CompArgs:-mcmodel=large
 //#Arch:x86_64
 
-//#Config:gcc-large-global-dynamic:gcc
+//#Config:gcc-large-global-dynamic:gcc-base
+//#LinkArgs:-pie
 //#CompArgs:-ftls-model=global-dynamic -fPIC -O2 -mcmodel=large
 //#Arch:x86_64
 

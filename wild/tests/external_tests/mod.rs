@@ -3,6 +3,7 @@ mod mold_tests;
 
 use crate::Filter;
 use crate::Result;
+use crate::TestConfig;
 use libtest_mimic::Trial;
 use std::env;
 use std::io::Write;
@@ -12,16 +13,28 @@ use std::process::Command;
 use std::process::Output;
 use std::sync::OnceLock;
 
-pub(super) fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
+pub(super) fn collect_tests(
+    tests: &mut Vec<Trial>,
+    filter: &Filter,
+    test_config: &TestConfig,
+) -> Result {
     if cfg!(feature = "mold_tests") {
-        mold_tests::collect_tests(tests, filter)?;
+        mold_tests::collect_tests(tests, filter, test_config)?;
     }
 
     if cfg!(feature = "lld_tests") {
-        lld_tests::collect_tests(tests, filter)?;
+        lld_tests::collect_tests(tests, filter, test_config)?;
     }
 
     Ok(())
+}
+
+/// Returns whether the user's test-config.toml says to skip a particular test. If this returns
+/// true, then we skip both the positive and negative versions of the test.
+pub(super) fn should_skip_by_local_config(path: &Path, config: &TestConfig) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| config.ignore_external_tests.iter().any(|n| n == name))
 }
 
 #[derive(Clone, Debug)]

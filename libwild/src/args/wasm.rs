@@ -30,12 +30,19 @@ pub(crate) const DEFAULT_ENTRY: &str = "_start";
 /// Default export name for the module's linear memory.
 pub(crate) const DEFAULT_MEMORY_EXPORT_NAME: &str = "memory";
 
+/// Default module name used when importing the linear memory (`--import-memory`).
+pub(crate) const DEFAULT_MEMORY_IMPORT_MODULE: &str = "env";
+
+/// Default field name used when importing the linear memory (`--import-memory`).
+pub(crate) const DEFAULT_MEMORY_IMPORT_NAME: &str = "memory";
+
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
+    pub(crate) extra_features: Vec<String>,
     pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
@@ -46,8 +53,14 @@ pub struct WasmArgs {
     // page-aligned). `None` means size is derived from data / stack layout only.
     pub(crate) initial_memory: Option<u64>,
     pub(crate) max_memory: Option<u64>,
+    // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
+    // target features.
+    pub(crate) shared_memory: bool,
+    // `(module, name)` to import the linear memory from, if `--import-memory` was given.
+    pub(crate) import_memory: Option<(String, String)>,
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
+    pub(crate) allow_multiple_definition: bool,
 }
 
 impl WasmArgs {
@@ -63,6 +76,12 @@ impl WasmArgs {
             .as_deref()
             .unwrap_or(DEFAULT_MEMORY_EXPORT_NAME)
     }
+
+    pub(crate) fn memory_import(&self) -> Option<(&str, &str)> {
+        self.import_memory
+            .as_ref()
+            .map(|(module, name)| (module.as_str(), name.as_str()))
+    }
 }
 
 impl Default for WasmArgs {
@@ -70,6 +89,7 @@ impl Default for WasmArgs {
         Self {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
+            extra_features: Vec::new(),
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
@@ -77,9 +97,12 @@ impl Default for WasmArgs {
             entry: Some(DEFAULT_ENTRY.to_owned()),
             initial_memory: None,
             max_memory: None,
+            shared_memory: false,
+            import_memory: None,
             export_memory: None,
             gc_sections: true,
             allow_undefined: false,
+            allow_multiple_definition: false,
         }
     }
 }
@@ -156,6 +179,10 @@ impl platform::Args for WasmArgs {
 
     fn is_ignored_flag(&self, _flag: &str) -> bool {
         false
+    }
+
+    fn allow_multiple_definitions(&self) -> bool {
+        self.allow_multiple_definition
     }
 }
 
@@ -269,6 +296,19 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         });
 
     parser
+        .declare_with_param()
+        .long("extra-features")
+        .help("Comma-separated list of features to add to the default set of features inferred from input objects")
+        .execute(|args, _modifier_stack, value| {
+            args.extra_features = value
+                .split(',')
+                .filter(|feature| !feature.is_empty())
+                .map(str::to_owned)
+                .collect();
+            Ok(())
+        });
+
+    parser
         .declare()
         .long("no-entry")
         .help("Do not output any entry point (reactor module)")
@@ -306,6 +346,10 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .declare_with_param()
         .prefix("z")
         .help("Linker options")
+        .sub_option("muldefs", "Allow multiple definitions", |args, _| {
+            args.allow_multiple_definition = true;
+            Ok(())
+        })
         .sub_option_with_value(
             "stack-size=",
             "Set the main stack size in linear memory",
@@ -358,6 +402,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         });
 
     parser
+        .declare()
+        .long("allow-multiple-definition")
+        .help("Allow multiple definitions of symbols in the output")
+        .execute(|args, _modifier_stack| {
+            args.allow_multiple_definition = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-allow-multiple-definition")
+        .help("Disallow multiple definitions of symbols in the output (default)")
+        .execute(|args, _modifier_stack| {
+            args.allow_multiple_definition = false;
+            Ok(())
+        });
+
+    parser
         .declare_with_param()
         .long("max-memory")
         .help("Maximum size of the linear memory in bytes")
@@ -367,11 +429,45 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         });
 
     parser
+        .declare()
+        .long("shared-memory")
+        .help("Use shared linear memory")
+        .execute(|args, _modifier_stack| {
+            args.shared_memory = true;
+            Ok(())
+        });
+
+    parser
+        .declare_with_optional_param()
+        .long("import-memory")
+        .help("Import the module's memory from <module>,<name> (default \"env\",\"memory\")")
+        .execute(|args, _modifier_stack, value| {
+            let (module, name) = match value {
+                None => (DEFAULT_MEMORY_IMPORT_MODULE, DEFAULT_MEMORY_IMPORT_NAME),
+                Some(value) => value
+                    .split_once(',')
+                    // wasm-ld treats a comma-less value as the name, module defaults to `env`.
+                    .unwrap_or((DEFAULT_MEMORY_IMPORT_MODULE, value)),
+            };
+            args.import_memory = Some((module.to_owned(), name.to_owned()));
+            Ok(())
+        });
+
+    parser
         .declare_with_param()
         .prefix("O")
         .execute(|_args, _modifier_stack, _value|
         // We don't use opt-level for now.
         Ok(()));
+
+    parser
+        .declare()
+        .long("demangle")
+        .help("Demangle symbol names (default)")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().demangle = true;
+            Ok(())
+        });
 
     parser
         .declare()
@@ -475,6 +571,42 @@ mod tests {
         assert_eq!(
             Args::force_export_symbol_names(&args),
             ["foo", "bar", "baz"]
+        );
+    }
+
+    #[test]
+    fn extra_features() {
+        assert_eq!(
+            parse_args(["--extra-features=foo,bar", "-o", "out.wasm"]).extra_features,
+            ["foo", "bar"]
+        );
+        assert_eq!(
+            parse_args(["--extra-features=a", "--extra-features=b", "-o", "out.wasm"])
+                .extra_features,
+            ["b"]
+        );
+        assert_eq!(
+            parse_args(["--extra-features=", "-o", "out.wasm"]).extra_features,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn import_memory() {
+        assert_eq!(
+            parse_args(["--import-memory", "-o", "out.wasm"]).import_memory,
+            Some((
+                DEFAULT_MEMORY_IMPORT_MODULE.to_owned(),
+                DEFAULT_MEMORY_IMPORT_NAME.to_owned()
+            ))
+        );
+        assert_eq!(
+            parse_args(["--import-memory=foo,bar", "-o", "out.wasm"]).import_memory,
+            Some(("foo".to_owned(), "bar".to_owned()))
+        );
+        assert_eq!(
+            parse_args(["--import-memory=foo", "-o", "out.wasm"]).import_memory,
+            Some((DEFAULT_MEMORY_IMPORT_MODULE.to_owned(), "foo".to_owned()))
         );
     }
 }

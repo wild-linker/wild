@@ -5,13 +5,11 @@
 
 use crate::error::Context as _;
 use crate::error::Result;
-#[cfg(not(target_family = "wasm"))]
-use memmap2::Mmap;
+use crate::host::fs::FilesystemKind;
 use memmap2::MmapOptions;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::io::Write as _;
-use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +41,8 @@ pub struct OutputOptions {
     pub size: u64,
     pub file_replacement_mode: FileReplacementMode,
     pub write_mode: Option<FileWriteMode>,
+    pub fallocate: Option<bool>,
+    pub madvise_huge_pages: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,9 @@ pub trait InputFileData: Send + Sync + std::fmt::Debug {
     fn verify_unchanged(&self) -> std::io::Result<bool> {
         Ok(true)
     }
+
+    /// Hint that the file will not be read again.
+    fn release_memory(&self) {}
 }
 
 /// A sized, random-access linker output.
@@ -313,35 +316,13 @@ impl OsFileSystem {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
-#[derive(Debug)]
-struct OsInputBytes(Mmap);
-
-#[cfg(target_family = "wasm")]
-struct OsInputBytes(Vec<u8>);
-
-#[cfg(target_family = "wasm")]
-impl std::fmt::Debug for OsInputBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("FileBytes").finish_non_exhaustive()
-    }
-}
-
 #[derive(Debug)]
 pub struct OsInputFile {
-    bytes: OsInputBytes,
+    bytes: crate::host::fs::InputBytes,
     path: PathBuf,
     /// The modification timestamp of the input file just before we opened it. We expect our input
     /// files not to change while we're running.
     modification_time: std::time::SystemTime,
-}
-
-impl Deref for OsInputBytes {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 impl InputFileData for OsInputFile {
@@ -351,6 +332,10 @@ impl InputFileData for OsInputFile {
 
     fn verify_unchanged(&self) -> std::io::Result<bool> {
         Ok(std::fs::metadata(&self.path)?.modified()? == self.modification_time)
+    }
+
+    fn release_memory(&self) {
+        crate::host::fs::release_input_memory(&self.bytes);
     }
 }
 
@@ -395,14 +380,9 @@ impl OutputFileData for OsOutputFile {
     }
 
     fn invalidate(&mut self, len: usize) {
-        #[cfg(target_os = "macos")]
         if let OsOutputBuffer::Mmap(output) = &mut self.buffer {
-            unsafe {
-                libc::msync(output.as_mut_ptr().cast(), len, libc::MS_INVALIDATE);
-            }
+            crate::host::fs::invalidate_mapped_output(output, len);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = len;
     }
 }
 
@@ -413,10 +393,9 @@ impl FileSystem for OsFileSystem {
     fn open_input(
         &self,
         path: &Path,
-        #[allow(unused_variables)] prepopulate_maps: bool,
+        prepopulate_maps: bool,
     ) -> Result<(Self::Input, Option<Arc<File>>)> {
-        #[allow(unused_mut)]
-        let mut file = File::open(path)
+        let file = File::open(path)
             .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
 
         let modification_time = file
@@ -426,45 +405,7 @@ impl FileSystem for OsFileSystem {
                 format!("Failed to read file modification time `{}`", path.display())
             })?;
 
-        #[cfg(not(target_family = "wasm"))]
-        let bytes = {
-            // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if
-            // our users manage to avoid editing the input files while we've got them
-            // mapped. It'd be great if there were a way to protect against unsoundness
-            // when the input files were modified externally, but there isn't - at least
-            // on Linux. Not only could the bytes change without notice, but the mapped
-            // file could be truncated causing any access to result in a SIGBUS.
-            //
-            // For our use case, mmap just has too many advantages. There are likely large parts of
-            // our input files that we don't need to read, so reading all our input
-            // files up front isn't really an option. Reading just the parts we need
-            // might be an option, but would add substantial complexity. Also, using
-            // mmap means that if the system needs to reclaim memory, it can just
-            // release some of our pages.
-
-            let mut mmap_options = memmap2::MmapOptions::new();
-
-            // Prepopulating maps generally slows things down, so is off by default, however it's
-            // useful when profiling, since it means that you don't see false positive
-            // slowness in the parts of the code that first read a bit of memory.
-            if prepopulate_maps {
-                mmap_options.populate();
-            }
-
-            let bytes = unsafe { mmap_options.map(&file) }
-                .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
-
-            OsInputBytes(bytes)
-        };
-
-        #[cfg(target_family = "wasm")]
-        let bytes = {
-            use std::io::Read as _;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)
-                .with_context(|| format!("Failed to read file `{}`", path.display()))?;
-            OsInputBytes(bytes)
-        };
+        let bytes = crate::host::fs::read_input(&file, path, prepopulate_maps)?;
 
         Ok((
             OsInputFile {
@@ -532,21 +473,63 @@ impl FileSystem for OsFileSystem {
             }
         };
 
-        let file_write_mode = options
-            .write_mode
-            .unwrap_or_else(|| default_file_write_mode_for_file(&file));
+        let defaults = OutputFileDefaults::for_file(&file);
+
+        let fallocate = options.fallocate.unwrap_or(defaults.fallocate);
+        let huge_pages_required = options.madvise_huge_pages == Some(true);
+        let madvise_huge_pages = options
+            .madvise_huge_pages
+            .unwrap_or(defaults.madvise_huge_pages);
+        let file_write_mode = options.write_mode.unwrap_or(defaults.write_mode);
+
+        if huge_pages_required && matches!(file_write_mode, FileWriteMode::BufferThenWrite) {
+            return Err(crate::error!(
+                "--madvise-huge-pages requires mmapped output file"
+            ));
+        }
+
+        let set_len_result = file.set_len(options.size);
+
+        if fallocate
+            && let Err(error) = crate::host::fs::preallocate(&file, options.size)
+            && options.fallocate.is_some()
+        {
+            return Err(error).with_context(|| format!("Failed to fallocate `{}`", path.display()));
+        }
 
         let buffer = match file_write_mode {
             FileWriteMode::Mmap => {
                 // For some types of output file (e.g. character devices) we can't mmap, so we try
                 // to mmap the file and if it fails, fall back to non-mmapped output.
-                if file.set_len(options.size).is_ok() {
-                    match unsafe { MmapOptions::new().map_mut(&file) } {
-                        Ok(mmap) => OsOutputBuffer::Mmap(mmap),
+                match set_len_result {
+                    Ok(()) => match unsafe { MmapOptions::new().map_mut(&file) } {
+                        Ok(mmap) => {
+                            if let Err(error) =
+                                advise_huge_pages_if_requested(&mmap, madvise_huge_pages)
+                                && huge_pages_required
+                            {
+                                return Err(error).with_context(|| {
+                                    format!("madvise huge pages failed for `{}`", path.display())
+                                });
+                            }
+                            OsOutputBuffer::Mmap(mmap)
+                        }
+                        Err(error) if huge_pages_required => {
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "--madvise-huge-pages requires mmap, but mmap of `{}` failed",
+                                    path.display()
+                                )
+                            });
+                        }
                         Err(_) => OsOutputBuffer::InMemory(vec![0; options.size as usize]),
+                    },
+                    Err(error) if huge_pages_required => {
+                        return Err(error).with_context(|| {
+                            format!("Failed to set size `{}` for mmap", path.display())
+                        });
                     }
-                } else {
-                    OsOutputBuffer::InMemory(vec![0; options.size as usize])
+                    Err(_) => OsOutputBuffer::InMemory(vec![0; options.size as usize]),
                 }
             }
             FileWriteMode::BufferThenWrite => {
@@ -554,7 +537,7 @@ impl FileSystem for OsFileSystem {
                 // to fail for some types of files, e.g. /dev/null. If there's actually a problem
                 // writing to the file, we'll discover that when we go to write the content later
                 // on.
-                let _ = file.set_len(options.size);
+                let _ = set_len_result;
                 OsOutputBuffer::InMemory(vec![0; options.size as usize])
             }
         };
@@ -569,60 +552,58 @@ impl FileSystem for OsFileSystem {
     }
 }
 
-fn default_file_write_mode_for_file(file: &std::fs::File) -> FileWriteMode {
-    cfg_select! {
-        any(target_os = "android", target_os = "linux") => {
-            match nix::sys::statfs::fstatfs(file)
-                .map(|stat| stat.filesystem_type())
-                .ok()
-            {
-                // Multi-threaded write performance with BTRFS is terrible. It's substantially
-                // faster to just buffer it all in memory then write it afterwards.
-                Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-                // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10%
-                // faster if we avoid mmap.
-                Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-                _ => FileWriteMode::Mmap,
-            }
-        }
-        _ => {
-            let _ = file;
-            FileWriteMode::Mmap
-        }
-    }
-}
-
-/// Make the the supplied file executable by adding execute permissions for all users that have read
-/// permissions. On non-Unix platforms, this is a no-op.
-pub fn make_executable(_file: &File) -> Result {
-    #[cfg(unix)]
-    {
-        use std::os::unix::prelude::PermissionsExt;
-        let mut permissions = _file.metadata()?.permissions();
-        let mut mode = PermissionsExt::mode(&permissions);
-        // Set execute permission wherever we currently have read permission.
-        mode = mode | ((mode & 0o444) >> 2);
-        PermissionsExt::set_mode(&mut permissions, mode);
-        _file.set_permissions(permissions)?;
+fn advise_huge_pages_if_requested(mmap: &memmap2::MmapMut, requested: bool) -> Result {
+    if requested {
+        crate::host::fs::advise_huge_pages(mmap)?;
     }
     Ok(())
 }
 
-pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    cfg_select! {
-        unix => {
-            use std::ffi::OsStr;
-            use std::os::unix::ffi::OsStrExt as _;
-            std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+struct OutputFileDefaults {
+    write_mode: FileWriteMode,
+    fallocate: bool,
+    madvise_huge_pages: bool,
+}
+
+impl OutputFileDefaults {
+    fn for_file(file: &std::fs::File) -> Self {
+        let mut defaults = Self {
+            write_mode: FileWriteMode::Mmap,
+            fallocate: false,
+            madvise_huge_pages: true,
+        };
+
+        match crate::host::fs::filesystem_kind(file) {
+            // Multi-threaded write performance with BTRFS is terrible without huge pages and when
+            // using huge pages with Linux < 7.2. It's substantially faster to just buffer it all in
+            // memory then write it afterwards.
+            Some(FilesystemKind::Btrfs)
+                if crate::host::os::kernel_version().is_none_or(|version| version < (7, 2)) =>
+            {
+                defaults.write_mode = FileWriteMode::BufferThenWrite;
+                defaults.madvise_huge_pages = false;
+            }
+            // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10% faster
+            // if we avoid mmap.
+            Some(FilesystemKind::Vfat) => {
+                defaults.write_mode = FileWriteMode::BufferThenWrite;
+            }
+            Some(FilesystemKind::Ext4 | FilesystemKind::Xfs) => {
+                defaults.fallocate = true;
+            }
+            Some(FilesystemKind::Btrfs | FilesystemKind::Other) | None => {}
         }
-        target_os = "wasi" => {
-            use std::ffi::OsStr;
-            use std::os::wasi::ffi::OsStrExt as _;
-            std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
-        }
-        _ => {
-            let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
-            PathBuf::from(path)
-        }
+
+        defaults
     }
+}
+
+/// Make the the supplied file executable by adding execute permissions for all users that have read
+/// permissions. On hosts without execute permissions, this is a no-op.
+pub fn make_executable(file: &File) -> Result {
+    crate::host::fs::make_executable(file)
+}
+
+pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    crate::host::fs::path_from_bytes(bytes)
 }

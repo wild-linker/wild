@@ -23,8 +23,11 @@ use crate::linker_script::Expression;
 use crate::macho_stub_library::DefinedStubLibrary;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
+use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
@@ -59,8 +62,10 @@ use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::hash::BuildHasher as _;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -97,14 +102,16 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
 
-        let mut syn = symbol_db.new_synthetic_symbols_group();
-
         assign_section_ids(
             &mut self.resolved_groups,
             &mut symbol_db.section_part_ids,
             output_sections,
             symbol_db.args,
         );
+
+        let start_stop_sections =
+            P::NEEDS_START_STOP_SECTION_GC.then(|| output_sections.new_section_map());
+        let mut syn = symbol_db.new_synthetic_symbols_group(start_stop_sections);
 
         // Apply -Ttext/-Tdata/-Tbss (and --section-start) overrides to built-in sections.
         output_sections.apply_section_start_overrides(symbol_db.args);
@@ -115,6 +122,14 @@ impl<'data, P: Platform> Resolver<'data, P> {
             &self.resolved_groups,
             symbol_db,
             per_symbol_flags,
+            &mut syn,
+        );
+
+        populate_start_stop_sections(
+            &self.resolved_groups,
+            &symbol_db.section_part_ids,
+            output_sections,
+            symbol_db.args,
             &mut syn,
         );
 
@@ -238,7 +253,7 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
         resolver.resolved_groups[file_id.group()].files[file_id.file()] = obj;
     }
 
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     for obj in outputs.loaded_lto_objects {
         let file_id = obj.file_id;
         resolver.resolved_groups[file_id.group()].files[file_id.file()] =
@@ -378,10 +393,11 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                     file_id: syn.file_id,
                     start_symbol_id: syn.symbol_id_range.start(),
                     symbol_definitions: Vec::new(),
+                    start_stop_sections: None,
                 })],
             }
         }
-        #[cfg(all(feature = "plugins", unix))]
+        #[cfg(feature = "plugins")]
         Group::LtoInputs(lto_objects) => ResolvedGroup {
             files: lto_objects
                 .iter()
@@ -612,7 +628,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
             outputs.loaded.push(resolved_object).unwrap();
         }
         Group::StubLibraries(_) => {}
-        #[cfg(all(feature = "plugins", unix))]
+        #[cfg(feature = "plugins")]
         Group::LtoInputs(lto_objects) => {
             let obj = &lto_objects[file_id.file()];
             // Push won't fail because we allocated enough space for all the LTO objects.
@@ -673,7 +689,7 @@ pub(crate) enum ResolvedFile<'data, P: Platform> {
     StubLibrary(ResolvedStubLibrary<'data>),
     LinkerScript(ResolvedLinkerScript<'data, P>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data, P>),
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     LtoInput(ResolvedLtoInput),
 }
 
@@ -705,6 +721,12 @@ pub(crate) enum SectionSlot {
     /// The section contains frame data, e.g. .eh_frame or equivalent.
     FrameData(object::SectionIndex),
 
+    /// The section contains initializer function pointers that are processed by the platform.
+    InitFunc(object::SectionIndex),
+
+    /// The section contains compact unwind information on Mach-O platform.
+    CompactUnwind(object::SectionIndex),
+
     /// The section is a string-merge section.
     MergeStrings(StringMergeSectionSlot),
 
@@ -713,6 +735,10 @@ pub(crate) enum SectionSlot {
 
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
+
+    /// A section with a unique name that is passed through from input to output without merging
+    /// with other input sections. Created after group layout finalisation.
+    PartialLinkSingleton(crate::layout::PartialLinkSingleton),
 
     // GNU property section (.note.gnu.property)
     NoteGnuProperty(object::SectionIndex),
@@ -812,9 +838,16 @@ pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
+    pub(crate) start_stop_sections: Option<OutputSectionMap<Vec<StartStopCandidate<P>>>>,
 }
 
-#[cfg(all(feature = "plugins", unix))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StartStopCandidate<P: Platform> {
+    pub(crate) file_id: FileId,
+    pub(crate) gc_unit: P::GcUnit,
+}
+
+#[cfg(feature = "plugins")]
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLtoInput {
     pub(crate) file_id: FileId,
@@ -830,11 +863,30 @@ fn assign_section_ids<'data, P: Platform>(
 ) {
     timing_phase!("Assign section IDs");
 
+    // An optimised path for partial linking to avoid allocating too many OutputSectionIds. We skip
+    // this if there are any linker scripts, since there are too many ways they could mess up our
+    // assumptions.
+    if args.should_output_partial_object()
+        && !resolved.iter().any(|group| {
+            group
+                .files
+                .iter()
+                .any(|file| matches!(file, ResolvedFile::LinkerScript(_)))
+        })
+    {
+        return assign_section_ids_partial(resolved, section_part_ids, output_sections, args);
+    }
+
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
                 let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
-                output_sections.add_sections(&s.custom_sections, obj_part_ids, args);
+
+                for custom in &s.custom_sections {
+                    obj_part_ids[custom.index.0] =
+                        output_sections.get_or_create_custom_section_part(args, custom);
+                }
+
                 apply_init_fini_secondaries(
                     &s.init_fini_sections,
                     s.sections.as_slice(),
@@ -846,11 +898,174 @@ fn assign_section_ids<'data, P: Platform>(
     }
 }
 
+fn populate_start_stop_sections<'data, P: Platform>(
+    resolved: &[ResolvedGroup<'data, P>],
+    section_part_ids: &[PartId],
+    output_sections: &OutputSections<'data, P>,
+    args: &P::Args,
+    syn: &mut ResolvedSyntheticSymbols<'data, P>,
+) {
+    if !P::NEEDS_START_STOP_SECTION_GC || !args.should_gc_sections() {
+        return;
+    }
+
+    let mut referenced_sections = output_sections.new_section_map::<bool>();
+    let mut has_referenced_sections = false;
+
+    for definition in &syn.symbol_definitions {
+        if let Some(section_id) = definition.section_id() {
+            *referenced_sections.get_mut(section_id) = true;
+            has_referenced_sections = true;
+        }
+    }
+
+    if !has_referenced_sections {
+        return;
+    }
+
+    let start_stop_sections = syn.start_stop_sections.as_mut().unwrap();
+    for group in resolved {
+        for file in &group.files {
+            let ResolvedFile::Object(s) = file else {
+                continue;
+            };
+
+            let obj_part_ids = &section_part_ids[s.section_id_range.as_usize()];
+
+            for custom_section in &s.custom_sections {
+                let section_index = custom_section.index;
+
+                let SectionSlot::Unloaded(unloaded) = s.sections[section_index.0] else {
+                    continue;
+                };
+
+                if !unloaded.start_stop_eligible {
+                    continue;
+                }
+
+                let section_id = obj_part_ids[section_index.0].output_section_id::<P>();
+                if !*referenced_sections.get(section_id) {
+                    continue;
+                }
+
+                let gc_unit = P::gc_unit_for_section(section_index);
+
+                start_stop_sections
+                    .get_mut(section_id)
+                    .push(StartStopCandidate {
+                        file_id: s.common.file_id,
+                        gc_unit,
+                    });
+            }
+        }
+    }
+}
+
+fn assign_section_ids_partial<'data, P: Platform>(
+    resolved: &mut [ResolvedGroup<'data, P>],
+    section_part_ids: &mut [PartId],
+    output_sections: &mut OutputSections<'data, P>,
+    args: &<P as Platform>::Args,
+) {
+    // Where two or more input sections have the same name, we assign OutputSectionIds as per normal
+    // so that those input sections can be correctly merged. For input sections with unique names,
+    // no merging is needed, so we handle those separately so as to avoid the overheads associated
+    // with an extra OutputSectionId.
+
+    let singletons_id: OutputSectionId = P::PARTIAL_SINGLETONS_ID
+        .expect("Tried to do partial linking on platform that doesn't support it");
+
+    let num_buckets = args.common().available_threads.get();
+    let per_group_buckets = resolved
+        .par_iter()
+        .map(|group| {
+            let mut buckets = vec![Vec::new(); num_buckets];
+            let hasher = foldhash::fast::FixedState::default();
+            for file in &group.files {
+                let ResolvedFile::Object(object) = file else {
+                    continue;
+                };
+                for custom in &object.custom_sections {
+                    if !is_partial_link_singleton_candidate(object, custom.index) {
+                        continue;
+                    }
+                    let hash = hasher.hash_one(custom.identity);
+                    buckets[hash as usize % num_buckets].push((
+                        PreHashed::new(custom.identity, hash),
+                        object.section_id_range.input_to_id(custom.index),
+                        singletons_id.part_id_with_alignment::<P>(custom.alignment),
+                    ));
+                }
+            }
+            buckets
+        })
+        .collect::<Vec<_>>();
+
+    let singletons = (0..num_buckets)
+        .into_par_iter()
+        .map(|bucket| {
+            let mut first_sections: PassThroughHashMap<SectionIdentity<P>, _> = Default::default();
+            first_sections.reserve(
+                per_group_buckets
+                    .iter()
+                    .map(|group| group[bucket].len())
+                    .sum(),
+            );
+            for group in &per_group_buckets {
+                for &(identity, section_id, part_id) in &group[bucket] {
+                    first_sections
+                        .entry(identity)
+                        .and_modify(|first| *first = None)
+                        .or_insert(Some((section_id, part_id)));
+                }
+            }
+            first_sections.into_values().flatten().collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    for bucket in singletons {
+        for (section_id, part_id) in bucket {
+            section_part_ids[section_id.as_usize()] = part_id;
+        }
+    }
+
+    // Allocate non-singleton sections.
+    for group in resolved {
+        for file in &group.files {
+            if let ResolvedFile::Object(object) = file {
+                let obj_part_ids = &mut section_part_ids[object.section_id_range.as_usize()];
+                for custom in &object.custom_sections {
+                    let part_id = &mut obj_part_ids[custom.index.0];
+                    if *part_id != singletons_id.part_id_with_alignment::<P>(custom.alignment) {
+                        *part_id = output_sections.get_or_create_custom_section_part(args, custom);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_partial_link_singleton_candidate<P: Platform>(
+    object: &ResolvedObject<P>,
+    section_index: SectionIndex,
+) -> bool {
+    // String merge sections and no-bits sections require special handling, so aren't eligible.
+    !matches!(
+        object.sections[section_index.0],
+        SectionSlot::MergeStrings(_)
+    ) && !object
+        .common
+        .object
+        .section(section_index)
+        .unwrap()
+        .is_no_bits()
+}
+
 struct Outputs<'data, P: Platform> {
     /// Where we put objects once we've loaded them.
     loaded: ArrayQueue<ResolvedFile<'data, P>>,
 
-    #[cfg(all(feature = "plugins", unix))]
+    #[cfg(feature = "plugins")]
     loaded_lto_objects: ArrayQueue<ResolvedLtoInput>,
 
     /// Any errors that we encountered.
@@ -864,7 +1079,7 @@ impl<'data, P: Platform> Outputs<'data, P> {
     fn new(num_regular_objects: usize, num_lto_objects: usize) -> Self {
         Self {
             loaded: ArrayQueue::new(num_regular_objects.max(1)),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             loaded_lto_objects: ArrayQueue::new(num_lto_objects.max(1)),
             errors: ArrayQueue::new(1),
             undefined_symbols: SegQueue::new(),
@@ -913,7 +1128,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
             }
         }
         Group::SyntheticSymbols(_) => {}
-        #[cfg(all(feature = "plugins", unix))]
+        #[cfg(feature = "plugins")]
         Group::LtoInputs(objects) => {
             let obj = &objects[file_id.file()];
             resources.handle_result(
@@ -1383,6 +1598,18 @@ fn resolve_section<'data, P: Platform>(
                 crate::part_id::UNMAPPED,
             ));
         }
+        SectionRuleOutcome::InitFunc => {
+            return Ok((
+                SectionSlot::InitFunc(input_section_index),
+                crate::part_id::UNMAPPED,
+            ));
+        }
+        SectionRuleOutcome::CompactUnwind => {
+            return Ok((
+                SectionSlot::CompactUnwind(input_section_index),
+                crate::part_id::UNMAPPED,
+            ));
+        }
         SectionRuleOutcome::NoteGnuProperty => {
             return Ok((
                 SectionSlot::NoteGnuProperty(input_section_index),
@@ -1667,17 +1894,36 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
             ResolvedFile::StubLibrary(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             ResolvedFile::LtoInput(_) => std::fmt::Display::fmt("<lto object>", f),
         }
     }
 }
 
 impl SectionSlot {
+    pub(crate) fn singleton(&self) -> Option<&crate::layout::PartialLinkSingleton> {
+        match self {
+            Self::PartialLinkSingleton(singleton) => Some(singleton),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn loaded_section(&self) -> Option<&crate::layout::Section> {
+        match self {
+            Self::Loaded(section) => Some(section),
+            Self::PartialLinkSingleton(singleton) => Some(&singleton.section),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(
             self,
-            SectionSlot::Discard | SectionSlot::Unloaded(..) | SectionSlot::NoteGnuProperty(..)
+            SectionSlot::Discard
+                | SectionSlot::Unloaded(..)
+                | SectionSlot::InitFunc(..)
+                | SectionSlot::CompactUnwind(..)
+                | SectionSlot::NoteGnuProperty(..)
         )
     }
 
@@ -1699,7 +1945,7 @@ impl<'data, P: Platform> ResolvedFile<'data, P> {
             ResolvedFile::StubLibrary(s) => s.symbol_id_range,
             ResolvedFile::LinkerScript(s) => s.symbol_id_range,
             ResolvedFile::SyntheticSymbols(s) => s.symbol_id_range(),
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             ResolvedFile::LtoInput(s) => s.symbol_id_range,
         }
     }

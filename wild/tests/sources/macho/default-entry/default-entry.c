@@ -1,7 +1,6 @@
 //#Config:default
 //#Object:runtime.c
 //#ExpectEntry:_main
-//#DiffIgnore:section.__unwind_info
 
 #include "../common/runtime.h"
 

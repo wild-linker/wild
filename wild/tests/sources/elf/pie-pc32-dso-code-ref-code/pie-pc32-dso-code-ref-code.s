@@ -5,8 +5,7 @@
 //#SoSingleLinker:wild
 //#LinkArgs:-pie
 //#RunEnabled:false
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT

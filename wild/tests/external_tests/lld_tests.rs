@@ -1,130 +1,174 @@
-//! Integration tests that run LLD's ELF test suite with Wild as the linker.
-//! Tests are vendored from llvm-project/lld/test/ELF/.
-//!
-//! Requires system LLVM tools: llvm-mc, FileCheck, split-file.
-//! These are available on distributions like Arch Linux.
+//! Runs LLD's ELF test suite via lit with Wild substituted for ld.lld.
+//! One test per architecture for granular reporting in cargo test output.
 
 use crate::Result;
+use crate::TestConfig;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
-const PREFIX: &str = "external_test_suites/lld";
+#[derive(Deserialize)]
+struct Config {
+    skipped_groups: HashMap<String, SkippedGroup>,
+}
 
-pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> Result {
-    if filter.excludes(PREFIX) {
-        return Ok(());
-    }
+#[derive(Deserialize)]
+struct SkippedGroup {
+    tests: Vec<String>,
+}
 
-    let test_dir = crate::base_dir().join("../external_test_suites/lld/test/ELF");
+static SKIP_TESTS: OnceLock<Vec<String>> = OnceLock::new();
+
+const PREFIX: &str = "external_test_suites/lld_lit";
+
+const SUPPORTED_ARCHS: &[(&str, crate::Architecture)] = &[
+    ("x86-64", crate::Architecture::X86_64),
+    ("aarch64", crate::Architecture::AArch64),
+];
+
+pub(crate) fn collect_tests(
+    tests: &mut Vec<Trial>,
+    filter: &crate::Filter,
+    test_config: &TestConfig,
+) -> Result {
+    let test_dir = crate::base_dir().join("../external_test_suites/lld/test");
     if !test_dir.exists() {
         return Ok(());
     }
 
-    let dir = std::fs::read_dir(&test_dir)?;
-    for ent in dir {
-        let ent = ent?;
-        let path = ent.path();
-        if path.extension().is_some_and(|ext| ext == "s") {
-            let file_name =
-                String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes()).to_string();
-            let name = format!("{PREFIX}/test/ELF/{file_name}");
-            tests.push(Trial::test(name, move || {
-                run_lld_test(&path).map_err(|e| Failed::from(e.to_string()))
-            }));
+    let lit_binary = find_lit_binary(test_config).ok_or_else(|| {
+        format!(
+            "lit not found in {} or PATH. Please install llvm tools.",
+            test_config.llvm_tools_dir.display()
+        )
+    })?;
+
+    for (arch, architecture) in SUPPORTED_ARCHS {
+        if filter.excludes(&format!("{PREFIX}/{arch}")) {
+            continue;
         }
+        let arch = arch.to_string();
+        let emulation = architecture.emulation_name().to_string();
+        let test_config = test_config.clone();
+        let test_dir = test_dir.clone();
+        let lit_binary = lit_binary.clone();
+        tests.push(Trial::test(format!("{PREFIX}/{arch}"), move || {
+            run_lit_for_arch(&arch, &emulation, &test_dir, &test_config, &lit_binary)
+                .map_err(|e| Failed::from(e.to_string()))
+        }));
     }
+
     Ok(())
 }
 
-fn run_lld_test(test_file: &Path) -> Result {
-    let llvm_mc = find_tool("llvm-mc")?;
-    let filecheck = find_tool("FileCheck")?;
-    let content = std::fs::read_to_string(test_file)?;
+fn load_xfail_list() -> &'static Vec<String> {
+    SKIP_TESTS.get_or_init(|| {
+        let skip_tests_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("external_tests")
+            .join("lld_skip_tests.toml");
+
+        fs::read_to_string(&skip_tests_path)
+            .map(|content| {
+                let config: Config =
+                    toml::from_str(&content).expect("Failed to parse lld_skip_tests.toml");
+                config
+                    .skipped_groups
+                    .into_values()
+                    .flat_map(|group| group.tests)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+fn find_lit_binary(test_config: &TestConfig) -> Option<PathBuf> {
+    let lit = test_config.llvm_tools_dir.join("lit");
+    if lit.exists() {
+        return Some(lit);
+    }
+    which::which("lit").ok()
+}
+
+fn run_lit_for_arch(
+    arch: &str,
+    emulation: &str,
+    test_dir: &Path,
+    test_config: &TestConfig,
+    lit_binary: &PathBuf,
+) -> Result {
+    let repo_root = crate::base_dir().join("..");
+    let cfg_src = repo_root.join("wild/tests/external_tests/wild-lit.site.cfg.py");
+    let lit_tmp = tempfile::tempdir()?;
+    std::os::unix::fs::symlink(&cfg_src, lit_tmp.path().join("wild-lit.site.cfg.py"))?;
+    std::os::unix::fs::symlink(test_dir.join("ELF"), lit_tmp.path().join("ELF"))?;
+
+    let wild_bin = std::path::Path::new(env!("CARGO_BIN_EXE_wild"));
+    let llvm_tools_dir = test_config.llvm_tools_dir.to_str().unwrap();
+
+    // Create a fakes directory with all lld variant names pointing to Wild.
+    // This is more robust than text substitution in the lit config.
+    let fakes_dir = tempfile::tempdir()?;
+    let script_contents = format!(
+        "#!/bin/bash\nexec {} -m {} \"$@\"\n",
+        wild_bin.display(),
+        emulation
+    );
+    for linker_name in &["ld.lld", "lld-link", "ld64.lld", "wasm-ld"] {
+        let script_path = fakes_dir.path().join(linker_name);
+        std::fs::write(&script_path, &script_contents)?;
+        libwild::make_executable(&std::fs::File::open(&script_path)?)?;
+    }
+
     let tmpdir = tempfile::tempdir()?;
 
-    for cmd in extract_run_lines(&content) {
-        let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
-        let cmd = substitute_tools(&cmd, &llvm_mc, &filecheck);
-        execute_command(&cmd)?;
-    }
-    Ok(())
-}
+    let xfail_list: Vec<String> = load_xfail_list()
+        .iter()
+        .filter(|t| t.contains(arch))
+        .map(|t| format!("lld :: ELF/{t}"))
+        .collect();
 
-/// Extracts RUN: lines from the test file, joining lines that end in a
-/// trailing `\` continuation character into a single logical command, per
-/// the LLVM lit RUN line syntax:
-/// https://llvm.org/docs/TestingGuide.html#run-lines
-fn extract_run_lines(content: &str) -> Vec<String> {
-    let mut commands = Vec::new();
-    let mut current: Option<String> = None;
+    let mut cmd = Command::new(lit_binary);
+    cmd.arg("--config-prefix")
+        .arg("wild-lit.site")
+        .arg(lit_tmp.path().join("ELF"))
+        .arg(format!("--filter={arch}"))
+        .env("WILD_BIN", wild_bin)
+        .env("WILD_FAKES_DIR", fakes_dir.path())
+        .env("LLVM_TOOLS_DIR", llvm_tools_dir)
+        .env("LLD_OBJ_ROOT", tmpdir.path())
+        .env("HOST_TRIPLE", "x86_64-unknown-linux-gnu")
+        .env("TARGET_TRIPLE", arch)
+        .env("WILD_EMULATION", emulation)
+        .env("WILD_LIT_CFG", test_dir.join("lit.cfg.py"));
 
-    for line in content.lines() {
-        let Some(rest) = line
-            .trim()
-            .strip_prefix("// RUN:")
-            .or_else(|| line.trim().strip_prefix("# RUN:"))
-        else {
-            continue;
-        };
-        let rest = rest.trim();
-
-        let (piece, continues) = match rest.strip_suffix('\\') {
-            Some(stripped) => (stripped.trim_end(), true),
-            None => (rest, false),
-        };
-
-        current = Some(match current.take() {
-            Some(mut buf) => {
-                buf.push(' ');
-                buf.push_str(piece);
-                buf
-            }
-            None => piece.to_string(),
-        });
-
-        if !continues {
-            commands.push(current.take().unwrap());
-        }
+    if !xfail_list.is_empty() {
+        cmd.arg("--xfail").arg(xfail_list.join(";"));
     }
 
-    if let Some(buf) = current {
-        commands.push(buf);
-    }
+    let output = cmd.output()?;
 
-    commands
-}
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
-    cmd.replace("%s", &test_file.display().to_string())
-        .replace("%t", &tmpdir.join("test").display().to_string())
-        .replace("%p", &test_file.parent().unwrap().display().to_string())
-}
+    print!("{stdout}");
+    eprint!("{stderr}");
 
-fn substitute_tools(cmd: &str, llvm_mc: &str, filecheck: &str) -> String {
-    const WILD: &str = env!("CARGO_BIN_EXE_wild");
-    cmd.replace("llvm-mc", llvm_mc)
-        .replace("FileCheck", filecheck)
-        .replace("ld.lld", &format!("{WILD} -m elf_x86_64"))
-}
-
-fn find_tool(name: &str) -> Result<String> {
-    if let Ok(path) = which::which(name) {
-        return Ok(path.display().to_string());
-    }
-    Err(format!("Required tool '{name}' not found. Install LLVM tools.").into())
-}
-
-fn execute_command(cmd: &str) -> Result {
-    let output = Command::new("sh").arg("-c").arg(cmd).output()?;
     if !output.status.success() {
-        return Err(format!(
-            "Command failed: {cmd}\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        )
-        .into());
+        return Err(format!("lit exited with status: {}", output.status).into());
     }
+
+    if stdout.contains("Unexpectedly Passed") || stderr.contains("Unexpectedly Passed") {
+        return Err("One or more tests unexpectedly passed. \
+            Remove them from lld_skip_tests.toml."
+            .into());
+    }
+
     Ok(())
 }

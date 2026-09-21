@@ -2,7 +2,7 @@
 //#RequiresLinkerPlugin:true
 //#Compiler:gcc
 //#LinkerDriver:gcc
-//#CompArgs:-flto -O2 -fPIE
+//#CompArgs:-flto -O2
 //#Object:runtime.c
 //#DiffIgnore:section.got
 //#DiffIgnore:dynsym.__bss_start.section
@@ -21,6 +21,7 @@
 //#SkipArch:loongarch64
 
 //#Config:archive-export-all:default
+//#CompArgs:-fPIE
 //#Archive:lto-export-dynamic-def.c:-flto -O2
 //#LinkArgs:-flto -nostdlib -pie -Wl,-z,now,--export-dynamic
 //#ExpectDynSym:foo
@@ -31,6 +32,7 @@
 //#NoDynSym:hidden_export
 
 //#Config:archive-export-exact:default
+//#CompArgs:-fPIE
 //#Archive:lto-export-dynamic-def.c:-flto -O2
 //#LinkArgs:-flto -nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=foo
 //#ExpectDynSym:foo
@@ -39,6 +41,7 @@
 //#NoDynSym:protected_export
 
 //#Config:archive-export-list:default
+//#CompArgs:-fPIE
 //#Archive:lto-export-dynamic-def.c:-flto -O2
 //#LinkArgs:-flto -nostdlib -pie -Wl,-z,now,--export-dynamic-symbol-list=./lto-export-dynamic.def
 //#ExpectDynSym:foo
@@ -47,6 +50,7 @@
 //#NoDynSym:protected_export
 
 //#Config:object-export-exact:default
+//#CompArgs:-fPIE
 //#Object:lto-export-dynamic-def.c:-flto -O2
 //#LinkArgs:-flto -nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=foo
 //#ExpectDynSym:foo
@@ -55,7 +59,7 @@
 //#NoDynSym:protected_export
 
 //#Config:shared-default:default
-//#CompArgs:-flto -O2 -fPIC
+//#CompArgs:-fPIC
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now
 //#RunEnabled:false
@@ -68,7 +72,7 @@
 //#NoDynSym:hidden_export
 
 //#Config:shared-version-script:default
-//#CompArgs:-flto -O2 -fPIC
+//#CompArgs:-fPIC
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now,--version-script=./lto-export-dynamic.map
 //#RunEnabled:false
@@ -79,7 +83,7 @@
 //#NoDynSym:protected_export
 
 //#Config:shared-exclude-archive:default
-//#CompArgs:-flto -O2 -fPIC
+//#CompArgs:-fPIC
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now,--exclude-libs=lto-export-dynamic-def.a
 //#RunEnabled:false
@@ -92,6 +96,7 @@
 //#NoDynSym:protected_export
 
 //#Config:unreferenced-archive-export:default
+//#CompArgs:-fPIE
 //#Archive:lto-export-dynamic-def.c:-flto -O2
 //#Archive:lto-export-dynamic-unreferenced.c:-flto -O2
 //#LinkArgs:-flto -nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=unreferenced_export

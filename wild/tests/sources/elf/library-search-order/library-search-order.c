@@ -2,6 +2,7 @@
 // each directory.
 
 //#CompArgs:-fPIC
+//#CompSoArgs:-fPIC
 //#Object:runtime.c
 //#Mode:unspecified
 //#SoSingleLinker:ld

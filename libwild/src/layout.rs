@@ -16,7 +16,9 @@ use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
 use crate::expression_eval::ResolvedLocationCounter;
+use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
+use crate::expression_eval::evaluate_early_expression;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
@@ -76,9 +78,8 @@ use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
-use crossbeam_queue::ArrayQueue;
-use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelaxDeltaMap;
@@ -92,6 +93,7 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -104,8 +106,6 @@ use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
 
 pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     symbol_db: SymbolDb<'data, A::Platform>,
@@ -162,6 +162,13 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
 
+    create_canonical_plt_entries(
+        &group_states,
+        &symbol_db,
+        &atomic_per_symbol_flags,
+        &mut dynamic_symbol_definitions,
+    )?;
+
     let mut script_sorted_sections = harvest_and_sort_script_sections(
         &mut group_states,
         &output_sections,
@@ -193,10 +200,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     finalise_all_sizes::<P, A>(
         &mut group_states,
-        &output_sections,
         &atomic_per_symbol_flags,
         &finalise_sizes_resources,
     )?;
+
+    let partial_link_plan =
+        PartialLinkPlan::build(&group_states, &symbol_db.section_part_ids, symbol_db.args)?;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
@@ -206,6 +215,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, &symbol_db)?;
 
     propagate_section_attributes(&group_states, &mut output_sections);
+
+    if symbol_db.args.should_output_partial_object() {
+        clear_singleton_attributes::<P>(&mut output_sections);
+    }
 
     let linker_scripts: Vec<&SequencedLinkerScript<P>> = symbol_db
         .groups
@@ -230,7 +243,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         output_order.display::<A::Platform>(&output_sections, &program_segments)
     );
 
-    let (mut section_part_sizes, gdb_index_data) = compute_total_section_part_sizes(
+    let TotalSectionSizes {
+        mut section_part_sizes,
+        gdb_index_data,
+        partial_link,
+    } = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
         &output_order,
@@ -238,11 +255,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &mut per_symbol_flags,
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
+        partial_link_plan.as_ref(),
     )?;
 
     let got_relr_n = A::Platform::GOT_RELR_SECTION_ID
         .and_then(A::Platform::single_part_id)
-        .map_or(0, |part_id| *section_part_sizes.get(part_id) / 8);
+        .map_or(0, |part_id| section_part_sizes.get(part_id) / 8);
 
     let thunk_blocks = thunk_layout_builder
         .map(|builder| {
@@ -292,8 +310,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         unreachable!();
     };
 
+    P::finalise_output_section_alignments(&section_part_sizes, &mut output_sections);
+
     let (mut section_part_layouts, mut section_layouts, mut resolved_location_counters) =
         compute_layout_sections::<A::Platform>(
+            &group_states,
             &section_part_sizes,
             &output_sections,
             &program_segments,
@@ -326,10 +347,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     {
         let last_part_id =
             PartId::from_usize(last_section_id.part_id_range::<P>().end.as_usize() - 1);
+
         let extra_file_size = A::Platform::last_part_size_to_extend(
-            section_part_layouts.get(last_part_id),
+            &section_part_layouts.get(last_part_id),
             last_part_id,
         )?;
+
         if extra_file_size > 0 {
             section_part_sizes.increment(last_part_id, extra_file_size as u64);
 
@@ -343,8 +366,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         }
     }
 
-    let mut merged_section_layouts = section_layouts.clone();
-    merge_secondary_parts(&output_sections, &mut merged_section_layouts);
+    let merged_section_layouts = merge_secondary_parts(&output_sections, &section_layouts);
 
     let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
@@ -413,7 +435,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
         &resources,
+        partial_link_plan.as_ref(),
     )?;
+    drop(partial_link_plan);
 
     for shard in per_group_res_writers {
         res_writer
@@ -447,7 +471,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     let num_sections = output_sections.num_sections();
 
-    let format_specific = P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions)?;
+    let format_specific =
+        P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
 
     let mut layout = Layout {
         symbol_db,
@@ -474,6 +499,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
         script_sorted_sections,
+        partial_link,
     };
 
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
@@ -552,7 +578,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                 }
             }
             Group::Objects(_) | Group::StubLibraries(_) | Group::SyntheticSymbols(_) => {}
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             Group::LtoInputs(_) => {}
         }
     }
@@ -572,16 +598,6 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
-        let current_section_base = match redirect.loc {
-            SymbolLoc::SectionStartRelative(id)
-            | SymbolLoc::SectionEndRelative(id)
-            | SymbolLoc::LocationCounter(_, Some(id)) => {
-                let primary_id = output_sections.primary_output_section(id);
-                Some(section_layouts.get(primary_id).mem_offset)
-            }
-            _ => None,
-        };
-
         let value = crate::expression_eval::evaluate_expression(
             &redirect.expression,
             &redirect.loc,
@@ -592,7 +608,9 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             symbol_db,
             sizeof_headers,
             resolved_location_counters,
-            &|name| {
+            // During late evaluation of linker scripts, we don't have any part relative symbols.
+            &OutputSectionPartMap::default(),
+            &mut |name| {
                 let Some(target_symbol_id) =
                     symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
                 else {
@@ -605,13 +623,14 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                     .as_ref()
                     .ok_or_else(|| redirect.missing_resolution(name))?;
 
-                if let Some(section_base) = current_section_base
-                    && resolution.raw_value >= section_base
-                {
-                    return Ok(resolution.raw_value - section_base);
-                }
-
-                Ok(resolution.raw_value)
+                let symbol_value = match symbol_db.output_section_id(canonical_target_id) {
+                    Some(section_id) => SymbolValue::SectionRelative {
+                        section_id,
+                        address: resolution.raw_value,
+                    },
+                    None => SymbolValue::Absolute(resolution.raw_value),
+                };
+                Ok(symbol_value)
             },
         )?;
 
@@ -661,7 +680,6 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
 
 fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &OutputSections<P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
 ) -> Result {
@@ -669,7 +687,7 @@ fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes::<A>(output_sections, per_symbol_flags, resources)
+        state.finalise_sizes::<A>(per_symbol_flags, resources)
     })
 }
 
@@ -691,6 +709,37 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     )?;
 
     Ok(dynamic_symbol_definitions)
+}
+
+fn create_canonical_plt_entries<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
+    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data, P>>,
+) -> Result {
+    timing_phase!("Create canonical PLT entries");
+
+    for group in group_states {
+        for file in &group.files {
+            let FileLayoutState::Dynamic(dynamic) = file else {
+                continue;
+            };
+
+            for symbol_id in dynamic.symbol_id_range {
+                if symbol_db.is_canonical(symbol_id)
+                    && per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .get()
+                        .needs_canonical_plt()
+                {
+                    dynamic_symbol_definitions
+                        .push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
@@ -783,6 +832,157 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
     pub(crate) gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
     pub(crate) script_sorted_sections: Vec<InputSortedSection>,
+
+    pub(crate) partial_link: PartialLinkSingletons,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PartialLinkSingletons {
+    output_indexes: std::ops::Range<u32>,
+    groups: Vec<SingletonGroupPlan>,
+}
+
+#[derive(Debug)]
+struct PartialLinkPlan {
+    groups: Vec<SingletonGroupPlan>,
+    singleton_count: u32,
+    section_name_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SingletonGroupPlan {
+    ordinals: std::ops::Range<u32>,
+    section_name_bytes: u64,
+}
+
+impl PartialLinkPlan {
+    fn build<P: Platform>(
+        group_states: &[GroupState<P>],
+        section_part_ids: &[PartId],
+        args: &P::Args,
+    ) -> Result<Option<Self>> {
+        if !args.should_output_partial_object() {
+            return Ok(None);
+        }
+
+        let singleton_id = P::PARTIAL_SINGLETONS_ID
+            .context("Partial linking is not supported for this output format")?;
+
+        let group_counts = group_states
+            .par_iter()
+            .map(|group| {
+                let mut singleton_count = 0u32;
+                let mut section_name_bytes = 0u64;
+
+                for file in &group.files {
+                    let FileLayoutState::Object(object) = file else {
+                        continue;
+                    };
+
+                    let object_part_ids = &section_part_ids[object.section_id_range.as_usize()];
+
+                    for (raw_index, (slot, &part_id)) in
+                        object.sections.iter().zip(object_part_ids).enumerate()
+                    {
+                        if part_id.output_section_id::<P>() != singleton_id {
+                            continue;
+                        }
+                        // Partial-link custom sections use ordinary loading, including debug sections.
+                        match slot {
+                            SectionSlot::Loaded(_) => {}
+                            SectionSlot::Discard | SectionSlot::Unloaded(_) => continue,
+                            _ => bail!(
+                                "Internal error: partial-link singleton {} in {} has unexpected state {slot:?}",
+                                object.object.section_display_name(SectionIndex(raw_index)),
+                                object.input,
+                            ),
+                        }
+
+                        singleton_count = singleton_count
+                            .checked_add(1)
+                            .context("Too many partial-link singleton sections")?;
+                        section_name_bytes +=
+                            object.object.section_name(SectionIndex(raw_index))?.len() as u64 + 1;
+                    }
+                }
+
+                Ok((singleton_count, section_name_bytes))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut singleton_count = 0u32;
+        let mut section_name_bytes = 0u64;
+        let groups = group_counts
+            .into_iter()
+            .map(|(count, name_bytes)| {
+                let start = singleton_count;
+                singleton_count = singleton_count
+                    .checked_add(count)
+                    .context("Too many partial-link singleton sections")?;
+                section_name_bytes += name_bytes;
+                Ok(SingletonGroupPlan {
+                    ordinals: start..singleton_count,
+                    section_name_bytes: name_bytes,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Some(Self {
+            groups,
+            singleton_count,
+            section_name_bytes,
+        }))
+    }
+}
+
+impl PartialLinkSingletons {
+    pub(crate) fn group_sizes(&self) -> impl Iterator<Item = (usize, usize)> {
+        self.groups
+            .iter()
+            .map(|group| (group.ordinals.len(), group.section_name_bytes as usize))
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.output_indexes.is_empty()
+    }
+
+    pub(crate) fn output_index_range(&self) -> std::ops::Range<u32> {
+        self.output_indexes.clone()
+    }
+
+    pub(crate) fn output_index(&self, singleton: &PartialLinkSingleton) -> u32 {
+        self.output_indexes.start + singleton.ordinal
+    }
+}
+
+impl SingletonGroupPlan {
+    fn finalise<P: Platform>(&self, layout: &mut GroupLayout<P>, section_part_ids: &[PartId]) {
+        if self.ordinals.is_empty() {
+            return;
+        }
+        let singleton_id = P::PARTIAL_SINGLETONS_ID.unwrap();
+        let mut ordinal = self.ordinals.start;
+        for file in &mut layout.files {
+            let FileLayout::Object(object) = file else {
+                continue;
+            };
+            let part_ids = &section_part_ids[object.section_id_range.as_usize()];
+            for (slot, &part_id) in object.sections.iter_mut().zip(part_ids) {
+                if part_id.output_section_id::<P>() != singleton_id {
+                    continue;
+                }
+                let section = match *slot {
+                    SectionSlot::Loaded(section) => section,
+                    SectionSlot::Discard | SectionSlot::Unloaded(_) => continue,
+                    _ => unreachable!("Singleton section changed state after planning: {slot:?}"),
+                };
+                *slot =
+                    SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section, ordinal });
+                ordinal += 1;
+            }
+        }
+        assert_eq!(ordinal, self.ordinals.end);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -895,6 +1095,7 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols<'data, P>,
+    start_stop_sections: Option<OutputSectionMap<Vec<resolution::StartStopCandidate<P>>>>,
 }
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
@@ -1065,7 +1266,7 @@ pub(crate) fn compute_allocations<P: Platform>(
     args: &P::Args,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes =
-        OutputSectionPartMap::with_size(crate::part_id::regular_part_base::<P>().as_usize());
+        OutputSectionPartMap::with_dense_size(crate::part_id::regular_part_base::<P>().as_usize());
     P::allocate_resolution(resolution.flags, &mut sizes, output_kind, args);
     sizes
 }
@@ -1239,11 +1440,13 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
         let def_info =
             &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
 
-        if let Some(output_section_id) = def_info.section_id() {
-            // We've gotten a request to load a __start_ / __stop_ symbol, sent requests to load all
+        if let Some(output_section_id) = def_info.section_id()
+            && let Some(start_stop_sections) = &mut self.start_stop_sections
+        {
+            // We've gotten a request to load a __start_ / __stop_ symbol, send requests to load all
             // sections that would go into that section.
-            let sections = resources.start_stop_sections.get(output_section_id);
-            while let Some(request) = sections.pop() {
+            for candidate in take(start_stop_sections.get_mut(output_section_id)) {
+                let request = GcLoadRequest::new(candidate.file_id, candidate.gc_unit);
                 resources.send_work::<A>(
                     request.file_id,
                     WorkItem::LoadGcUnit(request),
@@ -1261,7 +1464,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
 pub(crate) struct CommonGroupState<'data, P: Platform> {
     mem_sizes: OutputSectionPartMap<u64>,
 
-    section_attributes: OutputSectionMap<Option<P::SectionAttributes>>,
+    section_attributes: HashMap<OutputSectionId, P::SectionAttributes>,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
@@ -1276,7 +1479,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     fn new(output_sections: &OutputSections<P>) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
-            section_attributes: output_sections.new_section_map(),
+            section_attributes: Default::default(),
             dynamic_symbol_definitions: Default::default(),
             format_specific: Default::default(),
         }
@@ -1315,7 +1518,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         .flatten()
         {
             if let Some(part_id) = P::single_part_id(section_id) {
-                memory_offsets.increment(part_id, *self.mem_sizes.get(part_id));
+                memory_offsets.increment(part_id, self.mem_sizes.get(part_id));
             }
         }
 
@@ -1327,16 +1530,18 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     }
 
     fn store_section_attributes(&mut self, part_id: PartId, header: &P::SectionHeader) {
-        let existing_attributes = self
-            .section_attributes
-            .get_mut(part_id.output_section_id::<P>());
-
         let new_attributes = P::section_attributes(header);
 
-        if let Some(existing) = existing_attributes {
-            existing.merge(new_attributes);
-        } else {
-            *existing_attributes = Some(new_attributes);
+        match self
+            .section_attributes
+            .entry(part_id.output_section_id::<P>())
+        {
+            hashbrown::hash_map::Entry::Occupied(occupied_entry) => {
+                occupied_entry.into_mut().merge(new_attributes);
+            }
+            hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(new_attributes);
+            }
         }
     }
 }
@@ -1413,6 +1618,12 @@ pub(crate) struct SortedSection {
     pub(crate) section: Section,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PartialLinkSingleton {
+    pub(crate) section: Section,
+    pub(crate) ordinal: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct GroupLayout<'data, P: Platform> {
     pub(crate) files: Vec<FileLayout<'data, P>>,
@@ -1474,17 +1685,6 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
     has_variant_pcs: AtomicBool,
 
     pub(crate) thunk_layout_builder: Option<crate::thunks::ThunkLayoutBuilder>,
-
-    /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
-    /// section gets referenced. The sections here will only be those that are eligible for having
-    /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
-    start_stop_sections: OutputSectionMap<SegQueue<GcLoadRequest<P>>>,
-
-    /// The number of groups that haven't yet completed activation.
-    activations_remaining: AtomicUsize,
-
-    /// Groups that cannot be processed until all groups have completed activation.
-    delay_processing: ArrayQueue<GroupState<'data, P>>,
 
     pub(crate) layout_resources_ext: P::LayoutResourcesExt<'data>,
 }
@@ -1579,13 +1779,19 @@ impl<'data, P: Platform> Layout<'data, P> {
 
     #[inline(always)]
     pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution<P>> {
+        self.symbol_resolution_with_flags(symbol_id, self.flags_for_symbol(symbol_id))
+    }
+
+    #[inline(always)]
+    pub(crate) fn symbol_resolution_with_flags(
+        &self,
+        symbol_id: SymbolId,
+        flags: ValueFlags,
+    ) -> Option<Resolution<P>> {
         self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
             .copied()
             .map(|mut res| {
-                res.flags.merge(
-                    self.symbol_db
-                        .flags_for_symbol(&self.per_symbol_flags, symbol_id),
-                );
+                res.flags.merge(flags);
                 res
             })
     }
@@ -1615,7 +1821,7 @@ impl<'data, P: Platform> Layout<'data, P> {
             )
         })?;
 
-        if !resolution.flags().is_address() && !resolution.flags().is_absolute() {
+        if !resolution.flags().has_link_time_address() && !resolution.flags().is_absolute() {
             bail!(
                 "Entry point must be an address or absolute value. {}",
                 self.symbol_debug(symbol_id)
@@ -1654,6 +1860,15 @@ impl<'data, P: Platform> Layout<'data, P> {
             seg.alignment
                 .align_down(seg.mem_offset - linker_utils::aarch64::TLS_TCB_SIZE)
         })
+    }
+
+    pub(crate) fn tlv_data_start_address(&self) -> u64 {
+        self.output_sections
+            .ids_with_info()
+            .filter(|(_, info)| info.section_attributes.is_tls())
+            .map(|(id, _)| self.section_layouts.get(id).mem_offset)
+            .min()
+            .unwrap_or(0)
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
@@ -1793,12 +2008,16 @@ fn layout_section_from_part_layouts<'data, P: Platform>(
 
 pub(crate) fn merge_secondary_parts<P: Platform>(
     output_sections: &OutputSections<P>,
-    section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
-) {
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+) -> OutputSectionMap<OutputRecordLayout> {
+    verbose_timing_phase!("Merge secondary parts");
+
+    let mut merged = section_layouts.clone();
+
     for (id, info) in output_sections.ids_with_info() {
         if let SectionKind::Secondary(primary_id) = info.kind {
-            let secondary_layout = take(section_layouts.get_mut(id));
-            let primary = section_layouts.get_mut(primary_id);
+            let secondary_layout = take(merged.get_mut(id));
+            let primary = merged.get_mut(primary_id);
             let has_location_counters = info
                 .location_info
                 .as_ref()
@@ -1820,6 +2039,8 @@ pub(crate) fn merge_secondary_parts<P: Platform>(
             }
         }
     }
+
+    merged
 }
 
 fn compute_start_offsets_by_group<P: Platform>(
@@ -1830,11 +2051,7 @@ fn compute_start_offsets_by_group<P: Platform>(
 
     group_states
         .iter()
-        .map(|group| {
-            let group_mem_starts = mem_offsets.clone();
-            mem_offsets.merge(&group.common.mem_sizes);
-            group_mem_starts
-        })
+        .map(|group| mem_offsets.merge_and_return_start_offsets(&group.common.mem_sizes))
         .collect_vec()
 }
 
@@ -1843,6 +2060,7 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution<P>>>],
     resources: &FinaliseLayoutResources<'_, 'data, P>,
+    partial_link_plan: Option<&PartialLinkPlan>,
 ) -> Result<Vec<GroupLayout<'data, P>>> {
     timing_phase!("Assign symbol addresses");
 
@@ -1850,32 +2068,42 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
         .into_par_iter()
         .zip(starting_mem_offsets_by_group)
         .zip(per_group_res_writers)
-        .map(|((state, mut memory_offsets), symbols_out)| {
-            verbose_timing_phase!("Assign addresses for group");
+        .enumerate()
+        .map(
+            |(group_index, ((state, mut memory_offsets), symbols_out))| {
+                verbose_timing_phase!("Assign addresses for group");
 
-            if cfg!(debug_assertions) {
-                let offset_verifier = crate::verification::OffsetVerifier::new::<P>(
-                    &memory_offsets,
-                    &state.common.mem_sizes,
-                );
+                let mut layout = if cfg!(debug_assertions) {
+                    let offset_verifier = crate::verification::OffsetVerifier::new::<P>(
+                        &memory_offsets,
+                        &state.common.mem_sizes,
+                    );
 
-                // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
-                // them to an arbitrary value. If they are used, we'll quickly notice.
-                crate::verification::clear_ignored::<P>(&mut memory_offsets);
+                    // Make sure that ignored offsets really aren't used by `finalise_layout` by
+                    // setting them to an arbitrary value. If they are used,
+                    // we'll quickly notice.
+                    crate::verification::clear_ignored::<P>(&mut memory_offsets);
 
-                let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
+                    let layout =
+                        state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
 
-                offset_verifier.verify(
-                    &memory_offsets,
-                    resources.output_sections,
-                    resources.output_order,
-                    &layout.files,
-                )?;
+                    offset_verifier.verify(
+                        &memory_offsets,
+                        resources.output_sections,
+                        resources.output_order,
+                        &layout.files,
+                    )?;
+                    layout
+                } else {
+                    state.finalise_layout(&mut memory_offsets, symbols_out, resources)?
+                };
+                if let Some(plan) = partial_link_plan {
+                    plan.groups[group_index]
+                        .finalise(&mut layout, &resources.symbol_db.section_part_ids);
+                }
                 Ok(layout)
-            } else {
-                state.finalise_layout(&mut memory_offsets, symbols_out, resources)
-            }
-        })
+            },
+        )
         .collect()
 }
 
@@ -1987,10 +2215,11 @@ fn compute_segment_layout<'data, P: Platform>(
                             continue;
                         };
 
-                        // No-bits TLS sections neither exist in the file nor in the normal address
-                        // space. They shouldn't affect the extent of LOAD or RELRO segments.
-                        if section_info.section_attributes.is_tls()
-                            && section_info.section_attributes.is_no_bits()
+                        // Sections that occupy only TLS address space should not contribute to the
+                        // extent of non-TLS LOAD or RELRO segments.
+                        if section_info
+                            .section_attributes
+                            .occupies_only_tls_address_space()
                             && !program_segments.is_tls_segment(rec.segment_id)
                         {
                             continue;
@@ -2070,6 +2299,12 @@ fn compute_segment_layout<'data, P: Platform>(
     })
 }
 
+struct TotalSectionSizes<'data, P: Platform> {
+    section_part_sizes: OutputSectionPartMap<u64>,
+    gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
+    partial_link: PartialLinkSingletons,
+}
+
 fn compute_total_section_part_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &mut OutputSections<P>,
@@ -2078,10 +2313,8 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources<'data, '_, P>,
-) -> Result<(
-    OutputSectionPartMap<u64>,
-    Option<P::GdbIndexScanResult<'data>>,
-)> {
+    partial_link_plan: Option<&PartialLinkPlan>,
+) -> Result<TotalSectionSizes<'data, P>> {
     timing_phase!("Compute total section sizes");
 
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
@@ -2121,7 +2354,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         unreachable!();
     };
 
-    prelude.apply_late_size_adjustments(
+    let partial_link = prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
         must_keep_sections,
@@ -2130,6 +2363,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         program_segments,
         per_symbol_flags,
         resources,
+        partial_link_plan,
     )?;
 
     let num_sections = prelude
@@ -2144,7 +2378,11 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         }
     }
 
-    Ok((total_sizes, gdb_index_data))
+    Ok(TotalSectionSizes {
+        section_part_sizes: total_sizes,
+        gdb_index_data,
+        partial_link,
+    })
 }
 
 /// Allocates space for thunk blocks in each object that owns one.
@@ -2163,8 +2401,7 @@ fn allocate_thunk_block_space<P: Platform>(
     let emit_symbols = !symbol_db.args.should_strip_all();
 
     for group_state in group_states.iter_mut() {
-        let mut extra_thunk_sizes: OutputSectionPartMap<u64> =
-            OutputSectionPartMap::with_size(total_sizes.num_parts());
+        let mut extra_thunk_sizes: OutputSectionPartMap<u64> = total_sizes.new_empty_like();
         for file in &group_state.files {
             if let FileLayoutState::Object(obj) = file
                 && let Some(config) = P::file_thunk_config(obj.object)
@@ -2188,6 +2425,14 @@ fn allocate_thunk_block_space<P: Platform>(
     }
 }
 
+fn clear_singleton_attributes<P: Platform>(output_sections: &mut OutputSections<P>) {
+    let section_id = P::PARTIAL_SINGLETONS_ID.unwrap();
+    output_sections
+        .section_infos
+        .get_mut(section_id)
+        .section_attributes = Default::default();
+}
+
 /// Propagates attributes from input sections to the output sections into which they were placed.
 fn propagate_section_attributes<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
@@ -2199,10 +2444,9 @@ fn propagate_section_attributes<'data, P: Platform>(
         group_state
             .common
             .section_attributes
-            .for_each(|section_id, attributes| {
-                if let Some(attributes) = attributes {
-                    attributes.apply(output_sections, section_id);
-                }
+            .iter()
+            .for_each(|(&section_id, attributes)| {
+                attributes.apply(output_sections, section_id);
             });
     }
 }
@@ -2302,38 +2546,16 @@ impl<'data, P: Platform> GroupActivationInputs<'data, P> {
             common: CommonGroupState::new(resources.output_sections),
         };
 
-        let mut should_delay_processing = false;
-
         for file in &mut group.files {
             let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
                 .with_context(|| format!("Failed to activate {file}"));
-
-            // SyntheticSymbols can't be processed until all groups have completed activation, since
-            // it can read from `start_stop_sections` which gets populated by other objects during
-            // activation.
-            should_delay_processing |= matches!(file, FileLayoutState::SyntheticSymbols(_));
 
             if let Err(error) = r {
                 resources.errors.lock().unwrap().push(error);
             }
         }
 
-        if should_delay_processing {
-            resources.delay_processing.push(group).unwrap();
-        } else {
-            group.do_pending_work::<A>(resources, scope);
-        }
-
-        let remaining = resources
-            .activations_remaining
-            .fetch_sub(1, atomic::Ordering::Relaxed)
-            - 1;
-
-        if remaining == 0 {
-            while let Some(group) = resources.delay_processing.pop() {
-                group.do_pending_work::<A>(resources, scope);
-            }
-        }
+        group.do_pending_work::<A>(resources, scope);
     }
 }
 
@@ -2370,9 +2592,6 @@ fn traverse_reference_graph<'data, A: Arch>(
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
         thunk_layout_builder,
-        start_stop_sections: output_sections.new_section_map(),
-        activations_remaining: AtomicUsize::new(num_groups),
-        delay_processing: ArrayQueue::new(1),
         layout_resources_ext,
     };
     let resources_ref = &resources;
@@ -2487,17 +2706,11 @@ impl<'data, P: Platform> GroupState<'data, P> {
 
     fn finalise_sizes<A: Arch<Platform = P>>(
         &mut self,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         for file_state in &mut self.files {
-            file_state.finalise_sizes::<A>(
-                &mut self.common,
-                output_sections,
-                per_symbol_flags,
-                resources,
-            )?;
+            file_state.finalise_sizes::<A>(&mut self.common, per_symbol_flags, resources)?;
         }
 
         self.common.validate_sizes()?;
@@ -2548,7 +2761,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
                 let start = (memory_offsets.get(part_id)
                     - resources.section_layouts.get(section_id).mem_offset)
                     as u32;
-                memory_offsets.increment(part_id, *self.common.mem_sizes.get(part_id));
+                memory_offsets.increment(part_id, self.common.mem_sizes.get(part_id));
                 start
             });
 
@@ -2712,13 +2925,12 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn finalise_sizes<A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, output_sections, per_symbol_flags, resources)?;
+                s.finalise_sizes(common, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
@@ -2734,7 +2946,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Epilogue(s) => {
-                s.finalise_sizes(common, resources);
+                s.finalise_sizes(common, resources)?;
             }
             FileLayoutState::LinkerScript(s) => {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
@@ -3102,9 +3314,11 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteLowPart | RelocationKind::Alignment => {
-            ValueFlags::empty()
-        }
+        RelocationKind::SymbolSize => ValueFlags::SYMBOL_SIZE,
+        RelocationKind::None
+        | RelocationKind::AbsoluteLowPart
+        | RelocationKind::Alignment
+        | RelocationKind::MachoAddition => ValueFlags::empty(),
     }
 }
 
@@ -3256,13 +3470,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         program_segments: &ProgramSegments<P::ProgramSegmentDef>,
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
-    ) -> Result {
+        partial_link_plan: Option<&PartialLinkPlan>,
+    ) -> Result<PartialLinkSingletons> {
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
         // `extra_sizes` which we can then later add to both.
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+        let mut extra_sizes = common.mem_sizes.new_empty_like();
 
-        self.determine_header_sizes(
+        let partial_link = self.determine_header_sizes(
             total_sizes,
             &mut extra_sizes,
             must_keep_sections,
@@ -3271,11 +3486,13 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             output_order,
             resources,
             per_symbol_flags,
+            partial_link_plan,
         );
 
         P::apply_late_size_adjustments_prelude(
             total_sizes,
             &mut extra_sizes,
+            resources.format_specific,
             resources.symbol_db.args,
         )?;
 
@@ -3289,12 +3506,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         let entry_size = size_of::<P::SymtabEntry>() as u64;
 
         if resources.symbol_db.args.should_output_partial_object() {
-            let mut num_section_syms = 0;
+            let mut num_section_syms =
+                partial_link_plan.map_or(0, |plan| u64::from(plan.singleton_count));
+
             for (id, _) in output_sections.ids_with_info() {
                 if output_sections.will_emit_section_symbol_for_partial_objects(id) {
                     num_section_syms += 1;
                 }
             }
+
             extra_sizes.increment(
                 P::SYMTAB_LOCAL_SECTION_ID
                     .expect("partial objects require a local symbol table")
@@ -3308,7 +3528,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         common.mem_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);
 
-        Ok(())
+        Ok(partial_link)
     }
 
     /// Allocates space for our internal symbols. For unreferenced symbols, we also update the
@@ -3377,7 +3597,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         output_order: &OutputOrder<'data>,
         resources: &FinaliseSizesResources<'data, '_, P>,
         symbol_flags: &PerSymbolFlags,
-    ) {
+        partial_link_plan: Option<&PartialLinkPlan>,
+    ) -> PartialLinkSingletons {
         use output_section_id::OrderEvent;
 
         // Determine which sections to keep. To start with, we keep all sections that we've
@@ -3441,7 +3662,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
-        let mut num_sections = keep_sections.values_iter().filter(|p| **p).count();
+        let singleton_count = partial_link_plan.map_or(0, |plan| plan.singleton_count as usize);
+        let mut num_sections =
+            keep_sections.values_iter().filter(|p| **p).count() + singleton_count;
         if P::requires_symtab_shndx(num_sections) {
             *keep_sections.get_mut(
                 P::SYMTAB_SHNDX_LOCAL_SECTION_ID
@@ -3466,7 +3689,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 next_output_index += 1;
             }
         }
+
         output_sections.output_section_indexes = output_section_indexes;
+
+        let partial_link = partial_link_plan.map_or_else(PartialLinkSingletons::default, |plan| {
+            PartialLinkSingletons {
+                output_indexes: next_output_index..next_output_index + plan.singleton_count,
+                groups: plan.groups.clone(),
+            }
+        });
 
         // Determine which program segments contain sections that we're keeping.
         let mut keep_segments = if program_segments.has_custom_phdrs() {
@@ -3524,6 +3755,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 .try_into()
                 .expect("output section count must fit in a u32"),
 
+            partial_link_section_name_bytes: partial_link_plan
+                .map_or(0, |plan| plan.section_name_bytes),
+
             active_segment_ids,
         };
 
@@ -3539,6 +3773,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         );
 
         self.header_info = Some(header_info);
+        partial_link
     }
 
     fn finalise_layout(
@@ -3593,16 +3828,25 @@ fn load_redirect_referenced_symbols<'data, 'scope, A: Arch>(
     queue: &mut LocalWorkQueue<A::Platform>,
     scope: &Scope<'scope>,
     symbol_id: SymbolId,
-    redirect: &crate::parsing::Redirect<'_>,
+    redirect: &crate::parsing::Redirect<'data>,
 ) {
     resources
         .per_symbol_flags
         .get_atomic(symbol_id)
         .or_assign(ValueFlags::DIRECT);
 
+    load_expression_referenced_symbols::<A>(resources, queue, scope, &redirect.expression);
+}
+
+fn load_expression_referenced_symbols<'data, 'scope, A: Arch>(
+    resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
+    queue: &mut LocalWorkQueue<A::Platform>,
+    scope: &Scope<'scope>,
+    expression: &Expression<'data>,
+) {
     // Also mark any symbols in the expression as used and queue it for loading to
     // prevent it from being GC'd.
-    redirect.expression.visit_expressions(&mut |e| {
+    expression.visit_expressions(&mut |e| {
         if let crate::linker_script::Expression::Symbol(target_name) = e
             && let Some(target_symbol_id) = resources
                 .symbol_db
@@ -3897,6 +4141,7 @@ impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
                 symbol_definitions: input_state.symbol_definitions,
                 start_symbol_id: input_state.start_symbol_id,
             },
+            start_stop_sections: input_state.start_stop_sections,
         }
     }
 
@@ -3962,7 +4207,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         total_sizes: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+        let mut extra_sizes = common.mem_sizes.new_empty_like();
         for sec in resources.script_sorted_sections {
             extra_sizes.increment(sec.part_id, sec.size);
         }
@@ -3986,7 +4231,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &FinaliseSizesResources<'data, '_, P>,
-    ) {
+    ) -> Result<()> {
         let symbol_db = resources.symbol_db;
 
         P::finalise_sizes_epilogue(
@@ -3995,7 +4240,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             resources.dynamic_symbol_definitions,
             resources.format_specific,
             symbol_db,
-        );
+        )
     }
 
     fn finalise_layout(
@@ -4040,6 +4285,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
 #[derive(Debug)]
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u32,
+    pub(crate) partial_link_section_name_bytes: u64,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
 }
 
@@ -4144,6 +4390,8 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
         let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
+        let mut init_func_section_indices = SmallVec::<[SectionIndex; 1]>::new();
+        let mut compact_unwind_section_indices = SmallVec::<[SectionIndex; 1]>::new();
 
         let no_gc = !resources.symbol_db.args.should_gc_sections();
 
@@ -4159,7 +4407,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                         scope,
                     );
                 }
-                SectionSlot::Unloaded(sec) => {
+                SectionSlot::Unloaded(_) => {
                     if no_gc {
                         queue.send_gc_unit_request::<A>(
                             self.file_id,
@@ -4167,18 +4415,6 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                             resources,
                             scope,
                         );
-                    } else if sec.start_stop_eligible {
-                        let part_id = self.section_part_id(
-                            object::SectionIndex(i),
-                            &resources.symbol_db.section_part_ids,
-                        );
-                        resources
-                            .start_stop_sections
-                            .get(part_id.output_section_id::<P>())
-                            .push(GcLoadRequest::new(
-                                self.file_id,
-                                SectionGcUnit::new(object::SectionIndex(i)),
-                            ));
                     }
                 }
                 SectionSlot::FrameData(index) => {
@@ -4189,6 +4425,12 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 }
                 SectionSlot::RiscvVAttributes(index) => {
                     riscv_attributes_section = Some(*index);
+                }
+                SectionSlot::InitFunc(index) => {
+                    init_func_section_indices.push(*index);
+                }
+                SectionSlot::CompactUnwind(index) => {
+                    compact_unwind_section_indices.push(*index);
                 }
                 _ => (),
             }
@@ -4217,6 +4459,27 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 riscv_attributes_index,
             )
             .context("Cannot parse .riscv.attributes section")?;
+        }
+
+        for init_function_section_index in init_func_section_indices {
+            <A::Platform as Platform>::process_init_func_section::<A>(
+                self,
+                common,
+                init_function_section_index,
+                resources,
+                queue,
+                scope,
+            )?;
+        }
+        for compact_unwind_section_index in compact_unwind_section_indices {
+            <A::Platform as Platform>::process_compact_unwind_section::<A>(
+                self,
+                common,
+                compact_unwind_section_index,
+                resources,
+                queue,
+                scope,
+            )?;
         }
 
         Ok(())
@@ -4249,10 +4512,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
             SectionSlot::Loaded(_)
             | SectionSlot::Sorted(_)
+            | SectionSlot::PartialLinkSingleton(_)
             | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
-            | SectionSlot::RiscvVAttributes(..) => {}
+            | SectionSlot::RiscvVAttributes(..)
+            | SectionSlot::InitFunc(..)
+            | SectionSlot::CompactUnwind(..) => {}
             SectionSlot::MergeStrings(_) => {
                 // We currently always load everything in merge-string sections. i.e. we don't GC
                 // unreferenced data. So the only thing we need to do here is propagate section
@@ -4371,11 +4637,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        common.mem_sizes.resize(output_sections.num_parts());
         if !resources.symbol_db.args.should_strip_all() {
             self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags)?;
         }
@@ -4431,7 +4695,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         for (slot, &part_id) in self.sections.iter_mut().zip(object_part_ids) {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    let address = *memory_offsets.get(part_id);
+                    let address = memory_offsets.get(part_id);
 
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
@@ -4453,7 +4717,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 },
 
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
-                    let address = *memory_offsets.get(part_id);
+                    let address = memory_offsets.get(part_id);
                     *memory_offsets.get_mut(part_id) +=
                         sec.capacity(part_id, resources.output_sections);
                     SectionResolution { address }
@@ -4462,6 +4726,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     let address = P::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
+                SectionSlot::InitFunc(..) => SectionResolution::none(),
+                SectionSlot::CompactUnwind(..) => SectionResolution::none(),
                 _ => SectionResolution::none(),
             };
             section_resolutions.push(resolution);
@@ -4902,7 +5168,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
-            #[cfg(all(feature = "plugins", unix))]
+            #[cfg(feature = "plugins")]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
                 section_id_range: s.section_id_range,
@@ -4921,7 +5187,7 @@ impl<P: Platform> Resolution<P> {
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
-        if !self.flags.is_address() {
+        if !self.flags.has_link_time_address() {
             bail!("Expected address, found {}", self.flags);
         }
         Ok(self.raw_value)
@@ -4951,6 +5217,17 @@ const MAX_RELAXATION_ITERATIONS: usize = 5;
 /// unknown.
 const SYMBOL_ADDRESS_UNRESOLVED: u64 = u64::MAX;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InputSectionPosition {
+    part_id: PartId,
+    address: u64,
+}
+
+/// Input-section positions in the coordinate system supplied by the initial part offsets.
+/// Zero initial offsets produce part-relative positions, while final part offsets produce output
+/// addresses.
+pub(crate) type InputSectionPositions = Vec<Vec<Vec<Option<InputSectionPosition>>>>;
+
 /// Stores precomputed output-address information for every symbol.
 struct SymbolOutputInfos {
     addresses: Vec<u64>,
@@ -4975,23 +5252,52 @@ impl SymbolOutputInfos {
     }
 }
 
-/// Compute the output address of every loaded input section and every symbol in a single parallel
-/// pass over groups.
-fn compute_section_and_symbol_addresses<'data, P: Platform>(
-    group_states: &[GroupState<'data, P>],
-    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+fn compute_object_section_positions<'data, P: Platform>(
+    obj: &ObjectLayoutState<'data, P>,
+    offsets: &mut OutputSectionPartMap<u64>,
     symbol_db: &SymbolDb<'data, P>,
     output_sections: &OutputSections<P>,
-) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
-    timing_phase!("Compute section and symbol addresses");
-    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+) -> Vec<Option<InputSectionPosition>> {
+    let mut positions = vec![None; obj.sections.len()];
+    for (sec_idx, slot) in obj
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(idx, slot)| (object::SectionIndex(idx), slot))
+    {
+        match slot {
+            SectionSlot::Loaded(sec) => {
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
+                positions[sec_idx.0] = Some(InputSectionPosition {
+                    part_id,
+                    address: offsets.get(part_id),
+                });
+                *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
+            }
+            SectionSlot::LoadedDebugInfo(sec) => {
+                // Advance offsets so subsequent sections are placed correctly, but we don't need
+                // the address for relaxation.
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
+                *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
+            }
+            _ => {}
+        }
+    }
+
+    P::compute_object_addresses(obj, offsets);
+
+    positions
+}
+
+pub(crate) fn compute_input_section_positions<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    mem_offsets: OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<P>,
+) -> InputSectionPositions {
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
-    let symbol_addresses: Vec<AtomicU64> = (0..symbol_db.num_symbols())
-        .map(|_| AtomicU64::new(SYMBOL_ADDRESS_UNRESOLVED))
-        .collect();
-
-    let section_addresses: Vec<Vec<Vec<u64>>> = group_states
+    group_states
         .par_iter()
         .enumerate()
         .map(|(group_idx, group)| {
@@ -5001,79 +5307,309 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                 .files
                 .iter()
                 .map(|file| match file {
-                    FileLayoutState::Object(obj) => {
-                        let mut addresses = vec![0u64; obj.sections.len()];
-                        for (sec_idx, slot) in obj.sections.iter().enumerate() {
-                            match slot {
-                                SectionSlot::Loaded(sec) => {
-                                    let part_id = obj.section_part_id(
-                                        object::SectionIndex(sec_idx),
-                                        &symbol_db.section_part_ids,
-                                    );
-                                    addresses[sec_idx] = *offsets.get(part_id);
-                                    *offsets.get_mut(part_id) +=
-                                        sec.capacity(part_id, output_sections);
-                                }
-                                SectionSlot::LoadedDebugInfo(sec) => {
-                                    // Advance offsets so subsequent sections are placed
-                                    // correctly, but we don't need the address for relaxation.
-                                    let part_id = obj.section_part_id(
-                                        object::SectionIndex(sec_idx),
-                                        &symbol_db.section_part_ids,
-                                    );
-                                    *offsets.get_mut(part_id) +=
-                                        sec.capacity(part_id, output_sections);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        P::compute_object_addresses(obj, &mut offsets);
-
-                        // While we have the section addresses, also resolve symbol
-                        // output addresses for this file's canonical definitions.
-                        for sym_offset in 0..obj.symbol_id_range.len() {
-                            let sym_input_idx = object::SymbolIndex(sym_offset);
-                            let Ok(sym) = obj.object.symbol(sym_input_idx) else {
-                                continue;
-                            };
-                            let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
-                            let def_id = symbol_db.definition(sym_id);
-                            // Only record the address for the canonical definition.
-                            if def_id != sym_id {
-                                continue;
-                            }
-
-                            match obj.object.symbol_section(sym, sym_input_idx) {
-                                Ok(Some(section)) => {
-                                    let sec_addr = addresses.get(section.0).copied().unwrap_or(0);
-                                    if sec_addr == 0 {
-                                        continue;
-                                    }
-                                    symbol_addresses[sym_id.as_usize()]
-                                        .store(sec_addr + sym.value(), Relaxed);
-                                }
-                                Ok(None) if sym.is_absolute() => {
-                                    symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        addresses
-                    }
+                    FileLayoutState::Object(obj) => compute_object_section_positions(
+                        obj,
+                        &mut offsets,
+                        symbol_db,
+                        output_sections,
+                    ),
                     _ => vec![],
                 })
                 .collect()
         })
+        .collect()
+}
+
+/// Compute the output address of every loaded input section and every symbol in a single parallel
+/// pass over groups.
+fn compute_section_and_symbol_addresses<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<'data, P>,
+    address_buf: &mut Vec<u64>,
+) -> (InputSectionPositions, SymbolOutputInfos) {
+    timing_phase!("Compute section and symbol addresses");
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+    let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
+
+    let mut addresses = std::mem::take(address_buf);
+    addresses.clear();
+    addresses.resize(symbol_db.num_symbols(), SYMBOL_ADDRESS_UNRESOLVED);
+
+    let section_positions = {
+        let shards = split_symbol_addresses_by_group(&mut addresses, symbol_db, group_states.len());
+
+        group_states
+            .par_iter()
+            .zip(shards.into_par_iter())
+            .enumerate()
+            .map(|(group_idx, (group, (range_start, shard)))| {
+                verbose_timing_phase!("Compute addresses for group");
+                let mut offsets = starting_offsets[group_idx].clone();
+
+                group
+                    .files
+                    .iter()
+                    .map(|file| match file {
+                        FileLayoutState::Object(obj) => {
+                            let positions = compute_object_section_positions(
+                                obj,
+                                &mut offsets,
+                                symbol_db,
+                                output_sections,
+                            );
+
+                            // While we have the section addresses, also resolve symbol
+                            // output addresses for this file's canonical definitions.
+                            for sym_offset in 0..obj.symbol_id_range.len() {
+                                let sym_id = obj
+                                    .symbol_id_range
+                                    .input_to_id(object::SymbolIndex(sym_offset));
+                                if symbol_db.definition(sym_id) != sym_id {
+                                    continue;
+                                }
+                                if let Some(addr) =
+                                    canonical_symbol_output_address(obj, sym_id, &positions)
+                                {
+                                    shard[sym_id.as_usize() - range_start] = addr;
+                                }
+                            }
+
+                            positions
+                        }
+                        _ => vec![],
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+
+    (section_positions, SymbolOutputInfos { addresses })
+}
+
+fn canonical_symbol_output_address<P: Platform>(
+    obj: &ObjectLayoutState<P>,
+    canonical_id: SymbolId,
+    positions: &[Option<InputSectionPosition>],
+) -> Option<u64> {
+    let local = canonical_id.to_input(obj.symbol_id_range);
+    let sym = obj.object.symbol(local).ok()?;
+    match obj.object.symbol_section(sym, local) {
+        Ok(Some(section)) => {
+            let sec_addr = positions.get(section.0).copied().flatten()?;
+            let input_offset = obj.object.symbol_offset_in_section(sym, section).ok()?;
+            let output_offset =
+                opt_input_to_output(obj.section_relax_deltas.get(section.0), input_offset);
+            Some(sec_addr.address + output_offset)
+        }
+        Ok(None) if sym.is_absolute() => Some(sym.value()),
+        _ => None,
+    }
+}
+
+fn collect_needed_relaxation_symbols<A: Arch>(
+    group_states: &[GroupState<A::Platform>],
+    rescan: &RescanSections,
+    symbol_db: &SymbolDb<A::Platform>,
+) -> Vec<Vec<SymbolId>> {
+    let referenced: Vec<SymbolId> = group_states
+        .par_iter()
+        .enumerate()
+        .flat_map(|(group_idx, group)| {
+            let mut ids = Vec::new();
+            for (file_idx, file) in group.files.iter().enumerate() {
+                let FileLayoutState::Object(obj) = file else {
+                    continue;
+                };
+                let Some(sections) = rescan.get(group_idx).and_then(|files| files.get(file_idx))
+                else {
+                    continue;
+                };
+                for &sec_idx in sections {
+                    let Ok(relocs) = obj
+                        .object
+                        .relocations(SectionIndex(sec_idx), &obj.relocations)
+                    else {
+                        continue;
+                    };
+                    for sym_idx in A::collect_relaxation_referenced_symbols(
+                        relocs,
+                        obj.section_relax_deltas.get(sec_idx),
+                    ) {
+                        let local_id = obj.symbol_id_range.input_to_id(sym_idx);
+                        ids.push(symbol_db.definition(local_id));
+                    }
+                }
+            }
+            ids
+        })
         .collect();
 
-    let addresses = symbol_addresses
-        .into_iter()
-        .map(|a| a.into_inner())
-        .collect();
+    // Bucket by the defining group so each shard is written only by its owner.
+    let mut by_group = vec![Vec::new(); group_states.len()];
+    for id in referenced {
+        let group_idx = symbol_db.file_id_for_symbol(id).group();
+        if let Some(bucket) = by_group.get_mut(group_idx) {
+            bucket.push(id);
+        }
+    }
+    by_group
+}
 
-    (section_addresses, SymbolOutputInfos { addresses })
+fn compute_selected_symbol_addresses<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<'data, P>,
+    address_buf: &mut Vec<u64>,
+    needed_by_group: &[Vec<SymbolId>],
+) -> (InputSectionPositions, SymbolOutputInfos) {
+    timing_phase!("Compute section and symbol addresses");
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+    let section_positions =
+        compute_input_section_positions(group_states, mem_offsets, symbol_db, output_sections);
+
+    let mut addresses = std::mem::take(address_buf);
+    addresses.clear();
+    addresses.resize(symbol_db.num_symbols(), SYMBOL_ADDRESS_UNRESOLVED);
+
+    let shards = split_symbol_addresses_by_group(&mut addresses, symbol_db, group_states.len());
+    group_states
+        .par_iter()
+        .zip(shards.into_par_iter())
+        .zip(needed_by_group.par_iter())
+        .for_each(|((group, (range_start, shard)), needed)| {
+            verbose_timing_phase!("Compute addresses for group");
+            for &sym_id in needed {
+                let file_id = symbol_db.file_id_for_symbol(sym_id);
+                let Some(FileLayoutState::Object(obj)) = group.files.get(file_id.file()) else {
+                    continue;
+                };
+                let Some(positions) = section_positions
+                    .get(file_id.group())
+                    .and_then(|files| files.get(file_id.file()))
+                else {
+                    continue;
+                };
+                if let Some(addr) = canonical_symbol_output_address(obj, sym_id, positions) {
+                    debug_assert!(sym_id.as_usize() >= range_start);
+                    let idx = sym_id.as_usize() - range_start;
+                    shard[idx] = addr;
+                }
+            }
+        });
+
+    (section_positions, SymbolOutputInfos { addresses })
+}
+
+fn group_symbol_id_range<P: Platform>(
+    group_idx: usize,
+    symbol_db: &SymbolDb<P>,
+) -> std::ops::Range<usize> {
+    symbol_db.groups.get(group_idx).map_or(0..0, |group| {
+        let range = group.symbol_id_range();
+        let start = range.start().as_usize();
+        start..start + range.len()
+    })
+}
+
+fn split_symbol_addresses_by_group<'a, P: Platform>(
+    addresses: &'a mut [u64],
+    symbol_db: &SymbolDb<P>,
+    num_groups: usize,
+) -> Vec<(usize, &'a mut [u64])> {
+    let ranges: Vec<std::ops::Range<usize>> = (0..num_groups)
+        .map(|i| group_symbol_id_range(i, symbol_db))
+        .collect();
+    split_ordered_symbol_ranges(addresses, &ranges)
+}
+
+/// Splits `addresses` according to disjoint, increasing `ranges`. Empty ranges get an empty shard
+/// and do not consume the slice.
+fn split_ordered_symbol_ranges<'a>(
+    mut rest: &'a mut [u64],
+    ranges: &[std::ops::Range<usize>],
+) -> Vec<(usize, &'a mut [u64])> {
+    debug_assert!(
+        ranges
+            .iter()
+            .filter(|range| !range.is_empty())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|window| window[0].end <= window[1].start),
+        "group symbol ranges must be disjoint and ordered"
+    );
+
+    let mut cursor = 0;
+    let mut shards = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.is_empty() {
+            shards.push((0, &mut [][..]));
+            continue;
+        }
+        debug_assert!(
+            range.start >= cursor,
+            "group symbol ranges must be in increasing order"
+        );
+        let (_gap, after_gap) = rest.split_at_mut(range.start - cursor);
+        let (shard, after) = after_gap.split_at_mut(range.len());
+        shards.push((range.start, shard));
+        rest = after;
+        cursor = range.end;
+    }
+    shards
+}
+
+pub(crate) fn resolve_early_object_symbol<'data, P: Platform>(
+    canonical_id: SymbolId,
+    obj: &ObjectLayoutState<'data, P>,
+    section_positions: &InputSectionPositions,
+    symbol_db: &SymbolDb<'data, P>,
+) -> Result<SymbolValue> {
+    let file_id = symbol_db.file_id_for_symbol(canonical_id);
+    let local_index = canonical_id.to_input(obj.symbol_id_range);
+    let symbol = obj.object.symbol(local_index)?;
+    let Some(section_index) = obj.object.symbol_section(symbol, local_index)? else {
+        if symbol.is_absolute() {
+            return Ok(SymbolValue::Absolute(symbol.value()));
+        }
+        bail!(
+            "cannot resolve address of symbol '{}'",
+            symbol_db.symbol_name_for_display(canonical_id)
+        );
+    };
+
+    let section_position = section_positions
+        .get(file_id.group())
+        .and_then(|group| group.get(file_id.file()))
+        .and_then(|file| file.get(section_index.0))
+        .copied()
+        .flatten();
+
+    let Some(section_position) = section_position else {
+        if matches!(
+            obj.sections.get(section_index.0),
+            Some(SectionSlot::Sorted(_))
+        ) {
+            bail!(
+                "Early evaluation of sorted section {} is not supported",
+                obj.object.section_display_name(section_index)
+            );
+        }
+        bail!(
+            "cannot resolve address of symbol '{}' because its section does not have an early layout",
+            symbol_db.symbol_name_for_display(canonical_id)
+        );
+    };
+
+    let input_offset = obj.object.symbol_offset_in_section(symbol, section_index)?;
+    let output_offset =
+        opt_input_to_output(obj.section_relax_deltas.get(section_index.0), input_offset);
+    Ok(SymbolValue::PartRelative {
+        part_id: section_position.part_id,
+        offset: section_position.address + output_offset,
+    })
 }
 
 /// Per-file list of section indices to rescan on subsequent relaxation iterations. Indexed as
@@ -5095,16 +5631,30 @@ fn relaxation_scan_pass<'data, A: Arch>(
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
-    output_sections: &OutputSections<A::Platform>,
+    output_sections: &OutputSections<'data, A::Platform>,
+    address_buf: &mut Vec<u64>,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
-    let (section_addresses, symbol_infos) = compute_section_and_symbol_addresses(
-        group_states,
-        section_part_layouts,
-        symbol_db,
-        output_sections,
-    );
+    let (section_addresses, symbol_infos) = if let Some(rescan) = prev_rescan {
+        let needed = collect_needed_relaxation_symbols::<A>(group_states, rescan, symbol_db);
+        compute_selected_symbol_addresses(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            output_sections,
+            address_buf,
+            &needed,
+        )
+    } else {
+        compute_section_and_symbol_addresses(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            output_sections,
+            address_buf,
+        )
+    };
 
     // Scan each group.
     #[expect(clippy::type_complexity)]
@@ -5113,8 +5663,8 @@ fn relaxation_scan_pass<'data, A: Arch>(
             .par_iter_mut()
             .enumerate()
             .map(|(group_idx, group)| {
-                let mut reductions =
-                    OutputSectionPartMap::with_size(section_part_sizes.num_parts());
+                verbose_timing_phase!("Relaxation scan for group");
+                let mut reductions = section_part_sizes.new_empty_like();
                 let mut file_rescans: Vec<SmallVec<[(usize, u64); 16]>> =
                     Vec::with_capacity(group.files.len());
 
@@ -5155,10 +5705,14 @@ fn relaxation_scan_pass<'data, A: Arch>(
                             continue;
                         };
 
-                        let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
-                        if sec_output_addr == 0 {
+                        let Some(sec_output_addr) = file_section_addrs
+                            .get(sec_idx)
+                            .copied()
+                            .flatten()
+                            .map(|section| section.address)
+                        else {
                             continue;
-                        }
+                        };
 
                         let existing_deltas = obj.section_relax_deltas.get(sec_idx);
 
@@ -5232,15 +5786,17 @@ fn relaxation_scan_pass<'data, A: Arch>(
     let mut total_deleted = 0u64;
     let mut next_rescan_candidates: RescanCandidates = Vec::with_capacity(group_results.len());
     for (reduction, file_rescans) in group_results {
-        for (idx, &amount) in reduction.parts.iter().enumerate() {
+        for (part_id, &amount) in reduction.iter() {
             if amount > 0 {
-                let part_id = PartId::from_usize(idx);
                 section_part_sizes.decrement(part_id, amount);
                 total_deleted += amount;
             }
         }
         next_rescan_candidates.push(file_rescans);
     }
+
+    // Give the allocation back so the next relaxation pass can reuse it.
+    *address_buf = symbol_infos.addresses;
 
     (total_deleted, next_rescan_candidates)
 }
@@ -5262,6 +5818,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     timing_phase!("Iterative relaxation");
 
     let mut rescan_sections: Option<RescanSections> = None;
+    let mut address_buf = Vec::new();
 
     for _iteration in 0..MAX_RELAXATION_ITERATIONS {
         if let Some(ref rescan) = rescan_sections
@@ -5280,6 +5837,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
             section_part_sizes,
             rescan_sections.as_ref(),
             output_sections,
+            &mut address_buf,
         );
 
         if deleted == 0 {
@@ -5312,6 +5870,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
             *section_layouts,
             *resolved_location_counters,
         ) = compute_layout_sections::<A::Platform>(
+            group_states,
             section_part_sizes,
             output_sections,
             program_segments,
@@ -5325,6 +5884,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
 }
 
 fn compute_layout_sections<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'data, P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
@@ -5346,29 +5906,39 @@ fn compute_layout_sections<'data, P: Platform>(
         output_sections,
     );
 
+    timing_phase!("Layout sections");
+
     let mut section_layouts = OutputSectionMap::with_size(output_sections.num_sections());
+    let section_positions = OnceCell::new();
 
-    let expression_eval = |expr: &Expression<'data>,
-                           loc: &SymbolLoc,
-                           memory_regions: &HashMap<&[u8], MemoryRegion>,
-                           section_layouts: &OutputSectionMap<OutputRecordLayout>,
-                           resolved_lc: &[ResolvedLocationCounter]| {
-        crate::expression_eval::evaluate_expression(
-            expr,
-            loc,
-            None,
-            section_layouts,
-            output_sections,
-            memory_regions,
-            symbol_db,
-            sizeof_headers,
-            resolved_lc,
-            &|_| {
-                bail!("Symbols with the set location operation are not yet supported.");
-            },
-        )
-    };
+    let expression_eval =
+        |expr: &Expression<'data>,
+         loc: &SymbolLoc,
+         memory_regions: &HashMap<&[u8], MemoryRegion>,
+         section_layouts: &OutputSectionMap<OutputRecordLayout>,
+         resolved_lc: &[ResolvedLocationCounter],
+         laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>| {
+            let mut visited_nodes = HashSet::new();
+            evaluate_early_expression(
+                expr,
+                loc,
+                memory_regions,
+                section_layouts,
+                resolved_lc,
+                laid_out_mem_offsets,
+                group_states,
+                sizes,
+                output_sections,
+                symbol_db,
+                sizeof_headers,
+                &section_positions,
+                &mut visited_nodes,
+            )
+        };
 
+    // Memory offsets of the output-section parts that have been laid out so far. Used to resolve
+    // object symbols referenced from location-counter expressions.
+    let mut laid_out_mem_offsets = output_sections.new_part_map::<Option<u64>>();
     let mut file_offset = 0;
     let mut mem_offset = expression_eval(
         &output_sections.base_address,
@@ -5376,6 +5946,7 @@ fn compute_layout_sections<'data, P: Platform>(
         memory_regions,
         &section_layouts,
         &[],
+        &laid_out_mem_offsets,
     )?;
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
@@ -5403,9 +5974,22 @@ fn compute_layout_sections<'data, P: Platform>(
 
     for event in output_order {
         match event {
-            OrderEvent::SetLocation(expr, loc, idx) => {
-                let value =
-                    expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
+            OrderEvent::SetLocation(expr, mut loc, idx) => {
+                if matches!(loc, SymbolLoc::SectionEnd(_)) {
+                    resolved_lc[idx] = ResolvedLocationCounter {
+                        value: mem_offset,
+                        section_offset: None,
+                    };
+                    loc = SymbolLoc::LocationCounter(idx, None);
+                }
+                let value = expression_eval(
+                    &expr,
+                    &loc,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    &laid_out_mem_offsets,
+                )?;
                 pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
                     value,
@@ -5415,8 +5999,14 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::SetLocationRelative(expr, section_id, loc, idx) => {
                 let primary_id = output_sections.primary_output_section(section_id);
                 let section_base = section_layouts.get(primary_id).mem_offset;
-                let value =
-                    expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
+                let value = expression_eval(
+                    &expr,
+                    &loc,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    &laid_out_mem_offsets,
+                )?;
                 let offset = value - section_base;
                 pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
@@ -5431,6 +6021,7 @@ fn compute_layout_sections<'data, P: Platform>(
                     memory_regions,
                     &section_layouts,
                     &resolved_lc,
+                    &laid_out_mem_offsets,
                 )?;
                 pending_location = Some(value);
             }
@@ -5468,9 +6059,10 @@ fn compute_layout_sections<'data, P: Platform>(
                 let section_info = output_sections.output_info(section_id);
                 let section_offset = pending_location.take();
 
-                let is_tls_nobits = section_info.section_attributes.is_tls()
-                    && section_info.section_attributes.is_no_bits();
-                if is_tls_nobits {
+                if section_info
+                    .section_attributes
+                    .occupies_only_tls_address_space()
+                {
                     // Save our current mem_offset as we enter our first nobits TLS section
                     if tls_memsave.is_none() {
                         tls_memsave = Some(mem_offset);
@@ -5526,119 +6118,138 @@ fn compute_layout_sections<'data, P: Platform>(
                 }
                 lma_offset = mem_offset;
 
-                records_out[part_id_range.clone()]
-                    .iter_mut()
-                    .zip(&sizes[part_id_range.clone()])
-                    .enumerate()
-                    .try_for_each(|(offset, (part_layout, &part_size))| -> Result {
-                        let part_id = part_id_range.start.offset(offset);
-                        let alignment = part_id.alignment(output_sections).min(max_alignment);
-                        let merge_target = output_sections.primary_output_section(section_id);
-                        let section_flags = output_sections.section_flags(merge_target);
-                        let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
-                            let page_alignment = args.loadable_segment_alignment();
-                            let aligned_offset = page_alignment.align_up(mem_offset);
-                            aligned_offset - mem_offset
-                        } else {
-                            part_size
-                        };
+                let mut is_first_part = true;
 
-                        // Note, we align up even if our size is zero, otherwise our section will
-                        // start at an unaligned address. We don't however align up for NOBITS
-                        // sections.
-                        if output_sections.has_data_in_file(merge_target) {
-                            file_offset = alignment.align_up_usize(file_offset);
-                        }
+                let merge_target = output_sections.primary_output_section(section_id);
+                let section_flags = output_sections.section_flags(merge_target);
 
-                        if section_flags.is_alloc() {
-                            if args.should_output_partial_object() {
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
-                                    mem_size as usize
-                                } else {
-                                    0
-                                };
+                let mut part_sizes = sizes
+                    .in_range(part_id_range.clone())
+                    .map(|(id, &size)| (id, size))
+                    .peekable();
 
-                                let section_id = part_id.output_section_id::<P>();
-                                let part_mem_offset =
-                                    alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
-                                *reloc_alloc_mem_offsets.get_mut(section_id) =
-                                    part_mem_offset + mem_size;
+                // For sections with only empty parts, make sure we run the loop below at least once
+                // so as to properly initialise the section's layout.
+                let empty_part = part_sizes
+                    .peek()
+                    .is_none()
+                    .then_some((part_id_range.start, 0));
 
-                                *part_layout = OutputRecordLayout {
-                                    file_size,
-                                    mem_size,
-                                    alignment,
-                                    file_offset,
-                                    mem_offset: part_mem_offset,
-                                    lma_offset: part_mem_offset,
-                                };
+                for (part_id, part_size) in part_sizes.chain(empty_part) {
+                    let part_layout = records_out.get_mut(part_id);
+                    let alignment = if is_first_part {
+                        max_alignment
+                    } else {
+                        part_id.alignment(output_sections).min(max_alignment)
+                    };
+                    let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
+                        let page_alignment = args.loadable_segment_alignment();
+                        let aligned_offset = page_alignment.align_up(mem_offset);
+                        aligned_offset - mem_offset
+                    } else {
+                        part_size
+                    };
 
-                                file_offset += file_size;
+                    // Note, we align up even if our size is zero, otherwise our section will
+                    // start at an unaligned address. We don't however align up for NOBITS
+                    // sections.
+                    if output_sections.has_data_in_file(merge_target) {
+                        file_offset = alignment.align_up_usize(file_offset);
+                    }
+
+                    if section_flags.is_alloc() {
+                        if args.should_output_partial_object() {
+                            let file_size = if output_sections.has_data_in_file(merge_target) {
+                                mem_size as usize
                             } else {
-                                mem_offset = alignment.align_up(mem_offset);
-                                lma_offset = alignment.align_up(lma_offset);
+                                0
+                            };
 
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
-                                    mem_size as usize
-                                } else {
-                                    0
-                                };
-
-                                *part_layout = OutputRecordLayout {
-                                    file_size,
-                                    mem_size,
-                                    alignment,
-                                    file_offset,
-                                    mem_offset,
-                                    lma_offset,
-                                };
-
-                                file_offset += file_size;
-                                mem_offset += mem_size;
-                                lma_offset += mem_size;
-                            }
-                        } else {
                             let section_id = part_id.output_section_id::<P>();
-                            let mem_offset =
-                                alignment.align_up(*nonalloc_mem_offsets.get(section_id));
-
-                            *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+                            let part_mem_offset =
+                                alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
+                            *reloc_alloc_mem_offsets.get_mut(section_id) =
+                                part_mem_offset + mem_size;
 
                             *part_layout = OutputRecordLayout {
-                                file_size: mem_size as usize,
+                                file_size,
+                                mem_size,
+                                alignment,
+                                file_offset,
+                                mem_offset: part_mem_offset,
+                                lma_offset: part_mem_offset,
+                            };
+
+                            file_offset += file_size;
+                        } else {
+                            mem_offset = alignment.align_up(mem_offset);
+                            lma_offset = alignment.align_up(lma_offset);
+
+                            let file_size = if output_sections.has_data_in_file(merge_target) {
+                                mem_size as usize
+                            } else {
+                                0
+                            };
+
+                            *part_layout = OutputRecordLayout {
+                                file_size,
                                 mem_size,
                                 alignment,
                                 file_offset,
                                 mem_offset,
-                                lma_offset: mem_offset,
+                                lma_offset,
                             };
-                            file_offset += mem_size as usize;
-                        }
-                        layout_section_from_part_layouts(
-                            part_layout,
-                            section_layouts.get_mut(section_id),
-                            section_info,
-                            offset == 0,
-                        );
 
-                        if let Some(expr) = section_info
-                            .location_info
-                            .as_ref()
-                            .and_then(|info| info.at_location.as_ref())
-                        {
-                            lma_offset = expression_eval(
-                                expr,
-                                &SymbolLoc::None,
-                                memory_regions,
-                                &section_layouts,
-                                &resolved_lc,
-                            )?;
-                            part_layout.lma_offset = lma_offset;
-                            let section_layout = section_layouts.get_mut(section_id);
-                            section_layout.lma_offset = lma_offset;
+                            file_offset += file_size;
+                            mem_offset += mem_size;
+                            lma_offset += mem_size;
                         }
-                        Ok(())
-                    })?;
+                    } else {
+                        let section_id = part_id.output_section_id::<P>();
+                        let mem_offset = alignment.align_up(*nonalloc_mem_offsets.get(section_id));
+
+                        *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+
+                        *part_layout = OutputRecordLayout {
+                            file_size: mem_size as usize,
+                            mem_size,
+                            alignment,
+                            file_offset,
+                            mem_offset,
+                            lma_offset: mem_offset,
+                        };
+                        file_offset += mem_size as usize;
+                    }
+
+                    *laid_out_mem_offsets.get_mut(part_id) = Some(part_layout.mem_offset);
+
+                    layout_section_from_part_layouts(
+                        part_layout,
+                        section_layouts.get_mut(section_id),
+                        section_info,
+                        is_first_part,
+                    );
+
+                    if let Some(expr) = section_info
+                        .location_info
+                        .as_ref()
+                        .and_then(|info| info.at_location.as_ref())
+                    {
+                        lma_offset = expression_eval(
+                            expr,
+                            &SymbolLoc::None,
+                            memory_regions,
+                            &section_layouts,
+                            &resolved_lc,
+                            &laid_out_mem_offsets,
+                        )?;
+                        part_layout.lma_offset = lma_offset;
+                        let section_layout = section_layouts.get_mut(section_id);
+                        section_layout.lma_offset = lma_offset;
+                    }
+
+                    is_first_part = false;
+                }
 
                 if let Some(region_name) = section_info.region_name
                     && let Some(region) = memory_regions.get_mut(region_name)
@@ -5888,6 +6499,23 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
+        for group in &resources.symbol_db.groups {
+            match group {
+                Group::LinkerScripts(linker_scripts) => {
+                    for script in linker_scripts {
+                        for lc in &script.parsed.location_counters {
+                            load_expression_referenced_symbols::<A>(
+                                resources,
+                                queue,
+                                scope,
+                                lc.get_expression(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         self.internal_symbols
             .activate_symbols::<A>(common, resources, queue, scope)
     }
@@ -5983,15 +6611,14 @@ fn test_no_disallowed_overlaps() {
     use crate::elf::Elf64;
     use crate::output_section_id::OrderEvent;
 
-    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-        crate::args::RelocationModel::NonRelocatable,
-    );
+    let output_kind =
+        crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
     let (output_order, program_segments) =
         output_sections.output_order(output_kind, &[], &[]).unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
-    if args.arch == crate::arch::Architecture::Unsupported {
-        args.arch = crate::arch::Architecture::X86_64;
+    if args.architecture() == crate::arch::Architecture::Unsupported {
+        args.set_architecture(crate::arch::Architecture::X86_64);
     }
 
     let sections_to_output: hashbrown::HashSet<OutputSectionId> = output_order
@@ -6013,9 +6640,8 @@ fn test_no_disallowed_overlaps() {
         }
     });
 
-    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-        crate::args::RelocationModel::NonRelocatable,
-    );
+    let output_kind =
+        crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let arena = colosseum::sync::Arena::new();
     let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
     let herd = Default::default();
@@ -6023,6 +6649,7 @@ fn test_no_disallowed_overlaps() {
         crate::symbol_db::SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();
 
     let (_, section_layouts, _) = compute_layout_sections::<Elf64>(
+        &[],
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -6072,6 +6699,7 @@ fn test_no_disallowed_overlaps() {
 
     let header_info = HeaderInfo {
         num_output_sections_with_content: 0,
+        partial_link_section_name_bytes: 0,
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),

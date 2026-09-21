@@ -408,6 +408,9 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The size of a symbol rather than its address.
+    SymbolSize,
+
     /// The absolute address of a symbol or section related to EH section.
     AbsoluteSet,
 
@@ -546,6 +549,10 @@ pub enum RelocationKind {
 
     /// The address must fulfill the alignment requirement.
     Alignment,
+
+    /// A Macho-O specific relocation where the relocation holds a constant offset that is added
+    /// to the subsequent relocation (ARM64_RELOC_UNSIGNED).
+    MachoAddition,
 }
 
 impl RelocationKind {
@@ -1074,6 +1081,8 @@ pub struct RelocationKindInfo {
     pub bias: u64,
     /// Whether this relocation type supports range-extension thunks.
     pub thunkable: bool,
+    /// Whether this relocation assumes an implicit addend at the place of the relocation.
+    pub implicit_addend: bool,
 }
 
 impl RelocationKindInfo {
@@ -1114,7 +1123,13 @@ impl RelocationKindInfo {
                         "Relocation outside of bounds of section"
                     );
                     let value_bytes = value.to_le_bytes();
-                    output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+                    // Note, the following match is an optimisation that allows the compiler to
+                    // produce specialised code for each of these cases.
+                    match byte_size {
+                        4 => output[..4].copy_from_slice(&value_bytes[..4]),
+                        8 => output[..8].copy_from_slice(&value_bytes),
+                        _ => output[..byte_size].copy_from_slice(&value_bytes[..byte_size]),
+                    }
                 }
                 RelocationSize::BitMasking(BitMask {
                     range,

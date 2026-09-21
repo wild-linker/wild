@@ -3,7 +3,7 @@
 //#Object:ptr_black_box.c
 //#Object:script-sort-2.c
 //#Object:script-sort-3.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
 //#ExpectSym:func_kept
 //#NoSym:func_drop

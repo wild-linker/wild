@@ -87,6 +87,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Override this for architectures that need a different default.
     const DEFAULT_LOAD_ADDRESS: u64 = 0x400_000;
 
+    /// Number of entries reserved by the runtime at the start of the table addressed by DT_PLTGOT.
+    const NUM_GOT_PLT_HEADER_ENTRIES: u64 = 0;
+
     /// Returns the identifier to be written into the output file that identifies the file as
     /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
@@ -175,6 +178,14 @@ pub(crate) trait Arch: Send + Sync + 'static {
         unreachable!();
     }
 
+    /// Input symbols that `collect_relaxation_deltas` may resolve for this section.
+    fn collect_relaxation_referenced_symbols<'data>(
+        _relocations: <Self::Platform as Platform>::RelocationList<'data>,
+        _existing_deltas: Option<&SectionRelaxDeltas>,
+    ) -> Vec<object::SymbolIndex> {
+        Vec::new()
+    }
+
     fn is_symbol_variant_pcs(
         _object: &<Self::Platform as Platform>::File<'_>,
         _symbol_index: object::SymbolIndex,
@@ -235,10 +246,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Return the starting load address for non-PIE output.
     fn start_memory_address(output_kind: OutputKind) -> u64 {
-        if output_kind.is_relocatable() {
-            0
-        } else {
+        if output_kind.has_fixed_load_address() {
             Self::DEFAULT_LOAD_ADDRESS
+        } else {
+            0
         }
     }
 
@@ -314,6 +325,7 @@ pub(crate) trait Platform:
     const INTERP_SECTION_ID: Option<OutputSectionId> = None;
     const SFRAME_SECTION_ID: Option<OutputSectionId> = None;
     const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> = None;
+    const PARTIAL_SINGLETONS_ID: Option<OutputSectionId> = None;
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
     const PACKED_SECTION_IDS: &'static [OutputSectionId] = &[];
@@ -555,6 +567,13 @@ pub(crate) trait Platform:
         symbol_index: object::SymbolIndex,
     ) -> Result<Option<Self::GcUnit>>;
 
+    const NEEDS_START_STOP_SECTION_GC: bool = false;
+
+    /// Must be implemented if `NEEDS_START_STOP_SECTION_GC` is true.
+    fn gc_unit_for_section(_section_index: object::SectionIndex) -> Self::GcUnit {
+        unreachable!("NEEDS_START_STOP_SECTION_GC requires gc_unit_for_section");
+    }
+
     /// Loads GC roots for an object. May also perform platform-specific allocation.
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
@@ -655,6 +674,7 @@ pub(crate) trait Platform:
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
         _resolutions: &SymbolResolutions<Self>,
+        _group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>>;
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
@@ -665,6 +685,30 @@ pub(crate) trait Platform:
         queue: &mut layout::LocalWorkQueue<Self>,
         scope: &Scope<'scope>,
     ) -> Result;
+
+    /// Processes an input section containing initializer function pointers (Mach-O specific).
+    fn process_init_func_section<'data, 'scope, A: Arch<Platform = Self>>(
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _section_index: object::SectionIndex,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
+    /// Processes an input section containing compact unwind format (Mach-O specific).
+    fn process_compact_unwind_section<'data, 'scope, A: Arch<Platform = Self>>(
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _section_index: object::SectionIndex,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
@@ -701,7 +745,7 @@ pub(crate) trait Platform:
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &SymbolDb<'data, Self>,
-    );
+    ) -> Result<()>;
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut OutputSectionPartMap<u64>,
@@ -722,6 +766,7 @@ pub(crate) trait Platform:
     fn apply_late_size_adjustments_prelude(
         _current_sizes: &OutputSectionPartMap<u64>,
         _extra_sizes: &mut OutputSectionPartMap<u64>,
+        _format_specific: &Self::FinaliseSizesExt<'_>,
         _args: &Self::Args,
     ) -> Result {
         Ok(())
@@ -1030,6 +1075,12 @@ pub(crate) trait Platform:
         output_attributes: Self::SectionAttributes,
     ) -> Self::SectionAttributes {
         output_attributes
+    }
+
+    fn finalise_output_section_alignments(
+        _sizes: &OutputSectionPartMap<u64>,
+        _output_sections: &mut OutputSections<'_, Self>,
+    ) {
     }
 }
 
@@ -1383,6 +1434,8 @@ pub(crate) trait SectionAttributes:
 
     fn is_tls(&self) -> bool;
 
+    fn occupies_only_tls_address_space(&self) -> bool;
+
     fn is_writable(&self) -> bool;
 
     fn is_no_bits(&self) -> bool;
@@ -1533,6 +1586,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn rosegment(&self) -> bool {
         true
+    }
+
+    fn image_base(&self) -> Option<u64> {
+        None
     }
 
     fn should_emit_got_plt_syms(&self) -> bool {

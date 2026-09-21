@@ -1,5 +1,4 @@
 //#Object:runtime.c
-//#DiffIgnore:section.__unwind_info
 //#ExpectSym:_value section="__custom",segment="__DATA_CONST"
 //#NoSection:__got
 

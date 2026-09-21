@@ -451,45 +451,13 @@ impl SaveDirState {
 }
 
 fn create_symlink(target: &Path, dest_path: &Path) -> Result {
-    cfg_select! {
-        unix => {
-            std::os::unix::fs::symlink(target, dest_path).with_context(|| {
-                format!(
-                    "Failed to symlink {} to {}",
-                    dest_path.display(),
-                    target.display()
-                )
-            })?;
-            Ok(())
-        }
-        windows => {
-            use std::os::windows::fs::FileTypeExt as _;
-            let is_dir = std::fs::metadata(target).is_ok_and(|meta| meta.is_dir());
-            let is_symlink_dir = std::fs::symlink_metadata(target)
-                .is_ok_and(|meta| meta.file_type().is_symlink_dir());
-            let result = if is_dir || is_symlink_dir {
-                std::os::windows::fs::symlink_dir(target, dest_path)
-            } else {
-                std::os::windows::fs::symlink_file(target, dest_path)
-            };
-            result.with_context(|| {
-                format!(
-                    "Failed to symlink {} to {}",
-                    dest_path.display(),
-                    target.display()
-                )
-            })?;
-            Ok(())
-        }
-        target_os = "wasi" => {
-            let _ = (target, dest_path);
-            bail!("creating symlinks on wasi not supported on stable rust");
-        }
-        _ => {
-            let _ = (target, dest_path);
-            bail!("creating symlinks is not supported on this platform");
-        }
-    }
+    crate::host::fs::create_symlink(target, dest_path).with_context(|| {
+        format!(
+            "Failed to symlink {} to {}",
+            dest_path.display(),
+            target.display()
+        )
+    })
 }
 
 fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u8>> {
@@ -608,13 +576,20 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 }
 
 /// Saves certain environment variables into the script. We only propagate environment variables
-/// that are known to be used for communication between the compiler and say linker plugins.
+/// that are known to affect the link or to be used for communication between the compiler and say
+/// linker plugins.
 fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &impl platform::Args) -> Result {
-    for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
+    for var in &[
+        "COLLECT_GCC",
+        "COLLECT_GCC_OPTIONS",
+        crate::args::elf::LDEMULATION_ENV,
+    ] {
         if let Ok(mut value) = env::var(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
             // that we use the run-with scripts output file instead.
-            if let Some(out) = args.output().to_str() {
+            if *var == "COLLECT_GCC_OPTIONS"
+                && let Some(out) = args.output().to_str()
+            {
                 value = value.replace(out, "${OUT}");
             }
             out.write_all(b"export ")?;

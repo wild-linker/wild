@@ -5,10 +5,10 @@ use crate::arch::Architecture;
 use crate::args::BSymbolicKind;
 use crate::args::RelocationModel;
 use crate::args::elf::BuildIdOption;
+use crate::args::elf::CetReport;
 use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
-use crate::elf;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -129,6 +129,9 @@ use linker_utils::utils::read_string;
 use linker_utils::utils::read_u32;
 use linker_utils::utils::read_uleb128;
 use object::LittleEndian;
+use object::elf::GNU_PROPERTY_X86_FEATURE_1_AND;
+use object::elf::GNU_PROPERTY_X86_FEATURE_1_IBT;
+use object::elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
 use object::read::elf::CrelIterator;
@@ -163,7 +166,7 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
     args: &'data ElfArgs,
 ) -> Result<crate::LinkerOutput<'data>> {
-    match args.arch {
+    match args.architecture() {
         crate::arch::Architecture::X86_64 => {
             linker.link_for_arch::<Elf64, crate::elf_x86_64::ElfX86_64>(args)
         }
@@ -242,6 +245,7 @@ pub(crate) trait ElfClass: Copy + Default + Send + Sync + std::fmt::Debug + 'sta
     const NOTE_HEADER_SIZE: u64 = size_of::<NoteHeader<Self>>() as u64;
     const GNU_HASH_BLOOM_SIZE: u64 = Self::ADDRESS_SIZE;
     const PROGRAM_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const SECTION_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const GOT_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const RELA_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const RELR_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
@@ -366,6 +370,7 @@ enum RegularSectionId {
     GccExceptTable,
     NoteAbiTag,
     DataRelRo,
+    PartialLinkingSingletons,
 
     // Must be last.
     Count,
@@ -484,6 +489,8 @@ pub(crate) mod output_section_id {
     pub(crate) const NOTE_ABI_TAG: OutputSectionId =
         RegularSectionId::NoteAbiTag.output_section_id();
     pub(crate) const DATA_REL_RO: OutputSectionId = RegularSectionId::DataRelRo.output_section_id();
+    pub(crate) const PARTIAL_LINKING_SINGLETONS: OutputSectionId =
+        RegularSectionId::PartialLinkingSingletons.output_section_id();
 }
 
 #[derive(derive_more::Debug)]
@@ -680,6 +687,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     const SFRAME_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::SFRAME);
     const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::RELRO_PADDING);
+    const PARTIAL_SINGLETONS_ID: Option<OutputSectionId> =
+        Some(output_section_id::PARTIAL_LINKING_SINGLETONS);
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[
         output_section_id::PROGRAM_HEADERS,
@@ -853,7 +862,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     }
 
     fn validate_sizes(mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if *mem_sizes.get(part_id::GNU_VERSION) > 0 {
+        if mem_sizes.get(part_id::GNU_VERSION) > 0 {
             let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
             let num_versym = mem_sizes.get(part_id::GNU_VERSION) / size_of::<Versym>() as u64;
             if num_versym != num_dynamic_symbols {
@@ -869,7 +878,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt {
         GroupLayoutExt {
-            eh_frame_start_address: *memory_offsets.get(part_id::EH_FRAME),
+            eh_frame_start_address: memory_offsets.get(part_id::EH_FRAME),
         }
     }
 
@@ -877,7 +886,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         // References to symbols defined in .eh_frame are a bit weird, since it's a section where
         // we're GCing stuff, but crtbegin.o and crtend.o use them in order to find the start and
         // end of the whole .eh_frame section.
-        *memory_offsets.get(part_id::EH_FRAME)
+        memory_offsets.get(part_id::EH_FRAME)
     }
 
     fn post_gc<'data>(
@@ -984,7 +993,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 .section_layouts
                 .get(output_section_id::GNU_VERSION_R);
 
-            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
+            is_last_verneed = memory_offsets.get(part_id::GNU_VERSION_R)
                 == version_r_layout.mem_offset + version_r_layout.mem_size;
         }
 
@@ -1021,12 +1030,15 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             let address;
             let dynamic_symbol_index;
 
-            if flags.needs_copy_relocation() {
-                let input_address = local_symbol.value();
-
-                address = *copy_relocation_addresses
-                    .get(&input_address)
-                    .context("Internal error: Missing copy relocation address")?;
+            if flags.needs_copy_relocation() || flags.needs_canonical_plt() {
+                address = if flags.needs_copy_relocation() {
+                    let input_address = local_symbol.value();
+                    *copy_relocation_addresses
+                        .get(&input_address)
+                        .context("Internal error: Missing copy relocation address")?
+                } else {
+                    0
+                };
 
                 // Since this is a definition, the dynamic symbol index will be determined by the
                 // epilogue and set by `update_dynamic_symbol_resolutions`.
@@ -1090,6 +1102,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .map(SectionGcUnit::new))
     }
 
+    const NEEDS_START_STOP_SECTION_GC: bool = true;
+
+    fn gc_unit_for_section(section_index: object::SectionIndex) -> Self::GcUnit {
+        SectionGcUnit::new(section_index)
+    }
+
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -1127,6 +1145,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         scope: &Scope<'scope>,
     ) -> Result {
         if resources.symbol_db.args.should_output_partial_object() {
+            let header = state.object.section(section_index)?;
+            if header.sh_type(LittleEndian) == object::elf::SHT_CREL {
+                bail!("CREL with partial linking isn't yet supported: {state}");
+            }
             return Ok(());
         }
         match state.relocations(section_index)? {
@@ -1265,7 +1287,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 *keep = !args.nmagic;
             }
             if segment_def.segment_type == pt::RISCV_ATTRIBUTES
-                && args.arch != Architecture::RiscV64
+                && args.architecture() != Architecture::RiscV64
             {
                 *keep = false;
             }
@@ -1341,12 +1363,18 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .section_start(crate::output_section_id::FILE_HEADER, "__ehdr_start")
             .hide();
 
-        symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
+        symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "__dso_handle")
+            .hide();
 
-        // .rela.plt start/stop symbols are only emitted for non-relocatable executables. Emitting
-        // them for relocatable binaries causes glibc to try to call the resolver functions without
-        // taking into account that the binary has been relocated.
-        if output_kind != OutputKind::StaticExecutable(RelocationModel::Relocatable) {
+        symbols
+            .section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_")
+            .hide();
+
+        // Don't emit .rela.plt start/stop symbols for static PIE executables. Doing so causes glibc
+        // to call the resolver functions without taking into account that the binary has been
+        // relocated.
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::PositionIndependent) {
             symbols
                 .section_start(output_section_id::RELA_PLT, "__rela_iplt_start")
                 .hide();
@@ -1400,14 +1428,14 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
-        if args.arch == Architecture::RiscV64 {
+        if args.architecture() == Architecture::RiscV64 {
             symbols.section_start(
                 output_section_id::DATA,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
             );
         }
 
-        if args.arch == Architecture::Ppc64 {
+        if args.architecture() == Architecture::Ppc64 {
             symbols.section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME);
         }
 
@@ -1422,7 +1450,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .section_start(output_section_id::TDATA, "__tdata_start")
             .hide();
 
-        if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable) {
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::Fixed) {
             symbols.section_start(output_section_id::DYNAMIC, "_DYNAMIC");
         }
 
@@ -1487,6 +1515,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
         _resolutions: &layout::SymbolResolutions<Self>,
+        _group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>> {
         Ok(finalise_sizes_ext)
     }
@@ -1658,7 +1687,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         properties: &LayoutExt,
         symbol_db: &SymbolDb<'data, Self>,
-    ) {
+    ) -> Result<()> {
         if symbol_db.output_kind.needs_dynamic() {
             let dynamic_entry_size = C::DYNAMIC_ENTRY_SIZE as usize;
             mem_sizes.increment(
@@ -1759,6 +1788,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             );
             state.verdefs.replace(verdefs);
         }
+
+        Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(
@@ -1828,7 +1859,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         format_specific: &Self::FinaliseSizesExt<'_>,
         args: &ElfArgs,
     ) -> Result {
-        if format_specific.has_eh_frame_input || *current_sizes.get(part_id::EH_FRAME) != 0 {
+        if format_specific.has_eh_frame_input || current_sizes.get(part_id::EH_FRAME) != 0 {
             extra_sizes.increment(part_id::EH_FRAME, size_of::<u32>() as u64);
             state.needs_eh_frame_terminator = true;
         }
@@ -1837,7 +1868,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)?;
         }
         if args.is_relr_enabled() {
-            let got_relr_size = *current_sizes.get(part_id::GOT_RELR);
+            let got_relr_size = current_sizes.get(part_id::GOT_RELR);
             let n = got_relr_size / C::GOT_ENTRY_SIZE;
             let relr_entries = got_relr_bitmap_relr_count::<C>(n);
             if relr_entries > 0 {
@@ -1850,9 +1881,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn apply_late_size_adjustments_prelude(
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
+        format_specific: &LayoutExt,
         args: &ElfArgs,
     ) -> Result {
-        if args.should_write_eh_frame_hdr && *current_sizes.get(part_id::EH_FRAME_HDR) != 0 {
+        extra_sizes.increment(
+            part_id::GOT,
+            C::GOT_ENTRY_SIZE
+                * format_specific
+                    .num_got_plt_header_entries(current_sizes.get(part_id::RELA_PLT) > 0),
+        );
+
+        if args.should_write_eh_frame_hdr && current_sizes.get(part_id::EH_FRAME_HDR) != 0 {
             extra_sizes.increment(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
         Ok(())
@@ -1924,8 +1963,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     ) -> Result {
         // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
         // executable stack.
-        if input_section.is_executable() && !args.execstack {
-            bail!("{object}: requires executable stack, but -z execstack is not specified");
+        if input_section.is_executable() {
+            args.report_object_execstack(object)?;
         }
         Ok(())
     }
@@ -1945,7 +1984,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 // need to deal with the symtab entry here.
                 common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
                 common.allocate(part_id::STRTAB, name.len() as u64 + 1);
-            } else {
+            } else if !flags.needs_canonical_plt() {
                 common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                 common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
             }
@@ -1978,7 +2017,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let has_dynamic_symbol =
             flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
 
-        if flags.needs_got() && !flags.is_tls() {
+        if flags.needs_got() && !flags.needs_tls_got() {
             let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
             if is_got_relr {
                 mem_sizes.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
@@ -1986,13 +2025,15 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             }
             if flags.needs_plt() {
-                mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
             }
-            if flags.is_ifunc() {
+            if flags.needs_canonical_plt() {
                 mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-            } else if flags.is_address() && output_kind.is_relocatable() {
+            } else if flags.is_ifunc() {
+                mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
+            } else if flags.has_link_time_address() && output_kind.is_position_independent() {
                 if args.is_relr_enabled() && !is_got_relr {
                     // Flat RELR for section boundary symbols (not bitmap-packed)
                     mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
@@ -2001,11 +2042,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
                 // is_got_relr=true: RELR entries counted by post_compute_sizes
             }
+
+            if flags.needs_canonical_plt_got_for_address() {
+                mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+            }
         }
 
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
-            if output_kind.is_relocatable() {
+            if output_kind.is_position_independent() {
                 if args.is_relr_enabled() {
                     mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                 } else {
@@ -2118,7 +2164,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .iter()
             .map(|&sym_id| {
                 let name_len = symbol_db.symbol_name(sym_id).map_or(0, |n| n.bytes().len());
-                elf::THUNK_SYMBOL_PREFIX.len() + name_len + 1
+                THUNK_SYMBOL_PREFIX.len() + name_len + 1
             })
             .sum();
         sizes.increment(
@@ -2153,14 +2199,26 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
+        let got_plt_header_entries = resources.format_specific.num_got_plt_header_entries(
+            resources
+                .section_layouts
+                .get(output_section_id::RELA_PLT)
+                .mem_size
+                > 0,
+        );
+        memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * got_plt_header_entries);
+
         let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
-            let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
+            let address = NonZeroU64::new(memory_offsets.get(part_id::GOT))
                 .expect("GOT address must never be zero");
             memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
             address
         });
 
-        Ok(PreludeLayoutExt { tlsld_got_entry })
+        Ok(PreludeLayoutExt {
+            got_plt_header_entries,
+            tlsld_got_entry,
+        })
     }
 
     #[inline(always)]
@@ -2188,10 +2246,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             if flags.is_dynamic() {
                 resolution.raw_value = plt_address.get();
             }
-            // For ifunc with address equality needs, allocate 2 GOT entries
+            // For functions with address equality needs, allocate 2 GOT entries
             // - First entry: Used by PLT
             // - Second entry: Used by GOT-relative references
-            let num_got_entries = if flags.needs_ifunc_got_for_address() {
+            let num_got_entries = if flags.needs_ifunc_got_for_address()
+                || flags.needs_canonical_plt_got_for_address()
+            {
                 2
             } else {
                 1
@@ -2204,7 +2264,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             } else {
                 Some(allocate_got::<C>(num_got_entries, memory_offsets))
             };
-        } else if flags.is_tls() {
+        } else if flags.needs_tls_got() {
             // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
             let mut num_got_slots = 0;
             if flags.needs_got_tls_offset() {
@@ -2341,7 +2401,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
     fn verify_allowed_input_section_name(name: &[u8]) -> Result {
         if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-            if cfg!(all(feature = "plugins", unix)) {
+            if crate::linker_plugins::ENABLED {
                 bail!("Found GCC LTO input that we didn't supply to linker plugin");
             }
             return Err(crate::symbol_db::linker_plugin_disabled_error());
@@ -2360,15 +2420,18 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         _args: &Self::Args,
     ) {
         sizes.increment(crate::part_id::FILE_HEADER, u64::from(C::FILE_HEADER_SIZE));
+
         sizes.increment(
             part_id::PROGRAM_HEADERS,
             program_headers_size::<C>(header_info),
         );
+
         sizes.increment(
             part_id::SECTION_HEADERS,
             section_headers_size::<C>(header_info),
         );
-        prelude.format_specific.shstrtab_size = output_sections
+
+        let regular_strtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| {
@@ -2379,6 +2442,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
             })
             .sum::<u64>();
+
+        prelude.format_specific.shstrtab_size =
+            regular_strtab_size + header_info.partial_link_section_name_bytes;
+
         sizes.increment(part_id::SHSTRTAB, prelude.format_specific.shstrtab_size);
     }
 
@@ -2390,6 +2457,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let symbol = state
             .object
             .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
+
+        if symbol.visibility() == Visibility::Protected {
+            bail!(
+                "Cannot create copy relocation for protected symbol: {}",
+                resources.symbol_debug(symbol_id)
+            );
+        }
 
         // Note, we're a shared object, so this is the address relative to the load address of the
         // shared object, not an offset within a section like with regular input objects. That means
@@ -2450,7 +2524,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
-        builder.add_section(output_section_id::SECTION_HEADERS);
         builder.add_section(output_section_id::NOTE_GNU_PROPERTY);
         builder.add_section(output_section_id::NOTE_GNU_BUILD_ID);
         builder.add_section(output_section_id::INTERP);
@@ -2504,6 +2577,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::SYMTAB_LOCAL);
         builder.add_section(output_section_id::SYMTAB_SHNDX_LOCAL);
         builder.add_section(output_section_id::STRTAB);
+        builder.add_section(output_section_id::PARTIAL_LINKING_SINGLETONS);
+        builder.add_section(output_section_id::SECTION_HEADERS);
 
         builder.build()
     }
@@ -2715,7 +2790,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 while let Some((_, seg_id)) = it.next_if(|&(cat, _)| cat == 3) {
                     builder.push_event(OrderEvent::SegmentEnd(seg_id));
                 }
-                builder.push_event(OrderEvent::Section(output_section_id::SECTION_HEADERS));
+
                 for (_, seg_id) in it {
                     builder.push_event(OrderEvent::SegmentStart(seg_id));
                 }
@@ -2779,6 +2854,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.push_event(OrderEvent::SegmentStart(riscv_segment));
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.push_event(OrderEvent::SegmentEnd(riscv_segment));
+
+        builder.add_section(output_section_id::SECTION_HEADERS);
 
         Ok(builder.build())
     }
@@ -2865,7 +2942,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / C::SYMTAB_ENTRY_SIZE;
         let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / C::SYMTAB_ENTRY_SIZE;
 
-        let mut extra_sizes = OutputSectionPartMap::with_size(group_sizes.num_parts());
+        let mut extra_sizes = group_sizes.new_empty_like();
         extra_sizes.increment(
             part_id::SYMTAB_SHNDX_LOCAL,
             locals * SYMTAB_SHNDX_ENTRY_SIZE,
@@ -3067,12 +3144,12 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
 
-        if file.arch != args.arch {
+        if file.arch != args.architecture() {
             bail!(
                 "`{}` has incompatible architecture: {}, expecting {}",
                 input,
                 file.arch,
-                args.arch,
+                args.architecture(),
             )
         }
 
@@ -3776,7 +3853,7 @@ fn allocate_sysv_hash<C: ElfClass>(
     let bucket_count = (num_defs / 2).max(1).next_power_of_two() as u32;
     // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
     // symbols, which also includes undefined dynamic symbols.
-    let num_dynsym = *current_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
+    let num_dynsym = current_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
     let chain_count = num_dynsym
         .try_into()
         .context("Too many dynamic symbols for .hash")?;
@@ -4241,7 +4318,7 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct GnuProperty {
     pub(crate) ptype: object::elf::GnuPropertyType,
     pub(crate) data: u32,
@@ -4306,6 +4383,7 @@ pub(crate) struct LayoutExt {
     pub(crate) riscv_attributes: RiscVAttributes,
     pub(crate) eflags: object::elf::FileFlags,
     has_eh_frame_input: bool,
+    num_got_plt_header_entries: u64,
 }
 
 impl LayoutExt {
@@ -4320,7 +4398,14 @@ impl LayoutExt {
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
-        let gnu_property_notes = merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa)?;
+        let gnu_property_notes =
+            merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa, args.force_ibt);
+        if args.force_ibt || args.cet_report != crate::args::elf::CetReport::None {
+            for obj in objects_iter(groups) {
+                let filename = obj.input.file.filename.to_string_lossy();
+                check_cet_properties(&filename, &obj.format_specific.gnu_property_notes, args)?;
+            }
+        }
         let riscv_attributes = merge_riscv_attributes::<C, A>(states)?;
         let eflags = merge_eflags::<C, A>(objects_iter(groups).map(|o| o.object))?;
         let has_eh_frame_input = objects_iter(groups).any(|o| o.format_specific.has_eh_frame_input);
@@ -4330,14 +4415,60 @@ impl LayoutExt {
             riscv_attributes,
             eflags,
             has_eh_frame_input,
+            num_got_plt_header_entries: A::NUM_GOT_PLT_HEADER_ENTRIES,
         })
     }
+
+    fn num_got_plt_header_entries(&self, has_plt_relocations: bool) -> u64 {
+        if has_plt_relocations {
+            self.num_got_plt_header_entries
+        } else {
+            0
+        }
+    }
+}
+
+fn check_cet_properties(filename: &str, props: &[GnuProperty], args: &ElfArgs) -> Result {
+    let feature_bits = props
+        .iter()
+        .find(|p| p.ptype == object::elf::GNU_PROPERTY_X86_FEATURE_1_AND)
+        .map_or(0, |p| p.data);
+
+    if args.force_ibt && (feature_bits & GNU_PROPERTY_X86_FEATURE_1_IBT == 0) {
+        args.warning(format!(
+            "{filename}: -z force-ibt: file does not have GNU_PROPERTY_X86_FEATURE_1_IBT property"
+        ));
+    }
+
+    if args.cet_report != crate::args::elf::CetReport::None {
+        for (bit, name) in [
+            (
+                GNU_PROPERTY_X86_FEATURE_1_IBT,
+                "GNU_PROPERTY_X86_FEATURE_1_IBT",
+            ),
+            (
+                GNU_PROPERTY_X86_FEATURE_1_SHSTK,
+                "GNU_PROPERTY_X86_FEATURE_1_SHSTK",
+            ),
+        ] {
+            if feature_bits & bit == 0 {
+                let msg = format!("{filename}: -z cet-report: file does not have {name} property");
+                match args.cet_report {
+                    CetReport::Warning => args.warning(msg),
+                    CetReport::Error => bail!("{msg}"),
+                    CetReport::None => unreachable!(),
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
     states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data, C>>,
     isa_needed: Option<NonZeroU32>,
-) -> Result<Vec<GnuProperty>> {
+    force_ibt: bool,
+) -> Vec<GnuProperty> {
     timing_phase!("Merge GNU property notes");
 
     let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
@@ -4351,8 +4482,9 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
         // First OR within file to accumulate all features this file has.
         let mut file_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
         for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype.0)
-                .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
+            let Some(property_class) = A::get_property_class(prop.ptype.0) else {
+                continue;
+            };
             file_map
                 .entry(prop.ptype)
                 .and_modify(|entry: &mut (u32, PropertyClass)| {
@@ -4384,7 +4516,8 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
     }
 
     // Iterate the properties sorted by property_type so that we have a stable output!
-    let output_properties = property_map
+
+    let mut output = property_map
         .into_iter()
         .sorted_by_key(|x| x.0)
         .filter_map(|(property_type, (property_value, property_class))| {
@@ -4408,7 +4541,24 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
         })
         .collect_vec();
 
-    Ok(output_properties)
+    // Add IBT property if -z force-ibt is set, matching lld behavior.
+    // This is done after merging to ensure force-ibt overrides AND logic.
+    if force_ibt {
+        if let Some(prop) = output
+            .iter_mut()
+            .find(|p| p.ptype == GNU_PROPERTY_X86_FEATURE_1_AND)
+        {
+            prop.data |= GNU_PROPERTY_X86_FEATURE_1_IBT;
+        } else {
+            output.push(GnuProperty {
+                ptype: GNU_PROPERTY_X86_FEATURE_1_AND,
+                data: GNU_PROPERTY_X86_FEATURE_1_IBT,
+            });
+            output.sort_by_key(|p| p.ptype);
+        }
+    }
+
+    output
 }
 
 fn merge_eflags<'files, 'data: 'files, C: ElfClass, A: Arch<Platform = Elf<C>>>(
@@ -4790,6 +4940,10 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
 
     fn is_tls(&self) -> bool {
         self.flags.contains(shf::TLS)
+    }
+
+    fn occupies_only_tls_address_space(&self) -> bool {
+        self.is_tls() && self.is_no_bits()
     }
 
     fn is_writable(&self) -> bool {
@@ -5446,7 +5600,7 @@ impl<C: ElfClass> Elf<C> {
         };
         defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
             kind: Self::primary_section(SECTION_HEADERS_SECTION_NAME),
-            section_flags: shf::ALLOC,
+            min_alignment: C::SECTION_HEADER_ALIGNMENT,
             ..Self::DEFAULT_DEFS
         };
         defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
@@ -6139,6 +6293,19 @@ fn materialize_relocation_requirements<
                 .uses_tlsld
                 .store(true, atomic::Ordering::Relaxed);
         }
+    } else if rel_kind == RelocationKind::SymbolSize
+        && flags.is_interposable()
+        && (flags.is_dynamic() || symbol_db.output_kind.is_shared_object())
+    {
+        if !section_is_writable {
+            bail!(
+                "Cannot apply dynamic relocation {} to read-only section for symbol `{}`",
+                A::rel_type_to_string(r_type),
+                resources.symbol_db.symbol_name_for_display(symbol_id),
+            );
+        }
+
+        common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if flags_to_add.needs_direct() && flags.is_interposable() {
         if symbol_db.output_kind.is_shared_object()
             && A::is_disallowed_for_interposable_symbols(r_type)
@@ -6154,7 +6321,7 @@ fn materialize_relocation_requirements<
         } else if flags.is_function() {
             // Create a PLT entry for the function and refer to that instead.
             flags_to_add.remove(ValueFlags::DIRECT);
-            *flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
+            *flags_to_add |= ValueFlags::PLT | ValueFlags::GOT | ValueFlags::CANONICAL_PLT;
         } else if !flags.is_absolute() {
             match args.copy_relocations_enabled() {
                 crate::args::CopyRelocations::Allowed => {
@@ -6175,12 +6342,12 @@ fn materialize_relocation_requirements<
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
         && section_is_writable
-        && symbol_db.output_kind.is_relocatable()
+        && symbol_db.output_kind.is_position_independent()
     {
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-    } else if symbol_db.output_kind.is_relocatable()
+    } else if symbol_db.output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
-        && flags.is_address()
+        && flags.has_link_time_address()
     {
         if section_is_writable {
             // Odd offsets can't be encoded as RELR address entries (LSB used as
@@ -6210,12 +6377,17 @@ fn materialize_relocation_requirements<
     // that all references to the ifunc return the same address.
 
     let relocation_needs_got = flags_to_add.needs_got();
+    let relocation_needs_got_for_address = relocation_needs_got && !flags_to_add.needs_plt();
+
+    if flags.is_function() && relocation_needs_got_for_address {
+        *flags_to_add |= ValueFlags::GOT_FOR_PLT_ENTRY;
+    }
 
     if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
         *flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
     }
 
-    if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
+    if flags.is_ifunc() && relocation_needs_got && symbol_db.output_kind.has_fixed_load_address() {
         *flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
     }
 
@@ -6263,6 +6435,7 @@ pub(crate) struct PreludeLayoutStateExt {
 
 #[derive(Default, Debug)]
 pub(crate) struct PreludeLayoutExt {
+    pub(crate) got_plt_header_entries: u64,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
 }
 
@@ -6293,9 +6466,9 @@ pub(crate) fn is_got_relr_eligible(
     args.is_relr_enabled()
         && !flags.is_ifunc()
         && !has_dynamic_symbol
-        && flags.is_address()
+        && flags.has_link_time_address()
         && !flags.is_downgraded_to_local()
-        && output_kind.is_relocatable()
+        && output_kind.is_position_independent()
 }
 
 fn got_relr_bitmap_relr_count<C: ElfClass>(n: u64) -> u64 {
@@ -6310,20 +6483,20 @@ fn allocate_got<C: ElfClass>(
     num_entries: u64,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
+    let got_address = NonZeroU64::new(memory_offsets.get(part_id::GOT)).unwrap();
     memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * num_entries);
     got_address
 }
 
 fn allocate_got_relr<C: ElfClass>(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT_RELR)).unwrap();
+    let got_address = NonZeroU64::new(memory_offsets.get(part_id::GOT_RELR)).unwrap();
     memory_offsets.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
     got_address
 }
 
 fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
-    memory_offsets.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+    let plt_address = NonZeroU64::new(memory_offsets.get(part_id::PLT_GOT)).unwrap();
+    memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
     plt_address
 }
 
@@ -6338,7 +6511,9 @@ impl<C: ElfClass> Resolution<Elf<C>> {
 
     pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
         let mut got_address = self.got_address()?;
-        if self.flags.needs_ifunc_got_for_address() {
+        if self.flags.needs_ifunc_got_for_address()
+            || self.flags.needs_canonical_plt_got_for_address()
+        {
             got_address += C::GOT_ENTRY_SIZE;
         }
         Ok(got_address)

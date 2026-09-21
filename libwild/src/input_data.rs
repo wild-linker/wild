@@ -128,6 +128,10 @@ impl<I: InputFileData> InputFile<I> {
         self.data.as_ref().map_or(&[], InputFileData::bytes)
     }
 
+    pub(crate) fn storage(&self) -> Option<&I> {
+        self.data.as_ref()
+    }
+
     fn as_ref(&self) -> InputFileRef<'_> {
         InputFileRef {
             filename: &self.filename,

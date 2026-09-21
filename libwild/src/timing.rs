@@ -4,10 +4,9 @@ use crate::args::CounterKind;
 use crate::env;
 use crate::error::AlreadyInitialised;
 use crate::error::Result;
-use crate::perf::CounterList;
+use crate::host::perf::CounterList;
 use anyhow::Context;
 use anyhow::anyhow;
-use crossbeam_queue::ArrayQueue;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -54,14 +53,14 @@ macro_rules! verbose_timing_phase {
 }
 
 struct TimingLayer {
-    counter_pool: Option<ArrayQueue<CounterList>>,
+    counters: Mutex<CounterList>,
 }
 
 struct Data {
     start: Instant,
     child_count: u32,
     attributes_string: String,
-    counters: Option<CounterList>,
+    counters: Vec<Option<CounterSnapshot>>,
 }
 
 #[derive(Default)]
@@ -120,11 +119,9 @@ where
         let mut formatted = ValuesFormatter::default();
         attributes.values().record(&mut formatted);
 
-        let counters = self.counter_pool.as_ref().and_then(|l| l.pop());
-
         span.extensions_mut().insert(Data {
             start: Instant::now(),
-            counters,
+            counters: Vec::new(),
             child_count: 0,
             attributes_string: formatted.finish(),
         });
@@ -134,9 +131,7 @@ where
         let span = ctx.span(id).expect("valid span ID");
         if let Some(data) = span.extensions_mut().get_mut::<Data>() {
             data.start = Instant::now();
-            if let Some(counters) = data.counters.as_mut() {
-                counters.start();
-            }
+            data.counters = self.counters.lock().unwrap().read();
         }
     }
 
@@ -165,18 +160,15 @@ where
             let name = metadata.name();
             let wall = data.start.elapsed();
 
-            let mut counters = data.counters.take();
-
-            let counter_values = counters
-                .as_mut()
-                .map(|c| c.disable_and_read())
-                .unwrap_or_default();
-
-            if let Some(counters) = counters
-                && let Some(pool) = self.counter_pool.as_ref()
-            {
-                let _ = pool.push(counters);
-            }
+            let counter_values = self
+                .counters
+                .lock()
+                .unwrap()
+                .read()
+                .into_iter()
+                .zip(&data.counters)
+                .map(|(end, start)| end?.since(start.as_ref()?))
+                .collect();
 
             let reading = Reading {
                 wall,
@@ -197,32 +189,47 @@ where
 pub(crate) fn init_tracing(opts: &[CounterKind]) -> Result<(), AlreadyInitialised> {
     use tracing_subscriber::prelude::*;
 
-    let mut counter_pool = None;
-
-    if !opts.is_empty() {
-        // Our pool size limits the depth of nested measurements. At the time of writing, we don't
-        // have more than 4 levels. Note, we need to create all counters now and can't create more
-        // on-demand, since once our worker threads are started, any newly created counters won't
-        // apply to them.
-        let pool_size = 5;
-
-        let pool = ArrayQueue::new(pool_size);
-        for _ in 0..pool_size {
-            let _ = pool.push(CounterList::from_kinds(opts));
-        }
-
-        counter_pool = Some(pool);
-    }
-
-    let layer = TimingLayer { counter_pool };
+    // Create inherited counters before we spawn worker threads, otherwise the work done by those
+    // threads won't be counted.
+    let layer = TimingLayer {
+        counters: Mutex::new(CounterList::from_kinds(opts)),
+    };
 
     let subscriber = tracing_subscriber::Registry::default().with(layer);
     tracing::subscriber::set_global_default(subscriber).map_err(|_| AlreadyInitialised)
 }
 
+pub(crate) struct CounterSnapshot {
+    pub(crate) count: u64,
+    pub(crate) time_enabled: u64,
+    pub(crate) time_running: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CounterValue {
+    count: u64,
+    estimated: bool,
+}
+
+impl CounterSnapshot {
+    fn since(&self, start: &Self) -> Option<CounterValue> {
+        let count = self.count.checked_sub(start.count)?;
+        let enabled = self.time_enabled.checked_sub(start.time_enabled)?;
+        let running = self.time_running.checked_sub(start.time_running)?;
+        if running == 0 || running > enabled {
+            return None;
+        }
+        let scaled = u128::from(count) * u128::from(enabled) / u128::from(running);
+        Some(CounterValue {
+            count: u64::try_from(scaled).ok()?,
+            estimated: running < enabled,
+        })
+    }
+}
+
 struct Reading {
     wall: Duration,
-    counter_values: Vec<u64>,
+    counter_values: Vec<Option<CounterValue>>,
 }
 
 struct Indent {
@@ -268,7 +275,15 @@ impl Display for Reading {
                 } else {
                     write!(f, ", ")?;
                 }
-                write!(f, "{value}")?;
+                match value {
+                    Some(value) => {
+                        write!(f, "{}", value.count)?;
+                        if value.estimated {
+                            write!(f, " (estimated)")?;
+                        }
+                    }
+                    None => write!(f, "unavailable")?,
+                }
             }
             write!(f, ")")?;
         }

@@ -31,6 +31,7 @@
 //#DiffIgnore:section.rela.dyn.flags
 //#DiffIgnore:section.data
 //#CompArgs:-fPIC
+//#CompSoArgs:-fPIC
 //#LinkArgs:-shared -znow
 //#RunDynSym:entry
 

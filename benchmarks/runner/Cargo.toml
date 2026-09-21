@@ -8,8 +8,12 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+indexmap = { workspace = true, features = ["serde"] }
 indicatif.workspace = true
 postcard.workspace = true
 serde.workspace = true
-toml.workspace = true
+toml = { workspace = true, features = ["preserve_order"] }
 wait4.workspace = true
+
+[lints]
+workspace = true

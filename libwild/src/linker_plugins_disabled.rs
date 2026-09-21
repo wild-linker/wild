@@ -18,6 +18,9 @@ use crate::value_flags::PerSymbolFlags;
 use rayon::Scope;
 use std::marker::PhantomData;
 
+/// Whether linker plugins can be used: the `plugins` feature is on and the host can load them.
+pub(crate) const ENABLED: bool = false;
+
 pub(crate) struct LoadedPlugin {}
 
 pub(crate) struct LinkerPlugin<'data> {

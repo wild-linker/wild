@@ -4,9 +4,9 @@
 //#Shared:pie-pc32-dso-shared-fn.s
 //#SoSingleLinker:wild
 //#LinkArgs:-pie --no-gc-sections
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#ExpectError:R_X86_64_PC32
-//#SkipLinker:ld
+
 .global _start
 _start:
     ret

@@ -77,6 +77,8 @@ pub struct CommonArgs {
     pub(crate) inputs: Vec<Input>,
     pub(crate) file_replacement_mode: Option<FileReplacementMode>,
     pub(crate) file_write_mode: Option<FileWriteMode>,
+    pub(crate) fallocate_output_file: Option<bool>,
+    pub(crate) madvise_huge_pages: Option<bool>,
     pub(crate) save_dir: SaveDir,
 
     pub(crate) prepopulate_maps: bool,
@@ -219,7 +221,7 @@ impl Args {
                 writeln!(
                     stdout,
                     "supported emulations: {}",
-                    crate::arch::SUPPORTED_EMULATIONS
+                    elf::supported_emulations()
                 )?;
             }
             Args::Coff(_) | Args::MachO(_) | Args::Wasm(_) => (),
@@ -237,7 +239,7 @@ enum PlatformKind {
 
 impl PlatformKind {
     fn host() -> Self {
-        if cfg!(target_os = "macos") {
+        if crate::host::os::IS_MACOS {
             PlatformKind::MachO
         } else {
             PlatformKind::Elf
@@ -303,15 +305,15 @@ pub enum CounterKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelocationModel {
-    NonRelocatable,
-    Relocatable,
+    Fixed,
+    PositionIndependent,
 }
 
 impl Default for CommonArgs {
     fn default() -> Self {
         Self {
             output: Arc::from(Path::new("a.out")),
-            relocation_model: RelocationModel::NonRelocatable,
+            relocation_model: RelocationModel::Fixed,
             available_threads: NonZeroUsize::new(1).unwrap(),
             num_threads: None,
             jobserver_client: None,
@@ -321,6 +323,8 @@ impl Default for CommonArgs {
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
             file_write_mode: None,
+            fallocate_output_file: None,
+            madvise_huge_pages: None,
             prepopulate_maps: false,
             debug_fuel: None,
             should_fork: true,
@@ -864,7 +868,7 @@ impl<T: platform::Args> ArgumentParser<T> {
                     // Value has '=', look up key with trailing '='
                     if let Some(sub) = handler.sub_options.get(format!("{key}=").as_str()) {
                         match sub.handler {
-                            SubOptionHandler::NoValue(_) => {
+                            SubOptionHandler::NoValue(_) | SubOptionHandler::UseMainHandler => {
                                 (handler.handler)(args, modifier_stack, &value)?;
                             }
                             SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
@@ -878,6 +882,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                     if let Some(sub) = handler.sub_options.get(value.as_str()) {
                         match sub.handler {
                             SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
+                            SubOptionHandler::UseMainHandler => {
+                                (handler.handler)(args, modifier_stack, &value)?;
+                            }
                             SubOptionHandler::WithValue(_) => {
                                 bail!("Option -{prefix} {value} requires a value");
                             }
@@ -1179,6 +1186,7 @@ struct WithOptionalParam;
 enum SubOptionHandler<T> {
     /// Handler without value parameter (exact match)
     NoValue(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
+    UseMainHandler,
     /// Handler with value parameter (prefix match)
     WithValue(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
 }
@@ -1246,6 +1254,18 @@ impl<'a, T, S> OptionDeclaration<'a, T, S> {
             SubOption {
                 help,
                 handler: SubOptionHandler::NoValue(handler),
+            },
+        );
+        self
+    }
+
+    #[must_use]
+    fn value_help(mut self, name: &'static str, help: &'static str) -> Self {
+        self.sub_options.insert(
+            name,
+            SubOption {
+                help,
+                handler: SubOptionHandler::UseMainHandler,
             },
         );
         self
@@ -1526,6 +1546,42 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
         .help("Write output file without mmap")
         .execute(|args, _modifier_stack| {
             args.common_mut().file_write_mode = Some(FileWriteMode::BufferThenWrite);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("fallocate-output-file")
+        .help("Preallocate space for the output file with fallocate")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().fallocate_output_file = Some(true);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-fallocate-output-file")
+        .help("Do not preallocate space for the output file with fallocate")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().fallocate_output_file = Some(false);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("madvise-huge-pages")
+        .help("Request transparent huge pages for the output file mmap")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().madvise_huge_pages = Some(true);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-madvise-huge-pages")
+        .help("Do not request transparent huge pages for the output file mmap")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().madvise_huge_pages = Some(false);
             Ok(())
         });
 

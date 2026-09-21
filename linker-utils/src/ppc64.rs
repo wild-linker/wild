@@ -140,6 +140,7 @@ pub const fn relocation_type_from_raw(
         alignment,
         bias,
         thunkable: false,
+        implicit_addend: false,
     })
 }
 

@@ -14,7 +14,6 @@ resolver = "2"
 repository = "https://github.com/wild-linker/wild"
 license = "MIT OR Apache-2.0"
 version = "0.10.0"
-readme = "README.md"
 rust-version = "1.97.1"
 edition = "2024"
 
@@ -87,6 +86,7 @@ memchr = { version = "2.7.0", default-features = false }
 memmap2 = { version = "0.9.0", default-features = false }
 mimalloc = { version = "0.1", default-features = false }
 nix = { version = "0.31.1", default-features = false, features = [
+  "feature",
   "resource",
   "fs",
 ] }
@@ -127,7 +127,7 @@ symbolic-demangle = { version = "13.0.0", default-features = false, features = [
   "cpp",
   "rust",
 ] }
-tabled = { version = "0.21.0", default-features = false, features = ["std"] }
+tabled = { version = "0.22.0", default-features = false, features = ["std"] }
 tempfile = { version = "3.15.0", default-features = false, features = [
   "getrandom",
 ] }
@@ -145,11 +145,11 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
 ] }
 uuid = { version = "1.3.0", default-features = false, features = ["v4"] }
 wait-timeout = { version = "0.2.0", default-features = false }
-wait4 = { version = "0.1.3", default-features = false }
-wasmparser = { version = "0.255.0", default-features = false, features = [
+wait4 = { version = "0.2.0", default-features = false }
+wasmparser = { version = "0.259.0", default-features = false, features = [
   "hash-collections",
 ] }
-wasm-encoder = { version = "0.255.0", default-features = false }
+wasm-encoder = { version = "0.259.0", default-features = false }
 which = { version = "8.0.0", default-features = false, features = ["real-sys"] }
 winnow = { version = "1.0.0", default-features = false, features = [
   "ascii",
@@ -159,7 +159,7 @@ winnow = { version = "1.0.0", default-features = false, features = [
 zerocopy = { version = "0.8.27", default-features = false, features = [
   "derive",
 ] }
-zstd = { version = "0.13.0", default-features = false }
+zstd = { version = "0.14.0", default-features = false }
 
 [profile.release]
 codegen-units = 1

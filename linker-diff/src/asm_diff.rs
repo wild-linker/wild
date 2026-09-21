@@ -2541,6 +2541,7 @@ impl<'data> RelaxationTester<'data> {
                 .got_base_address
                 .context("Missing GOT base address")?,
             RelocationKind::Absolute
+            | RelocationKind::SymbolSize
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
@@ -2558,7 +2559,8 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtractionULEB128(..)
             | RelocationKind::None
-            | RelocationKind::Alignment => 0,
+            | RelocationKind::Alignment
+            | RelocationKind::MachoAddition => 0,
         };
 
         relative_to &= A::get_relocation_base_mask(&relocation_info);
@@ -2777,10 +2779,12 @@ fn value_kind_for_relocation<A: Arch>(
             // Same as above.
             ValueKind::Got(BasicValueKind::TlsGd)
         }
-        RelocationKind::TlsDescCall
+        RelocationKind::SymbolSize
+        | RelocationKind::TlsDescCall
         | RelocationKind::None
         | RelocationKind::PairSubtractionULEB128(..)
-        | RelocationKind::Alignment => {
+        | RelocationKind::Alignment
+        | RelocationKind::MachoAddition => {
             return None;
         }
     };
@@ -3706,7 +3710,9 @@ impl<'data> GotIndex<'data> {
                         Ok(Referent::UnmatchedTlsOffset(rel.addend()))
                     }
                 }
-                DynamicRelocationKind::JumpSlot if symbol.is_some_and(|s| s.is_ifunc) => {
+                DynamicRelocationKind::JumpSlot | DynamicRelocationKind::GotEntry
+                    if symbol.is_some_and(|s| s.is_ifunc) =>
+                {
                     let symbol = symbol.unwrap();
                     Ok(Referent::IFunc(Some(symbol.name)))
                 }
@@ -3736,6 +3742,7 @@ impl<'data> GotIndex<'data> {
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
+                | RelocationKind::SymbolSize
                 | RelocationKind::AbsoluteLowPart
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
@@ -3755,7 +3762,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
                 | RelocationKind::PairSubtractionULEB128(..)
-                | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
+                | RelocationKind::Alignment
+                | RelocationKind::MachoAddition => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase

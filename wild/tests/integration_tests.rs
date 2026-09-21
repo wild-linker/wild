@@ -18,8 +18,8 @@
 //! `none` means that we invoke the linker directly. For the other options, we invoke it via the
 //! specified compiler. This option doesn't apply to Rust code, which always uses the Rust compiler.
 //!
-//! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
-//! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
+//! LinkArgs:... Appends arguments to pass to the linker. If using a LinkerDriver, these arguments
+//! should be whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
 //! `./<filename>` will be replaced with the path to the input file. `$OUT_DIR` will be replaced
 //! with the path to the test's build directory. `$WASI_SYSROOT` will be replaced with the wasi-libc
 //! sysroot (see RequiresWasiLibc). These arguments are passed before input objects.
@@ -27,21 +27,26 @@
 //! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
 //! such as `-lc` that need to appear after objects that reference them.
 //!
-//! LinkSoArgs:... Arguments to pass when linking a shared object.
+//! LinkSoArgs:... Appends additional arguments when linking a shared object. Note that LinkArgs
+//! is still applied. LinkSoArgs is applied after LinkArgs.
 //!
 //! SoSingleLinker:{linker name} If specified, we will use the named linker for liking shared
 //! objects regardless of the linker under test.
 //!
 //! WildExtraLinkArgs:... Extra linker arguments that should only be passed to the Wild linker.
 //!
-//! CompArgs:... Arguments to be passed to the compiler when building object files.
+//! Env:NAME=value Adds an environment variable to linker invocations.
 //!
-//! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
+//! CompArgs:... Appends arguments to be passed to the compiler when building object files other
+//! than shared-object inputs.
+//!
+//! CompSoArgs:... Appends arguments to be passed to the compiler when building shared objects.
 //!
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
-//! For Wasm modules, this checks that the name is present in the export section. Symbol properties
-//! are not yet supported for Wasm.
+//! For Wasm modules, this checks that the name is present in the export section. The `address`
+//! property, if set, is the `i32.const` initializer of a global export. Other properties are not
+//! supported for Wasm.
 //!
 //! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols. For Mach-O, checks the
 //! exports trie.
@@ -84,6 +89,15 @@
 //!
 //! ExpectFuncImportCount:{count} (Wasm) Asserts the total number of function imports.
 //!
+//! ExpectSharedMemory:{bool} (Wasm) When true, asserts that the output module defines a shared
+//! linear memory with a maximum.
+//!
+//! ExpectMemoryImport:{module}/{name} [properties] (Wasm) Asserts that the output module
+//! imports a linear memory with the given module and field name. Optional properties:
+//!   initial=M: Asserts the memory has the specified initial size.
+//!   max=N: Asserts the memory has the specified maximum size.
+//!   shared=true|false: Asserts the memory is shared.
+//!
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -124,15 +138,10 @@
 //! RunDynSym:{string} If set and RunEnabled:true, then, instead of executing the binary normally,
 //! the binary is loaded as a shared library and the function specified by the string is called. The
 //! function must return an integer to indicate status (status != 42 is an error). Such run is
-//! currently skipped if the shared library is cross compiled.
+//! currently skipped if the shared library is cross compiled. For Wasm, wasmtime is invoked with
+//! `--invoke` on the named export.
 //!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
-//!
-//! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
-//! that isn't supported by GNU ld. Deprecated - use ReferenceLinkers instead.
-//!
-//! EnableLinker:{linker-name} Enables a linker that isn't enabled by default. e.g. lld. Deprecated
-//! - use ReferenceLinkers instead.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
@@ -302,12 +311,16 @@
 //! alignment=N: Type: Integer. Asserts that the symbol's address is a multiple of N.
 //!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
+//! For Wasm global exports, asserts the `i32.const` initializer.
 //!
 //! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
 //! size-changing relaxations (e.g. RISC-V call relaxation) were applied.
 //!
 //! binding=local|global|weak: Type: string. Asserts the binding of the symbol (STB_LOCAL,
 //! STB_GLOBAL or STB_WEAK).
+//!
+//! type=notype|object|func|section|file|common|tls|ifunc: Type: string. Asserts the ELF symbol
+//! type. This property is only supported for ELF symbols.
 //!
 //! line={num} Parses debug info to check that the symbol is on the line specified.
 //!
@@ -352,10 +365,15 @@ use object::ObjectSymbol as _;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::MH_HAS_TLV_DESCRIPTORS;
+use object::macho::S_THREAD_LOCAL_REGULAR;
+use object::macho::S_THREAD_LOCAL_VARIABLES;
+use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
 use object::read::macho::ExportData;
+use object::read::macho::Fixup;
 use object::read::macho::LoadCommandVariant;
 use object::read::macho::Segment;
 use regex::Regex;
@@ -402,15 +420,14 @@ fn main() -> Result<std::process::ExitCode> {
         args.color = Some(libtest_mimic::ColorSetting::Always);
     }
     let filter = Filter::new(&args);
+    let test_config = read_test_config()?;
     let mut tests = Vec::new();
-    collect_tests(&mut tests, &filter)?;
-    external_tests::collect_tests(&mut tests, &filter)?;
+    collect_tests(&mut tests, &filter, &test_config)?;
+    external_tests::collect_tests(&mut tests, &filter, &test_config)?;
     Ok(libtest_mimic::run(&args, tests).exit_code())
 }
 
-fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
-    let test_config = read_test_config()?;
-
+fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter, test_config: &TestConfig) -> Result {
     let host_arch = get_host_architecture();
 
     for platform in [PlatformKind::Elf, PlatformKind::MachO, PlatformKind::Wasm] {
@@ -457,12 +474,12 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                         platform,
                         arch,
                         path.clone(),
-                        &test_config,
+                        test_config,
                         &linker_catalog,
                     ),
                 )?;
 
-                let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+                let program_inputs = ProgramInputs::new(primary_source_file);
 
                 for config in configs {
                     if config.should_skip(arch) {
@@ -540,6 +557,19 @@ struct WasmModuleInfo {
     export_names: HashSet<String>,
     function_imports: Vec<(String, String)>,
     func_types: Vec<wasmparser::FuncType>,
+    imported_global_count: u32,
+    defined_global_i32: Vec<Option<i32>>,
+    export_global_indices: HashMap<String, u32>,
+    memories: Vec<wasmparser::MemoryType>,
+    memory_imports: Vec<(String, String, wasmparser::MemoryType)>,
+}
+
+fn i32_const_from_expr(expr: &wasmparser::ConstExpr<'_>) -> Option<i32> {
+    let mut reader = expr.get_operators_reader();
+    match reader.read().ok()? {
+        wasmparser::Operator::I32Const { value } => Some(value),
+        _ => None,
+    }
 }
 
 impl WasmModuleInfo {
@@ -554,6 +584,11 @@ impl WasmModuleInfo {
         let mut export_names = HashSet::new();
         let mut function_imports = Vec::new();
         let mut func_types = Vec::new();
+        let mut imported_global_count = 0u32;
+        let mut defined_global_i32 = Vec::new();
+        let mut export_global_indices = HashMap::new();
+        let mut memories = Vec::new();
+        let mut memory_imports = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -587,6 +622,16 @@ impl WasmModuleInfo {
                             function_imports
                                 .push((import.module.to_owned(), import.name.to_owned()));
                         }
+                        if matches!(import.ty, wasmparser::TypeRef::Global(_)) {
+                            imported_global_count += 1;
+                        }
+                        if let wasmparser::TypeRef::Memory(memory) = import.ty {
+                            memory_imports.push((
+                                import.module.to_owned(),
+                                import.name.to_owned(),
+                                memory,
+                            ));
+                        }
                     }
                 }
                 Payload::FunctionSection(_) => {
@@ -595,11 +640,22 @@ impl WasmModuleInfo {
                 Payload::TableSection(_) => {
                     section_names.insert("Table".to_owned());
                 }
-                Payload::MemorySection(_) => {
+                Payload::MemorySection(section) => {
                     section_names.insert("Memory".to_owned());
+                    for memory in section {
+                        memories.push(memory.with_context(|| {
+                            format!("Invalid memory entry in {}", path.display())
+                        })?);
+                    }
                 }
-                Payload::GlobalSection(_) => {
+                Payload::GlobalSection(section) => {
                     section_names.insert("Global".to_owned());
+                    for global in section {
+                        let global = global.with_context(|| {
+                            format!("Invalid global entry in {}", path.display())
+                        })?;
+                        defined_global_i32.push(i32_const_from_expr(&global.init_expr));
+                    }
                 }
                 Payload::ExportSection(section) => {
                     section_names.insert("Export".to_owned());
@@ -608,6 +664,9 @@ impl WasmModuleInfo {
                             format!("Invalid export entry in {}", path.display())
                         })?;
                         export_names.insert(export.name.to_owned());
+                        if matches!(export.kind, wasmparser::ExternalKind::Global) {
+                            export_global_indices.insert(export.name.to_owned(), export.index);
+                        }
                     }
                 }
                 Payload::StartSection { .. } => {
@@ -639,7 +698,18 @@ impl WasmModuleInfo {
             export_names,
             function_imports,
             func_types,
+            imported_global_count,
+            defined_global_i32,
+            export_global_indices,
+            memories,
+            memory_imports,
         })
+    }
+
+    fn exported_global_i32(&self, name: &str) -> Option<i32> {
+        let index = *self.export_global_indices.get(name)?;
+        let defined = index.checked_sub(self.imported_global_count)?;
+        self.defined_global_i32.get(defined as usize).copied()?
     }
 
     fn format_sorted(names: &HashSet<String>) -> String {
@@ -710,9 +780,13 @@ impl WasmModuleInfo {
         linker_name: &str,
     ) -> Result {
         for exp in expected {
+            let wasm_supported = SymtabAssertions {
+                absolute_address: exp.assertions.absolute_address,
+                ..Default::default()
+            };
             ensure!(
-                exp.assertions == SymtabAssertions::default(),
-                "Symbol property assertions are not supported for Wasm (on `{}`)",
+                exp.assertions == wasm_supported,
+                "Symbol property assertions other than `address` are not supported for Wasm (on `{}`)",
                 exp.name
             );
         }
@@ -726,6 +800,24 @@ impl WasmModuleInfo {
                 self.path.display(),
                 found()
             );
+            if let Some(expected_init) = exp.assertions.absolute_address {
+                let Some(actual) = self.exported_global_i32(&exp.name) else {
+                    bail!(
+                        "Expected global export `{}` with i32.const {expected_init} in {linker_name} \
+                         output ({}), but it is not an i32 global",
+                        exp.name,
+                        self.path.display()
+                    );
+                };
+                let actual_u64 = u64::from(actual as u32);
+                ensure!(
+                    actual_u64 == expected_init,
+                    "Expected global `{}` i32.const {expected_init} in {linker_name} output ({}), \
+                     found {actual}",
+                    exp.name,
+                    self.path.display()
+                );
+            }
         }
         for name in absent {
             ensure!(
@@ -757,6 +849,91 @@ impl WasmModuleInfo {
         }
         Ok(())
     }
+
+    fn ensure_memory_import(
+        &self,
+        expected: Option<&ExpectedMemoryImport>,
+        linker_name: &str,
+    ) -> Result {
+        let Some(exp) = expected else {
+            return Ok(());
+        };
+        let matching = self
+            .memory_imports
+            .iter()
+            .filter(|(module, name, _)| module == &exp.module && name == &exp.name)
+            .exactly_one()
+            .map_err(|matching| {
+                error!(
+                    "Expected exactly one memory import `{}/{}` in {linker_name} output ({}), \
+                     found {} (all: {:?})",
+                    exp.module,
+                    exp.name,
+                    self.path.display(),
+                    matching.count(),
+                    self.memory_imports
+                )
+            })?;
+        let (_, _, actual) = matching;
+        if let Some(shared) = exp.assertions.shared {
+            ensure!(
+                actual.shared == shared,
+                "Expected memory import `{}/{}` shared={shared} in {linker_name} output ({}), \
+                 found shared={}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.shared
+            );
+        }
+        if let Some(initial) = exp.assertions.initial {
+            ensure!(
+                actual.initial == initial,
+                "Expected memory import `{}/{}` initial={initial} page(s) in {linker_name} \
+                 output ({}), found initial={}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.initial
+            );
+        }
+        if let Some(max) = exp.assertions.max {
+            ensure!(
+                actual.maximum == Some(max),
+                "Expected memory import `{}/{}` max={max} page(s) in {linker_name} output ({}), \
+                 found max={:?}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.maximum
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_shared_memory(&self, expected: bool, linker_name: &str) -> Result {
+        if !expected {
+            return Ok(());
+        }
+        ensure!(
+            !self.memories.is_empty(),
+            "Expected a shared memory in {linker_name} output ({}), but the module has no memory",
+            self.path.display()
+        );
+        for (index, memory) in self.memories.iter().enumerate() {
+            ensure!(
+                memory.shared,
+                "Expected memory {index} to be shared in {linker_name} output ({})",
+                self.path.display()
+            );
+            ensure!(
+                memory.maximum.is_some(),
+                "Expected shared memory {index} to have a maximum in {linker_name} output ({})",
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
@@ -775,9 +952,14 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
     Ok(())
 }
 
-fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
-    let output = Command::new("wasmtime")
-        .arg("run")
+fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str, invoke: Option<&str>) -> Result {
+    let mut command = Command::new("wasmtime");
+    command.arg("run");
+    command.args(["-W", "threads,shared-memory"]);
+    if let Some(func) = invoke {
+        command.arg("--invoke").arg(func);
+    }
+    let output = command
         .arg(wasm_file)
         .output()
         .context("Failed to run wasmtime")?;
@@ -1046,9 +1228,9 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
 ];
 
 impl Architecture {
-    fn emulation_name(&self) -> &'static str {
+    fn emulation_name(self) -> &'static str {
         match self {
-            Architecture::X86_64 => "x86_64",
+            Architecture::X86_64 => "elf_x86_64",
             Architecture::AArch64 => "aarch64elf",
             Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
@@ -1059,21 +1241,21 @@ impl Architecture {
 
     /// The architecture prefix used in target triples / cross-toolchain names. This differs from
     /// the short name (`Display`) for ppc64le, whose triple prefix is `powerpc64le`.
-    fn triple_arch(&self) -> String {
+    fn triple_arch(self) -> String {
         match self {
             Architecture::Ppc64 => "powerpc64le".to_owned(),
             _ => self.to_string(),
         }
     }
 
-    fn darwin_arch_name(&self) -> &'static str {
+    fn darwin_arch_name(self) -> &'static str {
         match self {
             Architecture::AArch64 => "arm64",
             _ => panic!("Unsupported architecture {self} for darwin"),
         }
     }
 
-    fn default_target_triple(&self, platform: PlatformKind) -> String {
+    fn default_target_triple(self, platform: PlatformKind) -> String {
         match platform {
             PlatformKind::Elf => {
                 if cfg!(target_os = "freebsd") {
@@ -1087,7 +1269,7 @@ impl Architecture {
         }
     }
 
-    fn default_target_triple_rustc(&self, platform: PlatformKind) -> String {
+    fn default_target_triple_rustc(self, platform: PlatformKind) -> String {
         match (platform, self) {
             (PlatformKind::Elf, Architecture::RiscV64) => "riscv64gc-unknown-linux-gnu".to_string(),
             (PlatformKind::Wasm, _) => "wasm32-wasip1".to_string(),
@@ -1095,7 +1277,7 @@ impl Architecture {
         }
     }
 
-    fn cross_triplet(&self) -> String {
+    fn cross_triplet(self) -> String {
         let arch = self.triple_arch();
         let suse_triplet = format!("{arch}-suse-linux");
         if std::path::Path::new(&format!("/usr/{suse_triplet}/sys-root")).exists() {
@@ -1104,7 +1286,7 @@ impl Architecture {
         format!("{arch}-linux-gnu")
     }
 
-    fn get_cross_sysroot_path(&self) -> String {
+    fn get_cross_sysroot_path(self) -> String {
         let triplet = self.cross_triplet();
         if triplet.ends_with("-suse-linux") {
             format!("/usr/{triplet}/sys-root")
@@ -1115,7 +1297,7 @@ impl Architecture {
 
     /// Returns extra library directories that should be added to `LD_LIBRARY_PATH` when running
     /// binaries under qemu.
-    fn qemu_extra_lib_paths(&self) -> Vec<String> {
+    fn qemu_extra_lib_paths(self) -> Vec<String> {
         let triplet = self.cross_triplet();
         let gcc_base = format!("/usr/lib64/gcc/{triplet}");
         let Ok(entries) = std::fs::read_dir(&gcc_base) else {
@@ -1190,7 +1372,7 @@ fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
     // Remove null terminator.
     interp_data.pop();
 
-    String::from_utf8(interp_data.to_owned()).ok()
+    String::from_utf8(interp_data.clone()).ok()
 }
 
 #[allow(unreachable_code)]
@@ -1244,12 +1426,11 @@ struct Config {
     post_linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
+    linker_env: HashMap<String, String>,
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
     reference_linkers: Option<Vec<String>>,
-    skip_linkers: HashSet<String>,
-    enabled_linkers: HashSet<String>,
     cross_enabled: bool,
     section_equiv: Vec<(String, String)>,
     is_abstract: bool,
@@ -1313,6 +1494,9 @@ struct TestConfig {
     /// A list of external tests to ignore. Expected values are filenames not full paths.
     #[serde(default)]
     ignore_external_tests: Vec<String>,
+
+    #[serde(default = "default_llvm_tools_dir")]
+    llvm_tools_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -1542,15 +1726,14 @@ fn check_sframe_support_for_arch(arch: Architecture) -> bool {
 ///
 /// TODO: This should be unnecessary once more various distributions have updated glibc.
 fn run_sframe_backtrace_test(arch: Architecture) -> bool {
-    let temp_dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(_) => return false,
+    let Ok(temp_dir) = tempfile::tempdir() else {
+        return false;
     };
 
     let source_path = temp_dir.path().join("sframe_test.c");
     let obj_path = temp_dir.path().join("sframe_test.o");
     let binary_path = temp_dir.path().join("sframe_test");
-    let test_code = r#"
+    let test_code = r"
 #define _GNU_SOURCE
 #include <execinfo.h>
 #include <stdlib.h>
@@ -1572,7 +1755,7 @@ __attribute__((noinline)) int inner(void) {
 int main(void) {
     return inner();
 }
-"#;
+";
 
     if std::fs::write(&source_path, test_code).is_err() {
         return false;
@@ -1600,14 +1783,10 @@ int main(void) {
         .arg(&obj_path);
 
     if let Some(ref sysroot) = sysroot {
-        compile_cmd.arg(format!("--sysroot={}", sysroot));
+        compile_cmd.arg(format!("--sysroot={sysroot}"));
     }
 
-    if !compile_cmd
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+    if !compile_cmd.output().is_ok_and(|o| o.status.success()) {
         return false;
     }
 
@@ -1615,20 +1794,16 @@ int main(void) {
     link_cmd.arg(&obj_path).arg("-o").arg(&binary_path);
 
     if let Some(ref sysroot) = sysroot {
-        link_cmd.arg(format!("--sysroot={}", sysroot));
+        link_cmd.arg(format!("--sysroot={sysroot}"));
     }
 
-    if !link_cmd
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+    if !link_cmd.output().is_ok_and(|o| o.status.success()) {
         return false;
     }
 
     // Remove .eh_frame and .eh_frame_hdr sections to force SFrame-only unwinding
     let objcopy = if is_cross {
-        format!("{}-linux-gnu-objcopy", arch)
+        format!("{arch}-linux-gnu-objcopy")
     } else {
         "objcopy".to_string()
     };
@@ -1639,7 +1814,7 @@ int main(void) {
         .arg(&binary_path)
         .output();
 
-    if !objcopy_result.map(|o| o.status.success()).unwrap_or(false) {
+    if !objcopy_result.is_ok_and(|o| o.status.success()) {
         return false;
     }
 
@@ -1686,14 +1861,6 @@ impl Config {
             }
             return references.iter().any(|n| n == linker.gcc_name());
         }
-        // TODO: Get rid of skip_linkers and enabled_linkers once we're relatively sure that
-        // in-flight PRs aren't using them.
-        if self.skip_linkers.contains(linker.name()) {
-            return false;
-        }
-        if self.enabled_linkers.contains(linker.name()) {
-            return true;
-        }
         linker.enabled_by_default()
     }
 
@@ -1706,7 +1873,8 @@ impl Config {
     }
 
     fn can_use_wild_in_process(&self) -> bool {
-        !self.test_update_in_place
+        self.linker_env.is_empty()
+            && !self.test_update_in_place
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
@@ -1819,6 +1987,10 @@ struct Assertions {
     expected_func_imports: Vec<(String, String, usize)>,
     /// Wasm: total number of function imports in the import section.
     expected_func_import_count: Option<usize>,
+    /// Wasm: require a shared linear memory with a maximum.
+    expect_shared_memory: bool,
+    /// Wasm: require the linear memory to be imported as `module/name`.
+    expected_memory_import: Option<ExpectedMemoryImport>,
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -1838,9 +2010,24 @@ struct ExpectedSectionBytes {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedMemoryImport {
+    module: String,
+    name: String,
+    assertions: MemoryImportAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSection {
     section_name: String,
     assertions: SectionAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct MemoryImportAssertions {
+    initial: Option<u64>,
+    max: Option<u64>,
+    shared: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1887,6 +2074,9 @@ struct SymtabAssertions {
     size: Option<u64>,
 
     binding: Option<String>,
+
+    #[serde(rename = "type")]
+    symbol_type: Option<String>,
 
     line: Option<u64>,
 }
@@ -1981,14 +2171,14 @@ struct ArgumentSet {
 }
 
 impl ArgumentSet {
-    fn parse(s: &str) -> Result<ArgumentSet> {
-        Ok(ArgumentSet {
+    fn parse(s: &str) -> ArgumentSet {
+        ArgumentSet {
             args: s
                 .split(' ')
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty())
                 .collect(),
-        })
+        }
     }
 
     fn default_for_compiling() -> Self {
@@ -2020,14 +2210,13 @@ impl Config {
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: platform.default_args_for_linking(),
             post_linker_args: ArgumentSet::empty(),
-            linker_so_args: platform.default_args_for_linking(),
+            linker_so_args: ArgumentSet::empty(),
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
+            linker_env: Default::default(),
             diff_ignore: Default::default(),
             reference_linkers: None,
-            skip_linkers: Default::default(),
-            enabled_linkers: Default::default(),
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
@@ -2110,7 +2299,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 &mut configs,
                 is_rust,
             )
-            .with_context(|| format!("problematic directive line: '{}'", rest))
+            .with_context(|| format!("problematic directive line: '{rest}'"))
             .with_context(|| {
                 format!(
                     "Failed to process test directive {}:{}",
@@ -2274,10 +2463,7 @@ fn process_directive(
             if config.variant_num.is_some() {
                 bail!("Variant can only be specified once per config");
             }
-            config.variant_num = Some(
-                arg.parse()
-                    .with_context(|| format!("Failed to parse '{arg}'"))?,
-            )
+            config.variant_num = Some(arg.parse()?);
         }
         "LinkArgs" => {
             if is_rust {
@@ -2290,9 +2476,15 @@ fn process_directive(
                 config.tracked_files.push(src_path.clone());
                 let with_replaced_path =
                     arg.replace(&format!("./{filename}"), &src_path.display().to_string());
-                config.linker_args = ArgumentSet::parse(&with_replaced_path)?
+                config
+                    .linker_args
+                    .args
+                    .extend(ArgumentSet::parse(&with_replaced_path).args);
             } else {
-                config.linker_args = ArgumentSet::parse(&arg)?
+                config
+                    .linker_args
+                    .args
+                    .extend(ArgumentSet::parse(&arg).args);
             }
         }
         "PostLinkArgs" => {
@@ -2300,13 +2492,19 @@ fn process_directive(
                 bail!("PostLinkArgs is not used when building Rust code");
             }
             let arg = expand_test_arg_placeholders(arg, config);
-            config.post_linker_args = ArgumentSet::parse(&arg)?
+            config
+                .post_linker_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "LinkSoArgs" => {
             if is_rust {
                 bail!("LinkSoArgs is not used when building Rust code");
             }
-            config.linker_so_args = ArgumentSet::parse(arg)?
+            config
+                .linker_so_args
+                .args
+                .extend(ArgumentSet::parse(arg).args);
         }
         "SoSingleLinker" => {
             config.so_single_linker = Some(
@@ -2321,22 +2519,41 @@ fn process_directive(
         "LinkerDriver" => {
             config.linker_driver = LinkerDriver::parse(arg)?;
         }
-        "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
+        "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg),
+        "Env" => {
+            let (name, value) = arg
+                .split_once('=')
+                .context("Env requires an argument of the form NAME=value")?;
+
+            ensure!(
+                !name.is_empty(),
+                "Environment variable name cannot be empty"
+            );
+
+            config.linker_env.insert(name.to_owned(), value.to_owned());
+        }
         "CompArgs" => {
             let arg = expand_test_arg_placeholders(arg, config);
-            config.compiler_args = ArgumentSet::parse(&arg)?
+            config
+                .compiler_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "CompSoArgs" => {
             let arg = expand_test_arg_placeholders(arg, config);
-            config.compiler_so_args = ArgumentSet::parse(&arg)?
+            config
+                .compiler_so_args
+                .args
+                .extend(ArgumentSet::parse(&arg).args);
         }
         "ExpectSym" => config
             .assertions
             .expected_symtab_entries
-            .push(ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectSym arguments")?),
-        "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
-            ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectDynSym arguments")?,
-        ),
+            .push(ExpectedSymtabEntry::parse(arg)?),
+        "ExpectDynSym" => config
+            .assertions
+            .expected_dynsym_entries
+            .push(ExpectedSymtabEntry::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectComment" => config.assertions.expected_comments.push(arg.to_owned()),
         "NoSym" => {
@@ -2366,11 +2583,27 @@ fn process_directive(
             ));
         }
         "ExpectFuncImportCount" => {
-            config.assertions.expected_func_import_count = Some(
-                arg.trim()
-                    .parse()
-                    .with_context(|| format!("Invalid ExpectFuncImportCount: `{arg}`"))?,
-            );
+            config.assertions.expected_func_import_count = Some(arg.trim().parse()?);
+        }
+        "ExpectSharedMemory" => {
+            config.assertions.expect_shared_memory = arg.parse()?;
+        }
+        "ExpectMemoryImport" => {
+            // module/name [initial=<pages>,max=<pages>,shared=<bool>]
+            let arg = arg.trim();
+            let (path, assertions) = if let Some((path, props)) = arg.split_once(' ') {
+                (path, serde_keyvalue::from_key_values(props.trim())?)
+            } else {
+                (arg, MemoryImportAssertions::default())
+            };
+            let (module, name) = path
+                .split_once('/')
+                .with_context(|| format!("ExpectMemoryImport requires module/name, got `{arg}`"))?;
+            config.assertions.expected_memory_import = Some(ExpectedMemoryImport {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                assertions,
+            });
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -2385,33 +2618,22 @@ fn process_directive(
             });
         }
         "RelrCount" => {
-            config.assertions.relr_count = Some(
-                arg.trim()
-                    .parse::<u64>()
-                    .with_context(|| format!("Invalid RelrCount: {arg}"))?,
-            );
+            config.assertions.relr_count = Some(arg.trim().parse::<u64>()?);
         }
         "NoSection" => config
             .assertions
             .absent_sections
             .push(arg.trim().to_owned()),
         "ExpectGdbIndexCuCount" => {
-            config.assertions.expected_gdb_index_cu_count = Some(
-                arg.trim()
-                    .parse::<usize>()
-                    .with_context(|| format!("Invalid CU count: {arg}"))?,
-            );
+            config.assertions.expected_gdb_index_cu_count = Some(arg.trim().parse::<usize>()?);
         }
         "ExpectGdbIndexSymbol" => config
             .assertions
             .expected_gdb_index_symbols
             .push(arg.trim().to_owned()),
         "ExpectGdbIndexDistinctAddrCus" => {
-            config.assertions.expected_gdb_index_distinct_addr_cus = Some(
-                arg.trim()
-                    .parse::<usize>()
-                    .with_context(|| format!("Invalid distinct addr CU count: {arg}"))?,
-            );
+            config.assertions.expected_gdb_index_distinct_addr_cus =
+                Some(arg.trim().parse::<usize>()?);
         }
         "ExpectSectionBytes" => {
             let (section_name, hex_str) = arg.split_once('=').with_context(|| {
@@ -2456,9 +2678,8 @@ fn process_directive(
             .absent_dynamic_entries
             .push(arg.to_owned()),
         "ExpectLoadAlignment" => {
-            let alignment_strs = arg.split(" ").map(str::trim);
-            let alignments = alignment_strs
-                .map(|alignment_str| parse_number(alignment_str).context("Invalid alignment"));
+            let alignment_strs = arg.split(' ').map(str::trim);
+            let alignments = alignment_strs.map(parse_number);
             config.assertions.expected_load_alignments =
                 alignments.collect::<Result<Vec<u64>>>()?;
         }
@@ -2469,36 +2690,22 @@ fn process_directive(
                 .push(ExpectedProgramHeaders::parse(arg)?);
         }
         "NoProgramHeader" => {
-            let header_type: ProgramHeaderType = arg
-                .parse()
-                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            let header_type: ProgramHeaderType = arg.parse()?;
             config.assertions.absent_program_headers.push(header_type);
         }
         "Mode" => {
-            let mode: Mode = arg
-                .parse()
-                .with_context(|| format!("Invalid Mode `{arg}`"))?;
+            let mode: Mode = arg.parse()?;
             if mode == Mode::Dynamic {
                 config.assertions.expect_dynamic = true;
             }
             config.linker_driver.direct_mut()?.mode = mode;
         }
         "DiffIgnore" => config.diff_ignore.push(arg.to_owned()),
-        "DiffEnabled" => {
-            config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
-        }
-        "DiffMatchAny" => {
-            config.diff_match_any = arg.parse().context("Invalid bool for DiffMatchAny")?
-        }
-        "RunEnabled" => config.should_run = arg.parse().context("Invalid bool for RunEnabled")?,
-        "RunDynSym" => {
-            config.run_dyn_sym = Some(arg.parse().context("Invalid string for RunDynSym")?)
-        }
+        "DiffEnabled" => config.should_diff = arg.parse()?,
+        "DiffMatchAny" => config.diff_match_any = arg.parse()?,
+        "RunEnabled" => config.should_run = arg.parse()?,
+        "RunDynSym" => config.run_dyn_sym = Some(arg.to_string()),
         "ReferenceLinkers" => {
-            if !config.skip_linkers.is_empty() || !config.enabled_linkers.is_empty() {
-                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
-            }
-
             let refs: Vec<String> = arg
                 .split(',')
                 .filter(|n| !n.is_empty())
@@ -2526,18 +2733,9 @@ fn process_directive(
 
             config.reference_linkers = Some(refs);
         }
-        "SkipLinker" => {
-            if config.reference_linkers.is_some() {
-                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
-            }
-            config.skip_linkers.insert(arg.to_owned());
-        }
-        "EnableLinker" => {
-            config.enabled_linkers.insert(arg.to_owned());
-        }
         "Cross" => config.cross_enabled = arg.parse()?,
         "SkipOverlapSegmentsCheck" => {
-            config.assertions.skip_overlap_segments_check = arg.parse()?
+            config.assertions.skip_overlap_segments_check = arg.parse()?;
         }
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
@@ -2605,12 +2803,12 @@ fn process_directive(
             }
 
             let files = arg
-                .split(",")
+                .split(',')
                 .map(|arg| {
-                    let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
+                    let (filename, comp_args) = arg.split_once(':').unwrap_or((arg, ""));
                     Ok(FilenameArgumentPair::new(
                         &config.source_path(filename),
-                        ArgumentSet::parse(comp_args)?,
+                        ArgumentSet::parse(comp_args),
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -2621,7 +2819,7 @@ fn process_directive(
                 template,
                 output_path,
                 auto_add,
-            })
+            });
         }
         "RemoveSection" => config.remove_sections.push(arg.to_owned()),
         "AssertOutputFileMatches" => {
@@ -2634,14 +2832,14 @@ fn process_directive(
         "Arch" => {
             config.support_architectures = arg
                 .trim()
-                .split(",")
+                .split(',')
                 .map(|arch| Architecture::parse(arch.trim()))
                 .collect::<Result<Vec<_>, _>>()?;
         }
         "SkipArch" => {
             let skipped = arg
                 .trim()
-                .split(",")
+                .split(',')
                 .map(|arch| Architecture::parse(arch.trim()))
                 .collect::<Result<Vec<_>, _>>()?;
             config.support_architectures = ALL_ARCHITECTURES
@@ -2653,7 +2851,7 @@ fn process_directive(
         "RequiresGlibc" => config.requires_glibc = arg.parse()?,
         "RequiresGlibcVersion" => {
             config.requires_glibc = true;
-            config.requires_glibc_version = Some(arg.to_owned())
+            config.requires_glibc_version = Some(arg.to_owned());
         }
         "RequiresSFrameBacktrace" => {
             config.requires_sframe_backtrace = arg.parse()?;
@@ -2698,7 +2896,7 @@ fn process_directive(
             })?);
         }
         "MaxThunks" => {
-            config.assertions.max_thunks = arg.parse().context("Invalid MaxThunks value")?;
+            config.assertions.max_thunks = arg.parse()?;
         }
         other => bail!("Unknown directive '{other}'"),
     }
@@ -2707,8 +2905,8 @@ fn process_directive(
 }
 
 impl ProgramInputs {
-    fn new(source_file: PathBuf) -> Result<Self> {
-        Ok(Self { source_file })
+    fn new(source_file: PathBuf) -> Self {
+        Self { source_file }
     }
 
     fn build<'a>(
@@ -2883,7 +3081,7 @@ fn remove_sections(
     cross_arch: Option<Architecture>,
 ) -> Result {
     let objcopy = match cross_arch {
-        Some(arch) => format!("{}-linux-gnu-objcopy", arch),
+        Some(arch) => format!("{arch}-linux-gnu-objcopy"),
         None => "objcopy".to_owned(),
     };
 
@@ -2990,7 +3188,11 @@ const EXIT_SUCCESS: i32 = 42;
 impl LinkOutput {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
         if self.command.config.platform == PlatformKind::Wasm {
-            return run_wasm_with_wasmtime(&self.binary, self.linker_used.name());
+            return run_wasm_with_wasmtime(
+                &self.binary,
+                self.linker_used.name(),
+                self.command.config.run_dyn_sym.as_deref(),
+            );
         }
 
         let mut command = if let Some(arch) = cross_arch {
@@ -3036,12 +3238,11 @@ impl LinkOutput {
                 let _ = recv.read_to_end(&mut output);
             });
 
-            match child.wait_timeout(TEST_BINARY_TIMEOUT)? {
-                Some(s) => Ok(s),
-                None => {
-                    child.kill()?;
-                    bail!("Binary ran for too long");
-                }
+            if let Some(s) = child.wait_timeout(TEST_BINARY_TIMEOUT)? {
+                Ok(s)
+            } else {
+                child.kill()?;
+                bail!("Binary ran for too long");
             }
         })?;
 
@@ -3297,10 +3498,10 @@ fn build_linker_input(
 
                 match fat_kind {
                     FatKind::Bit32 => {
-                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &path)?
+                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &path)?;
                     }
                     FatKind::Bit64 => {
-                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &path)?
+                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &path)?;
                     }
                 }
 
@@ -3346,10 +3547,14 @@ fn build_linker_input(
 
                 match fat_kind {
                     FatKind::Bit32 => {
-                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &obj_path)?
+                        make_macho_fat_file::<object::read::macho::FatArch32>(
+                            &fat_path, &obj_path,
+                        )?;
                     }
                     FatKind::Bit64 => {
-                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &obj_path)?
+                        make_macho_fat_file::<object::read::macho::FatArch64>(
+                            &fat_path, &obj_path,
+                        )?;
                     }
                 }
 
@@ -3505,12 +3710,11 @@ fn build_obj(
     // writes temporary files to the working directory, they won't collide.
     command.current_dir(config.build_dir());
 
-    let mut compiler_args =
-        if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
-            config.compiler_so_args.args.clone()
-        } else {
-            config.compiler_args.args.clone()
-        };
+    let mut compiler_args = if input_type == InputType::SharedObject {
+        config.compiler_so_args.args.clone()
+    } else {
+        config.compiler_args.args.clone()
+    };
 
     compiler_args.extend_from_slice(&file.args.args);
 
@@ -3584,7 +3788,7 @@ fn build_obj(
                         "--target={}",
                         arch.default_target_triple_rustc(config.platform)
                     ));
-                    arch.default_target_triple(config.platform).to_owned()
+                    arch.default_target_triple(config.platform)
                 });
                 if config.platform != PlatformKind::Wasm {
                     let target_underscore = target.replace('-', "_");
@@ -3616,7 +3820,7 @@ fn build_obj(
 
     // If we haven't run previously or we're compiling rust code, there won't be a deps file. In
     // that case, our deps is just the source file.
-    let deps = parse_deps_file(&deps_path).unwrap_or_else(|_| vec![src_path.to_owned()]);
+    let deps = parse_deps_file(&deps_path).unwrap_or_else(|_| vec![src_path.clone()]);
 
     command.arg(&src_path);
 
@@ -3760,8 +3964,8 @@ fn add_cross_args(
 
     if !platform.is_host() || cross_arch.is_some() {
         let arch = cross_arch.unwrap_or_else(get_host_architecture);
-        let target = get_target(compiler_args)
-            .unwrap_or_else(|_| arch.default_target_triple(platform).to_owned());
+        let target =
+            get_target(compiler_args).unwrap_or_else(|_| arch.default_target_triple(platform));
         command.arg(format!("--target={target}"));
 
         // Debian sets sysroot to `/` and uses real paths for libraries in linker scripts.
@@ -3773,7 +3977,7 @@ fn add_cross_args(
 }
 
 impl RustcChannel {
-    fn as_arg(&self) -> Option<&'static str> {
+    fn as_arg(self) -> Option<&'static str> {
         match self {
             RustcChannel::Stable => Some("+stable"),
             RustcChannel::Beta => Some("+beta"),
@@ -3983,15 +4187,13 @@ fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
         }
         let line = buf.trim_end_matches(['\r', '\n']);
 
-        let frag = if !started {
-            if let Some(i) = line.find(':') {
-                started = true;
-                &line[i + 1..]
-            } else {
-                continue;
-            }
-        } else {
+        let frag = if started {
             line
+        } else if let Some(i) = line.find(':') {
+            started = true;
+            &line[i + 1..]
+        } else {
+            continue;
         };
 
         let (frag, cont) = if frag.ends_with('\\') {
@@ -4241,6 +4443,9 @@ impl LinkCommand {
                             }
                         }
                         PlatformKind::MachO => {
+                            let (_, sdk) = macos_toolchain()
+                                .map_err(|err| error!("Unable to locate macOS toolchain: {err}"))?;
+                            command.arg("-syslibroot").arg(sdk).arg("-lSystem");
                             if linker.is_lld() {
                                 let arch = cross_arch.unwrap_or(arch);
                                 command.arg("-arch").arg(arch.darwin_arch_name());
@@ -4308,12 +4513,14 @@ impl LinkCommand {
             }
         }
 
+        command.envs(&config.linker_env);
+
         let mut link_command = LinkCommand {
             command,
             inputs: inputs.to_vec(),
             input_commands: inputs
                 .iter()
-                .filter_map(|input| input.command.as_ref().cloned())
+                .filter_map(|input| input.command.clone())
                 .collect(),
             linker: linker.clone(),
             config: config.clone(),
@@ -4790,11 +4997,11 @@ impl Assertions {
             "dynsym",
         )?;
         self.verify_elf_entry(&obj)?;
-        self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
+        Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(&obj)?;
         self.verify_absent_sections(&obj)?;
         self.verify_section_bytes(&obj)?;
-        self.verify_eh_frame_terminator(&obj, linker_used)?;
+        Self::verify_eh_frame_terminator(&obj, linker_used)?;
         self.verify_relr_count(&obj)?;
         self.verify_gdb_index_cu_count(&obj)?;
         self.verify_gdb_index_symbols(&obj)?;
@@ -4810,8 +5017,8 @@ impl Assertions {
                 self.verify_comment_section(&elf_obj, linker_used)?;
                 self.verify_load_alignment(&elf_obj)?;
                 self.verify_dynamic_entries(&elf_obj)?;
-                self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
-                self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
+                Self::verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
+                Self::verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_program_headers(&elf_obj)?;
                 self.verify_section_max_entries(&elf_obj)?;
             }
@@ -4866,7 +5073,7 @@ impl Assertions {
         }
 
         self.verify_macho_entry(obj)?;
-        self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
+        Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
         self.verify_section_bytes(obj)?;
@@ -4874,8 +5081,10 @@ impl Assertions {
         verify_no_overlapping_sections(obj)?;
         verify_no_overlapping_segments(obj)?;
         verify_chained_fixups_segment_offsets(obj, bytes)?;
+        verify_macho_tlv_template_layout(obj)?;
 
         if linker_used.is_wild() {
+            verify_macho_tlv_descriptor_bindings(obj, bytes)?;
             verify_uuid(obj, bytes)?;
         }
         Ok(())
@@ -4893,6 +5102,8 @@ impl Assertions {
             no_sym: self.no_sym.clone(),
             expected_func_imports: self.expected_func_imports.clone(),
             expected_func_import_count: self.expected_func_import_count,
+            expect_shared_memory: self.expect_shared_memory,
+            expected_memory_import: self.expected_memory_import.clone(),
             ..Default::default()
         };
         ensure!(
@@ -4924,6 +5135,8 @@ impl Assertions {
         )?;
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
+        info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
+        info.ensure_memory_import(self.expected_memory_import.as_ref(), linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
@@ -5156,7 +5369,7 @@ impl Assertions {
             distinct_cus.len(),
             {
                 let mut v: Vec<_> = distinct_cus.iter().copied().collect();
-                v.sort();
+                v.sort_unstable();
                 v
             }
         );
@@ -5184,7 +5397,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_eh_frame_terminator(&self, obj: &object::File, linker: &Linker) -> Result {
+    fn verify_eh_frame_terminator(obj: &object::File, linker: &Linker) -> Result {
         // BFD fails this check for at least one of our tests.
         if linker.is_bfd() {
             return Ok(());
@@ -5234,7 +5447,7 @@ impl Assertions {
                 count += 1;
             } else {
                 // Bitmap entry — count set bits excluding LSB marker.
-                count += (val >> 1).count_ones() as u64;
+                count += u64::from((val >> 1).count_ones());
             }
             i += 8;
         }
@@ -5332,7 +5545,7 @@ impl Assertions {
             return Ok(());
         }
         let actual_comments = read_comments(obj)?;
-        for expected in self.expected_comments.iter() {
+        for expected in &self.expected_comments {
             if let Some(expected) = expected.strip_suffix('*') {
                 if !actual_comments
                     .iter()
@@ -5390,7 +5603,6 @@ impl Assertions {
     }
 
     fn verify_symbols_absent<'a, I>(
-        &self,
         absent_syms: &HashSet<String>,
         symbols: I,
         table_name: &str,
@@ -5495,7 +5707,7 @@ impl Assertions {
         let mut header_sections = Vec::with_capacity(headers.len());
         let mut header_types = HashSet::new();
         for header in headers {
-            header_sections.push(self.get_sections_in_segment(obj, header));
+            header_sections.push(Self::get_sections_in_segment(obj, header));
             header_types.insert(header.p_type(endian).0);
         }
 
@@ -5542,7 +5754,10 @@ impl Assertions {
                         continue;
                     }
 
-                    if !expected_sections.is_empty() {
+                    if expected_sections.is_empty() {
+                        found = true;
+                        break;
+                    } else {
                         let mut has_wildcard = false;
                         let mut sections_found = 0;
 
@@ -5563,9 +5778,6 @@ impl Assertions {
                             found = true;
                             break;
                         }
-                    } else {
-                        found = true;
-                        break;
                     }
                 }
             }
@@ -5593,7 +5805,6 @@ impl Assertions {
     }
 
     fn get_sections_in_segment<'data>(
-        &self,
         obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
         header: &object::elf::ProgramHeader64<object::Endianness>,
     ) -> HashSet<&'data str> {
@@ -5711,18 +5922,21 @@ fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>
 }
 
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
-    let mut previous_range = None;
+    let mut ranges = Vec::new();
     for section in obj.sections() {
-        if let Some((_, prev_end)) = previous_range
-            && let Some((start, _)) = section.file_range()
-            && start < prev_end
+        if let Some((start, size)) = section.file_range()
+            && size != 0
         {
-            bail!("Section {} overlaps with previous section", section.name()?);
+            ranges.push((start, start + size, section.name()?.to_owned()));
         }
-
-        previous_range = section.file_range();
-
         section.data()?;
+    }
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    for ((_, previous_end, previous_name), (start, _, name)) in ranges.iter().tuple_windows() {
+        if start < previous_end {
+            bail!("Section {name} overlaps with section {previous_name}");
+        }
     }
 
     Ok(())
@@ -5912,6 +6126,225 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     Ok(exports)
 }
 
+fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    const MACHO64_POINTER_ALIGNMENT: u64 = 8;
+
+    let mut sections = Vec::new();
+    for section in obj.sections() {
+        let object::SectionFlags::MachO { flags, .. } = section.flags() else {
+            bail!("Expected Mach-O section flags");
+        };
+
+        sections.push((
+            section.name()?,
+            flags.typ(),
+            section.align(),
+            section.address(),
+        ));
+    }
+
+    let descriptors = sections
+        .iter()
+        .copied()
+        .filter(|(_, ty, _, _)| *ty == S_THREAD_LOCAL_VARIABLES)
+        .collect_vec();
+
+    ensure!(
+        file.macho_header()
+            .flags
+            .get(file.endianness())
+            .contains(MH_HAS_TLV_DESCRIPTORS)
+            != descriptors.is_empty(),
+        "MH_HAS_TLV_DESCRIPTORS must be set in Mach-O header flag for S_THREAD_LOCAL_VARIABLES"
+    );
+
+    ensure!(
+        descriptors
+            .iter()
+            .all(|(_, _, align, address)| *align >= MACHO64_POINTER_ALIGNMENT
+                && address.is_multiple_of(*align)),
+        "Mach-O TLV descriptors must satisfy a minimum alignment of pointer size {MACHO64_POINTER_ALIGNMENT}: {}",
+        descriptors
+            .iter()
+            .map(|(name, _, align, address)| { format!("{name} {address:#x} alignment: {align}") })
+            .join(", ")
+    );
+
+    let is_tlv_template = |ty| matches!(ty, S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL);
+
+    let (Some(start), Some(end)) = (
+        sections
+            .iter()
+            .position(|&(_, ty, _, _)| is_tlv_template(ty)),
+        sections
+            .iter()
+            .rposition(|&(_, ty, _, _)| is_tlv_template(ty)),
+    ) else {
+        return Ok(());
+    };
+
+    let template = &sections[start..=end];
+    let types = template
+        .iter()
+        .map(|&(_, ty, _, _)| ty)
+        .dedup()
+        .collect_vec();
+    let max_align = template
+        .iter()
+        .map(|(_, _, align, _)| *align)
+        .max()
+        .expect("Mach-O TLV template sections should have a maximum alignment");
+
+    ensure!(
+        matches!(
+            types.as_slice(),
+            [S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL]
+                | [S_THREAD_LOCAL_REGULAR, S_THREAD_LOCAL_ZEROFILL]
+        ),
+        "Mach-O TLV template sections must be contiguous: {}",
+        template
+            .iter()
+            .map(|(name, ty, _, _)| format!("{name} ({ty:?})"))
+            .join(", ")
+    );
+
+    ensure!(
+        template.iter().all(|(_, _, align, _)| *align == max_align),
+        "Mach-O TLV template sections must use maximum alignment {max_align}: {}",
+        template
+            .iter()
+            .map(|(name, _, align, _)| { format!("{name} alignment: {align}") })
+            .join(", ")
+    );
+
+    ensure!(
+        template
+            .iter()
+            .all(|(_, _, align, address)| address.is_multiple_of(*align)),
+        "Mach-O TLV template section addresses must satisfy their maximum alignment: {}",
+        template
+            .iter()
+            .map(|(name, _, align, address)| { format!("{name} {address:#x} alignment: {align}") })
+            .join(", ")
+    );
+
+    Ok(())
+}
+
+fn verify_macho_tlv_descriptor_bindings(obj: &object::File, bytes: &[u8]) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    const DESCRIPTOR_SIZE: u64 = 24;
+    let mut pending = HashSet::new();
+    for section in obj.sections() {
+        if !matches!(section.flags(), object::SectionFlags::MachO { flags, .. }
+            if flags.typ() == S_THREAD_LOCAL_VARIABLES)
+        {
+            continue;
+        }
+
+        ensure!(
+            section.size().is_multiple_of(DESCRIPTOR_SIZE),
+            "Invalid TLV descriptor section size for `{}`: {}",
+            section.name()?,
+            section.size()
+        );
+
+        for offset in (0..section.size()).step_by(DESCRIPTOR_SIZE as usize) {
+            pending.insert(
+                section
+                    .address()
+                    .checked_add(offset)
+                    .context("TLV descriptor thunk address overflow")?,
+            );
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+    let mut segments = Vec::new();
+    let mut dylibs = Vec::new();
+    let mut chained_fixups = None;
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::Segment64(segment, _) => segments.push(segment),
+            LoadCommandVariant::Dylib(dylib) => {
+                dylibs.push(load_command.string(e, dylib.dylib.name)?);
+            }
+            LoadCommandVariant::LinkeditData(linkedit)
+                if linkedit.cmd.get(e) == LC_DYLD_CHAINED_FIXUPS =>
+            {
+                chained_fixups = Some(linkedit.chained_fixups(e, bytes)?);
+            }
+            _ => {}
+        }
+    }
+
+    let chained_fixups = chained_fixups.context("Missing chained fixups for TLV descriptors")?;
+    let imports: Vec<_> = chained_fixups.imports(e)?.try_collect()?;
+    let load_addr = segments
+        .iter()
+        .find(|segment| segment.name() == SEG_TEXT.as_bytes())
+        .map(|segment| segment.vmaddr.get(e))
+        .context("Missing __TEXT segment")?;
+
+    // dyld overwrites these pointers during TLV setup with `__tlv_get_addr`, so let's explicitly
+    // check for `__tlv_bootstrap` since execution can't verify the binds themselves.
+    for chained_segment in chained_fixups.segments(e)? {
+        let chained_segment = chained_segment?;
+        let segment = segments
+            .get(chained_segment.index() as usize)
+            .context("Invalid chained fixups segment index")?;
+        let segment_data = segment
+            .data(e, bytes)
+            .map_err(|()| error!("Invalid Mach-O segment data"))?;
+        for fixup in chained_segment.fixups(e, load_addr, segment_data) {
+            let (offset, fixup) = fixup?;
+            let address = segment
+                .vmaddr
+                .get(e)
+                .checked_add(offset)
+                .context("Chained fixup address overflow")?;
+            if !pending.remove(&address) {
+                continue;
+            }
+            let Fixup::Bind(bind) = fixup else {
+                bail!("Expected TLV descriptor thunk bind at {address:#x}");
+            };
+            let import = imports
+                .get(bind.ordinal as usize)
+                .context("Invalid TLV descriptor thunk import ordinal")?;
+            let dylib = import
+                .dylib
+                .index()
+                .and_then(|ordinal| dylibs.get(ordinal as usize - 1))
+                .context("Invalid TLV descriptor thunk library ordinal")?;
+            let addend = import.addend.checked_add(i64::from(bind.addend));
+            ensure!(
+                import.name == b"__tlv_bootstrap"
+                    && *dylib == b"/usr/lib/libSystem.B.dylib"
+                    && addend == Some(0),
+                "Expected __tlv_bootstrap from libSystem with zero addend at {address:#x}"
+            );
+        }
+    }
+
+    if let Some(address) = pending.iter().min() {
+        bail!("Missing TLV descriptor thunk bind at {address:#x}");
+    }
+    Ok(())
+}
+
 fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Result {
     let object::File::MachO64(file) = obj else {
         return Ok(());
@@ -6068,6 +6501,7 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
     Ok(())
 }
 
+#[allow(clippy::wildcard_imports)]
 fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
     use object::elf::*;
     Some(match tag {
@@ -6128,7 +6562,7 @@ fn lookup_line_for_symbol(obj: &object::File, sym_address: u64) -> Result<Option
         match obj.section_by_name(id.name()) {
             Some(section) => section
                 .uncompressed_data()
-                .map_err(|e| libwild::error::Error::from(format!("Failed to read section: {}", e))),
+                .map_err(|e| libwild::error::Error::from(format!("Failed to read section: {e}"))),
             None => Ok(std::borrow::Cow::Borrowed(&[])),
         }
     };
@@ -6297,6 +6731,40 @@ where
             }
         }
 
+        if let Some(expected_type) = exp.assertions.symbol_type.as_deref() {
+            let expected_type_value = match expected_type {
+                "notype" => object::elf::STT_NOTYPE,
+                "object" => object::elf::STT_OBJECT,
+                "func" => object::elf::STT_FUNC,
+                "section" => object::elf::STT_SECTION,
+                "file" => object::elf::STT_FILE,
+                "common" => object::elf::STT_COMMON,
+                "tls" => object::elf::STT_TLS,
+                "ifunc" => object::elf::STT_GNU_IFUNC,
+                _ => bail!(
+                    "Invalid type value `{expected_type}` for symbol `{}`. Must be one of: \
+                     notype, object, func, section, file, common, tls, ifunc",
+                    exp.name
+                ),
+            };
+
+            let object::SymbolFlags::Elf { st_info, .. } = sym.flags() else {
+                bail!(
+                    "Cannot assert ELF symbol type `{expected_type}` for non-ELF symbol `{}`",
+                    exp.name
+                );
+            };
+
+            let actual_type = st_info.st_type();
+            if actual_type != expected_type_value {
+                bail!(
+                    "Expected symbol `{}` to have type `{expected_type}`, but it actually had \
+                     type `{actual_type:?}`",
+                    exp.name
+                );
+            }
+        }
+
         if let Some(expected_line) = exp.assertions.line {
             let address = sym.address();
 
@@ -6319,7 +6787,7 @@ where
             "Missing expected symbol(s) in {context_name}: {}",
             missing.join(", ")
         );
-    };
+    }
 
     Ok(())
 }
@@ -6382,23 +6850,29 @@ impl Compiler {
         }
     }
 
-    fn c_language(&self) -> CLanguage {
+    fn c_language(self) -> CLanguage {
         match self {
-            Compiler::Gcc(lang) | Compiler::Clang(lang) => *lang,
+            Compiler::Gcc(lang) | Compiler::Clang(lang) => lang,
         }
     }
 }
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let build_features = match self.config.platform {
+            PlatformKind::MachO => "--features macho",
+            PlatformKind::Wasm => "--features wasm",
+            PlatformKind::Elf => "",
+        };
+
         if let Some(save_dir) = self.opt_save_dir.as_ref()
             && save_dir.exists()
             && self.linker == Linker::Wild
         {
             write!(
                 f,
-                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
-                     --bin wild -- --",
+                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} \
+                    {}/run-with cargo run {build_features} --bin wild -- --",
                 self.output_path.display(),
                 save_dir.display()
             )?;
@@ -6412,6 +6886,15 @@ impl Display for LinkCommand {
         // A bit of indentation makes it easier to see the start of the command, especially when it
         // wraps over several lines and there are multiple commands.
         write!(f, "        ")?;
+
+        for (key, value) in self.command.get_envs() {
+            write!(
+                f,
+                "{}={} ",
+                key.to_str().unwrap_or("??"),
+                value.and_then(|value| value.to_str()).unwrap_or_default(),
+            )?;
+        }
 
         let mut command_str = self.command.get_program().to_string_lossy();
 
@@ -6427,27 +6910,27 @@ impl Display for LinkCommand {
 
         match (self.invocation_mode, &self.linker) {
             (LinkerInvocationMode::Cc, Linker::Wild) => {
-                write!(f, "cargo build; {} {}", command_str, args.join(" "))
+                write!(
+                    f,
+                    "cargo build {build_features}; {} {}",
+                    command_str,
+                    args.join(" ")
+                )
             }
             (LinkerInvocationMode::Direct, Linker::Wild) => {
-                write!(f, "cargo run --bin wild -- {}", args.join(" "))
+                write!(
+                    f,
+                    "cargo run {build_features} --bin wild -- {}",
+                    args.join(" ")
+                )
             }
             (LinkerInvocationMode::Script, Linker::Wild) => {
-                for (k, v) in self.command.get_envs() {
-                    write!(
-                        f,
-                        "{}={} ",
-                        k.to_str().unwrap_or("??"),
-                        v.and_then(|v| v.to_str()).unwrap_or_default(),
-                    )?;
-                }
-
                 // The first argument is the linker, which we're replacing with `cargo run --`.
                 args.remove(0);
 
                 write!(
                     f,
-                    "{} cargo run --bin wild -- -- {}",
+                    "{} cargo run {build_features} --bin wild -- -- {}",
                     command_str,
                     args.join(" ")
                 )
@@ -6522,7 +7005,7 @@ impl Clone for LinkCommand {
     fn clone(&self) -> Self {
         Self {
             command: clone_command(&self.command),
-            input_commands: self.input_commands.to_vec(),
+            input_commands: self.input_commands.clone(),
             linker: self.linker.clone(),
             invocation_mode: self.invocation_mode,
             opt_save_dir: self.opt_save_dir.clone(),
@@ -6708,7 +7191,7 @@ fn create_diff_config(config: &Config, files: Vec<PathBuf>) -> Result<linker_dif
         .equiv
         .extend(config.section_equiv.iter().cloned());
     diff_config.match_any = config.diff_match_any;
-    diff_config.references = files.clone();
+    diff_config.references = files;
     diff_config.file = diff_config
         .references
         .pop()
@@ -6744,7 +7227,7 @@ fn setup_wild_ld_symlink() -> Result {
                 wild_ld_path.display(),
                 wild.display()
             )
-        })?
+        })?;
     }
     Ok(())
 }
@@ -6839,7 +7322,7 @@ fn should_print_timing() -> bool {
 }
 
 impl LinkerInvocationMode {
-    fn format_arg(&self, arg: &str) -> String {
+    fn format_arg(self, arg: &str) -> String {
         match self {
             LinkerInvocationMode::Direct | LinkerInvocationMode::Script => arg.to_owned(),
             LinkerInvocationMode::Cc => {
@@ -6936,7 +7419,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
 
 fn available_linkers_for_mac() -> Result<LinkerCatalog> {
     let mut linkers = Vec::new();
-    let (path, sdk_path) = macos_toolchain()
+    let (path, _) = macos_toolchain()
         .map_err(|reason| error!("Apple linker `ld` is required for Mach-O tests: {reason}"))?;
 
     linkers.push(Linker::ThirdParty(ThirdPartyLinker {
@@ -6944,11 +7427,7 @@ fn available_linkers_for_mac() -> Result<LinkerCatalog> {
         gcc_name: "ld",
         path: path.clone(),
         cross_paths: HashMap::new(),
-        direct_args: vec![
-            OsString::from("-syslibroot"),
-            sdk_path.as_os_str().to_owned(),
-            OsString::from("-lSystem"),
-        ],
+        direct_args: Vec::new(),
         enabled_by_default: true,
     }));
 
@@ -6971,7 +7450,7 @@ fn available_linkers_for_mac() -> Result<LinkerCatalog> {
     })
 }
 
-fn available_linkers_for_wasm() -> Result<Vec<Linker>> {
+fn available_linkers_for_wasm() -> Vec<Linker> {
     let mut linkers = Vec::new();
 
     if let Ok(path) = find_bin(&["wasm-ld"]) {
@@ -6987,7 +7466,7 @@ fn available_linkers_for_wasm() -> Result<Vec<Linker>> {
 
     linkers.push(Linker::Wild);
 
-    Ok(linkers)
+    linkers
 }
 
 fn run_with_config(
@@ -7073,14 +7552,20 @@ fn run_with_config(
             // If RunDynSym is set, execute our binary by loading it dynamically and calling the
             // configured function.
             if let Some(func) = config.run_dyn_sym.as_ref() {
-                // As we are loading the library directly into our process, our binary cannot be
-                // cross compiled. Also, if we are on a musl libc system, we cannot
-                // use dlopen() as the integration test is a statically linked binary.
-                // In those cases test execution is skipped.
+                // Wasm: `run` already passes `--invoke` to wasmtime.
+                if config.platform == PlatformKind::Wasm {
+                    program
+                        .link_output
+                        .run(cross_arch)
+                        .with_context(|| format!("Failed to run program. {program}"))?;
+                } else if cross_arch.is_none() && !is_musl_used() {
+                    // As we are loading the library directly into our process, our binary cannot be
+                    // cross compiled. Also, if we are on a musl libc system, we cannot
+                    // use dlopen() as the integration test is a statically linked binary.
+                    // In those cases test execution is skipped.
 
-                // TODO: To support those other cases: a small "wrapper executable" can be cross
-                // compiled and dynamically linked to load the shared library instead.
-                if cross_arch.is_none() && !is_musl_used() {
+                    // TODO: To support those other cases: a small "wrapper executable" can be cross
+                    // compiled and dynamically linked to load the shared library instead.
                     program
                         .link_output
                         .run_as_dynlib(func)
@@ -7414,6 +7899,31 @@ fn verify_linker_plugin_requirements(
 
             verify_command_success(&mut command)
                 .context("Can't use compiler with linker-plugin")?;
+
+            // Our linker plugin implementation requires at least GCC 14 (where the LAPI_V1 version
+            // got added).
+            let output = Command::new(&linker_driver_string)
+                .arg("--version")
+                .output()
+                .context("Can't execute compiler with --version")?;
+            let compiler_version = String::from_utf8_lossy(&output.stdout);
+            if compiler_version.contains("gcc") || compiler_version.contains("g++") {
+                let mut command = Command::new(&linker_driver_string);
+                let output = command
+                    .arg("-dumpfullversion")
+                    .output()
+                    .context("Can't execute compiler with -dumpversion")?;
+                let compiler_version = String::from_utf8_lossy(&output.stdout)
+                    .split_once('.')
+                    .and_then(|version| version.0.parse::<u64>().ok())
+                    .context("Can't parse compiler version")?;
+
+                const MINIMAL_GCC_VERSION: u64 = 14;
+                ensure!(
+                    compiler_version >= MINIMAL_GCC_VERSION,
+                    "Expected GCC LTO plug-in version {MINIMAL_GCC_VERSION}, got: {compiler_version}"
+                );
+            }
         }
     }
 
@@ -7474,9 +7984,10 @@ fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
 fn read_test_config() -> Result<TestConfig> {
     let config_default_path = base_dir().parent().unwrap().join("test-config.toml");
 
-    let config_path = std::env::var("WILD_TEST_CONFIG")
-        .map(|config_path| base_dir().parent().unwrap().join(config_path))
-        .unwrap_or_else(|_| config_default_path.clone());
+    let config_path = std::env::var("WILD_TEST_CONFIG").map_or_else(
+        |_| config_default_path.clone(),
+        |config_path| base_dir().parent().unwrap().join(config_path),
+    );
 
     let mut config = if config_path.exists() {
         let config_content = std::fs::read_to_string(&config_path).with_context(|| {
@@ -7487,7 +7998,7 @@ fn read_test_config() -> Result<TestConfig> {
         })?;
 
         toml::from_str(&config_content)
-            .with_context(|| format!("Unable to load config from {config_path:?}"))?
+            .with_context(|| format!("Unable to load config from `{}`", config_path.display()))?
     } else if config_path == config_default_path {
         TestConfig::default()
     } else {
@@ -7552,7 +8063,7 @@ impl PlatformKind {
             }),
             PlatformKind::MachO => available_linkers_for_mac(),
             PlatformKind::Wasm => Ok(LinkerCatalog {
-                available: available_linkers_for_wasm()?,
+                available: available_linkers_for_wasm(),
                 unavailable: Vec::new(),
             }),
         }
@@ -7592,7 +8103,7 @@ impl PlatformKind {
         })
     }
 
-    fn intermediate_extension(&self, kind: IntermediateKind) -> Result<&'static str> {
+    fn intermediate_extension(self, kind: IntermediateKind) -> Result<&'static str> {
         Ok(match (self, kind) {
             (PlatformKind::Elf, IntermediateKind::Shared) => "so",
             (PlatformKind::Elf, IntermediateKind::Partial) => "o",
@@ -7735,4 +8246,8 @@ impl FatArch for object::read::macho::FatArch64 {
 
         Ok(())
     }
+}
+
+fn default_llvm_tools_dir() -> PathBuf {
+    PathBuf::from("/usr/bin")
 }

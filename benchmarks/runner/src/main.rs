@@ -41,7 +41,11 @@ use std::time::Duration;
 mod benchmarking;
 mod config;
 mod reporting;
+mod scaling;
 mod system;
+mod table;
+
+const RESULT_HEADER: &[u8] = b"wild-bench-results-v3\n";
 
 type Result<T = (), E = anyhow::Error> = std::result::Result<T, E>;
 
@@ -55,6 +59,8 @@ struct Args {
 enum Subcommand {
     Bench(BenchArgs),
     Report(ReportArgs),
+    /// Print benchmark timings as a Markdown table.
+    Table(table::TableArgs),
 }
 
 #[derive(Parser, Clone)]
@@ -63,9 +69,9 @@ struct BenchArgs {
     #[clap(long, default_value = "benchmarks/ryzen-9955hx.toml")]
     config: PathBuf,
 
-    /// The directory containing the savedirs.
+    /// The directory containing the savedirs. Defaults to directory containing config.
     #[clap(long)]
-    saves: PathBuf,
+    saves: Option<PathBuf>,
 
     /// Skip initial verification that we can run each benchmark.
     #[clap(long)]
@@ -75,12 +81,8 @@ struct BenchArgs {
     #[clap(long)]
     no_check_system: bool,
 
-    /// Allow benchmarking on non-tmpfs filesystem.
-    #[clap(long)]
-    allow_non_tmpfs: bool,
-
-    /// Where to write output file of linker. Should generally be on tmpfs.
-    #[clap(long, default_value = "/tmp/linker-benchmark-out")]
+    /// Output filename template. %fs is replaced with the configured filesystem type.
+    #[clap(long, default_value = "/ram/%fs/linker-benchmark-out")]
     tmp: PathBuf,
 
     /// Number of runs per batch.
@@ -104,6 +106,14 @@ struct BenchArgs {
     /// `benchmarks/[benchmark-name].bench-results`.
     #[clap(long)]
     output: Option<PathBuf>,
+
+    /// Thread counts, comma-separated and/or inclusive ranges (e.g. 1-32 or 1,2,4,8).
+    #[clap(long)]
+    threads: Option<ThreadCounts>,
+
+    /// Named linker configurations from the config. Defaults to all when no binaries are supplied.
+    #[clap(long, value_delimiter = ',')]
+    linkers: Vec<String>,
 
     /// The linker binaries to benchmark.
     binaries: Vec<PathBuf>,
@@ -129,6 +139,11 @@ struct ReportArgs {
     /// Whether to print stats to stdout.
     #[clap(long)]
     print_stats: bool,
+
+    /// Label charts with absolute values (ms for time, MiB for memory) instead of percentage
+    /// changes.
+    #[clap(long)]
+    absolute: bool,
 }
 
 fn main() -> Result {
@@ -142,10 +157,11 @@ fn main() -> Result {
             }
             benchmarking::run_bench(&bench_args, &config)
         }
+        Subcommand::Table(table_args) => table::run(&table_args),
         Subcommand::Report(report_args) => {
             for config_path in &report_args.configs()? {
                 let config = config::Config::load(config_path)?;
-                reporting::run_report(&report_args, &config)?
+                reporting::run_report(&report_args, &config)?;
             }
             Ok(())
         }
@@ -157,6 +173,17 @@ struct Benchmarks {
     benchmarks: Vec<BenchmarkResult>,
 }
 
+impl Benchmarks {
+    fn load(path: &Path) -> Result<Self> {
+        let bytes =
+            std::fs::read(path).with_context(|| format!("Failed to read `{}`", path.display()))?;
+        let bytes = bytes
+            .strip_prefix(RESULT_HEADER)
+            .context("Unsupported benchmark results format; rerun the bench command")?;
+        postcard::from_bytes(bytes).with_context(|| format!("Failed to parse `{}`", path.display()))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct BenchmarkResult {
     config: Benchmark,
@@ -165,6 +192,7 @@ struct BenchmarkResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BatchResult {
+    threads: Option<u32>,
     bin: Bin,
     runs: Vec<Run>,
 }
@@ -177,6 +205,7 @@ struct Run {
     /// future.
     pid: u32,
     extra_flags: Vec<String>,
+    memory: bool,
     elapsed: std::time::Duration,
     pub(crate) max_rss: u64,
     pub(crate) stime: Duration,
@@ -185,6 +214,8 @@ struct Run {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Bin {
+    label: Option<String>,
+    flags: Vec<String>,
     index: u32,
     path: PathBuf,
     identifier: LinkerIdentifier,
@@ -195,14 +226,14 @@ struct LinkerIdentifier {
     kind: LinkerKind,
     version: String,
     variant: Option<String>,
-    /// The commit hash of the linker. Set for Wild when the path to the linker doesn't include the
-    /// version number. i.e. when we've concluded that this isn't a release version.
+    /// The commit hash reported by Wild, including a modification suffix when present.
     hash: Option<String>,
-    /// If we've got has, then this is one patch level higher than version.
+    /// If we've got a hash, then this is one patch level higher than version. Empty when the
+    /// version output only contains a commit hash.
     effective_version: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum LinkerKind {
     Wild,
@@ -216,6 +247,10 @@ struct Benchmark {
     name: String,
     path: PathBuf,
     config: BenchConfig,
+    output: PathBuf,
+    // Used only when running benchmarks, not when reporting saved results.
+    #[serde(skip)]
+    min_wild_version: Option<Vec<u32>>,
 }
 
 impl LinkerKind {
@@ -228,7 +263,7 @@ impl LinkerKind {
         }
     }
 
-    fn supports_arg(&self, arg: &str) -> bool {
+    fn supports_arg(self, arg: &str) -> bool {
         match arg {
             "--no-fork" => matches!(self, LinkerKind::Wild | LinkerKind::Mold),
             _ => true,
@@ -261,7 +296,12 @@ impl Bin {
         let identifier = LinkerIdentifier::parse(&version_line, bin_path)
             .with_context(|| format!("Failed to parse linker version `{version_line}`"))?;
 
+        let label = display_version_override(bin_path)?
+            .map(|version| format!("{} {version}", identifier.kind));
+
         Ok(Self {
+            label,
+            flags: Vec::new(),
             index,
             path: bin_path.to_owned(),
             identifier,
@@ -269,15 +309,55 @@ impl Bin {
     }
 }
 
-impl Benchmark {
-    fn new(bench_dir: PathBuf, bench_config: BenchConfig) -> Result<Benchmark> {
-        let name = bench_dir
-            .file_name()
-            .context("Invalid filename")?
-            .to_str()
-            .with_context(|| format!("Filename isn't valid UTF-8: {}", bench_dir.display()))?
-            .to_owned();
+/// Looks for a .version file alongside the binary. Only works if the path to the binary is
+/// supplied. This is useful for overriding a version string for a linker that isn't actually the
+/// release which its `--version` flag returns - e.g. because it was built from git at some later
+/// point.
+fn display_version_override(bin_path: &Path) -> Result<Option<String>> {
+    let mut version_path = bin_path.to_owned().into_os_string();
+    version_path.push(".version");
+    let version_path = PathBuf::from(version_path);
 
+    let contents = match std::fs::read_to_string(&version_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read `{}`", version_path.display()));
+        }
+    };
+
+    let mut lines = contents.lines();
+    let version = lines.next().unwrap_or_default().trim();
+
+    if version.is_empty() || lines.next().is_some() {
+        bail!(
+            "{} must contain one non-empty version line",
+            version_path.display()
+        );
+    }
+    Ok(Some(version.to_owned()))
+}
+
+impl Benchmark {
+    fn new(
+        name: String,
+        bench_dir: &Path,
+        bench_config: BenchConfig,
+        template: &Path,
+    ) -> Result<Benchmark> {
+        let filesystem = bench_config.filesystem();
+        let min_wild_version = bench_config
+            .min_wild_version
+            .as_deref()
+            .map(parse_version_number)
+            .transpose()?;
+        let output = std::path::absolute(
+            template
+                .to_str()
+                .context("Output template must be UTF-8")?
+                .replace("%fs", filesystem),
+        )?;
         let path = bench_dir.join("run-with");
         if !path.exists() {
             bail!("{} doesn't exist", path.display())
@@ -287,20 +367,21 @@ impl Benchmark {
             name,
             path,
             config: bench_config,
+            output,
+            min_wild_version,
         })
     }
 
     fn supports_wild_version(&self, wild_version: &[u32]) -> bool {
-        let Some(min_required) = self
-            .config
-            .min_wild_version
-            .as_ref()
-            .and_then(|v| crate::parse_version_number(v).ok())
-        else {
+        if wild_version.is_empty() {
+            return true;
+        }
+
+        let Some(min_required) = &self.min_wild_version else {
             return true;
         };
 
-        wild_version >= &min_required
+        wild_version >= min_required.as_slice()
     }
 
     fn supports_bin(&self, bin: &Bin) -> bool {
@@ -322,36 +403,67 @@ impl LinkerIdentifier {
         let mut variant = None;
 
         if let Some(mut rest) = version_line.strip_prefix("Wild ") {
+            let legacy = rest.starts_with("version ");
             if let Some(r) = rest.strip_prefix("version ") {
                 rest = r;
             }
-            version = take_word(&mut rest)?.to_owned();
-            if !bin_path.to_string_lossy().contains(&version) {
-                // For wild, we only consider the version to be true if the path to the linker
-                // contains the version number, otherwise we use the git hash.
-                hash = take_word(&mut rest).map(|w| w.replace(['(', ')'], ""));
+            version = take_word(&mut rest).to_owned();
+            if version.len() == 40 && version.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Some(Self {
+                    kind: LinkerKind::Wild,
+                    hash: Some(version.clone()),
+                    version,
+                    variant: None,
+                    effective_version: Vec::new(),
+                });
+            }
+            let token = take_word(&mut rest).trim_matches(['(', ')']);
+            let commit = token.strip_suffix("-modified").unwrap_or(token);
+            if (7..=40).contains(&commit.len()) && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+                // Older releases include a hash too; release archive paths identify their version.
+                let release = legacy
+                    && !token.ends_with("-modified")
+                    && bin_path.components().any(|component| {
+                        component.as_os_str().to_str().is_some_and(|name| {
+                            name.split(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+                                .any(|part| part == version)
+                        })
+                    });
+                if !release {
+                    hash = Some(token.to_owned());
+                }
+            } else if token == "non-git-build" {
+                variant = Some(token.to_owned());
             }
 
             kind = LinkerKind::Wild;
         } else if let Some(mut rest) = version_line.strip_prefix("LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
         } else if let Some(mut rest) = version_line.strip_prefix("Ubuntu LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             variant = Some("Ubuntu".to_owned());
         } else if let Some(mut rest) = version_line.strip_prefix("Debian LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             variant = Some("Debian".to_owned());
         } else if let Some(mut rest) = version_line.strip_prefix("mold ") {
             kind = LinkerKind::Mold;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
         } else {
-            let mut rest = version_line.strip_prefix("GNU ld (GNU Binutils for Ubuntu) ")?;
+            let rest = version_line.strip_prefix("GNU ld (")?;
+            let (distribution, mut rest) = rest.split_once(") ")?;
             kind = LinkerKind::Bfd;
-            version = take_word(&mut rest)?.to_owned();
-            variant = Some("Ubuntu".to_owned());
+            version = take_word(&mut rest).to_owned();
+            let distribution = distribution
+                .strip_prefix("GNU Binutils")
+                .unwrap_or(distribution)
+                .trim();
+            let distribution = distribution.strip_prefix("for ").unwrap_or(distribution);
+            if !distribution.is_empty() {
+                variant = Some(distribution.to_owned());
+            }
         }
 
         let mut effective_version = parse_version_number(&version).ok()?;
@@ -386,17 +498,21 @@ impl LinkerIdentifier {
     }
 }
 
-fn take_word<'a>(input: &mut &'a str) -> Option<&'a str> {
+fn take_word<'a>(input: &mut &'a str) -> &'a str {
     *input = input.trim();
     let i = input.find(' ').unwrap_or(input.len());
     let (word, rest) = input.split_at(i);
     *input = rest;
-    Some(word)
+    word
 }
 
 impl Display for Bin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.identifier)
+        if let Some(label) = &self.label {
+            write!(f, "{label}")
+        } else {
+            write!(f, "{}", self.identifier)
+        }
     }
 }
 
@@ -431,7 +547,7 @@ impl Display for Benchmark {
 }
 
 fn parse_version_number(v: &str) -> Result<Vec<u32>> {
-    v.split(".")
+    v.split('.')
         .map(|p| {
             p.parse()
                 .with_context(|| format!("Failed to parse version `{v}`"))
@@ -439,8 +555,8 @@ fn parse_version_number(v: &str) -> Result<Vec<u32>> {
         .collect()
 }
 
-fn default_result_path(config: &Config, path_buf: &Option<PathBuf>) -> PathBuf {
-    path_buf.clone().unwrap_or_else(|| {
+fn default_result_path(config: &Config, path_buf: Option<&PathBuf>) -> PathBuf {
+    path_buf.cloned().unwrap_or_else(|| {
         PathBuf::from("benchmarks").join(format!("{}.bench-results", config.name))
     })
 }
@@ -479,5 +595,28 @@ mod tests {
         assert!(!version_less_than("0.5.0", "0.5.0"));
         assert!(!version_less_than("0.6.0", "0.5.0"));
         assert!(version_less_than("0.5.0", "0.10.0"));
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ThreadCounts(Vec<u32>);
+
+impl std::str::FromStr for ThreadCounts {
+    type Err = anyhow::Error;
+
+    fn from_str(input: &str) -> Result<Self> {
+        let mut counts = std::collections::BTreeSet::new();
+        for part in input.split(',') {
+            let part = part.trim();
+            let (start, end) = part.split_once('-').unwrap_or((part, part));
+            let start: u32 = start.parse().context("Invalid thread count")?;
+            let end: u32 = end.parse().context("Invalid thread count")?;
+            anyhow::ensure!(
+                start > 0 && start <= end,
+                "Thread ranges must be positive and ascending"
+            );
+            counts.extend(start..=end);
+        }
+        Ok(Self(counts.into_iter().collect()))
     }
 }

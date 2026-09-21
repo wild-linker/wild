@@ -15,6 +15,7 @@
 
 //#Config:gcc-shared:default
 //#CompArgs:-fpic
+//#CompSoArgs:-fpic
 //#Shared:tls-variant-1.c:-mtls-dialect=gnu2,tls-variant-2.c:-ftls-model=global-dynamic,tls-variant-3.c:-ftls-model=initial-exec
 //#Arch: x86_64
 
@@ -27,6 +28,7 @@
 
 //#Config:gcc-shared-tls-trad:default
 //#CompArgs:-fpic
+//#CompSoArgs:-fpic
 //#Shared:tls-variant-1.c,tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad,tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
 //#SkipArch: x86_64
 //#RequiresCompilerFlags:-mtls-dialect=trad

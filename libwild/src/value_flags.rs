@@ -55,9 +55,8 @@ bitflags! {
         /// local.
         const DOWNGRADE_TO_LOCAL = 1 << 4;
 
-        /// Set when the value is a function. Currently only set for dynamic symbols, since that's
-        /// all we need it for.
-        const FUNCTION = 1 << 5;
+        /// Set when the value is a dynamic function.
+        const DYNAMIC_FUNCTION = 1 << 5;
 
         /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
         /// PLT or GOT.
@@ -107,6 +106,16 @@ bitflags! {
 
         /// Whether the symbol has a reference from non-IR code.
         const HAS_NON_IR_REF = 1 << 16;
+
+        /// Symbol needs a canonical PLT in order to preserve address identity.
+        const CANONICAL_PLT = 1 << 17;
+
+        /// We need a second GOT entry. i.e GOT->PLT->GOT. This is only used in conjunction with
+        /// canonical PLT entries.
+        const GOT_FOR_PLT_ENTRY = 1 << 18;
+
+        /// The size of a symbol is needed, but not its address.
+        const SYMBOL_SIZE = 1 << 19;
     }
 }
 
@@ -136,7 +145,10 @@ impl ValueFlags {
                 | ValueFlags::GOT_TLS_DESCRIPTOR
                 | ValueFlags::EXPORT_DYNAMIC
                 | ValueFlags::COPY_RELOCATION
-                | ValueFlags::IFUNC_GOT_FOR_ADDRESS,
+                | ValueFlags::IFUNC_GOT_FOR_ADDRESS
+                | ValueFlags::CANONICAL_PLT
+                | ValueFlags::GOT_FOR_PLT_ENTRY
+                | ValueFlags::SYMBOL_SIZE,
         )
     }
 
@@ -159,7 +171,7 @@ impl ValueFlags {
     /// opposed to things where the address cannot be known until runtime or absolute values, which
     /// aren't addresses.
     #[must_use]
-    pub(crate) fn is_address(self) -> bool {
+    pub(crate) fn has_link_time_address(self) -> bool {
         !self.contains(ValueFlags::IFUNC)
             && !self.contains(ValueFlags::DYNAMIC)
             && !self.contains(ValueFlags::ABSOLUTE)
@@ -172,7 +184,7 @@ impl ValueFlags {
 
     #[must_use]
     pub(crate) fn is_function(self) -> bool {
-        self.contains(ValueFlags::FUNCTION)
+        self.contains(ValueFlags::DYNAMIC_FUNCTION)
     }
     #[must_use]
     pub(crate) fn is_downgraded_to_local(self) -> bool {
@@ -237,7 +249,17 @@ impl ValueFlags {
     }
 
     #[must_use]
-    pub(crate) fn is_tls(self) -> bool {
+    pub(crate) fn needs_canonical_plt(self) -> bool {
+        self.contains(ValueFlags::CANONICAL_PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_canonical_plt_got_for_address(self) -> bool {
+        self.contains(ValueFlags::CANONICAL_PLT | ValueFlags::GOT_FOR_PLT_ENTRY)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_tls_got(self) -> bool {
         self.contains(ValueFlags::GOT_TLS_OFFSET)
             || self.contains(ValueFlags::GOT_TLS_MODULE)
             || self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)

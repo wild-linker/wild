@@ -7,7 +7,6 @@ use super::Input;
 use super::InputSpec;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
-use crate::arch::SUPPORTED_EMULATIONS;
 use crate::arch::SUPPORTED_TARGETS;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
@@ -19,7 +18,10 @@ use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
 use crate::args::parse_number;
 use crate::bail;
+use crate::env;
+use crate::error;
 use crate::error::Context as _;
+use crate::error::Error;
 use crate::error::Result;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::output_kind::OutputKind;
@@ -44,14 +46,17 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
+use strum::EnumMessage as _;
+use strum::IntoEnumIterator as _;
 
 #[derive(Debug)]
 pub struct ElfArgs {
     pub(crate) common: super::CommonArgs,
 
-    pub(crate) arch: Architecture,
+    emulation: Emulation,
+    emulation_error: Option<Error>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) dynamic_linker: Option<Box<Path>>,
+    dynamic_linker: DynamicLinker,
     pub(crate) strip: Strip,
     pub(crate) merge_sections: bool,
     pub(crate) version_script_path: Option<PathBuf>,
@@ -96,6 +101,9 @@ pub struct ElfArgs {
     pub(crate) tdata: Option<u64>,
     pub(crate) tbss: Option<u64>,
 
+    /// Base address for the output binary from --image-base.
+    pub(crate) image_base: Option<u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -107,6 +115,8 @@ pub struct ElfArgs {
 
     pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) execstack: bool,
+    pub(crate) warn_execstack: WarnExecstack,
+    pub(crate) error_execstack: bool,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -117,6 +127,8 @@ pub struct ElfArgs {
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
+    pub(crate) force_ibt: bool,
+    pub(crate) cet_report: CetReport,
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) z_pack_relative_relocs: bool,
     pub(crate) max_page_size: Option<Alignment>,
@@ -191,6 +203,22 @@ pub(crate) enum CompressionKind {
     Zstd,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum CetReport {
+    None,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum WarnExecstack {
+    None,
+    Always,
+    #[default]
+    Objects,
+}
+
 impl ExcludeLibs {
     pub(crate) fn should_exclude(&self, lib_path: &[u8]) -> bool {
         match self {
@@ -234,15 +262,9 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "undefined-version",
     "sort-common",
     "stats",
+    "verbose",
 ];
-const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
-    "(",
-    ")",
-    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld
-    // linker.
-    #[cfg(target_os = "illumos")]
-    "C",
-];
+const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 
 const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
@@ -263,17 +285,70 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X", // alias for --discard-locals
 ];
 
+pub(crate) const LDEMULATION_ENV: &str = "LDEMULATION";
+
+#[derive(Debug, Default)]
+enum DynamicLinker {
+    #[default]
+    EmulationDefault,
+    Omit,
+    Explicit(Box<Path>),
+}
+
+#[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
+enum Emulation {
+    #[strum(serialize = "elf_x86_64", message = "x86-64 ELF target")]
+    ElfX86_64,
+    #[strum(serialize = "elf_x86_64_sol2", message = "x86-64 ELF target (Solaris)")]
+    ElfX86_64Sol2,
+    #[strum(
+        serialize = "aarch64elf",
+        serialize = "aarch64linux",
+        message = "AArch64 ELF target"
+    )]
+    AArch64,
+    #[strum(serialize = "elf64lriscv", message = "RISC-V 64-bit ELF target")]
+    RiscV64,
+    #[strum(serialize = "elf64loongarch", message = "LoongArch 64-bit ELF target")]
+    LoongArch64,
+    #[strum(serialize = "elf64lppc", message = "PowerPC64 LE ELF target")]
+    Ppc64,
+    #[strum(disabled)]
+    Unsupported,
+}
+
+impl Emulation {
+    fn architecture(self) -> Architecture {
+        match self {
+            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 => Architecture::X86_64,
+            Emulation::AArch64 => Architecture::AArch64,
+            Emulation::RiscV64 => Architecture::RiscV64,
+            Emulation::LoongArch64 => Architecture::LoongArch64,
+            Emulation::Ppc64 => Architecture::Ppc64,
+            Emulation::Unsupported => Architecture::Unsupported,
+        }
+    }
+
+    fn default_dynamic_linker(self) -> Option<&'static Path> {
+        match self {
+            Emulation::ElfX86_64Sol2 => Some(Path::new("/lib/amd64/ld.so.1")),
+            _ => None,
+        }
+    }
+}
+
 impl Default for ElfArgs {
     fn default() -> Self {
         Self {
             common: CommonArgs::default(),
 
-            arch: default_target_arch(),
+            emulation: default_emulation(),
+            emulation_error: None,
 
             lib_search_path: Vec::new(),
             should_output_executable: true,
             should_output_partial_object: false,
-            dynamic_linker: None,
+            dynamic_linker: DynamicLinker::default(),
             strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other
             // than being different, there doesn't seem to be any downside to doing
@@ -294,6 +369,8 @@ impl Default for ElfArgs {
             soname: None,
             enable_new_dtags: true,
             execstack: false,
+            warn_execstack: WarnExecstack::Objects,
+            error_execstack: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             should_write_linker_identity: true,
@@ -313,6 +390,7 @@ impl Default for ElfArgs {
             defsym: Vec::new(),
             section_start: HashMap::new(),
             ttext: None,
+            image_base: None,
             tdata: None,
             tbss: None,
             got_plt_syms: false,
@@ -332,6 +410,8 @@ impl Default for ElfArgs {
             z_interpose: false,
             z_stack_size: None,
             z_isa: None,
+            force_ibt: false,
+            cet_report: CetReport::None,
             z_pack_relative_relocs: false,
             max_page_size: None,
             auxiliary: Vec::new(),
@@ -348,46 +428,105 @@ impl Default for ElfArgs {
     }
 }
 
-const fn default_target_arch() -> Architecture {
+const fn default_emulation() -> Emulation {
     // We default to targeting the architecture that we're running on. We don't support running on
     // architectures that we can't target.
     #[cfg(target_arch = "x86_64")]
     {
-        return Architecture::X86_64;
+        return Emulation::ElfX86_64;
     }
     #[cfg(target_arch = "aarch64")]
     {
-        return Architecture::AArch64;
+        return Emulation::AArch64;
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RiscV64;
+        return Emulation::RiscV64;
     }
     #[cfg(target_arch = "loongarch64")]
     {
-        return Architecture::LoongArch64;
+        return Emulation::LoongArch64;
     }
     #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
     {
-        return Architecture::Ppc64;
+        return Emulation::Ppc64;
     }
 
     #[allow(unreachable_code)]
-    Architecture::Unsupported
+    Emulation::Unsupported
 }
 
 impl ElfArgs {
     pub(crate) fn new() -> Result<Self> {
-        Ok(Self {
+        let mut args = Self {
             common: CommonArgs::from_env()?,
             ..Default::default()
-        })
+        };
+
+        if let Ok(value) = env::var(LDEMULATION_ENV) {
+            args.set_emulation_str(&value, LDEMULATION_ENV);
+        }
+
+        Ok(args)
+    }
+
+    fn set_emulation_str(&mut self, value: &str, source: &'static str) {
+        match value.parse() {
+            Ok(emulation) => self.set_emulation(emulation),
+            Err(_) => {
+                self.emulation_error = Some(error!(
+                    "Emulation '{value}' is not yet supported (from {source})"
+                ));
+            }
+        }
+    }
+
+    fn set_emulation(&mut self, emulation: Emulation) {
+        self.emulation = emulation;
+        self.emulation_error = None;
     }
 
     pub(crate) fn is_relr_enabled(&self) -> bool {
         self.z_pack_relative_relocs
             || self.pack_dyn_relocs == PackDynRelocs::Relr
             || self.pack_dyn_relocs == PackDynRelocs::AndroidRelr
+    }
+
+    pub(crate) fn architecture(&self) -> Architecture {
+        self.emulation.architecture()
+    }
+
+    /// Report that `object` requested an executable stack via `.note.GNU-stack`.
+    ///
+    /// Unlike GNU ld, we never enable an executable stack from input objects. `-z execstack` is
+    /// required. The flags only control whether we error, warn, or stay silent about that request.
+    pub(crate) fn report_object_execstack(&self, object: &impl std::fmt::Display) -> Result {
+        // `-z execstack` with `--warn-execstack` is reported during argument parsing, so
+        // `self.execstack && matches!(self.warn_execstack, WarnExecstack::Always)` cannot happen
+        // here.
+        if self.execstack || matches!(self.warn_execstack, WarnExecstack::None) {
+            return Ok(());
+        }
+
+        let message =
+            format!("{object}: requires executable stack, but -z execstack is not specified");
+        if self.error_execstack {
+            bail!("{message}");
+        }
+        self.warning(message);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_architecture(&mut self, architecture: Architecture) {
+        self.set_emulation(match architecture {
+            Architecture::X86_64 => Emulation::ElfX86_64,
+            Architecture::AArch64 => Emulation::AArch64,
+            Architecture::RiscV64 => Emulation::RiscV64,
+            Architecture::LoongArch64 => Emulation::LoongArch64,
+            Architecture::Ppc64 => Emulation::Ppc64,
+            Architecture::Unsupported => Emulation::Unsupported,
+        });
     }
 }
 
@@ -403,6 +542,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         let arg = arg.as_ref();
 
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+    }
+
+    if let Some(error) = args.emulation_error.take() {
+        return Err(error);
     }
 
     // Copy relocations are only permitted when building executables.
@@ -439,11 +582,35 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             .for_each(|input| input.modifiers.allow_shared = false);
     }
 
+    if args.execstack
+        && matches!(args.warn_execstack, WarnExecstack::Always)
+        && !args.should_output_partial_object
+    {
+        let message = "enabling an executable stack because of -z execstack command line option";
+        if args.error_execstack {
+            bail!("{message}");
+        }
+        args.warning(message);
+    }
+
     if !args.experimental_sframe {
         args.discard_sframe = true;
     }
 
     Ok(())
+}
+
+fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
+    Emulation::iter().flat_map(|emulation| {
+        emulation
+            .get_serializations()
+            .iter()
+            .map(move |&name| (emulation, name))
+    })
+}
+
+pub(crate) fn supported_emulations() -> String {
+    emulations().map(|(_, name)| name).join(" ")
 }
 
 fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
@@ -521,52 +688,19 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
-    parser
+    let mut emulation_option = parser
         .declare_with_param()
         .prefix("m")
-        .help("Set target architecture")
-        .sub_option("elf_x86_64", "x86-64 ELF target", |args, _| {
-            args.arch = Architecture::X86_64;
-            Ok(())
-        })
-        .sub_option(
-            "elf_x86_64_sol2",
-            "x86-64 ELF target (Solaris)",
-            |args, _| {
-                if args.dynamic_linker.is_none() {
-                    args.dynamic_linker = Some(Path::new("/lib/amd64/ld.so.1").into());
-                }
-                args.arch = Architecture::X86_64;
-                Ok(())
-            },
-        )
-        .sub_option("aarch64elf", "AArch64 ELF target", |args, _| {
-            args.arch = Architecture::AArch64;
-            Ok(())
-        })
-        .sub_option("aarch64linux", "AArch64 ELF target (Linux)", |args, _| {
-            args.arch = Architecture::AArch64;
-            Ok(())
-        })
-        .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
-            args.arch = Architecture::RiscV64;
-            Ok(())
-        })
-        .sub_option(
-            "elf64loongarch",
-            "LoongArch 64-bit ELF target",
-            |args, _| {
-                args.arch = Architecture::LoongArch64;
-                Ok(())
-            },
-        )
-        .sub_option("elf64lppc", "PowerPC64 LE ELF target", |args, _| {
-            args.arch = Architecture::Ppc64;
-            Ok(())
-        })
-        .execute(|_args, _modifier_stack, value| {
-            bail!("-m {value} is not yet supported");
-        });
+        .help("Select linker emulation");
+
+    for (emulation, name) in emulations() {
+        emulation_option = emulation_option.value_help(name, emulation.get_message().unwrap());
+    }
+
+    emulation_option.execute(|args, _modifier_stack, value| {
+        args.set_emulation_str(value, "-m");
+        Ok(())
+    });
 
     parser
         .declare_with_param()
@@ -714,6 +848,24 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
+        .sub_option(
+            "force-ibt",
+            "Warn if any input file lacks IBT property",
+            |args, _| {
+                args.force_ibt = true;
+                Ok(())
+            },
+        )
+        .sub_option_with_value(
+            "cet-report=",
+            "Report missing CET properties",
+            |args, _, value| {
+                args.cet_report = value
+                    .parse::<CetReport>()
+                    .map_err(|_| error!("unknown -z cet-report= value '{value}'"))?;
+                Ok(())
+            },
+        )
         .execute(|args, _modifier_stack, value| {
             args.warn_unsupported(&(format!("-z {value}")))?;
             Ok(())
@@ -824,7 +976,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("pic-executable")
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
-            args.common.relocation_model = RelocationModel::Relocatable;
+            args.common.relocation_model = RelocationModel::PositionIndependent;
             args.should_output_executable = true;
             Ok(())
         });
@@ -834,7 +986,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-pie")
         .help("Do not create a position-independent executable (default)")
         .execute(|args, _modifier_stack| {
-            args.common.relocation_model = RelocationModel::NonRelocatable;
+            args.common.relocation_model = RelocationModel::Fixed;
             args.should_output_executable = true;
             Ok(())
         });
@@ -883,7 +1035,11 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
             // The following listing is something autoconf detection relies on.
             writeln!(stdout, "wild: supported targets: {SUPPORTED_TARGETS}")?;
-            writeln!(stdout, "wild: supported emulations: {SUPPORTED_EMULATIONS}")?;
+            writeln!(
+                stdout,
+                "wild: supported emulations: {}",
+                supported_emulations()
+            )?;
 
             std::process::exit(0);
         });
@@ -938,7 +1094,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("dynamic-linker")
         .help("Set dynamic linker path")
         .execute(|args, _modifier_stack, value| {
-            args.dynamic_linker = Some(Box::from(Path::new(value)));
+            args.dynamic_linker = DynamicLinker::Explicit(Box::from(Path::new(value)));
             Ok(())
         });
 
@@ -947,7 +1103,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-dynamic-linker")
         .help("Omit the load-time dynamic linker request")
         .execute(|args, _modifier_stack| {
-            args.dynamic_linker = None;
+            args.dynamic_linker = DynamicLinker::Omit;
             Ok(())
         });
 
@@ -1448,6 +1604,18 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare_with_param()
+        .long("image-base")
+        .help("Set the base address of the output binary")
+        .execute(|args, _modifier_stack, value| {
+            args.image_base = Some(
+                parse_number(value)
+                    .with_context(|| format!("Invalid address `{value}` in --image-base"))?,
+            );
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
         .execute(|args, _modifier_stack, value| {
@@ -1713,6 +1881,53 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
+        .long("warn-execstack")
+        .help(
+            "Warn whenever the output has an executable stack, including when -z execstack is used",
+        )
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::Always;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-execstack-objects")
+        .help("Warn only when an input object requests an executable stack (default)")
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::Objects;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-warn-execstack")
+        .help("Do not warn about an executable stack")
+        .execute(|args, _modifier_stack| {
+            args.warn_execstack = WarnExecstack::None;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("error-execstack")
+        .help("Turn executable-stack warnings into errors")
+        .execute(|args, _modifier_stack| {
+            args.error_execstack = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-error-execstack")
+        .help("Keep executable-stack reports as warnings")
+        .execute(|args, _modifier_stack| {
+            args.error_execstack = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("error-unresolved-symbols")
         .help("Treat unresolved symbols as errors")
         .execute(|args, _modifier_stack| {
@@ -1816,7 +2031,10 @@ fn add_silently_ignored_flags(parser: &mut ArgumentParser<ElfArgs>) {
         declaration = declaration.long(flag);
         declaration.execute(|_args, _modifier_stack| Ok(()));
     }
-    for flag in SILENTLY_IGNORED_SHORT_FLAGS {
+    for flag in SILENTLY_IGNORED_SHORT_FLAGS
+        .iter()
+        .chain(crate::host::os::CLANG_DRIVER_NOOP_SHORT_FLAGS)
+    {
         let mut declaration = parser.declare();
         declaration = declaration.short(flag);
         declaration.execute(|_args, _modifier_stack| Ok(()));
@@ -1859,6 +2077,10 @@ impl platform::Args for ElfArgs {
 
     fn rosegment(&self) -> bool {
         self.rosegment
+    }
+
+    fn image_base(&self) -> Option<u64> {
+        self.image_base
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
@@ -1988,7 +2210,11 @@ impl platform::Args for ElfArgs {
     }
 
     fn dynamic_linker(&self) -> Option<&Path> {
-        self.dynamic_linker.as_deref()
+        match &self.dynamic_linker {
+            DynamicLinker::EmulationDefault => self.emulation.default_dynamic_linker(),
+            DynamicLinker::Omit => None,
+            DynamicLinker::Explicit(path) => Some(path),
+        }
     }
 
     fn should_allow_object_undefined(&self, output_kind: OutputKind) -> bool {
@@ -2028,7 +2254,7 @@ impl platform::Args for ElfArgs {
             return max_page_size;
         }
 
-        match self.arch {
+        match self.architecture() {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
             Architecture::RiscV64 => Alignment { exponent: 12 },
@@ -2059,7 +2285,7 @@ impl platform::Args for ElfArgs {
     }
 
     fn architecture(&self) -> Architecture {
-        self.arch
+        ElfArgs::architecture(self)
     }
 
     fn output_format_endian(&self) -> Option<Endianness> {
@@ -2271,8 +2497,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_file_only_options() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
         // Create a temporary file containing the same options (one per line) as INPUT1
         let file = NamedTempFile::new().expect("Could not create temp file");
         write_options_to_file(file.as_file(), INPUT1);
@@ -2285,8 +2514,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_mixed_file_and_inline_options() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
         // Create a temporary file containing some options
         let file = NamedTempFile::new().expect("Could not create temp file");
         write_options_to_file(file.as_file(), FILE_OPTIONS);
@@ -2305,8 +2537,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_overlapping_file_and_inline_options() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
         // Create a set of file options that has a duplicate of an inline option
         let mut file_options = FILE_OPTIONS.to_vec();
         file_options.append(&mut INLINE_OPTIONS.to_vec());
@@ -2328,8 +2563,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_recursive_file_option() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
         // Create a temporary file containing a @file option
         let file1 = NamedTempFile::new().expect("Could not create temp file");
         let file2 = NamedTempFile::new().expect("Could not create temp file");

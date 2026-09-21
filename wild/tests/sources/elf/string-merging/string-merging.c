@@ -2,13 +2,13 @@
 // to the same memory.
 
 //#AbstractConfig:default
-//#LinkArgs:-z noexecstack
 //#Object:string_merging1.s
 //#Object:string_merging2.s
 //#Object:runtime.c
 //#Arch: x86_64
 
 //#Config:merge_strings:default
+//#LinkArgs:-z noexecstack
 
 //#Config:export_merged_str_dyn:default
 //#Mode:dynamic
