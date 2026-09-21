@@ -1137,6 +1137,7 @@ impl<'data, P: Platform> InputRecord<'data, P> {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn archive_members_process_in_parallel_without_reordering() {
         let active = AtomicUsize::new(0);
