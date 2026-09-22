@@ -67,6 +67,7 @@ use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -79,6 +80,7 @@ use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
+use object::ObjectSymbolTable as _;
 use object::RelocationTarget;
 use object::SectionKind;
 use object::read::elf::Dyn as _;
@@ -3084,6 +3086,7 @@ pub(crate) struct AddressIndex<'data> {
     dynamic_relocations_by_symbol_index: HashMap<object::SymbolIndex, Vec<object::Relocation>>,
     tls_tp_offset: u64,
     aarch64_tls_offset_bias: u64,
+    symbolic: bool,
 
     /// GOT addresses for each JMPREL relocation by their index.
     jmprel_got_addresses: Vec<u64>,
@@ -3178,6 +3181,7 @@ impl<'data> AddressIndex<'data> {
             got_base_address: None,
             tls_tp_offset: get_tls_tp_offset(file),
             aarch64_tls_offset_bias: get_aarch64_tls_offset_bias(file),
+            symbolic: false,
             plt_indexes: Default::default(),
             got_tables: Default::default(),
             verdef: Default::default(),
@@ -3514,6 +3518,11 @@ impl<'data> AddressIndex<'data> {
                 object::elf::DT_NEEDED => {
                     self.bin_attributes.link_type = LinkType::Dynamic;
                 }
+                object::elf::DT_SYMBOLIC => self.symbolic = true,
+                object::elf::DT_FLAGS => {
+                    self.symbolic |=
+                        object::elf::DynamicFlags(entry.val(e)).contains(object::elf::DF_SYMBOLIC);
+                }
                 _ => {}
             });
     }
@@ -3529,6 +3538,23 @@ impl<'data> AddressIndex<'data> {
         self.got_tables
             .iter()
             .any(|t| t.address_range.contains(&address))
+    }
+
+    fn local_tls_symbol_offset(&self, bin: &Binary, target: RelocationTarget) -> Option<u64> {
+        let RelocationTarget::Symbol(symbol_index) = target else {
+            return None;
+        };
+
+        let symbols = bin.file.dynamic_symbol_table()?;
+        let symbol = symbols.symbol_by_index(symbol_index).ok()?;
+        let info = self.dynamic_symbols.get(symbol_index.0)?;
+
+        (symbol.section_index().is_some()
+            && symbol.kind() == object::SymbolKind::Tls
+            && (info.visibility == Visibility::Protected
+                || self.symbolic
+                || self.bin_attributes.output_kind == OutputKind::Executable))
+            .then(|| symbol.address())
     }
 
     pub(crate) fn symbols_at_address(&self, address: u64) -> &[object::SymbolIndex] {
@@ -3686,15 +3712,42 @@ impl<'data> GotIndex<'data> {
                         (BasicValueKind::TlsModuleId, Some(symbol)) => {
                             bail!("Expected TLSLD, but found DTPMOD with symbol (`{symbol}`)");
                         }
-                        (BasicValueKind::TlsGd, Some(symbol)) => Ok(Referent::TlsGd(*symbol)),
-                        (BasicValueKind::TlsGd, None) => {
-                            // There's no symbol associated with the DTPMOD relocation, so it's a
-                            // TLS variable within the current DSO. Read
-                            // the next word of data to get the offset.
-                            let tls_offset =
-                                read_word_at(bin.file, got_address + size_of::<u64>() as u64)
+                        (BasicValueKind::TlsGd, Some(symbol))
+                            if index.local_tls_symbol_offset(bin, rel.target()).is_none() =>
+                        {
+                            Ok(Referent::TlsGd(*symbol))
+                        }
+                        (BasicValueKind::TlsGd, _) => {
+                            // The module is local, but the offset may be fixed or relocated.
+                            let offset_address = got_address + size_of::<u64>() as u64;
+                            let tls_offset = if let Some(offset_rel) =
+                                index.relocation_at_address(offset_address)
+                            {
+                                ensure!(
+                                    get_r_type::<R>(offset_rel).dynamic_relocation_kind()
+                                        == Some(DynamicRelocationKind::DtpOff),
+                                    "Expected DTPOFF after DTPMOD"
+                                );
+
+                                index
+                                    .local_tls_symbol_offset(bin, offset_rel.target())
+                                    .context(
+                                        "Expected locally bound TLS symbol after local DTPMOD",
+                                    )?
+                                    .wrapping_add(offset_rel.addend() as u64)
+                                    as i64
+                            } else {
+                                let dtv_offset = match bin.file.architecture() {
+                                    object::Architecture::Riscv64 => RISCV_TLS_DTV_OFFSET,
+                                    object::Architecture::PowerPc64 => 0x8000,
+                                    _ => 0,
+                                };
+
+                                read_word_at(bin.file, offset_address)
                                     .context("Short read after DTPMOD")?
-                                    as i64;
+                                    .wrapping_add(dtv_offset) as i64
+                            };
+
                             Ok(Referent::UnmatchedTlsOffset(tls_offset))
                         }
                         (other, _) => bail!("Unexpected DTPMOD when looking for {other:?}"),

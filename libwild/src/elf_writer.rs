@@ -940,7 +940,10 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             *got_entry = elf::Word::<C>::from_u64(elf::CURRENT_EXE_TLS_MOD)?;
         } else {
             *got_entry = elf::Word::<C>::from_u64(0)?;
-            let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
+            let dynamic_symbol_index = res
+                .dynamic_symbol_index
+                .filter(|_| res.flags.is_interposable())
+                .map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
                 compute_allocations::<elf::Elf<C>>(res, self.output_kind, args)
                     .get(part_id::RELA_DYN_GENERAL)
@@ -951,13 +954,13 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             self.write_dtpmod_relocation::<A>(got_address, dynamic_symbol_index)?;
         }
         let offset_entry = self.take_next_got_entry()?;
-        if let Some(dynamic_symbol_index) = res.dynamic_symbol_index {
-            if res.flags.is_interposable() {
-                self.write_dtpoff_relocation::<A>(
-                    got_address + C::GOT_ENTRY_SIZE,
-                    dynamic_symbol_index.get(),
-                )?;
-            }
+        if let Some(dynamic_symbol_index) = res.dynamic_symbol_index
+            && res.flags.is_interposable()
+        {
+            self.write_dtpoff_relocation::<A>(
+                got_address + C::GOT_ENTRY_SIZE,
+                dynamic_symbol_index.get(),
+            )?;
             *offset_entry = elf::Word::<C>::from_u64(0)?;
             return Ok(());
         }

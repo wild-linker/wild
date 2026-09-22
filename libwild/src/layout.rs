@@ -5905,6 +5905,14 @@ fn compute_layout_sections<'data, P: Platform>(
         args,
         output_sections,
     );
+    let tls_alignment = output_sections
+        .ids_with_info()
+        .filter(|(_, info)| info.section_attributes.is_tls())
+        .map(|(section_id, _)| {
+            sizes.max_alignment(section_id.part_id_range::<P>(), output_sections)
+        })
+        .max()
+        .unwrap_or(alignment::MIN);
 
     timing_phase!("Layout sections");
 
@@ -5971,6 +5979,7 @@ fn compute_layout_sections<'data, P: Platform>(
     // and therefore no copy happens. It would be wasteful to reserve that address in the TLS
     // template, so we don't do it.
     let mut tls_memsave: Option<u64> = None;
+    let mut in_tls = false;
 
     for event in output_order {
         match event {
@@ -6116,12 +6125,30 @@ fn compute_layout_sections<'data, P: Platform>(
                     }
                     mem_offset = offset;
                 }
-                lma_offset = mem_offset;
 
                 let mut is_first_part = true;
 
                 let merge_target = output_sections.primary_output_section(section_id);
                 let section_flags = output_sections.section_flags(merge_target);
+
+                // Align the first TLS section to the TLS segment alignment so that PT_TLS p_vaddr
+                // is a multiple of p_align. Some loaders, including glibc, require this when
+                // thread-local variables have mixed alignments.
+                let is_tls = section_info.section_attributes.is_tls();
+                if is_tls
+                    && !in_tls
+                    && section_offset.is_none()
+                    && !args.should_output_partial_object()
+                {
+                    let aligned_mem = tls_alignment.align_up(mem_offset);
+                    let padding = aligned_mem - mem_offset;
+                    mem_offset = aligned_mem;
+                    if output_sections.has_data_in_file(merge_target) {
+                        file_offset += padding as usize;
+                    }
+                }
+                in_tls = is_tls;
+                lma_offset = mem_offset;
 
                 let mut part_sizes = sizes
                     .in_range(part_id_range.clone())
