@@ -271,7 +271,219 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     };
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-    let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
+
+    let debug_jobs = collect_uncompressed_debug_jobs(layout);
+    let mut debug_buffers = take_debug_part_buffers(&mut writable_buckets, &debug_jobs);
+    let debug_part_ids = unique_debug_part_ids(&debug_jobs);
+
+    let (debug_result, group_result) = rayon::join(
+        || write_debug_sections_by_output::<C, A>(&mut debug_buffers, &debug_jobs, layout),
+        || {
+            write_groups::<C, A>(
+                layout,
+                &mut writable_buckets,
+                &debug_part_ids,
+                &sym_index_map,
+                &sized_output.trace,
+            )
+        },
+    );
+    debug_result?;
+    group_result?;
+
+    for (output_section_id, _) in layout.output_sections.ids_with_info() {
+        let relocations = layout
+            .relocation_statistics
+            .get(output_section_id)
+            .load(Relaxed);
+
+        if relocations > 0 {
+            tracing::debug!(
+                target: "metrics",
+                section = layout.output_sections.display_name(output_section_id),
+                relocations, "resolved relocations");
+        }
+    }
+
+    fill_padding(section_buffers);
+
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct DebugWriteJob<'data, 'layout, C: ElfClass> {
+    object: &'layout ObjectLayout<'data, elf::Elf<C>>,
+    section: Section,
+    section_index: object::SectionIndex,
+    part_id: PartId,
+    address: u64,
+    allocation_size: usize,
+}
+
+fn collect_uncompressed_debug_jobs<'data, 'layout, C: ElfClass>(
+    layout: &'layout ElfLayout<'data, C>,
+) -> Vec<DebugWriteJob<'data, 'layout, C>> {
+    let mut jobs = Vec::new();
+    for group in &layout.group_layouts {
+        for file in &group.files {
+            let FileLayout::Object(object) = file else {
+                continue;
+            };
+            for (i, slot) in object.sections.iter().enumerate() {
+                let SectionSlot::LoadedDebugInfo(sec) = slot else {
+                    continue;
+                };
+                let section_index = object::SectionIndex(i);
+                let part_id =
+                    object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+                let section_id = part_id.output_section_id::<elf::Elf<C>>();
+                if layout.compressed_debug_sections.get(section_id).is_some() {
+                    continue;
+                }
+                let Some(address) = object.section_resolutions[i].address() else {
+                    continue;
+                };
+                let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
+                if allocation_size == 0 {
+                    continue;
+                }
+                jobs.push(DebugWriteJob {
+                    object,
+                    section: *sec,
+                    section_index,
+                    part_id,
+                    address,
+                    allocation_size,
+                });
+            }
+        }
+    }
+    jobs
+}
+
+fn unique_debug_part_ids<C: ElfClass>(jobs: &[DebugWriteJob<'_, '_, C>]) -> Vec<PartId> {
+    let mut part_ids: Vec<PartId> = jobs.iter().map(|job| job.part_id).collect();
+    part_ids.sort();
+    part_ids.dedup();
+    part_ids
+}
+
+fn take_debug_part_buffers<'out, C: ElfClass>(
+    writable_buckets: &mut OutputSectionPartMap<&'out mut [u8]>,
+    jobs: &[DebugWriteJob<'_, '_, C>],
+) -> OutputSectionPartMap<&'out mut [u8]> {
+    let mut sizes = writable_buckets.new_empty_like::<usize>();
+    for job in jobs {
+        let len = writable_buckets.get_mut(job.part_id).len();
+        *sizes.get_mut(job.part_id) = len;
+    }
+    writable_buckets.take_mut(&sizes)
+}
+
+fn write_debug_sections_by_output<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    debug_buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    jobs: &[DebugWriteJob<'data, '_, C>],
+    layout: &ElfLayout<'data, C>,
+) -> Result {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+
+    timing_phase!("Write debug sections");
+
+    let mut jobs_by_part = jobs.to_vec();
+    jobs_by_part.sort_by_key(|job| (job.part_id, job.address));
+
+    struct DebugWork<'a, 'data, C: ElfClass> {
+        job: &'a DebugWriteJob<'data, 'a, C>,
+        out: &'a mut [u8],
+    }
+
+    let mut work = Vec::with_capacity(jobs.len());
+    for part_jobs in jobs_by_part.chunk_by(|a, b| a.part_id == b.part_id) {
+        let part_id = part_jobs[0].part_id;
+        let mut remaining = std::mem::take(debug_buffers.get_mut(part_id));
+        let part_start = layout.section_part_layouts.get(part_id).mem_offset;
+        let mut pos = 0usize;
+        for job in part_jobs {
+            let offset = usize::try_from(job.address.wrapping_sub(part_start)).map_err(|_| {
+                error!(
+                    "Debug section offset overflow for {} in {}",
+                    job.object.object.section_display_name(job.section_index),
+                    job.object.input
+                )
+            })?;
+            if offset < pos {
+                bail!(
+                    "Overlapping debug writes at 0x{offset:x} (pos 0x{pos:x}) in {}",
+                    layout
+                        .output_sections
+                        .display_name(part_id.output_section_id::<elf::Elf<C>>())
+                );
+            }
+            if offset > pos {
+                remaining = remaining.split_off_mut(offset - pos..).ok_or_else(|| {
+                    error!(
+                        "Insufficient debug buffer padding in {}",
+                        layout
+                            .output_sections
+                            .display_name(part_id.output_section_id::<elf::Elf<C>>())
+                    )
+                })?;
+                pos = offset;
+            }
+            let out = remaining
+                .split_off_mut(..job.allocation_size)
+                .ok_or_else(|| {
+                    error!(
+                        "Insufficient debug buffer for {} in {}",
+                        job.object.object.section_display_name(job.section_index),
+                        job.object.input
+                    )
+                })?;
+            work.push(DebugWork { job, out });
+            pos += job.allocation_size;
+        }
+    }
+
+    work.sort_unstable_by_key(|item| std::cmp::Reverse(item.job.allocation_size));
+    work.into_par_iter()
+        .with_max_len(1)
+        .try_for_each(|item| -> Result {
+            write_debug_section::<C, A>(
+                item.job.object,
+                layout,
+                item.job.section,
+                item.job.section_index,
+                item.out,
+            )
+        })
+}
+
+fn write_groups<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    layout: &ElfLayout<'data, C>,
+    writable_buckets: &mut OutputSectionPartMap<&mut [u8]>,
+    debug_part_ids: &[PartId],
+    sym_index_map: &[Option<u32>],
+    trace: &TraceOutput,
+) -> Result {
+    let groups_and_buffers = if debug_part_ids.is_empty() {
+        split_output_by_group(layout, writable_buckets)
+    } else {
+        timing_phase!("Split output buffers by group");
+        layout
+            .group_layouts
+            .iter()
+            .map(|group| {
+                let mut sizes = group.file_sizes.clone();
+                for &part_id in debug_part_ids {
+                    *sizes.get_mut(part_id) = 0;
+                }
+                (group, writable_buckets.take_mut(&sizes))
+            })
+            .collect()
+    };
+
     groups_and_buffers
         .into_par_iter()
         .with_max_len(1)
@@ -292,8 +504,8 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     &mut buffers,
                     &mut table_writer,
                     layout,
-                    &sized_output.trace,
-                    &sym_index_map,
+                    trace,
+                    sym_index_map,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -301,25 +513,7 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 .validate_empty(&group.mem_sizes)
                 .with_context(|| format!("validate_empty failed for {group}"))?;
             Ok(())
-        })?;
-
-    for (output_section_id, _) in layout.output_sections.ids_with_info() {
-        let relocations = layout
-            .relocation_statistics
-            .get(output_section_id)
-            .load(Relaxed);
-
-        if relocations > 0 {
-            tracing::debug!(
-                target: "metrics",
-                section = layout.output_sections.display_name(output_section_id),
-                relocations, "resolved relocations");
-        }
-    }
-
-    fill_padding(section_buffers);
-
-    Ok(())
+        })
 }
 
 fn fill_padding_for_sections<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
@@ -1920,8 +2114,8 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     )?;
                 }
             }
-            SectionSlot::LoadedDebugInfo(sec) => {
-                write_debug_section::<C, A>(object, layout, *sec, section_index, buffers)?;
+            SectionSlot::LoadedDebugInfo(_) => {
+                // Uncompressed debug is written by `write_debug_sections_by_output`.
             }
             SectionSlot::FrameData(section_index) => {
                 write_eh_frame_data::<C, A>(object, *section_index, layout, table_writer, trace)?;
@@ -2446,17 +2640,9 @@ fn write_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     layout: &ElfLayout<'data, C>,
     section: Section,
     section_index: object::SectionIndex,
-    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    out: &mut [u8],
 ) -> Result {
-    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    let section_id = part_id.output_section_id::<elf::Elf<C>>();
-
-    if layout.compressed_debug_sections.get(section_id).is_some() {
-        // Compressed debug sections are written by the epilogue.
-        return Ok(());
-    }
-
-    let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    let out = write_section_contents::<C, A>(object, layout, section, section_index, out)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
         elf::RelocationList::Rela(rela) => apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
@@ -2509,54 +2695,61 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             );
         }
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
-        let object_section = object.object.section(section_index)?;
-        let relax_deltas = object.section_relax_deltas.get(section_index.0);
-
-        let section_info = layout
-            .output_sections
-            .output_info(part_id.output_section_id::<elf::Elf<C>>());
-        match relax_deltas {
-            None => {
-                let section_size = object.object.section_size(object_section)?;
-                let (out, padding) = out.split_at_mut(section_size as usize);
-                object.object.copy_section_data(object_section, out)?;
-                fill_section_padding::<C, A>(padding, section_info);
-                Ok(out)
-            }
-            Some(deltas) => {
-                let input_data = object.object.raw_section_data(object_section)?;
-                let effective_size = sec.size as usize;
-
-                let mut input_pos: usize = 0;
-                let mut output_pos: usize = 0;
-
-                for delta in deltas.deltas() {
-                    let skip_start = delta.input_offset as usize;
-                    // Copy everything from input_pos up to the deletion point.
-                    let copy_len = skip_start - input_pos;
-                    if copy_len > 0 {
-                        out[output_pos..output_pos + copy_len]
-                            .copy_from_slice(&input_data[input_pos..skip_start]);
-                        output_pos += copy_len;
-                    }
-                    // Skip over the deleted bytes in the input.
-                    input_pos = skip_start + delta.bytes_deleted as usize;
-                }
-
-                // Copy the remainder after the last deletion.
-                let remaining = input_data.len() - input_pos;
-                if remaining > 0 {
-                    out[output_pos..output_pos + remaining]
-                        .copy_from_slice(&input_data[input_pos..]);
-                    output_pos += remaining;
-                }
-                fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
-
-                Ok(&mut out[..effective_size])
-            }
-        }
+        write_section_contents::<C, A>(object, layout, sec, section_index, out)
     } else {
         Ok(&mut [])
+    }
+}
+
+fn write_section_contents<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    sec: Section,
+    section_index: object::SectionIndex,
+    out: &'out mut [u8],
+) -> Result<&'out mut [u8]> {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let object_section = object.object.section(section_index)?;
+    let relax_deltas = object.section_relax_deltas.get(section_index.0);
+
+    let section_info = layout
+        .output_sections
+        .output_info(part_id.output_section_id::<elf::Elf<C>>());
+    match relax_deltas {
+        None => {
+            let section_size = object.object.section_size(object_section)?;
+            let (out, padding) = out.split_at_mut(section_size as usize);
+            object.object.copy_section_data(object_section, out)?;
+            fill_section_padding::<C, A>(padding, section_info);
+            Ok(out)
+        }
+        Some(deltas) => {
+            let input_data = object.object.raw_section_data(object_section)?;
+            let effective_size = sec.size as usize;
+
+            let mut input_pos: usize = 0;
+            let mut output_pos: usize = 0;
+
+            for delta in deltas.deltas() {
+                let skip_start = delta.input_offset as usize;
+                let copy_len = skip_start - input_pos;
+                if copy_len > 0 {
+                    out[output_pos..output_pos + copy_len]
+                        .copy_from_slice(&input_data[input_pos..skip_start]);
+                    output_pos += copy_len;
+                }
+                input_pos = skip_start + delta.bytes_deleted as usize;
+            }
+
+            let remaining = input_data.len() - input_pos;
+            if remaining > 0 {
+                out[output_pos..output_pos + remaining].copy_from_slice(&input_data[input_pos..]);
+                output_pos += remaining;
+            }
+            fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
+
+            Ok(&mut out[..effective_size])
+        }
     }
 }
 
@@ -2766,21 +2959,36 @@ pub(crate) fn apply_debug_relocations<
         relocation_count += 1;
         let rel = rel?;
         let offset_in_section = rel.offset();
-        apply_debug_relocation::<C, A, R>(
+        if !try_apply_thin_debug_reloc::<C, A, R>(
             object,
             offset_in_section,
             &rel,
             layout,
             tombstone_value,
             out,
-            &relocation_cache,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
                 display_relocation::<C, A, R>(object, &rel, layout)
             )
-        })?;
+        })? {
+            apply_debug_relocation::<C, A, R>(
+                object,
+                offset_in_section,
+                &rel,
+                layout,
+                tombstone_value,
+                out,
+                &relocation_cache,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    display_relocation::<C, A, R>(object, &rel, layout)
+                )
+            })?;
+        }
         relocation_cache.previous = Some(rel);
     }
     layout
@@ -3906,6 +4114,114 @@ fn maybe_get_thunk_for_relocation<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         part = layout.output_sections.part_debug(section_info.part_id),
         offset = value as i64,
     );
+}
+
+#[inline(always)]
+fn try_apply_thin_debug_reloc<'data, C, A, R>(
+    object_layout: &ObjectLayout<'data, elf::Elf<C>>,
+    offset_in_section: u64,
+    rel: &R,
+    layout: &ElfLayout<C>,
+    section_tombstone_value: u64,
+    out: &mut [u8],
+) -> Result<bool>
+where
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+    R: Relocation<Platform = elf::Elf<C>>,
+{
+    let Some(symbol_index) = rel.symbol() else {
+        return Ok(false);
+    };
+    let addend = rel.addend();
+    let r_type = rel.raw_type();
+    let Some(dest) = out.get_mut(offset_in_section as usize..) else {
+        return Ok(false);
+    };
+
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let canonical_id = layout.symbol_db.definition(local_symbol_id);
+    let value = if let Some(resolution) = layout.local_symbol_resolution(canonical_id) {
+        if resolution.flags.is_ifunc() {
+            return Ok(false);
+        }
+        if resolution.raw_value != 0 {
+            resolution.raw_value.wrapping_add(addend as u64)
+        } else if let Some(merged) = get_merged_string_output_address::<elf::Elf<C>>(
+            symbol_index,
+            addend,
+            object_layout.object,
+            &object_layout.sections,
+            &layout.symbol_db.section_part_ids,
+            object_layout.section_id_range,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+            false,
+        )? {
+            merged
+        } else {
+            addend as u64
+        }
+    } else {
+        let sym = object_layout.object.symbol(symbol_index)?;
+        if crate::platform::Symbol::is_ifunc(sym) || crate::platform::Symbol::is_tls(sym) {
+            return Ok(false);
+        }
+        if let Some(section_index) = object_layout.object.symbol_section(sym, symbol_index)? {
+            if let Some(section_address) =
+                object_layout.section_resolutions[section_index.0].address()
+            {
+                let st_value = crate::platform::Symbol::value(sym);
+                let output_offset = if st_value == 0 {
+                    0
+                } else {
+                    opt_input_to_output(
+                        object_layout.section_relax_deltas.get(section_index.0),
+                        st_value,
+                    )
+                };
+                section_address
+                    .wrapping_add(output_offset)
+                    .wrapping_add(addend as u64)
+            } else {
+                match object_layout.sections[section_index.0] {
+                    SectionSlot::MergeStrings(..) => {
+                        get_merged_string_output_address::<elf::Elf<C>>(
+                            symbol_index,
+                            addend,
+                            object_layout.object,
+                            &object_layout.sections,
+                            &layout.symbol_db.section_part_ids,
+                            object_layout.section_id_range,
+                            &layout.merged_strings,
+                            &layout.merged_string_start_addresses,
+                            false,
+                        )?
+                        .context("Cannot get merged string offset for a debug info section")?
+                    }
+                    SectionSlot::Discard
+                    | SectionSlot::Unloaded(_)
+                    | SectionSlot::UnloadedDebugInfo => section_tombstone_value,
+                    _ => return Ok(false),
+                }
+            }
+        } else {
+            section_tombstone_value
+        }
+    };
+
+    if A::write_simple_debug_absolute(r_type, value, dest)? {
+        return Ok(true);
+    }
+
+    let rel_info = A::relocation_from_raw(r_type)?;
+    match rel_info.kind {
+        RelocationKind::Absolute | RelocationKind::AbsoluteSet => {
+            rel_info.write_to_buffer(value, dest)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn apply_debug_relocation<
