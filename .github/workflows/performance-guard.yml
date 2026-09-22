@@ -1,0 +1,108 @@
+name: Linux performance guard
+
+on:
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Compare exact merge base and PR head (report-only calibration)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_TOOLCHAIN: 1.97.1
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Resolve exact merge base
+        id: revisions
+        working-directory: candidate
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          base_sha=$(git merge-base HEAD "origin/$BASE_REF")
+          candidate_sha=$(git rev-parse HEAD)
+          test "$candidate_sha" = "$EXPECTED_HEAD"
+          echo "base=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate_sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout merge base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ steps.revisions.outputs.base }}
+          persist-credentials: false
+          path: baseline
+      - name: Checkout trusted performance guard
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: 6164591eaeeefb36e3605960e9b66d1d835111d3
+          persist-credentials: false
+          path: trusted-action
+          sparse-checkout: |
+            .github/actions/performance-guard
+            benchmarks/performance_guard
+          sparse-checkout-cone-mode: false
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build both revisions identically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" build --manifest-path baseline/Cargo.toml --package wild-linker --profile release
+          cargo +"$RUST_TOOLCHAIN" build --manifest-path candidate/Cargo.toml --package wild-linker --profile release
+          mkdir -p "$RUNNER_TEMP/wild-performance-binaries"
+          cp baseline/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/baseline-wild"
+          cp candidate/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/candidate-wild"
+          chmod 0555 "$RUNNER_TEMP/wild-performance-binaries/"*
+          sha256sum "$RUNNER_TEMP/wild-performance-binaries/"* > "$RUNNER_TEMP/wild-performance-binaries/SHA256SUMS"
+      - name: Record environment metadata
+        shell: bash
+        run: |
+          mkdir -p candidate/performance-evidence
+          {
+            echo "baseline_sha=${{ steps.revisions.outputs.base }}"
+            echo "candidate_sha=${{ steps.revisions.outputs.candidate }}"
+            echo "runner_image=${ImageOS:-unknown}-${ImageVersion:-unknown}"
+            uname -a
+            lscpu
+            rustc +"$RUST_TOOLCHAIN" -vV
+            clang --version
+            cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
+            cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true
+          } > candidate/performance-evidence/environment.txt
+          cp "$RUNNER_TEMP/wild-performance-binaries/SHA256SUMS" candidate/performance-evidence/
+      - name: Run trusted repository-owned guard
+        uses: ./trusted-action/.github/actions/performance-guard
+        with:
+          baseline: ${{ runner.temp }}/wild-performance-binaries/baseline-wild
+          candidate: ${{ runner.temp }}/wild-performance-binaries/candidate-wild
+          baseline-sha: ${{ steps.revisions.outputs.base }}
+          candidate-sha: ${{ steps.revisions.outputs.candidate }}
+          performance-claim: ${{ contains(github.event.pull_request.labels.*.name, 'performance') }}
+          output: candidate/performance-evidence
+      - name: Upload machine-readable evidence and chart
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: performance-guard-${{ steps.revisions.outputs.candidate }}
+          path: candidate/performance-evidence/
+          if-no-files-found: error
+          retention-days: 30
