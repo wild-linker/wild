@@ -1,0 +1,72 @@
+name: Wild Linux performance guard
+description: Compare merge-base and candidate Wild binaries with Hyperfine and Poop
+inputs:
+  baseline:
+    description: Absolute path to the merge-base Wild executable
+    required: true
+  candidate:
+    description: Absolute path to the candidate Wild executable
+    required: true
+  baseline-sha:
+    description: Exact merge-base source revision
+    required: true
+  candidate-sha:
+    description: Exact candidate source revision
+    required: true
+  performance-claim:
+    description: Whether this PR carries the performance label
+    required: false
+    default: "false"
+  output:
+    description: Evidence output directory
+    required: false
+    default: performance-evidence
+runs:
+  using: composite
+  steps:
+    - name: Validate guard policy fixtures
+      shell: bash
+      env:
+        PYTHONDONTWRITEBYTECODE: "1"
+      run: python3 -m unittest discover -s "$GITHUB_ACTION_PATH/../../../benchmarks/performance_guard" -p 'test_*.py' -v
+    - name: Install pinned local benchmark tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        tools_dir="$RUNNER_TEMP/wild-performance-tools"
+        mkdir -p "$tools_dir"
+        curl --fail --location --silent --show-error \
+          https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-musl.tar.gz \
+          --output "$tools_dir/hyperfine.tar.gz"
+        echo '3285ec7959285288137043dd81dce0dde056227018a8277532d9a364b4f03c2b  '"$tools_dir/hyperfine.tar.gz" | sha256sum --check
+        tar -xzf "$tools_dir/hyperfine.tar.gz" -C "$tools_dir"
+        cp "$tools_dir/hyperfine-v1.20.0-x86_64-unknown-linux-musl/hyperfine" "$tools_dir/hyperfine"
+        curl --fail --location --silent --show-error \
+          https://github.com/andrewrk/poop/releases/download/0.5.0/x86_64-linux-poop \
+          --output "$tools_dir/poop"
+        echo '8384e7089530ec993b9fdb13f5164f0028fb9b67a55bcd9afcfb2ef42fc8d700  '"$tools_dir/poop" | sha256sum --check
+        chmod +x "$tools_dir/hyperfine" "$tools_dir/poop"
+        echo "PERF_GUARD_TOOLS=$tools_dir" >> "$GITHUB_ENV"
+    - name: Prepare real ELF workloads
+      shell: bash
+      run: python3 "${{ github.action_path }}/../../../benchmarks/performance_guard/prepare_workloads.py" --output "$RUNNER_TEMP/wild-performance-workloads"
+    - name: Measure, classify, and render
+      shell: bash
+      env:
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_CANDIDATE: ${{ inputs.candidate }}
+        INPUT_BASELINE_SHA: ${{ inputs.baseline-sha }}
+        INPUT_CANDIDATE_SHA: ${{ inputs.candidate-sha }}
+        INPUT_PERFORMANCE_CLAIM: ${{ inputs.performance-claim }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+      run: |
+        claim=()
+        if [[ "$INPUT_PERFORMANCE_CLAIM" == 'true' ]]; then claim=(--performance-claim); fi
+        python3 "${{ github.action_path }}/../../../benchmarks/performance_guard/guard.py" \
+          --policy "${{ github.action_path }}/../../../benchmarks/performance_guard/policy.json" \
+          --manifest "$RUNNER_TEMP/wild-performance-workloads/manifest.json" \
+          --baseline "$INPUT_BASELINE" --candidate "$INPUT_CANDIDATE" \
+          --baseline-sha "$INPUT_BASELINE_SHA" --candidate-sha "$INPUT_CANDIDATE_SHA" \
+          --hyperfine "$PERF_GUARD_TOOLS/hyperfine" --poop "$PERF_GUARD_TOOLS/poop" \
+          --output "$INPUT_OUTPUT" "${claim[@]}"
+        cat "$INPUT_OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"

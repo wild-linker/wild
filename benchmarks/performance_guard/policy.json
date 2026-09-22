@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "calibration_mode": true,
+  "regression_threshold_percent": 1.5,
+  "improvement_threshold_percent": 1.5,
+  "confidence_level": 0.95,
+  "warmup_count": 2,
+  "initial_pairs": 12,
+  "maximum_pairs": 24,
+  "pairs_per_block": 3,
+  "poop_duration_ms": 1000,
+  "cases": [
+    {"name": "ordinary-fast", "workload": "ordinary", "build_id": "fast", "target": false},
+    {"name": "full-lto-fast", "workload": "full-lto", "build_id": "fast", "target": true},
+    {"name": "full-lto-none-control", "workload": "full-lto", "build_id": "none", "target": false}
+  ]
+}
