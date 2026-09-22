@@ -14,6 +14,14 @@ equivalence failures still fail the workflow. Setting calibration mode to false 
 repeat-run calibration activates regression gating and the `performance` label's
 required-target-improvement rule.
 
+Correctness checking executes both original linked outputs, then compares
+normalized copies byte-for-byte. Normalization replaces only the exact
+NUL-delimited `Linker: Wild <revision> (compatible with GNU linkers)` provenance
+record in `.comment`; all other comment records are preserved. For
+`--build-id=fast`, it also removes `.note.gnu.build-id`. Differences in every
+other section, including allocated runtime content and unrelated non-allocated
+structure, remain failures.
+
 Deployment uses two PRs. The first lands the action, policy, driver, workloads, and
 tests without a workflow. After that PR merges, a second PR adds the workflow and
 pins this action to the durable merge commit on `origin/main`. The benchmarked PR

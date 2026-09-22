@@ -10,10 +10,12 @@ import math
 import os
 import platform
 import random
+import re
 import shlex
 import statistics
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +155,55 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def normalized_elf_sha256(
+    source: Path, destination: Path, *, remove_build_id: bool
+) -> str:
+    """Hash an ELF after removing revision-only linker provenance.
+
+    Wild writes its own revision record to ``.comment``. That exact record is
+    expected to differ between a merge-base build and a PR build even when the
+    emitted runtime image is otherwise identical. Other ``.comment`` records
+    remain byte-for-byte significant. The original ELF is still executed; this
+    normalized copy exists only for the structural-equivalence check.
+    """
+    command = ["objcopy"]
+    if remove_build_id:
+        command.extend(["--remove-section", ".note.gnu.build-id"])
+    command.extend([str(source), str(destination)])
+    run_checked(command)
+
+    wild_provenance = re.compile(
+        rb"Linker: Wild (?:[0-9A-Za-z.+-]+(?: [0-9a-f]{40}-modified| non-git-build)?|[0-9a-f]{40}) \(compatible with GNU linkers\)"
+    )
+    with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
+        comment = Path(temporary) / "comment"
+        subprocess.run(
+            ["objcopy", "--dump-section", f".comment={comment}", str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if comment.exists():
+            records = comment.read_bytes().split(b"\0")
+            normalized_records = [
+                b"Linker: Wild <revision> (compatible with GNU linkers)"
+                if wild_provenance.fullmatch(record)
+                else record
+                for record in records
+            ]
+            if normalized_records != records:
+                comment.write_bytes(b"\0".join(normalized_records))
+                run_checked(
+                    [
+                        "objcopy",
+                        "--update-section",
+                        f".comment={comment}",
+                        str(destination),
+                    ]
+                )
+    return sha256(destination)
+
+
 def verify_case(
     case: dict[str, Any],
     commands: dict[str, str],
@@ -163,26 +214,25 @@ def verify_case(
         run_checked(["bash", "-c", commands[name]])
         run_checked([str(outputs[name])])
     hashes = {name: sha256(path) for name, path in outputs.items()}
-    equivalent = hashes["baseline"] == hashes["candidate"]
-    if not equivalent and case["build_id"] == "fast":
-        stripped = {}
-        for name, path in outputs.items():
-            stripped[name] = evidence / f"{case['name']}-{name}-without-build-id"
-            run_checked(
-                [
-                    "objcopy",
-                    "--remove-section",
-                    ".note.gnu.build-id",
-                    str(path),
-                    str(stripped[name]),
-                ]
-            )
-        equivalent = sha256(stripped["baseline"]) == sha256(stripped["candidate"])
+    normalized_hashes = {}
+    for name, path in outputs.items():
+        normalized = evidence / f"{case['name']}-{name}-normalized"
+        normalized_hashes[name] = normalized_elf_sha256(
+            path,
+            normalized,
+            remove_build_id=case["build_id"] == "fast",
+        )
+    equivalent = normalized_hashes["baseline"] == normalized_hashes["candidate"]
     if not equivalent:
         raise GuardError(
             f"{case['name']}: baseline and candidate outputs are not structurally equivalent"
         )
-    return {"sha256": hashes, "structurally_equivalent": True, "executed": True}
+    return {
+        "sha256": hashes,
+        "normalized_sha256": normalized_hashes,
+        "structurally_equivalent": True,
+        "executed": True,
+    }
 
 
 def run_poop(
