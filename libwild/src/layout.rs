@@ -6108,7 +6108,6 @@ fn compute_layout_sections<'data, P: Platform>(
                     }
                     mem_offset = offset;
                 }
-                lma_offset = mem_offset;
 
                 let mut is_first_part = true;
 
@@ -6127,12 +6126,12 @@ fn compute_layout_sections<'data, P: Platform>(
                     let aligned_mem = tls_alignment.align_up(mem_offset);
                     let padding = aligned_mem - mem_offset;
                     mem_offset = aligned_mem;
-                    lma_offset = aligned_mem;
                     if output_sections.has_data_in_file(merge_target) {
                         file_offset += padding as usize;
                     }
                 }
                 in_tls = is_tls;
+                lma_offset = mem_offset;
 
                 let mut part_sizes = sizes
                     .in_range(part_id_range.clone())

@@ -1,5 +1,6 @@
 //#AbstractConfig:default
 //#LinkerDriver:gcc
+//#Object:ptr_black_box.c
 //#SkipArch:ppc64le
 //#DiffIgnore:section.tdata.alignment
 //#DiffIgnore:section.rodata
@@ -14,6 +15,8 @@
 //#Config:static:default
 //#LinkArgs:-static
 
+#include "../common/ptr_black_box.h"
+
 __thread unsigned long tls_var_a = 0x1122334455667788UL;
 __thread char tls_var_b[8] __attribute__((aligned(256)));
 
@@ -24,7 +27,7 @@ int main(void) {
   if (tls_var_b[0] != 0) {
     return 2;
   }
-  if (((unsigned long)tls_var_b) & 255UL) {
+  if (ptr_to_int(tls_var_b) % 256 != 0) {
     return 3;
   }
   return 42;
