@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn empty_input_produces_empty_trie() {
         let mut symbols = [];
-        assert_eq!(build(&mut symbols), []);
+        assert!(build(&mut symbols).is_empty());
     }
 
     #[test]
