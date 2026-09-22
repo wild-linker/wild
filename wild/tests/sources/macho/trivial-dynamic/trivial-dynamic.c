@@ -1,7 +1,6 @@
 //#AbstractConfig:default
 //#LinkerDriver:clang
 //#SoSingleLinker:lld
-//#DiffIgnore:section.__unwind_info
 
 //#Config:dylib:default
 //#TestUpdateInPlace:true

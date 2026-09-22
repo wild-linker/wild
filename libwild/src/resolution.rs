@@ -724,6 +724,9 @@ pub(crate) enum SectionSlot {
     /// The section contains initializer function pointers that are processed by the platform.
     InitFunc(object::SectionIndex),
 
+    /// The section contains compact unwind information on Mach-O platform.
+    CompactUnwind(object::SectionIndex),
+
     /// The section is a string-merge section.
     MergeStrings(StringMergeSectionSlot),
 
@@ -1601,6 +1604,12 @@ fn resolve_section<'data, P: Platform>(
                 crate::part_id::UNMAPPED,
             ));
         }
+        SectionRuleOutcome::CompactUnwind => {
+            return Ok((
+                SectionSlot::CompactUnwind(input_section_index),
+                crate::part_id::UNMAPPED,
+            ));
+        }
         SectionRuleOutcome::NoteGnuProperty => {
             return Ok((
                 SectionSlot::NoteGnuProperty(input_section_index),
@@ -1913,6 +1922,7 @@ impl SectionSlot {
             SectionSlot::Discard
                 | SectionSlot::Unloaded(..)
                 | SectionSlot::InitFunc(..)
+                | SectionSlot::CompactUnwind(..)
                 | SectionSlot::NoteGnuProperty(..)
         )
     }

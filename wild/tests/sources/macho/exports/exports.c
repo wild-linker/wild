@@ -5,7 +5,6 @@
 //#ExpectDynSym:_weak_function binding=weak
 //#NoDynSym:_hidden_function
 //#NoDynSym:_local_function
-//#DiffIgnore:section.__unwind_info
 
 int exported_data = 20;
 

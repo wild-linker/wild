@@ -408,6 +408,9 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The size of a symbol rather than its address.
+    SymbolSize,
+
     /// The absolute address of a symbol or section related to EH section.
     AbsoluteSet,
 
@@ -1078,6 +1081,8 @@ pub struct RelocationKindInfo {
     pub bias: u64,
     /// Whether this relocation type supports range-extension thunks.
     pub thunkable: bool,
+    /// Whether this relocation assumes an implicit addend at the place of the relocation.
+    pub implicit_addend: bool,
 }
 
 impl RelocationKindInfo {

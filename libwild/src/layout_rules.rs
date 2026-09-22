@@ -112,6 +112,7 @@ pub(crate) enum SectionRuleOutcome {
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
     InitFunc,
+    CompactUnwind,
 }
 
 impl SectionRuleOutcome {

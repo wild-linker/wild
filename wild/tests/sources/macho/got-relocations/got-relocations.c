@@ -1,7 +1,6 @@
 //#LinkerDriver:clang
 //#SoSingleLinker:lld
 //#Shared:function.c
-//#DiffIgnore:section.__unwind_info
 //#ExpectSection:__got
 
 int plus_one(int value);

@@ -120,6 +120,7 @@ impl RelaxationKind {
             alignment: 1,
             bias: 0,
             thunkable: false,
+            implicit_addend: false,
         }
     }
 }
@@ -454,6 +455,7 @@ pub const fn relocation_type_from_raw(
         alignment,
         bias: 0,
         thunkable: false,
+        implicit_addend: false,
     })
 }
 

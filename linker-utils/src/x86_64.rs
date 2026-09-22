@@ -341,6 +341,8 @@ pub const fn relocation_from_raw(
 
         object::elf::R_X86_64_32 => (RelocationKind::Absolute, RELOC_4_BYTE_UNSIGNED),
         object::elf::R_X86_64_32S => (RelocationKind::Absolute, RELOC_4_BYTE_SIGNED),
+        object::elf::R_X86_64_SIZE32 => (RelocationKind::SymbolSize, RELOC_4_BYTE_UNSIGNED),
+        object::elf::R_X86_64_SIZE64 => (RelocationKind::SymbolSize, RELOC_8_BYTE_UNSIGNED),
         object::elf::R_X86_64_16 => (RelocationKind::Absolute, RELOC_2_BYTE_MIXED),
         object::elf::R_X86_64_PC16 => (RelocationKind::Relative, RELOC_2_BYTE_SIGNED),
         object::elf::R_X86_64_8 => (RelocationKind::Absolute, RELOC_1_BYTE_MIXED),
@@ -380,5 +382,6 @@ pub const fn relocation_from_raw(
         alignment: 1,
         bias: 0,
         thunkable: false,
+        implicit_addend: false,
     })
 }

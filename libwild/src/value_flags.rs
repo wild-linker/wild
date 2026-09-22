@@ -113,6 +113,9 @@ bitflags! {
         /// We need a second GOT entry. i.e GOT->PLT->GOT. This is only used in conjunction with
         /// canonical PLT entries.
         const GOT_FOR_PLT_ENTRY = 1 << 18;
+
+        /// The size of a symbol is needed, but not its address.
+        const SYMBOL_SIZE = 1 << 19;
     }
 }
 
@@ -144,7 +147,8 @@ impl ValueFlags {
                 | ValueFlags::COPY_RELOCATION
                 | ValueFlags::IFUNC_GOT_FOR_ADDRESS
                 | ValueFlags::CANONICAL_PLT
-                | ValueFlags::GOT_FOR_PLT_ENTRY,
+                | ValueFlags::GOT_FOR_PLT_ENTRY
+                | ValueFlags::SYMBOL_SIZE,
         )
     }
 

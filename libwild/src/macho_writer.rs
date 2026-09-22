@@ -42,6 +42,7 @@ use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MAX_SEGMENT_COUNT;
 use crate::macho::MachO;
 use crate::macho::PLT_ENTRY_SIZE;
+use crate::macho::ResolvedUnwindInfo;
 use crate::macho::SectionEntry;
 use crate::macho::SectionFlags;
 use crate::macho::SegmentCommand;
@@ -75,7 +76,9 @@ use crate::verbose_timing_phase;
 use itertools::Itertools;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use linker_utils::utils::slice_from_all_bytes_mut;
+use linker_utils::utils::u64_from_slice;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
@@ -295,6 +298,15 @@ fn write_epilogue(
     out[..exports_trie.len()].copy_from_slice(exports_trie);
     out[exports_trie.len()..].fill(0);
 
+    let out = buffers.get_mut(part_id::COMPACT_UNWIND);
+    let serialized_compact_unwind = build_compact_unwind(layout, out.len())?;
+    ensure!(
+        serialized_compact_unwind.len() <= out.len(),
+        "Mach-O compact unwind exceeded its reserved size"
+    );
+    out[..serialized_compact_unwind.len()].copy_from_slice(&serialized_compact_unwind);
+    out[serialized_compact_unwind.len()..].fill(0);
+
     Ok(())
 }
 
@@ -376,6 +388,66 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
         .collect::<Result<Vec<_>>>()?;
 
     Ok(crate::trie::build(&mut symbols))
+}
+
+fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
+    let unwind_infos = layout
+        .format_specific
+        .unwind_info_entries
+        .iter()
+        .map(|entry| -> Result<ResolvedUnwindInfo> {
+            let FileLayout::Object(object_layout) = &layout.file_layout(entry.file_id) else {
+                bail!("unwind info must come from an object file")
+            };
+            let Some(start_relocation) = entry.start_relocation else {
+                bail!("unwind info missing start relocation");
+            };
+            let start_address = object_layout
+                .section_resolutions
+                .get((start_relocation.r_symbolnum - 1) as usize)
+                .context("cannot resolve start of an unwind info")?
+                .address()
+                .context("missing unwind info relocation")?
+                + entry.entry.start;
+
+            let personality_address = entry
+                .personality_symbol_id
+                .map(|symbol_id| -> Result<u64> {
+                    Ok(layout
+                        .symbol_resolutions
+                        .get(symbol_id)
+                        .context("missing unwind personality resolution")?
+                        .format_specific
+                        .got_address
+                        .context("missing unwind personality GOT slot")?
+                        .get())
+                })
+                .transpose()?;
+            let lsda_address = entry
+                .lsda_relocation
+                .map(|rel| -> Result<u64> {
+                    Ok(object_layout
+                        .section_resolutions
+                        .get((rel.r_symbolnum - 1) as usize)
+                        .context("cannot resolve LSDA of an unwind info")?
+                        .address()
+                        .context("missing unwind info relocation")?
+                        + entry.entry.lsda)
+                })
+                .transpose()?;
+
+            Ok(ResolvedUnwindInfo {
+                entry: entry.entry,
+                start_address,
+                personality_address,
+                personality_symbol_id: entry.personality_symbol_id,
+                lsda_address,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let text_segment = get_text_segment_layout(layout)?.sizes.mem_offset;
+    crate::compact_unwind::build(text_segment, section_size, &unwind_infos)
 }
 
 fn exported_symbol_is_weak(layout: &MachOLayout<'_>, symbol_id: SymbolId) -> Result<bool> {
@@ -750,6 +822,22 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             }
             _ => {}
         }
+    }
+
+    if rel_info.implicit_addend {
+        let RelocationSize::ByteSize(byte_size @ (4 | 8)) = rel_info.size else {
+            bail!(
+                "Unexpected relocation size for implicit addend read: {}",
+                rel_info.size
+            );
+        };
+        let bytes = out
+            .get(offset_in_section as usize..)
+            .and_then(|bytes| bytes.get(..byte_size))
+            .context("implicit addend read extends beyond section data")?;
+        let mut buffer = [0u8; 8];
+        buffer[..byte_size].copy_from_slice(bytes);
+        addend = addend.wrapping_add(u64_from_slice(&buffer));
     }
 
     let mask = get_page_mask(rel_info.mask);
