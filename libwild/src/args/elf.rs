@@ -261,6 +261,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
+    "no-keep-memory",
     "stats",
     "verbose",
 ];
@@ -2427,6 +2428,7 @@ mod tests {
         "--discard-all",
         "--dependency-file=deps.d",
         "--sort-section=alignment",
+        "--no-keep-memory",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];
