@@ -39,6 +39,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use std::ffi::CString;
+use std::mem::size_of;
 use std::num::NonZero;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
@@ -169,12 +170,27 @@ pub(crate) enum Strip {
     Retain(HashSet<Vec<u8>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BuildIdOption {
     None,
     Fast,
+    Md5,
+    Sha1,
     Hex(Vec<u8>),
     Uuid,
+}
+
+impl BuildIdOption {
+    pub(crate) fn descriptor_size(&self) -> Option<usize> {
+        match self {
+            Self::None => None,
+            Self::Fast => Some(size_of::<u128>()),
+            Self::Md5 => Some(16),
+            Self::Sha1 => Some(20),
+            Self::Hex(hex) => Some(hex.len()),
+            Self::Uuid => Some(size_of::<uuid::Uuid>()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1686,7 +1702,9 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack, value| {
             args.build_id = match value {
                 "none" => BuildIdOption::None,
-                "fast" | "md5" | "sha1" => BuildIdOption::Fast,
+                "fast" => BuildIdOption::Fast,
+                "md5" => BuildIdOption::Md5,
+                "sha1" => BuildIdOption::Sha1,
                 "uuid" => BuildIdOption::Uuid,
                 s if s.starts_with("0x") || s.starts_with("0X") => {
                     let hex_string = &s[2..];
@@ -2314,6 +2332,7 @@ impl platform::Args for ElfArgs {
 
 #[cfg(test)]
 mod tests {
+    use super::BuildIdOption;
     use super::ElfArgs;
     use super::SILENTLY_IGNORED_FLAGS;
     use super::VersionMode;
@@ -2662,6 +2681,24 @@ mod tests {
     fn parse_args_err<'a>(args: impl IntoIterator<Item = &'a str>) -> crate::error::Error {
         let mut elf_args = ElfArgs::new().unwrap();
         elf_args.parse(args.into_iter()).unwrap_err()
+    }
+
+    #[test]
+    fn build_id_modes_remain_distinct() {
+        assert_eq!(parse_args(["--build-id"]).build_id, BuildIdOption::Fast);
+        assert_eq!(
+            parse_args(["--build-id=fast"]).build_id,
+            BuildIdOption::Fast
+        );
+        assert_eq!(parse_args(["--build-id=md5"]).build_id, BuildIdOption::Md5);
+        assert_eq!(
+            parse_args(["--build-id=sha1"]).build_id,
+            BuildIdOption::Sha1
+        );
+
+        assert_eq!(BuildIdOption::Fast.descriptor_size(), Some(16));
+        assert_eq!(BuildIdOption::Md5.descriptor_size(), Some(16));
+        assert_eq!(BuildIdOption::Sha1.descriptor_size(), Some(20));
     }
 
     #[test]
