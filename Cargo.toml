@@ -192,6 +192,9 @@ debug = 0
 
 [workspace.lints.rust]
 ffi_unwind_calls = "warn"
+# We sometimes supress lints that are only on nightly, but don't want to see warnings about these 
+# supressions on stable.
+unknown_lints = "allow"
 
 [workspace.lints.clippy]
 # It's not always desirable to use if-let instead of a match, especially if you might later end up
