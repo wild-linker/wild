@@ -1269,6 +1269,10 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
             continue;
         }
 
+        if symbol_db.symbol_strength(undefined.symbol_id, groups) == SymbolStrength::Weak {
+            per_symbol_flags.set_flag(undefined.symbol_id, ValueFlags::UNDEFINED_WEAK);
+        }
+
         match undefined.name {
             PreHashedSymbolName::Unversioned(pre_hashed) => {
                 match name_to_id.entry(pre_hashed) {

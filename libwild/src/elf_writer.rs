@@ -3399,6 +3399,11 @@ fn apply_relocation<
     // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
     let place = section_address + offset_in_section;
 
+    let undefined_weak_target = if flags.is_undefined_weak() && !flags.needs_plt() {
+        A::undefined_weak_target(r_type, place)
+    } else {
+        None
+    };
     let mask = get_page_mask(rel_info.mask);
     let bias = rel_info.bias;
     // For ppc64 calls, branch to the callee's local entry point (we share its TOC, so the global
@@ -3412,6 +3417,7 @@ fn apply_relocation<
         RelocationKind::Absolute => write_absolute_relocation::<C, A>(
             table_writer,
             resolution,
+            rel_info.size,
             place,
             addend,
             section_info,
@@ -3460,19 +3466,26 @@ fn apply_relocation<
                 &layout.merged_string_start_addresses,
             )?
             .bitand(mask.symbol_plus_addend),
-        RelocationKind::Relative => resolution
-            .value_with_addend(
-                addend,
-                symbol_index,
-                object_layout,
-                &layout.symbol_db.section_part_ids,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?
-            .wrapping_add(branch_local_entry)
-            .wrapping_add(bias)
-            .bitand(mask.symbol_plus_addend)
-            .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::Relative => {
+            let symbol_plus_addend = if let Some(target) = undefined_weak_target {
+                target.wrapping_add(addend as u64)
+            } else {
+                resolution.value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.symbol_db.section_part_ids,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+            };
+
+            symbol_plus_addend
+                .wrapping_add(branch_local_entry)
+                .wrapping_add(bias)
+                .bitand(mask.symbol_plus_addend)
+                .wrapping_sub(place.bitand(mask.place))
+        }
         RelocationKind::RelativeLoongArchHigh => highest_relocation_with_bias(
             resolution.value_with_addend(
                 addend,
@@ -4044,6 +4057,7 @@ fn apply_debug_relocation<
 fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     resolution: Resolution<elf::Elf<C>>,
+    rel_size: RelocationSize,
     place: u64,
     addend: i64,
     section_info: SectionInfo<<A::Platform as Platform>::SectionFlags>,
@@ -4066,7 +4080,10 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
     {
         // Weak undefined symbol referenced from a read-only section. Fill in as zero.
         Ok(0)
-    } else if resolution.flags.is_interposable() && section_info.is_writable {
+    } else if resolution.flags.is_interposable()
+        && section_info.is_writable
+        && rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as usize)
+    {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
             addend,

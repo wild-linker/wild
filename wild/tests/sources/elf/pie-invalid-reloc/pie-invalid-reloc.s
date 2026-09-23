@@ -5,6 +5,7 @@
 //#Shared:pie-invalid-reloc-dso.s
 //#LinkArgs:-pie --no-gc-sections
 //#ExpectError:R_X86_64_32
+//#ExpectErrorWild:R_X86_64_32.*cannot be used.*recompile with -fPIC
 .globl _start
 _start:
   ret

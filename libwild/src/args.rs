@@ -1513,7 +1513,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
     parser
         .declare()
         .long("update-in-place")
-        .help("Update file in place")
+        .help("Update file in place, including any hard links")
         .execute(|args, _modifier_stack| {
             args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
             Ok(())

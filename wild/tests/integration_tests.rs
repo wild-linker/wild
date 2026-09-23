@@ -215,6 +215,9 @@
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
 //!
+//! TestHardLinks:{bool} Relink Wild's output after changing some bytes and creating a hard link.
+//! Verify that the hard linked alias isn't changed and the output is replaced.
+//!
 //! TestRelinkAfterRun:{bool} Run Wild's output, relink it at the same path, then run it again.
 //! Verifies that relinking replaces the output file rather than updating its inode in place.
 //!
@@ -1459,6 +1462,7 @@ struct Config {
     requires_rust_musl: bool,
     requires_linker_plugin: bool,
     test_update_in_place: bool,
+    test_hard_links: bool,
     test_relink_after_run: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
@@ -1875,6 +1879,7 @@ impl Config {
     fn can_use_wild_in_process(&self) -> bool {
         self.linker_env.is_empty()
             && !self.test_update_in_place
+            && !self.test_hard_links
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
@@ -2245,6 +2250,7 @@ impl Config {
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
             test_update_in_place: false,
+            test_hard_links: false,
             test_relink_after_run: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
@@ -2884,6 +2890,9 @@ fn process_directive(
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.parse()?;
         }
+        "TestHardLinks" => {
+            config.test_hard_links = arg.parse()?;
+        }
         "TestRelinkAfterRun" => {
             config.test_relink_after_run = arg.parse()?;
         }
@@ -2950,6 +2959,10 @@ impl ProgramInputs {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
         }
 
+        if config.test_hard_links && matches!(linker, Linker::Wild) {
+            self.run_hard_links_test(&inputs, config, cross_arch, &link_output)?;
+        }
+
         #[cfg(target_os = "macos")]
         if config.test_relink_after_run && config.should_run && linker.is_wild() {
             self.run_relink_after_run_test(linker, &inputs, config, cross_arch, &link_output)?;
@@ -2973,6 +2986,38 @@ impl ProgramInputs {
 
     fn name(&self) -> &str {
         self.source_file.file_name().unwrap().to_str().unwrap()
+    }
+
+    fn run_hard_links_test(
+        &self,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+        reference_output: &LinkOutput,
+    ) -> Result {
+        let path = &reference_output.binary;
+        let original = std::fs::read(path)?;
+        let sentinel = vec![0xa5; original.len() + 1024];
+        let alias_dir = tempfile::tempdir_in(path.parent().unwrap())?;
+        let alias = alias_dir.path().join("alias");
+        std::fs::write(path, &sentinel)?;
+        std::fs::hard_link(path, &alias)?;
+
+        let relinked = Linker::Wild.link(self.name(), inputs, config, cross_arch)?;
+
+        ensure!(
+            std::fs::read(&alias)? == sentinel,
+            "Relinking {} modified its hard link",
+            path.display()
+        );
+
+        ensure!(
+            std::fs::read(&relinked.binary)? == original,
+            "Relinking {} changed the output",
+            path.display()
+        );
+
+        Ok(())
     }
 
     fn run_update_in_place_test(
