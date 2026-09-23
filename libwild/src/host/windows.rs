@@ -12,6 +12,11 @@ pub(crate) mod fs {
 
     pub(crate) type InputBytes = memmap2::Mmap;
 
+    pub(crate) fn may_have_multiple_links(_metadata: &std::fs::Metadata) -> bool {
+        // std::os::windows::fs::MetadataExt::number_of_links is unstable.
+        true
+    }
+
     pub(crate) fn read_input(file: &File, path: &Path, prepopulate: bool) -> Result<InputBytes> {
         crate::host::common::map_input(file, path, prepopulate)
     }

@@ -310,6 +310,7 @@ similar_names = "allow"
 naive_bytecount = "allow"
 verbose_bit_mask = "allow"
 format_push_string = "allow"
+assert_is_empty = "allow"
 
 # Enable some of the lints from the "nursery" group.
 redundant_clone = "warn"

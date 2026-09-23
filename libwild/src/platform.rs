@@ -157,6 +157,16 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
+    /// Returns the effective target address for an unresolved weak symbol
+    /// when the architecture defines special PC-relative semantics.
+    /// `None` means normal symbol resolution should be used.
+    fn undefined_weak_target(
+        _r_type: <Self::Platform as Platform>::RelocationInfo,
+        _place: u64,
+    ) -> Option<u64> {
+        None
+    }
+
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info<'data>(

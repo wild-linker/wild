@@ -28,6 +28,11 @@ pub(crate) mod fs {
         }
     }
 
+    pub(crate) fn may_have_multiple_links(_metadata: &std::fs::Metadata) -> bool {
+        // std::os::wasi::fs::MetadataExt is unstable
+        true
+    }
+
     pub(crate) fn read_input(file: &File, path: &Path, _prepopulate: bool) -> Result<InputBytes> {
         use std::io::Read as _;
         let mut bytes = Vec::new();

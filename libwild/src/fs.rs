@@ -25,8 +25,8 @@ pub enum FileReplacementMode {
     /// will fail.
     UpdateInPlace,
 
-    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
-    /// unlinking and replacing.
+    /// As for `UpdateInPlace`, but unlink and replace if the file is currently being executed
+    /// or has hard links.
     UpdateInPlaceWithFallback,
 }
 
@@ -464,14 +464,29 @@ impl FileSystem for OsFileSystem {
                     )
                 {
                     // If the file is being executed, we can't modify it, but we can delete it.
-                    std::fs::remove_file(&path)?;
-                    open_options.create(true).open(&path)?
+                    unlink_and_recreate(&path)?
                 } else {
                     return Err(error)
                         .with_context(|| format!("Failed to open `{}`", path.display()));
                 }
             }
         };
+
+        let file =
+            if options.file_replacement_mode == FileReplacementMode::UpdateInPlaceWithFallback {
+                let metadata = file
+                    .metadata()
+                    .with_context(|| format!("Failed to stat output `{}`", path.display()))?;
+
+                if metadata.is_file() && crate::host::fs::may_have_multiple_links(&metadata) {
+                    drop(file);
+                    unlink_and_recreate(&path)?
+                } else {
+                    file
+                }
+            } else {
+                file
+            };
 
         let defaults = OutputFileDefaults::for_file(&file);
 
@@ -550,6 +565,18 @@ impl FileSystem for OsFileSystem {
         (&file).write_all(bytes)?;
         Ok(())
     }
+}
+
+fn unlink_and_recreate(path: &Path) -> Result<File> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("Failed to unlink output `{}`", path.display()))?;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("Failed to recreate output `{}`", path.display()))
 }
 
 fn advise_huge_pages_if_requested(mmap: &memmap2::MmapMut, requested: bool) -> Result {

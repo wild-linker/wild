@@ -76,6 +76,16 @@ impl crate::platform::Arch for ElfAArch64 {
         })
     }
 
+    fn undefined_weak_target(r_type: object::elf::RelocationType, place: u64) -> Option<u64> {
+        match r_type {
+            object::elf::R_AARCH64_CALL26
+            | object::elf::R_AARCH64_CONDBR19
+            | object::elf::R_AARCH64_JUMP26
+            | object::elf::R_AARCH64_TSTBR14 => Some(place.wrapping_add(4)),
+            _ => None,
+        }
+    }
+
     fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
@@ -203,6 +213,17 @@ impl crate::platform::Arch for ElfAArch64 {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
+            object::elf::R_AARCH64_CONDBR19 | object::elf::R_AARCH64_TSTBR14
+                if flags.is_undefined_weak() && interposable =>
+            {
+                relocation.kind = RelocationKind::PltRelative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: true,
+                });
+            }
+
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if !interposable => {
                 relocation.kind = RelocationKind::Relative;
                 return Some(Relaxation {

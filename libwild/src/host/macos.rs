@@ -7,6 +7,7 @@ pub(crate) mod fs {
     pub(crate) use crate::host::unix::fs::InputBytes;
     pub(crate) use crate::host::unix::fs::create_symlink;
     pub(crate) use crate::host::unix::fs::make_executable;
+    pub(crate) use crate::host::unix::fs::may_have_multiple_links;
     pub(crate) use crate::host::unix::fs::path_from_bytes;
     pub(crate) use crate::host::unix::fs::read_input;
     pub(crate) use crate::host::unix::fs::release_input_memory;

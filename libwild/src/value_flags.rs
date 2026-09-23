@@ -116,6 +116,9 @@ bitflags! {
 
         /// The size of a symbol is needed, but not its address.
         const SYMBOL_SIZE = 1 << 19;
+
+        /// The symbol is weak and remained undefined after symbol resolution.
+        const UNDEFINED_WEAK = 1 << 20;
     }
 }
 
@@ -226,6 +229,11 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn needs_plt(self) -> bool {
         self.contains(ValueFlags::PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn is_undefined_weak(self) -> bool {
+        self.contains(ValueFlags::UNDEFINED_WEAK)
     }
 
     #[must_use]

@@ -104,6 +104,7 @@ use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentFlags;
@@ -6184,6 +6185,7 @@ struct ClassifiedSymbolRelocation {
     rel_offset: u64,
     r_type: object::elf::RelocationType,
     rel_kind: linker_utils::elf::RelocationKind,
+    rel_size: RelocationSize,
     next_modifier: RelocationModifier,
     section_is_writable: bool,
 }
@@ -6242,6 +6244,7 @@ fn classify_symbol_relocation<
         rel_offset,
         r_type,
         rel_kind: rel_info.kind,
+        rel_size: rel_info.size,
         next_modifier,
         section_is_writable: section.is_writable(),
     })
@@ -6316,7 +6319,22 @@ fn materialize_relocation_requirements<
                 A::rel_type_to_string(r_type),
             );
         }
-        if section_is_writable {
+
+        // Dynamic absolute relocations write a full address, so narrower references need
+        // a copy relocation or canonical PLT even when the section is writable.
+        let is_narrow_absolute = rel_kind == RelocationKind::Absolute
+            && classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as usize);
+
+        if is_narrow_absolute && symbol_db.output_kind.is_position_independent() {
+            bail!(
+                "relocation {} cannot be used against symbol `{}` in position-independent output; \
+                recompile with -fPIC",
+                A::rel_type_to_string(r_type),
+                symbol_db.symbol_name_for_display(symbol_id),
+            );
+        }
+
+        if section_is_writable && !is_narrow_absolute {
             common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
         } else if flags.is_function() {
             // Create a PLT entry for the function and refer to that instead.
@@ -6331,7 +6349,7 @@ fn materialize_relocation_requirements<
                     // We don't at present support text relocations, so if we can't apply a copy
                     // relocation, we error instead.
                     bail!(
-                        "Direct relocation ({}) to dynamic symbol from non-writable section, \
+                        "Direct relocation ({}) to dynamic symbol requires a copy relocation, \
                         but copy relocations are disabled because {reason}. {}",
                         A::rel_type_to_string(r_type),
                         resources.symbol_debug(symbol_id),
