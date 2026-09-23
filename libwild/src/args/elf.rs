@@ -263,6 +263,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "sort-common",
     "stats",
     "verbose",
+    "no-keep-memory",
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 
@@ -2629,6 +2630,11 @@ mod tests {
         for flag in SILENTLY_IGNORED_FLAGS {
             assert!(!flag.starts_with('-'));
         }
+    }
+
+    #[test]
+    fn test_no_keep_memory_ignored() {
+        parse_args(["--no-keep-memory"]);
     }
 
     // Helper: parse a small set of args and return the resulting ElfArgs.
