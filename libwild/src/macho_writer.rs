@@ -530,7 +530,20 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
                         .context("Rebase target is before the image base")?;
                     write_rebase_encoding(target, next)?
                 }
-                FixupKind::Bind { ordinal } => write_bind_encoding(ordinal, next),
+                FixupKind::Bind {
+                    ordinal,
+                    relocation_base,
+                } => {
+                    // Relocations have already written S + A.
+                    let addend = match relocation_base {
+                        Some(base) => {
+                            u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?)
+                                .wrapping_sub(base)
+                        }
+                        None => 0,
+                    };
+                    write_bind_encoding(ordinal, addend, next)?
+                }
             };
             out[file_offset..file_offset + encoding.len()].copy_from_slice(&encoding);
         }
@@ -543,7 +556,7 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
     Ok(())
 }
 
-fn write_bind_encoding(ordinal: u64, next: u64) -> [u8; 8] {
+fn write_bind_encoding(ordinal: u64, addend: u64, next: u64) -> Result<[u8; 8]> {
     /* DYLD_CHAINED_PTR_64/DYLD_CHAINED_PTR_64_OFFSET format:
     uint64_t dyld_chained_ptr_64_bind:
       ordinal: 24
@@ -552,9 +565,13 @@ fn write_bind_encoding(ordinal: u64, next: u64) -> [u8; 8] {
       next: 12 // 4-byte stride
       bind: 1 // == 1
     */
+    ensure!(
+        u8::try_from(addend).is_ok(),
+        "Bind addend cannot be encoded inline: {addend:#x}"
+    );
     let bind = 1u64 << 63;
     let next = next << 51;
-    (bind | next | ordinal).to_le_bytes()
+    Ok((bind | next | (addend << 24) | ordinal).to_le_bytes())
 }
 
 fn write_rebase_encoding(target: u64, next: u64) -> Result<[u8; 8]> {

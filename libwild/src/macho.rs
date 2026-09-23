@@ -383,7 +383,12 @@ pub(crate) struct Fixup {
 #[derive(Debug)]
 pub(crate) enum FixupKind {
     Rebase,
-    Bind { ordinal: u64 },
+    Bind {
+        ordinal: u64,
+        // Relocation base address used for getting to the implicit addend (None for synthesized
+        // GOT slots).
+        relocation_base: Option<u64>,
+    },
 }
 
 #[derive(derive_more::Debug)]
@@ -1570,6 +1575,7 @@ impl platform::Platform for MachO {
                     address: got_address.get(),
                     kind: FixupKind::Bind {
                         ordinal: ordinal as u64,
+                        relocation_base: None,
                     },
                 });
             }
@@ -1597,6 +1603,12 @@ impl platform::Platform for MachO {
                         .context("Invalid ordinal for bind fixup")?;
                     FixupKind::Bind {
                         ordinal: ordinal as u64,
+                        relocation_base: Some(
+                            resolutions
+                                .get(symbol_id)
+                                .context("Missing resolution for bind fixup")?
+                                .raw_value,
+                        ),
                     }
                 }
                 PendingFixupKind::Rebase => FixupKind::Rebase,
