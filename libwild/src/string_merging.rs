@@ -298,7 +298,7 @@ fn group_merge_string_sections_by_output<'data, P: Platform>(
     section_part_ids: &[crate::part_id::PartId],
     output_sections: &OutputSections<P>,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
-    verbose_timing_phase!("Find merge sectionns");
+    verbose_timing_phase!("Find merge sections");
 
     let mut input_sections = output_sections.new_section_map::<Vec<StringMergeInputSection>>();
 
