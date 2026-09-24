@@ -516,7 +516,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
         self.sections()
             .get(index.0)
-            .ok_or_else(|| error!("section index out of range"))
+            .context("section index out of range")
     }
 
     fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
