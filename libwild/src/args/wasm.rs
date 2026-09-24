@@ -61,6 +61,7 @@ pub struct WasmArgs {
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
     pub(crate) allow_multiple_definition: bool,
+    pub(crate) strip_debug: bool,
 }
 
 impl WasmArgs {
@@ -103,6 +104,7 @@ impl Default for WasmArgs {
             gc_sections: true,
             allow_undefined: false,
             allow_multiple_definition: false,
+            strip_debug: false,
         }
     }
 }
@@ -117,7 +119,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn should_strip_debug(&self) -> bool {
-        todo!()
+        self.strip_debug
     }
 
     fn should_strip_all(&self) -> bool {
@@ -459,6 +461,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .execute(|_args, _modifier_stack, _value|
         // We don't use opt-level for now.
         Ok(()));
+
+    parser
+        .declare()
+        .long("strip-debug")
+        .help("Strip debug info")
+        .execute(|args, _modifier_stack| {
+            args.strip_debug = true;
+            Ok(())
+        });
 
     parser
         .declare()
