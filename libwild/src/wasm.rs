@@ -845,7 +845,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SymtabEntry> {
         self.symbols
             .get(index.0)
-            .ok_or_else(|| crate::error!("wasm symbol index {} out of range", index.0))
+            .with_context(|| format!("wasm symbol index {} out of range", index.0))
     }
 
     fn section_size(
@@ -906,7 +906,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
         self.sections
             .get(index.0)
-            .ok_or_else(|| crate::error!("wasm section index {} out of range", index.0))
+            .with_context(|| format!("wasm section index {} out of range", index.0))
     }
 
     fn section_by_name(
@@ -967,12 +967,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let header = self
             .sections
             .get(index.0)
-            .ok_or_else(|| crate::error!("wasm section index {} out of range", index.0))?;
+            .with_context(|| format!("wasm section index {} out of range", index.0))?;
         if let Some(name_range) = &header.name_range {
             Ok(&self.data[name_range.start as usize..name_range.end as usize])
         } else {
             standard_section_name(header.id)
-                .ok_or_else(|| crate::error!("unknown wasm section id {}", header.id))
+                .with_context(|| format!("unknown wasm section id {}", header.id))
         }
     }
 
@@ -2312,8 +2312,8 @@ fn tls_reloc_value(abs_addr: Option<u32>, tls_base: u32, addend: i64) -> Result<
     let Some(abs_addr) = abs_addr else {
         return Ok(0);
     };
-    let offset = abs_addr.checked_sub(tls_base).ok_or_else(|| {
-        crate::error!("TLS relocation address 0x{abs_addr:x} is before TLS base 0x{tls_base:x}")
+    let offset = abs_addr.checked_sub(tls_base).with_context(|| {
+        format!("TLS relocation address 0x{abs_addr:x} is before TLS base 0x{tls_base:x}")
     })?;
     let value = i64::from(offset)
         .checked_add(addend)
@@ -2445,7 +2445,7 @@ impl WasmObjectIndexMap {
 
         let sym = symbols
             .get(reloc.index as usize)
-            .ok_or_else(|| crate::error!("relocation symbol index {} out of range", reloc.index))?;
+            .with_context(|| format!("relocation symbol index {} out of range", reloc.index))?;
 
         match reloc.ty {
             RelocationType::FunctionIndexLeb | RelocationType::FunctionIndexI32 => {
@@ -2464,8 +2464,8 @@ impl WasmObjectIndexMap {
                     .get(reloc.index as usize)
                     .copied()
                     .flatten()
-                    .ok_or_else(|| {
-                        crate::error!(
+                    .with_context(|| {
+                        format!(
                             "missing GOT.mem global for data symbol index {}",
                             reloc.index
                         )
@@ -2475,8 +2475,8 @@ impl WasmObjectIndexMap {
                     .get(reloc.index as usize)
                     .copied()
                     .flatten()
-                    .ok_or_else(|| {
-                        crate::error!(
+                    .with_context(|| {
+                        format!(
                             "missing GOT.func global for function symbol index {}",
                             reloc.index
                         )
@@ -2505,8 +2505,8 @@ impl WasmObjectIndexMap {
                     .data_addresses
                     .get(reloc.index as usize)
                     .copied()
-                    .ok_or_else(|| {
-                        crate::error!("data address for symbol index {} out of range", reloc.index)
+                    .with_context(|| {
+                        format!("data address for symbol index {} out of range", reloc.index)
                     })?;
                 if reloc.ty == RelocationType::MemoryAddrRelSleb {
                     let relative =
@@ -3291,8 +3291,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 ImportResolution::Unresolved => {
                     let output_function_index = shared_imports
                         .function_index(object_index, i)
-                        .ok_or_else(|| {
-                            crate::error!(
+                        .with_context(|| {
+                            format!(
                                 "missing shared function import index for object {object_index} \
                                  import {i}"
                             )
@@ -3300,9 +3300,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     index_map.function_indices.push(output_function_index);
                 }
                 ImportResolution::LinkerDefined(known) => {
-                    let index = indices.function_index(known).ok_or_else(|| {
-                        crate::error!("missing reserved Wasm function for {known:?}")
-                    })?;
+                    let index = indices
+                        .function_index(known)
+                        .with_context(|| format!("missing reserved Wasm function for {known:?}"))?;
                     index_map.function_indices.push(index);
                 }
                 ImportResolution::WeakUndefStub { stub_index } => {
@@ -3310,8 +3310,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         .weak_undef_stubs
                         .get(stub_index as usize)
                         .map(|s| s.function_index)
-                        .ok_or_else(|| {
-                            crate::error!("Wasm weak-undef stub index {stub_index} out of range")
+                        .with_context(|| {
+                            format!("Wasm weak-undef stub index {stub_index} out of range")
                         })?;
                     index_map.function_indices.push(index);
                 }
@@ -3353,8 +3353,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 ImportResolution::Unresolved => {
                     let output_global_index = shared_imports
                         .global_index(object_index, i)
-                        .ok_or_else(|| {
-                            crate::error!(
+                        .with_context(|| {
+                            format!(
                                 "missing shared global import index for object {object_index} \
                                  import {i}"
                             )
@@ -3362,9 +3362,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     index_map.global_indices.push(output_global_index);
                 }
                 ImportResolution::LinkerDefined(known) => {
-                    let index = indices.global_index(known).ok_or_else(|| {
-                        crate::error!("missing reserved Wasm global for {known:?}")
-                    })?;
+                    let index = indices
+                        .global_index(known)
+                        .with_context(|| format!("missing reserved Wasm global for {known:?}"))?;
                     index_map.global_indices.push(index);
                 }
                 ImportResolution::DirectGlobal { output_index } => {
@@ -4297,11 +4297,10 @@ fn absorb_weak_undef_function_imports<'data>(
             let ty = input
                 .types
                 .get(import.type_index as usize)
-                .ok_or_else(|| {
-                    crate::error!(
+                .with_context(|| {
+                    format!(
                         "Wasm type index {} out of range for weak import `{}`",
-                        import.type_index,
-                        import.name
+                        import.type_index, import.name
                     )
                 })?
                 .clone();
@@ -4857,8 +4856,8 @@ fn fill_got_mem_inits(
                 .unwrap_or(0),
             GotMemDef::LinkerDefined(known) => known
                 .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
-                .ok_or_else(|| {
-                    crate::error!(
+                .with_context(|| {
+                    format!(
                         "GOT.mem linker-defined symbol `{}` has no data address",
                         std::str::from_utf8(known.name()).unwrap_or("?")
                     )
@@ -4868,7 +4867,7 @@ fn fill_got_mem_inits(
         let global = layout
             .globals
             .get_mut(global_slot)
-            .ok_or_else(|| crate::error!("GOT.mem global slot {global_slot} out of range"))?;
+            .with_context(|| format!("GOT.mem global slot {global_slot} out of range"))?;
         global.init_expr_body = Cow::Owned(encode_i32_const_u32(addr));
     }
     Ok(())
@@ -4886,16 +4885,17 @@ fn fill_exported_data_global_inits(
     for &(known, global_index) in &indices.data_address_globals {
         let addr = known
             .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
-            .ok_or_else(|| {
-                crate::error!(
+            .with_context(|| {
+                format!(
                     "linker-defined symbol `{}` has no address to export",
                     std::str::from_utf8(known.name()).unwrap_or("?")
                 )
             })?;
         let defined_slot = (global_index - indices.global_import_count) as usize;
-        let global = layout.globals.get_mut(defined_slot).ok_or_else(|| {
-            crate::error!("exported data global slot {defined_slot} out of range")
-        })?;
+        let global = layout
+            .globals
+            .get_mut(defined_slot)
+            .with_context(|| format!("exported data global slot {defined_slot} out of range"))?;
         global.init_expr_body = Cow::Owned(encode_i32_const_u32(addr));
     }
     Ok(())
@@ -4915,11 +4915,11 @@ fn fill_got_func_inits(
     let defined_slot = (got_base - indices.global_import_count) as usize;
 
     for (i, entry) in got_func.entries.iter().enumerate() {
-        let input = layout_inputs.get(entry.object_index).ok_or_else(|| {
-            crate::error!("GOT.func object index {} out of range", entry.object_index)
+        let input = layout_inputs.get(entry.object_index).with_context(|| {
+            format!("GOT.func object index {} out of range", entry.object_index)
         })?;
-        let sym = input.symbols.get(entry.symbol_offset).ok_or_else(|| {
-            crate::error!(
+        let sym = input.symbols.get(entry.symbol_offset).with_context(|| {
+            format!(
                 "GOT.func symbol offset {} out of range",
                 entry.symbol_offset
             )
@@ -4944,7 +4944,7 @@ fn fill_got_func_inits(
         let global = layout
             .globals
             .get_mut(global_slot)
-            .ok_or_else(|| crate::error!("GOT.func global slot {global_slot} out of range"))?;
+            .with_context(|| format!("GOT.func global slot {global_slot} out of range"))?;
         let table_i32 = i32::try_from(slot)
             .map_err(|_| crate::error!("GOT.func table index out of i32 range"))?;
         global.init_expr_body = Cow::Owned(encode_i32_const_body(table_i32));
@@ -5331,17 +5331,16 @@ fn wrap_command_exports(layout: &mut WasmLayout<'_>, call_ctors: u32) -> Result<
         let type_index = *layout
             .function_type_indices
             .get(defined_idx)
-            .ok_or_else(|| {
-                crate::error!(
+            .with_context(|| {
+                format!(
                     "export `{}` function index {} has no type",
-                    export.name,
-                    export.index
+                    export.name, export.index
                 )
             })?;
         let n_params = layout
             .output_types
             .get(type_index as usize)
-            .ok_or_else(|| crate::error!("missing Wasm type {type_index}"))?
+            .with_context(|| format!("missing Wasm type {type_index}"))?
             .params()
             .len();
         pending.push(PendingWrap {
@@ -5401,18 +5400,21 @@ fn function_type_for_symbol<'a>(
             "Wasm init/reference to GC'd function index {}",
             sym.index
         );
-        *input.module_functions.get(dense as usize).ok_or_else(|| {
-            crate::error!(
-                "Wasm function index {} out of range (dense {dense}, live len {})",
-                sym.index,
-                input.module_functions.len()
-            )
-        })?
+        *input
+            .module_functions
+            .get(dense as usize)
+            .with_context(|| {
+                format!(
+                    "Wasm function index {} out of range (dense {dense}, live len {})",
+                    sym.index,
+                    input.module_functions.len()
+                )
+            })?
     };
     input
         .types
         .get(type_index as usize)
-        .ok_or_else(|| crate::error!("Wasm type index {type_index} out of range"))
+        .with_context(|| format!("Wasm type index {type_index} out of range"))
 }
 
 /// From InitFuncs to `(output function index, result count)`, sorted by ascending priority.
@@ -6308,9 +6310,10 @@ fn finalize_indirect_function_table(
     {
         let index_map = &layout.object_index_maps[obj_idx];
         for &sym_idx in sym_indices {
-            let sym = input.symbols.get(sym_idx).ok_or_else(|| {
-                crate::error!("table index relocation symbol {sym_idx} out of range")
-            })?;
+            let sym = input
+                .symbols
+                .get(sym_idx)
+                .with_context(|| format!("table index relocation symbol {sym_idx} out of range"))?;
             ensure!(
                 sym.kind == WasmSymbolKind::Func,
                 "R_WASM_TABLE_INDEX_* references non-function symbol"
@@ -6702,8 +6705,8 @@ fn classify_code_relocations(bodies: &mut [WasmFunctionBody<'_>], relocs: &[Wasm
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
-    let mapped = indices.get(index as usize).copied().ok_or_else(|| {
-        crate::error!(
+    let mapped = indices.get(index as usize).copied().with_context(|| {
+        format!(
             "Wasm {kind} index {index} out of range (map len {})",
             indices.len()
         )

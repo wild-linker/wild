@@ -150,7 +150,7 @@ pub trait OutputFileData: Send {
 ///             .unwrap()
 ///             .get(&path.to_path_buf())
 ///             .cloned()
-///             .ok_or_else(|| libwild::error!("No such in-memory file: {}", path.display()))?;
+///             .with_context(|| format!("No such in-memory file: {}", path.display()))?;
 ///         Ok((Input(bytes), None))
 ///     }
 ///

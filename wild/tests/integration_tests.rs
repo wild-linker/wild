@@ -2458,8 +2458,8 @@ fn process_directive(
             }
 
             let name = if let Some((name, inherit)) = arg.split_once(':') {
-                let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
-                    error!("Config `{name}` inherits from unknown config named `{inherit}`")
+                let inherit_index = config_name_to_index.get(inherit).with_context(|| {
+                    format!("Config `{name}` inherits from unknown config named `{inherit}`")
                 })?;
 
                 *config = configs[*inherit_index].clone();
@@ -2532,7 +2532,9 @@ fn process_directive(
                     .iter()
                     .find(|l| l.name() == arg)
                     .cloned()
-                    .ok_or_else(|| error!("Unknown linker specified for SoSingleLinker: {arg}"))?,
+                    .with_context(|| {
+                        format!("Unknown linker specified for SoSingleLinker: {arg}")
+                    })?,
             );
         }
         "LinkerDriver" => {

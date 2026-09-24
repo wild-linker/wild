@@ -159,8 +159,8 @@ fn evaluate_location<'data, P: Platform>(
         }
         SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
         SymbolLoc::LocationCounter(idx, section_id) => {
-            let entry = resolved_location_counters.get(*idx).ok_or_else(|| {
-                crate::error!(
+            let entry = resolved_location_counters.get(*idx).with_context(|| {
+                format!(
                     "location counter index {idx} out of range (len: {})",
                     resolved_location_counters.len()
                 )
@@ -371,8 +371,8 @@ fn evaluate_expression_value<'data, P: Platform>(
 
         Expression::Origin(name) => {
             value_kind.contains_absolute = true;
-            let region = memory_regions.get(name).ok_or_else(|| {
-                crate::error!(
+            let region = memory_regions.get(name).with_context(|| {
+                format!(
                     "ORIGIN: memory region '{}' not found",
                     String::from_utf8_lossy(name)
                 )
@@ -380,8 +380,8 @@ fn evaluate_expression_value<'data, P: Platform>(
             Ok(region.origin)
         }
         Expression::Length(name) => {
-            let region = memory_regions.get(name).ok_or_else(|| {
-                crate::error!(
+            let region = memory_regions.get(name).with_context(|| {
+                format!(
                     "LENGTH: memory region '{}' not found",
                     String::from_utf8_lossy(name)
                 )
@@ -690,8 +690,8 @@ fn section_address<'data, P: Platform>(
 ) -> Result<u64> {
     let id = output_sections
         .section_id_by_name(SectionName(name))
-        .ok_or_else(|| {
-            crate::error!(
+        .with_context(|| {
+            format!(
                 "ADDR: section '{}' not found",
                 String::from_utf8_lossy(name)
             )
@@ -706,8 +706,8 @@ fn section_load_address<'data, P: Platform>(
 ) -> Result<u64> {
     let id = output_sections
         .section_id_by_name(SectionName(name))
-        .ok_or_else(|| {
-            crate::error!(
+        .with_context(|| {
+            format!(
                 "LOADADDR: section '{}' not found",
                 String::from_utf8_lossy(name)
             )

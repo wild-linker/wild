@@ -4,7 +4,6 @@ use crate::elf::ElfRela;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::RelocationList64;
 use crate::ensure;
-use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform::ObjectFile as _;
@@ -61,8 +60,8 @@ impl crate::platform::Arch for ElfRiscV64 {
 
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
-        linker_utils::riscv64::relocation_type_from_raw(r_type).ok_or_else(|| {
-            error!(
+        linker_utils::riscv64::relocation_type_from_raw(r_type).with_context(|| {
+            format!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
             )

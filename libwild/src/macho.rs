@@ -1561,8 +1561,8 @@ impl platform::Platform for MachO {
                 resolutions
                     .get(symbol_id)
                     .map(|resolution| resolution.raw_value)
-                    .ok_or_else(|| {
-                        error!("missing resolution for Mach-O initializer {symbol_id:?}")
+                    .with_context(|| {
+                        format!("missing resolution for Mach-O initializer {symbol_id:?}")
                     })
             })
             .collect::<Result<Vec<_>>>()?;

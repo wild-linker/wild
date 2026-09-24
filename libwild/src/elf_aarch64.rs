@@ -4,7 +4,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::elf::output_section_id;
 use crate::ensure;
-use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::malfunction_point_ret;
@@ -68,8 +68,8 @@ impl crate::platform::Arch for ElfAArch64 {
     // https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst.
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
-        linker_utils::aarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
-            error!(
+        linker_utils::aarch64::relocation_type_from_raw(r_type).with_context(|| {
+            format!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
             )
