@@ -1604,7 +1604,7 @@ fn macho_section_index(layout: &MachOLayout<'_>, section_id: OutputSectionId) ->
                 }
                 section_idx = section_idx
                     .checked_add(1)
-                    .ok_or(error!("Section index out of range (u8)"))?;
+                    .ok_or_else(|| error!("Section index out of range (u8)"))?;
             }
             _ => {}
         }
