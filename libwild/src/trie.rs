@@ -28,14 +28,6 @@ struct Edge<'data> {
     child_offset_size: usize,
 }
 
-#[derive(Debug, Default)]
-struct UncompressedNode {
-    symbol: Option<usize>,
-    representative: usize,
-    depth: usize,
-    children: Vec<usize>,
-}
-
 /// Build a Mach-O exports trie for `symbols`. `symbols` is sorted in place.
 pub(crate) fn build(symbols: &mut [Symbol<'_>]) -> Vec<u8> {
     timing_phase!("Build trie nodes");
@@ -68,55 +60,93 @@ struct Builder<'data, 'symbols> {
 
 impl<'data> Builder<'data, '_> {
     fn build_nodes(&mut self) {
-        let mut uncompressed = vec![UncompressedNode::default()];
-        let mut previous_name = &[][..];
-        let mut previous_path = vec![0];
+        struct PendingNode {
+            /// The range of offsets into `symbols` that the node represents.
+            start: usize,
+            end: usize,
 
-        for (symbol_index, symbol) in self.symbols.iter().enumerate() {
-            let common_prefix = previous_name
-                .iter()
-                .zip(symbol.name)
-                .take_while(|(a, b)| a == b)
-                .count();
+            /// How many bytes into the symbol name we are.
+            depth: usize,
 
-            previous_path.truncate(common_prefix + 1);
-            let mut parent = *previous_path.last().unwrap();
-
-            for depth in common_prefix + 1..=symbol.name.len() {
-                let child = uncompressed.len();
-
-                uncompressed.push(UncompressedNode {
-                    representative: symbol_index,
-                    depth,
-                    ..Default::default()
-                });
-
-                uncompressed[parent].children.push(child);
-                previous_path.push(child);
-                parent = child;
-            }
-
-            uncompressed[parent].symbol.replace(symbol_index);
-            previous_name = symbol.name;
+            parent_edge: Option<usize>,
         }
 
-        let mut pending: Vec<(usize, Option<usize>)> = vec![(0, None)];
-        while let Some((uncompressed_index, parent_edge)) = pending.pop() {
-            let source = &uncompressed[uncompressed_index];
+        let mut stack = vec![PendingNode {
+            start: 0,
+            end: self.symbols.len(),
+            depth: 0,
+            parent_edge: None,
+        }];
+
+        while let Some(PendingNode {
+            mut start,
+            end,
+            depth,
+            parent_edge,
+        }) = stack.pop()
+        {
             let node_index = self.nodes.len();
             if let Some(edge_index) = parent_edge {
                 self.edges[edge_index].child = node_index;
             }
 
-            let (address, flags) = source
-                .symbol
-                .map_or((None, macho::ExportSymbolFlags(0)), |i| {
-                    (Some(self.symbols[i].address), self.symbols[i].flags)
-                });
+            let symbol = &self.symbols[start];
+            let (address, flags) = if symbol.name.len() == depth {
+                start += 1;
+                (Some(symbol.address), symbol.flags)
+            } else {
+                (None, macho::ExportSymbolFlags(0))
+            };
 
             let first_edge = self.edges.len();
+            let pending_start = stack.len();
+            while start < end {
+                let name = self.symbols[start].name;
+
+                // Find the index of the first symbol with a different next byte.
+                let child_end = start
+                    + 1
+                    + self.symbols[start + 1..end]
+                        .partition_point(|symbol| symbol.name[depth] == name[depth]);
+
+                let child_depth = if child_end == start + 1 {
+                    // There's only a single symbol in this child's range, so the remainder of the
+                    // symbol name will be consumed.
+                    name.len()
+                } else {
+                    // The child node will always be at a depth one more than the current node,
+                    // but possibly more. e.g. if name="foo" and last_name="fz", then we'll just
+                    // bump by 1, but if name="foo" and last_name="fox", we'll bump by 2.
+                    let last_name = self.symbols[child_end - 1].name;
+
+                    depth
+                        + 1
+                        + name[depth + 1..]
+                            .iter()
+                            .zip(&last_name[depth + 1..])
+                            .take_while(|(a, b)| a == b)
+                            .count()
+                };
+
+                stack.push(PendingNode {
+                    start,
+                    end: child_end,
+                    depth: child_depth,
+                    parent_edge: Some(self.edges.len()),
+                });
+
+                self.edges.push(Edge {
+                    label: &name[depth..child_depth],
+                    child: usize::MAX,
+                    child_offset_size: 1,
+                });
+
+                start = child_end;
+            }
+
+            let num_edges = self.edges.len() - first_edge;
             debug_assert!(
-                u8::try_from(source.children.len()).is_ok(),
+                u8::try_from(num_edges).is_ok(),
                 "Mach-O exports trie node has too many children"
             );
 
@@ -124,39 +154,13 @@ impl<'data> Builder<'data, '_> {
                 address,
                 flags,
                 first_edge,
-                num_edges: source.children.len(),
+                num_edges,
                 ..Default::default()
             });
 
-            for &first_child in &source.children {
-                let mut child = first_child;
-
-                while uncompressed[child].symbol.is_none()
-                    && uncompressed[child].children.len() == 1
-                {
-                    child = uncompressed[child].children[0];
-                }
-
-                let child_node = &uncompressed[child];
-
-                self.edges.push(Edge {
-                    label: &self.symbols[child_node.representative].name
-                        [source.depth..child_node.depth],
-                    child: usize::MAX,
-                    child_offset_size: 1,
-                });
-            }
-            for (edge_offset, &first_child) in source.children.iter().enumerate().rev() {
-                let mut child = first_child;
-
-                while uncompressed[child].symbol.is_none()
-                    && uncompressed[child].children.len() == 1
-                {
-                    child = uncompressed[child].children[0];
-                }
-
-                pending.push((child, Some(first_edge + edge_offset)));
-            }
+            // The pending nodes we just added should be visited in the order we added them. Since
+            // this is a stack, that means we need to reverse them.
+            stack[pending_start..].reverse();
         }
     }
 
