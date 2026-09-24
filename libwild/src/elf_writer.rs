@@ -4762,7 +4762,7 @@ fn write_sysv_hash_table<C: ElfClass>(
 
     let buffer = buffers.get_mut(part_id::SYSV_HASH);
     if buffer.len() < required_bytes {
-        return Err(error!("Insufficient .hash allocation"));
+        bail!("Insufficient .hash allocation");
     }
     let buffer = &mut buffer[..required_bytes];
     buffer.fill(0);

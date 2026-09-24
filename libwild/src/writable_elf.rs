@@ -4,6 +4,7 @@
 //! traits to abstract over writing to these structs.
 
 use crate::Result;
+use crate::bail;
 use crate::error;
 use object::LittleEndian;
 use object::elf::SectionFlags;
@@ -401,9 +402,7 @@ impl WritableRela for object::elf::Rela32<LittleEndian> {
     }
     fn set_info(&mut self, symbol: u32, r_type: object::elf::RelocationType) -> Result {
         if symbol > 0x00ff_ffff {
-            return Err(error!(
-                "relocation symbol index {symbol} does not fit in ELF32"
-            ));
+            bail!("relocation symbol index {symbol} does not fit in ELF32");
         }
         u8::try_from(r_type.0)
             .map_err(|_| error!("relocation type {r_type} does not fit in ELF32"))?;

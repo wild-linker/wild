@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use crate::args::CounterKind;
+use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::host::fs::FilesystemKind;
@@ -39,12 +40,12 @@ pub(crate) fn map_input(file: &File, path: &Path, prepopulate: bool) -> Result<m
 
 /// `preallocate` for hosts without `fallocate`.
 pub(crate) fn preallocate_unsupported(_file: &File, _size: u64) -> Result {
-    Err(crate::error!("fallocate is only supported on Linux"))
+    bail!("fallocate is only supported on Linux")
 }
 
 /// `advise_huge_pages` for hosts without `MADV_HUGEPAGE`.
 pub(crate) fn advise_huge_pages_unsupported(_mmap: &memmap2::MmapMut) -> Result {
-    Err(crate::error!("MADV_HUGEPAGE is only supported on Linux"))
+    bail!("MADV_HUGEPAGE is only supported on Linux")
 }
 
 /// `invalidate_mapped_output` for hosts with nothing to invalidate.
@@ -66,18 +67,14 @@ pub(crate) struct UnsupportedPluginLibrary;
 
 impl UnsupportedPluginLibrary {
     pub(crate) fn open(_path: &Path) -> Result<Self> {
-        Err(crate::error!(
-            "Linker plugins are not supported on this host"
-        ))
+        bail!("Linker plugins are not supported on this host")
     }
 
     /// # Safety
     /// See `PluginLibrary::symbol` on hosts that support plugins.
     #[allow(clippy::unused_self)]
     pub(crate) unsafe fn symbol<T: Copy>(&self, _name: &[u8]) -> Result<T> {
-        Err(crate::error!(
-            "Linker plugins are not supported on this host"
-        ))
+        bail!("Linker plugins are not supported on this host")
     }
 }
 

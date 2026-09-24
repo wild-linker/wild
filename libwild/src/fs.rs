@@ -3,6 +3,7 @@
 //! The main output is exposed as a sized random-access byte buffer because linker writers fill
 //! disjoint regions in parallel. Auxiliary outputs are written as complete byte slices.
 
+use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::host::fs::FilesystemKind;
@@ -499,9 +500,7 @@ impl FileSystem for OsFileSystem {
         let file_write_mode = options.write_mode.unwrap_or(defaults.write_mode);
 
         if huge_pages_required && matches!(file_write_mode, FileWriteMode::BufferThenWrite) {
-            return Err(crate::error!(
-                "--madvise-huge-pages requires mmapped output file"
-            ));
+            bail!("--madvise-huge-pages requires mmapped output file");
         }
 
         let set_len_result = file.set_len(options.size);
