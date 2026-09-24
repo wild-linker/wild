@@ -11,6 +11,8 @@ use crate::compression::CompressedSection;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
+use crate::erratum::ErratumPatchParts;
+use crate::erratum::ObjectPatches;
 use crate::error;
 use crate::error::Context;
 use crate::error::Error;
@@ -112,6 +114,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, A::Platform>>,
     mut output_sections: OutputSections<'data, P>,
+    erratum_patch_parts: Option<&ErratumPatchParts>,
     output: &mut file_writer::Output<F>,
 ) -> Result<Layout<'data, A::Platform>> {
     timing_phase!("Layout");
@@ -338,6 +341,32 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
             &mut memory_regions,
             sizeof_headers,
             &mut resolved_location_counters,
+        )?;
+    }
+
+    if let Some(patch_parts) = erratum_patch_parts
+        && erratum_scan_pass::<A>(
+            &mut group_states,
+            &section_part_layouts,
+            &mut section_part_sizes,
+            &symbol_db,
+            &output_sections,
+            patch_parts,
+        )?
+    {
+        (
+            section_part_layouts,
+            section_layouts,
+            resolved_location_counters,
+        ) = compute_layout_sections::<A::Platform>(
+            &group_states,
+            &section_part_sizes,
+            &output_sections,
+            &program_segments,
+            &output_order,
+            &symbol_db,
+            &mut memory_regions,
+            sizeof_headers,
         )?;
     }
 
@@ -1157,6 +1186,8 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
 
     /// Whether this object is responsible for writing the thunks in its ThunkBlock.
     pub(crate) owns_thunk_block: bool,
+
+    pub(crate) erratum_patches: ObjectPatches,
 }
 
 #[derive(Debug)]
@@ -1576,6 +1607,8 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// Total bytes of primary-function-part sections that survived GC. Used to help determine
     /// distances for range-extension thunks.
     pub(crate) post_gc_primary_bytes: u64,
+
+    pub(crate) erratum_patches: ObjectPatches,
 }
 
 #[derive(Debug, Default)]
@@ -4312,6 +4345,7 @@ fn new_object_layout_state<P: Platform>(
         thunk_block_id: ThunkBlockId::default(),
         owns_thunk_block: false,
         post_gc_primary_bytes: 0,
+        erratum_patches: ObjectPatches::default(),
     })
 }
 
@@ -4751,6 +4785,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         P::finalise_object_layout(&self, memory_offsets);
 
+        self.erratum_patches.assign_bases(memory_offsets);
+
         // If this object owns a ThunkBlock, assign addresses for the block's thunks and write
         // them directly into the shared output map.
         if self.owns_thunk_block
@@ -4782,6 +4818,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             section_relax_deltas: self.section_relax_deltas,
             thunk_block_id: self.thunk_block_id,
             owns_thunk_block: self.owns_thunk_block,
+            erratum_patches: self.erratum_patches,
         })
     }
 
@@ -5801,6 +5838,158 @@ fn relaxation_scan_pass<'data, A: Arch>(
     (total_deleted, next_rescan_candidates)
 }
 
+/// Scans executable input sections for erratum sequences and reserves space for the patches.
+/// Returns whether anything was reserved, in which case section layouts need recomputing.
+fn erratum_scan_pass<'data, A: Arch>(
+    group_states: &mut [GroupState<'data, A::Platform>],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+    section_part_sizes: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, A::Platform>,
+    output_sections: &OutputSections<'data, A::Platform>,
+    patch_parts: &ErratumPatchParts,
+) -> Result<bool> {
+    timing_phase!("Erratum scan");
+
+    let fixes = symbol_db.args.erratum_fixes();
+
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+    let section_addresses =
+        compute_input_section_positions(group_states, mem_offsets, symbol_db, output_sections);
+
+    let mut group_bytes = group_states
+        .par_iter_mut()
+        .enumerate()
+        .map(|(group_idx, group)| {
+            verbose_timing_phase!("Erratum scan for group");
+
+            let mut group_bytes: HashMap<PartId, u64> = HashMap::new();
+            let mut sections = Vec::new();
+
+            for (file_idx, file) in group.files.iter_mut().enumerate() {
+                let FileLayoutState::Object(obj) = file else {
+                    continue;
+                };
+
+                let file_section_addresses = &section_addresses[group_idx][file_idx];
+
+                sections.clear();
+                for (sec_idx, slot) in obj.sections.iter().enumerate() {
+                    let section_index = SectionIndex(sec_idx);
+
+                    let Ok(header) = obj.object.section(section_index) else {
+                        continue;
+                    };
+
+                    if !header.is_executable() {
+                        continue;
+                    }
+
+                    // SORT-placed sections only get an address in the epilogue, so there's nothing
+                    // to scan yet. Erroring beats silently leaving the erratum in place.
+                    ensure!(
+                        !matches!(slot, SectionSlot::Sorted(_)),
+                        "Erratum workarounds don't support sorted executable sections"
+                    );
+
+                    if !matches!(slot, SectionSlot::Loaded(_)) {
+                        continue;
+                    }
+
+                    let Some(position) = file_section_addresses.get(sec_idx).copied().flatten()
+                    else {
+                        continue;
+                    };
+
+                    let Some(patch_part_id) =
+                        patch_parts.for_part::<A::Platform>(output_sections, position.part_id)
+                    else {
+                        continue;
+                    };
+
+                    sections.push((patch_part_id, section_index, position.address));
+                }
+
+                if sections.is_empty() {
+                    continue;
+                }
+
+                sections.sort_unstable_by_key(|&(patch_part_id, section_index, _)| {
+                    (patch_part_id, section_index.0)
+                });
+
+                let mut areas = Vec::new();
+                for chunk in sections.chunk_by(|a, b| a.0 == b.0) {
+                    let part_sections: Vec<(SectionIndex, u64)> = chunk
+                        .iter()
+                        .map(|&(_, section_index, address)| (section_index, address))
+                        .collect();
+
+                    areas.push((
+                        chunk[0].0,
+                        A::scan_for_errata(fixes, obj.object, &part_sections)?,
+                    ));
+                }
+
+                obj.erratum_patches = ObjectPatches::new(areas);
+
+                for area in obj.erratum_patches.areas() {
+                    *group_bytes.entry(area.part_id).or_default() += area.size();
+                }
+            }
+
+            Ok(group_bytes)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut totals: HashMap<PartId, u64> = HashMap::new();
+    for bytes in &group_bytes {
+        for (&part_id, &size) in bytes {
+            *totals.entry(part_id).or_default() += size;
+        }
+    }
+
+    if totals.is_empty() {
+        return Ok(false);
+    }
+
+    for (&part_id, &total) in &totals {
+        let padding = total.next_multiple_of(patch_parts.config().size_granularity) - total;
+        if padding > 0 {
+            assign_erratum_patch_padding(group_states, &mut group_bytes, part_id, padding);
+        }
+    }
+
+    for (group_state, bytes) in group_states.iter_mut().zip(group_bytes) {
+        for (part_id, size) in bytes {
+            group_state.common.mem_sizes.increment(part_id, size);
+            section_part_sizes.increment(part_id, size);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Gives a part's round-up padding to the last object with patches in it, so exactly one object
+/// owns those bytes for both address assignment and buffer splitting.
+fn assign_erratum_patch_padding<P: Platform>(
+    group_states: &mut [GroupState<P>],
+    group_bytes: &mut [HashMap<PartId, u64>],
+    part_id: PartId,
+    padding: u64,
+) {
+    for (group_idx, group) in group_states.iter_mut().enumerate().rev() {
+        for file in group.files.iter_mut().rev() {
+            if let FileLayoutState::Object(obj) = file
+                && let Some(area) = obj.erratum_patches.area_mut(part_id)
+            {
+                area.set_padding(padding);
+                *group_bytes[group_idx].entry(part_id).or_default() += padding;
+                return;
+            }
+        }
+    }
+}
+
 fn perform_iterative_relaxation<'data, A: Arch>(
     group_states: &mut [GroupState<'data, A::Platform>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
@@ -5897,6 +6086,10 @@ fn compute_layout_sections<'data, P: Platform>(
     OutputSectionMap<OutputRecordLayout>,
     Vec<ResolvedLocationCounter>,
 )> {
+    for region in memory_regions.values_mut() {
+        region.used = 0;
+    }
+
     let args = symbol_db.args;
     let segment_alignments = compute_segment_alignments::<P>(
         sizes,

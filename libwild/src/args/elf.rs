@@ -19,6 +19,8 @@ use crate::args::VersionMode;
 use crate::args::parse_number;
 use crate::bail;
 use crate::env;
+use crate::erratum::Erratum;
+use crate::erratum::ErratumFixes;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -120,6 +122,7 @@ pub struct ElfArgs {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) erratum_fixes: ErratumFixes,
     pub(crate) should_write_linker_identity: bool,
     pub(crate) hash_style: HashStyle,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
@@ -268,8 +271,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 
 const IGNORED_FLAGS: &[&str] = &[
-    "fix-cortex-a53-835769",
-    "fix-cortex-a53-843419",
     "discard-all",
     "x", // alias for --discard-all
 ];
@@ -396,6 +397,7 @@ impl Default for ElfArgs {
             tbss: None,
             got_plt_syms: false,
             relax: true,
+            erratum_fixes: ErratumFixes::default(),
             hash_style: HashStyle::Both,
             trace: false,
             pack_dyn_relocs: PackDynRelocs::None,
@@ -1328,6 +1330,48 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
+        .long("fix-cortex-a53-835769")
+        .help("Work around Arm Cortex-A53 erratum 835769")
+        .execute(|args, _modifier_stack| {
+            args.erratum_fixes.insert(Erratum::Mac835769);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-fix-cortex-a53-835769")
+        .help("Don't work around Arm Cortex-A53 erratum 835769")
+        .execute(|args, _modifier_stack| {
+            args.erratum_fixes.remove(Erratum::Mac835769);
+            Ok(())
+        });
+
+    parser
+        .declare_with_optional_param()
+        .long("fix-cortex-a53-843419")
+        .help("Work around Arm Cortex-A53 erratum 843419")
+        .execute(|args, _modifier_stack, mode| {
+            // GNU ld's adr mode rewrites the adrp in place when the target is close enough.
+            // We always branch to a stub, which is correct in every mode.
+            match mode {
+                None | Some("full" | "adr" | "adrp") => {}
+                Some(mode) => bail!("Unsupported --fix-cortex-a53-843419 mode `{mode}`"),
+            }
+            args.erratum_fixes.insert(Erratum::Adrp843419);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-fix-cortex-a53-843419")
+        .help("Don't work around Arm Cortex-A53 erratum 843419")
+        .execute(|args, _modifier_stack| {
+            args.erratum_fixes.remove(Erratum::Adrp843419);
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("got-plt-syms")
         .help("Write symbol table entries that point to the GOT/PLT entry for symbols")
         .execute(|args, _modifier_stack| {
@@ -2188,6 +2232,10 @@ impl platform::Args for ElfArgs {
 
     fn should_relax(&self) -> bool {
         self.relax
+    }
+
+    fn erratum_fixes(&self) -> ErratumFixes {
+        self.erratum_fixes
     }
 
     fn sort_sections_by_name(&self) -> bool {

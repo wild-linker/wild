@@ -4,6 +4,10 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::elf::output_section_id;
 use crate::ensure;
+use crate::erratum::ErratumFixes;
+use crate::erratum::ErratumPatchConfig;
+use crate::erratum::PatchSite;
+use crate::erratum_aarch64;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
@@ -418,6 +422,32 @@ impl crate::platform::Arch for ElfAArch64 {
             min_branch_range: MIN_BRANCH_RANGE,
             thunk_size: THUNK_TEMPLATE.len() as u64,
         })
+    }
+
+    fn erratum_patch_config() -> Option<ErratumPatchConfig> {
+        Some(ErratumPatchConfig {
+            alignment: Alignment { exponent: 2 },
+            // The page 843419 cares about is 4 KiB whatever the OS page size is.
+            size_granularity: 4096,
+        })
+    }
+
+    fn scan_for_errata<'data>(
+        fixes: ErratumFixes,
+        object: &<Elf64 as Platform>::File<'data>,
+        sections: &[(object::SectionIndex, u64)],
+    ) -> Result<Vec<PatchSite>> {
+        erratum_aarch64::scan_sections(fixes, object, sections)
+    }
+
+    fn write_erratum_patch(
+        site: PatchSite,
+        section_address: u64,
+        section_out: &mut [u8],
+        patch_base: u64,
+        patch: &mut [u8],
+    ) -> Result {
+        erratum_aarch64::apply_patch(site, section_address, section_out, patch_base, patch)
     }
 
     fn write_thunk(thunk_address: u64, target_address: u64, buf: &mut [u8]) {
