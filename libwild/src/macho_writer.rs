@@ -343,7 +343,7 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
     let text_segment = get_text_segment_layout(layout)?;
     let image_base = text_segment.sizes.mem_offset;
 
-    let mut symbols = layout
+    let symbols = layout
         .dynamic_symbol_definitions
         .iter()
         .map(|symbol| {
@@ -389,7 +389,15 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(crate::trie::build(&mut symbols))
+    let Some(FileLayout::Epilogue(epilogue)) = layout
+        .group_layouts
+        .last()
+        .and_then(|group| group.files.last())
+    else {
+        bail!("Epilogue layout not found at expected offset");
+    };
+
+    Ok(epilogue.format_specific.exports_trie.encode(&symbols))
 }
 
 fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
