@@ -165,6 +165,10 @@ fn copy_metadata_sections(
         section_buffers.get_mut(output_section_id::WASM_ELEMENT),
     )?;
     copy_encoded_section(
+        encoded.data_count.as_ref(),
+        section_buffers.get_mut(output_section_id::WASM_DATA_COUNT),
+    )?;
+    copy_encoded_section(
         encoded.name.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_NAME),
     )?;
@@ -372,7 +376,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
             .into_par_iter()
             .try_for_each(|(slot, obj_idx, segment)| -> Result<()> {
                 verbose_timing_phase!("Emit Wasm data segment");
-                write_active_data_segment(
+                write_data_segment(
                     slot,
                     segment,
                     &object_index_maps[obj_idx],
@@ -390,7 +394,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     Ok(())
 }
 
-fn write_active_data_segment(
+fn write_data_segment(
     out: &mut [u8],
     segment: &WasmDataSegmentLayout<'_>,
     index_map: &WasmObjectIndexMap,
@@ -408,27 +412,19 @@ fn write_active_data_segment(
     );
 
     let mut pos = 0;
-    if segment.output_memory_index == 0 {
+    if segment.passive {
+        out[pos] = 0x01;
+        pos += 1;
+    } else if segment.output_memory_index == 0 {
         out[pos] = 0x00;
         pos += 1;
+        pos = write_active_offset_expr(out, pos, segment.output_memory_offset)?;
     } else {
         out[pos] = 0x02;
         pos += 1;
         pos += write_uleb128(&mut out[pos..], u64::from(segment.output_memory_index));
+        pos = write_active_offset_expr(out, pos, segment.output_memory_offset)?;
     }
-
-    // Offset expr: `i32.const <offset> end`
-    out[pos] = 0x41;
-    pos += 1;
-    let offset_i32 = i32::try_from(segment.output_memory_offset).with_context(|| {
-        format!(
-            "Wasm data segment memory offset {}",
-            segment.output_memory_offset
-        )
-    })?;
-    pos += write_sleb128(&mut out[pos..], i64::from(offset_i32));
-    out[pos] = 0x0b;
-    pos += 1;
 
     let data_len = segment.data.len() as u64;
     pos += write_uleb128(&mut out[pos..], data_len);
@@ -454,6 +450,17 @@ fn write_active_data_segment(
         out.len()
     );
     Ok(())
+}
+
+fn write_active_offset_expr(out: &mut [u8], mut pos: usize, offset: u32) -> Result<usize> {
+    out[pos] = 0x41;
+    pos += 1;
+    let offset_i32 = i32::try_from(offset)
+        .with_context(|| format!("Wasm data segment memory offset {offset}"))?;
+    pos += write_sleb128(&mut out[pos..], i64::from(offset_i32));
+    out[pos] = 0x0b;
+    pos += 1;
+    Ok(pos)
 }
 
 /// Build a `type` section from a list of function types in output order. Callers must have

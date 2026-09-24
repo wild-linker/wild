@@ -148,6 +148,7 @@ wait-timeout = { version = "0.2.0", default-features = false }
 wait4 = { version = "0.2.0", default-features = false }
 wasmparser = { version = "0.259.0", default-features = false, features = [
   "hash-collections",
+  "simd",
 ] }
 wasm-encoder = { version = "0.259.0", default-features = false }
 which = { version = "8.0.0", default-features = false, features = ["real-sys"] }
