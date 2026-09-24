@@ -66,9 +66,11 @@ Clang. Meaning you have several options:
 * Generally supported `-B <path>`, where `<path>` is the directory containing `ld` that points to
   `wild`
 
+### ELF
+
 Below are examples of integrating Wild with various build systems.
 
-### Rust (Cargo)
+#### Rust (Cargo)
 
 You can use one of the options mentioned above in `~/.cargo/config.toml`:
 
@@ -86,14 +88,14 @@ Or:
 rustflags = ["-Clink-arg=-fuse-ld=wild"]
 ```
 
-### CMake
+#### CMake
 
 CMake 4.4 or later supports Wild directly when used with Clang or GCC 16 or later. You can select
 Wild as the linker by adding `-DCMAKE_LINKER_TYPE=WILD` to the cmake command-line.
 
 For older versions of cmake, see the generic instructions below.
 
-### C/C++ (autotools, meson, old CMake etc.)
+#### C/C++ (autotools, meson, old CMake etc.)
 
 Usually setting `LDFLAGS` is enough, but there are projects that implement their own solutions:
 
@@ -118,7 +120,7 @@ usual build steps.
 Due to the complexity of these build systems, you might want to verify that Wild was used to link a
 binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary).
 
-### Illumos specific Cargo configuration:
+#### Illumos specific Cargo configuration:
 
 ```toml
 [target.x86_64-unknown-illumos]
@@ -129,6 +131,59 @@ rustflags = [
     # Will silently delegate to GNU ld or Sun ld unless the absolute path to Wild is provided.
     "-Clink-arg=-fuse-ld=/absolute/path/to/wild"
 ]
+```
+
+### WebAssembly
+
+Wasm linking is experimental. Install Wild with the `wasm` feature:
+
+```sh
+cargo install --locked --features wasm wild-linker
+```
+
+#### Rust (Cargo)
+
+Pass the `wild` binary and `-C linker-flavor=wasm-ld`. The same flags apply to `wasm32-unknown-unknown`.
+
+```sh
+RUSTFLAGS="-C linker=path/to/wild -C linker-flavor=wasm-ld" \
+  cargo build --target wasm32-wasip1
+```
+
+```toml
+[target.wasm32-wasip1]
+rustflags = ["-C", "linker=path/to/wild", "-C", "linker-flavor=wasm-ld"]
+```
+
+#### C and C++ (Clang)
+
+As with ELF, point Clang at a directory that contains a `wasm-ld` symlink to `wild`. `-fuse-ld=lld` makes Clang look up that `wasm-ld`. `clang++` takes the same flags.
+
+```sh
+mkdir -p /tmp/wild
+ln -sf "$(command -v wild)" /tmp/wild/wasm-ld
+
+clang --target=wasm32-wasi -B/tmp/wild -fuse-ld=lld hello.c -o hello.wasm
+```
+
+For autotools, Meson, and similar drivers:
+
+```sh
+export CC="clang --target=wasm32-wasi"
+export CXX="clang++ --target=wasm32-wasi"
+export LDFLAGS="${LDFLAGS} -B/tmp/wild -fuse-ld=lld"
+```
+
+#### CMake
+
+Pass a directory that contains a `wasm-ld` symlink to `wild` and `-fuse-ld=lld`. For C++, set `CMAKE_CXX_COMPILER=clang++` and `CMAKE_CXX_COMPILER_TARGET=wasm32-wasi` as well.
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_C_COMPILER_TARGET=wasm32-wasi \
+  -DCMAKE_EXE_LINKER_FLAGS="-B/tmp/wild -fuse-ld=lld" \
+  -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
 ```
 
 ## Using wild in CI
