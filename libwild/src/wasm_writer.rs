@@ -70,9 +70,10 @@ fn apply_section_reloc(
     buf: &mut [u8],
 ) -> Result<()> {
     let mut reloc = *reloc;
-    reloc.offset = reloc.offset.checked_sub(local_base).ok_or_else(|| {
-        crate::error!("Wasm relocation offset is before the body or payload start")
-    })?;
+    reloc.offset = reloc
+        .offset
+        .checked_sub(local_base)
+        .context("Wasm relocation offset is before the body or payload start")?;
     apply_resolved_reloc(
         index_map,
         &reloc,
@@ -96,7 +97,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     let preamble = section_buffers
         .get_mut(crate::output_section_id::FILE_HEADER)
         .get_mut(..8)
-        .ok_or_else(|| crate::error!("Wasm output buffer is shorter than the 8-byte preamble"))?;
+        .context("Wasm output buffer is shorter than the 8-byte preamble")?;
     preamble[..4].copy_from_slice(&WASM_MAGIC);
     preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
 

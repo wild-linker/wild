@@ -12,6 +12,7 @@
 
 use crate::ensure;
 use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -102,7 +103,7 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
 
     let main_library = library_definitions
         .first()
-        .ok_or_else(|| error!("root library must be defined"))?;
+        .context("root library must be defined")?;
     ensure!(
         main_library.targets.contains(&ARM64_LIB_ARCH),
         "Library only supports {targets:?}, but we need {ARM64_LIB_ARCH}",

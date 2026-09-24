@@ -2810,7 +2810,7 @@ fn process_directive(
         }
         "SecEquiv" => config.section_equiv.push(
             arg.split_once('=')
-                .ok_or_else(|| error!("DiffIgnore missing '='"))
+                .context("DiffIgnore missing '='")
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = arg.parse()?,

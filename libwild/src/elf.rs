@@ -3471,7 +3471,7 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
         for note in notes {
             for gnu_property in note?
                 .gnu_properties(e)
-                .ok_or(error!("Invalid type of .note.gnu.property"))?
+                .context("Invalid type of .note.gnu.property")?
             {
                 let gnu_property = gnu_property?;
 
@@ -4798,18 +4798,10 @@ pub(crate) fn process_riscv_attributes(
                     .split('_')
                     .map(|part| {
                         let mut it = part.chars().rev();
-                        let minor = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse minor"))?
-                            .to_string();
-                        let p = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse 'p' separator"))?;
+                        let minor = it.next().context("Cannot parse minor")?.to_string();
+                        let p = it.next().context("Cannot parse 'p' separator")?;
                         ensure!(p == 'p', "Separator expected");
-                        let major = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse major"))?
-                            .to_string();
+                        let major = it.next().context("Cannot parse major")?.to_string();
                         let name = it.rev().collect();
                         Ok((name, (major.parse()?, minor.parse()?)))
                     })

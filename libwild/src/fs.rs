@@ -85,6 +85,7 @@ pub trait OutputFileData: Send {
 /// # Examples
 ///
 /// ```
+/// use libwild::error::Context as _;
 /// use libwild::{FileSystem, FileType, InputFileData, Linker, OutputFileData, OutputOptions};
 /// use object::write::{Object, StandardSection, Symbol, SymbolSection};
 /// use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
@@ -270,7 +271,7 @@ pub trait OutputFileData: Send {
 ///         .unwrap()
 ///         .get(Path::new("libx.so"))
 ///         .cloned()
-///         .ok_or_else(|| libwild::error!("linker did not create libx.so"))?;
+///         .context("linker did not create libx.so")?;
 ///     // std::fs::write("libx.so", &output)?;
 ///     Ok(())
 /// }

@@ -474,8 +474,7 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
         let offset = stub_address
             .get()
             .checked_sub(plt_layout.mem_offset)
-            .ok_or_else(|| error!("STUB entry address is before __stubs"))?
-            as usize;
+            .context("STUB entry address is before __stubs")? as usize;
         let end = offset + PLT_ENTRY_SIZE as usize;
 
         let got_address = imported_symbol
@@ -1451,7 +1450,7 @@ fn write_code_signature_hashes(
         (CS_HEADERS_SIZE + code_signature_padded_identifier_size(layout.args())) as usize;
     let hashes = code_signature
         .get_mut(hashes_offset..)
-        .ok_or_else(|| error!("Invalid CODE_SIGNATURE allocation"))?;
+        .context("Invalid CODE_SIGNATURE allocation")?;
 
     hashes.copy_from_slice(&calculated_hashes);
 

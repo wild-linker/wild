@@ -494,7 +494,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .n_value
             .get(LE)
             .checked_sub(section.addr.get(LE))
-            .ok_or_else(|| error!("Mach-O symbol value is before its section address"))
+            .context("Mach-O symbol value is before its section address")
     }
 
     fn num_sections(&self) -> usize {
@@ -577,7 +577,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let section = self
             .sections()
             .get(index.0)
-            .ok_or(error!("section index out of range"))?;
+            .context("section index out of range")?;
         Ok(section.name())
     }
 
@@ -620,7 +620,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             relocations: self
                 .sections()
                 .get(index.0)
-                .ok_or(error!("section index out of range"))?
+                .context("section index out of range")?
                 .relocations(LE, self.data)?,
         })
     }

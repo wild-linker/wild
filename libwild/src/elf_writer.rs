@@ -1310,7 +1310,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
                         let entry = self
                             .current_relr_dyn
                             .as_deref_mut()
-                            .ok_or_else(|| error!("Internal error in RELR bitmap encoding"))?;
+                            .context("Internal error in RELR bitmap encoding")?;
                         entry.set_value(encoded)?;
                     }
                 }
@@ -6264,7 +6264,7 @@ impl<'out, C: ElfClass> ProgramHeaderWriter<'out, C> {
     fn take_header(&mut self) -> Result<&mut elf::ProgramHeader<C>> {
         self.headers
             .split_off_first_mut()
-            .ok_or_else(|| error!("Insufficient header slots"))
+            .context("Insufficient header slots")
     }
 }
 
