@@ -7,7 +7,9 @@ use crate::error::Result;
 use crate::host::perf::CounterList;
 use anyhow::Context;
 use anyhow::anyhow;
+use std::cell::Cell;
 use std::fmt::Display;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -29,14 +31,50 @@ pub fn setup() -> Result {
     Ok(())
 }
 
-#[macro_export]
-macro_rules! timing_guard {
-    ($($args:tt)*) => {
-        (tracing::info_span!($($args)*).entered(), perfetto_recorder::start_span!($($args)*))
-    };
+thread_local! {
+    static IS_LINKER_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
-#[macro_export]
+/// While the returned value lives, the current thread can use timing_phase!
+pub(crate) fn enter_linker_thread() -> impl Drop {
+    struct Guard {
+        previous: bool,
+        _not_send: PhantomData<*mut ()>,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            IS_LINKER_THREAD.set(self.previous);
+        }
+    }
+
+    Guard {
+        previous: IS_LINKER_THREAD.replace(true),
+        _not_send: PhantomData,
+    }
+}
+
+#[track_caller]
+#[inline(always)]
+pub(crate) fn check_timing_thread(phase: &str) {
+    debug_assert!(
+        IS_LINKER_THREAD.get()
+            || rayon::current_thread_index().is_none()
+            || rayon::current_num_threads() < 2,
+        "timing phase `{phase}` ran on a worker thread; use verbose_timing_phase! instead"
+    );
+}
+
+macro_rules! timing_guard {
+    ($name:expr $(, $($args:tt)*)?) => {{
+        $crate::timing::check_timing_thread($name);
+        let span = tracing::info_span!($name $(, $($args)*)?);
+        (span.entered(), perfetto_recorder::start_span!($name $(, $($args)*)?))
+    }};
+}
+
+/// Only permitted on the main linker thread (the one that called enter_linker_thread). Otherwise,
+/// please use verbose_timing_phase! then view the perfetto trace.
 macro_rules! timing_phase {
     ($($args:tt)*) => {
         let _guard = $crate::timing_guard!($($args)*);
@@ -45,12 +83,15 @@ macro_rules! timing_phase {
 
 /// More verbose timing instrumentation that by default doesn't show up in the output of --time.
 /// Suitable for use from threads other than main.
-#[macro_export]
 macro_rules! verbose_timing_phase {
     ($($args:tt)*) => {
         perfetto_recorder::scope!($($args)*);
     };
 }
+
+pub(crate) use timing_guard;
+pub(crate) use timing_phase;
+pub(crate) use verbose_timing_phase;
 
 struct TimingLayer {
     counters: Mutex<CounterList>,

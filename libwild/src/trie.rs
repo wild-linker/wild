@@ -1,6 +1,6 @@
 //! Builds a Mach-O exports trie.
 
-use crate::timing_phase;
+use crate::verbose_timing_phase;
 use leb128::write::unsigned_len as uleb128_size;
 use object::macho;
 
@@ -30,7 +30,7 @@ struct Edge<'data> {
 
 /// Build a Mach-O exports trie for `symbols`. `symbols` is sorted in place.
 pub(crate) fn build(symbols: &mut [Symbol<'_>]) -> Vec<u8> {
-    timing_phase!("Build trie nodes");
+    verbose_timing_phase!("Build trie nodes");
 
     if symbols.is_empty() {
         return Vec::new();

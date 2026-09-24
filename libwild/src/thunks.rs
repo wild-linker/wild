@@ -106,7 +106,7 @@ impl ThunkLayoutBuilder {
     ) -> Option<ThunkLayoutBuilder> {
         let config = A::thunk_config()?;
 
-        timing_phase!("Create thunk layout builder");
+        verbose_timing_phase!("Create thunk layout builder");
 
         let total_executable_bytes: u64 = groups
             .iter()

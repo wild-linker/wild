@@ -130,24 +130,27 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &output_sections,
     )?;
 
-    let (merged_strings, gc_outputs) = rayon::join(
-        || {
-            crate::string_merging::merge_strings(
-                &string_merge_inputs,
-                &output_sections,
-                symbol_db.args,
-            )
-        },
-        || {
-            traverse_reference_graph::<A>(
-                groups,
-                &symbol_db,
-                &atomic_per_symbol_flags,
-                &output_sections,
-                layout_resources_ext,
-            )
-        },
-    );
+    let (merged_strings, gc_outputs) = {
+        timing_phase!("Merge strings and traverse reference graph");
+        rayon::join(
+            || {
+                crate::string_merging::merge_strings(
+                    &string_merge_inputs,
+                    &output_sections,
+                    symbol_db.args,
+                )
+            },
+            || {
+                traverse_reference_graph::<A>(
+                    groups,
+                    &symbol_db,
+                    &atomic_per_symbol_flags,
+                    &output_sections,
+                    layout_resources_ext,
+                )
+            },
+        )
+    };
 
     let merged_strings = merged_strings?;
     let gc_outputs = gc_outputs?;
@@ -2569,7 +2572,7 @@ fn traverse_reference_graph<'data, A: Arch>(
     output_sections: &OutputSections<'data, A::Platform>,
     layout_resources_ext: <A::Platform as Platform>::LayoutResourcesExt<'data>,
 ) -> Result<GcOutputs<'data, A::Platform>> {
-    timing_phase!("Traverse reference graph");
+    verbose_timing_phase!("Traverse reference graph");
 
     let num_groups = groups_in.len();
 
