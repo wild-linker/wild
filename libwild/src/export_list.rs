@@ -1,4 +1,4 @@
-use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::hash::PreHashed;
 use crate::input_data::ScriptData;
@@ -17,7 +17,7 @@ impl<'data> ExportList<'data> {
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<Self> {
         parse_export_list
             .parse(BStr::new(data.raw))
-            .map_err(|err| error!("Failed to parse symbol export list:\n{err}"))
+            .context("Failed to parse symbol export list")
     }
 
     // Based on Version Script counterpart

@@ -539,9 +539,7 @@ impl<'data> SectionRule<'data> {
         input_file_pattern: Option<&'data [u8]>,
         outcome: SectionRuleOutcome,
     ) -> Result<Self> {
-        let compiled_file_pattern = input_file_pattern
-            .map(|pattern| compile_glob_pattern(pattern).map_err(|e| crate::error!("{e}")))
-            .transpose()?;
+        let compiled_file_pattern = input_file_pattern.map(compile_glob_pattern).transpose()?;
 
         let name_matcher = match analyze_glob_pattern(pattern) {
             GlobPatternType::Exact => SectionNameMatcher::Exact(Cow::Borrowed(pattern)),
@@ -549,8 +547,7 @@ impl<'data> SectionRule<'data> {
                 SectionNameMatcher::Exact(Cow::Owned(unescape_pattern(pattern)))
             }
             GlobPatternType::Star | GlobPatternType::NonStar => {
-                let compiled_pattern =
-                    compile_glob_pattern(pattern).map_err(|e| crate::error!("{}", e))?;
+                let compiled_pattern = compile_glob_pattern(pattern)?;
 
                 SectionNameMatcher::Glob(pattern, compiled_pattern)
             }

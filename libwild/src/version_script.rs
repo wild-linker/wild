@@ -5,7 +5,7 @@
 //! For this reason, we have a separate parser for them.
 
 use crate::bail;
-use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::glob_match::GlobPatternType;
 use crate::glob_match::analyze_glob_pattern;
@@ -405,7 +405,7 @@ impl<'data> VersionScript<'data> {
 
         parse_version_script
             .parse(BStr::new(data.raw))
-            .map_err(|err| error!("Failed to parse version script:\n{err}"))
+            .context("Failed to parse version script")
     }
 
     pub(crate) fn version_count(&self) -> u16 {

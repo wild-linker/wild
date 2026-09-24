@@ -195,7 +195,7 @@ impl SectionCompressor for ZstdCompressor {
 }
 
 fn zlib_deflate_error(error: DeflateError) -> crate::error::Error {
-    crate::error::Error::with_message(format!("zlib compression failed: {error:?}"))
+    crate::error!("zlib compression failed: {error:?}")
 }
 
 fn shard_size(uncompressed_len: usize) -> usize {
