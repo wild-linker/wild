@@ -1812,7 +1812,10 @@ impl platform::Platform for MachO {
             .copied()
             .collect();
 
-        EpilogueLayoutExt { imported_symbols }
+        EpilogueLayoutExt {
+            imported_symbols,
+            ..Default::default()
+        }
     }
 
     fn apply_non_addressable_indexes_epilogue(
@@ -1866,7 +1869,7 @@ impl platform::Platform for MachO {
         // work around this for now by assuming all addresses will be u64::MAX. This gives us an
         // upper bound on how large the trie will be, but wastes some space in the file. TODO:
         // Figure out a good way to fix this.
-        let mut exports = dynamic_symbol_definitions
+        let exports = dynamic_symbol_definitions
             .iter()
             .map(|symbol| crate::trie::Symbol {
                 name: symbol.name,
@@ -1875,9 +1878,10 @@ impl platform::Platform for MachO {
             })
             .collect_vec();
 
+        state.exports_trie = crate::trie::Trie::new(&exports);
         mem_sizes.increment(
             part_id::EXPORTS_TRIE,
-            crate::trie::build(&mut exports).len() as u64,
+            state.exports_trie.compute_byte_size(&exports) as u64,
         );
         mem_sizes.increment(
             part_id::INIT_OFFSETS,
@@ -2462,6 +2466,7 @@ pub(crate) struct CommonGroupStateExt {
 #[derive(Debug, Default)]
 pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
+    pub(crate) exports_trie: crate::trie::Trie,
 }
 
 #[derive(Debug)]

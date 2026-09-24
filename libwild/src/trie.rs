@@ -3,6 +3,7 @@
 use crate::verbose_timing_phase;
 use leb128::write::unsigned_len as uleb128_size;
 use object::macho;
+use std::ops::Range;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Symbol<'data> {
@@ -11,55 +12,77 @@ pub(crate) struct Symbol<'data> {
     pub(crate) flags: macho::ExportSymbolFlags,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Node {
-    address: Option<u64>,
-    flags: macho::ExportSymbolFlags,
+    symbol: Option<usize>,
     first_edge: usize,
     num_edges: usize,
-    offset: usize,
-    size: usize,
 }
 
-#[derive(Debug, Default)]
-struct Edge<'data> {
-    label: &'data [u8],
+#[derive(Debug)]
+struct Edge {
+    symbol: usize,
+    label: Range<usize>,
     child: usize,
-    child_offset_size: usize,
 }
 
-/// Build a Mach-O exports trie for `symbols`. `symbols` is sorted in place.
-pub(crate) fn build(symbols: &mut [Symbol<'_>]) -> Vec<u8> {
-    verbose_timing_phase!("Build trie nodes");
+/// The structure of an exports trie, independent of symbol addresses and flags. Symbol indexes
+/// refer to the original input order, which must also be used when sizing and encoding the trie.
+#[derive(Debug, Default)]
+pub(crate) struct Trie {
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    num_symbols: usize,
+}
 
-    if symbols.is_empty() {
-        return Vec::new();
+impl Trie {
+    pub(crate) fn new(symbols: &[Symbol]) -> Self {
+        verbose_timing_phase!("Prepare exports trie");
+
+        let mut names = symbols
+            .iter()
+            .enumerate()
+            .map(|(index, symbol)| (index, symbol.name))
+            .collect::<Vec<_>>();
+        {
+            verbose_timing_phase!("Sort trie symbols");
+            names.sort_unstable_by(|a, b| a.1.cmp(b.1));
+        }
+
+        debug_assert!(
+            names.windows(2).all(|w| w[0].1 != w[1].1),
+            "duplicate Mach-O export symbol names"
+        );
+
+        let mut trie = Self {
+            nodes: Vec::with_capacity(symbols.len() + 1),
+            edges: Vec::with_capacity(symbols.len()),
+            num_symbols: symbols.len(),
+        };
+
+        if !symbols.is_empty() {
+            trie.build_nodes(&names);
+        }
+
+        trie
     }
 
-    symbols.sort_unstable_by(|a, b| a.name.cmp(b.name));
-    debug_assert!(
-        symbols.windows(2).all(|w| w[0].name != w[1].name),
-        "duplicate Mach-O export symbol names"
-    );
+    /// Compute the size that would be returned by `build`, but without doing so much work. Symbol
+    /// names and their order must match the input to `new`. Addresses and flags may be different.
+    pub(crate) fn compute_byte_size(&self, symbols: &[Symbol]) -> usize {
+        verbose_timing_phase!("Size exports trie");
+        Layout::new(self, symbols).encoded_size()
+    }
 
-    let mut builder = Builder {
-        symbols,
-        nodes: Vec::with_capacity(symbols.len() + 1),
-        edges: Vec::with_capacity(symbols.len()),
-    };
-    builder.build_nodes();
-    builder.layout_until_stable();
-    builder.encode()
-}
+    /// Encode the trie as bytes. Symbol names and their order must match the input to `new`.
+    pub(crate) fn encode(&self, symbols: &[Symbol]) -> Vec<u8> {
+        verbose_timing_phase!("Encode exports trie");
+        Layout::new(self, symbols).encode()
+    }
 
-struct Builder<'data, 'symbols> {
-    symbols: &'symbols [Symbol<'data>],
-    nodes: Vec<Node>,
-    edges: Vec<Edge<'data>>,
-}
+    fn build_nodes(&mut self, symbols: &[(usize, &[u8])]) {
+        verbose_timing_phase!("Build trie nodes");
 
-impl<'data> Builder<'data, '_> {
-    fn build_nodes(&mut self) {
         struct PendingNode {
             /// The range of offsets into `symbols` that the node represents.
             start: usize,
@@ -73,7 +96,7 @@ impl<'data> Builder<'data, '_> {
 
         let mut stack = vec![PendingNode {
             start: 0,
-            end: self.symbols.len(),
+            end: symbols.len(),
             depth: 0,
             parent_edge: None,
         }];
@@ -90,24 +113,24 @@ impl<'data> Builder<'data, '_> {
                 self.edges[edge_index].child = node_index;
             }
 
-            let symbol = &self.symbols[start];
-            let (address, flags) = if symbol.name.len() == depth {
+            let symbol = if symbols[start].1.len() == depth {
+                let symbol = Some(symbols[start].0);
                 start += 1;
-                (Some(symbol.address), symbol.flags)
+                symbol
             } else {
-                (None, macho::ExportSymbolFlags(0))
+                None
             };
 
             let first_edge = self.edges.len();
             let pending_start = stack.len();
             while start < end {
-                let name = self.symbols[start].name;
+                let (symbol_index, name) = symbols[start];
 
                 // Find the index of the first symbol with a different next byte.
                 let child_end = start
                     + 1
-                    + self.symbols[start + 1..end]
-                        .partition_point(|symbol| symbol.name[depth] == name[depth]);
+                    + symbols[start + 1..end]
+                        .partition_point(|symbol| symbol.1[depth] == name[depth]);
 
                 let child_depth = if child_end == start + 1 {
                     // There's only a single symbol in this child's range, so the remainder of the
@@ -117,7 +140,7 @@ impl<'data> Builder<'data, '_> {
                     // The child node will always be at a depth one more than the current node,
                     // but possibly more. e.g. if name="foo" and last_name="fz", then we'll just
                     // bump by 1, but if name="foo" and last_name="fox", we'll bump by 2.
-                    let last_name = self.symbols[child_end - 1].name;
+                    let last_name = symbols[child_end - 1].1;
 
                     depth
                         + 1
@@ -136,9 +159,9 @@ impl<'data> Builder<'data, '_> {
                 });
 
                 self.edges.push(Edge {
-                    label: &name[depth..child_depth],
+                    symbol: symbol_index,
+                    label: depth..child_depth,
                     child: usize::MAX,
-                    child_offset_size: 1,
                 });
 
                 start = child_end;
@@ -151,11 +174,9 @@ impl<'data> Builder<'data, '_> {
             );
 
             self.nodes.push(Node {
-                address,
-                flags,
+                symbol,
                 first_edge,
                 num_edges,
-                ..Default::default()
             });
 
             // The pending nodes we just added should be visited in the order we added them. Since
@@ -164,76 +185,118 @@ impl<'data> Builder<'data, '_> {
         }
     }
 
+    fn node_edges(&self, node_index: usize) -> impl Iterator<Item = &Edge> {
+        let node = &self.nodes[node_index];
+        self.edges[node.first_edge..node.first_edge + node.num_edges].iter()
+    }
+}
+
+struct Layout<'trie, 'symbols, 'data> {
+    trie: &'trie Trie,
+    symbols: &'symbols [Symbol<'data>],
+    node_offsets: Vec<usize>,
+    child_offset_sizes: Vec<usize>,
+    total_size: usize,
+}
+
+impl<'trie, 'symbols, 'data> Layout<'trie, 'symbols, 'data> {
+    fn new(trie: &'trie Trie, symbols: &'symbols [Symbol<'data>]) -> Self {
+        debug_assert_eq!(trie.num_symbols, symbols.len());
+
+        let mut layout = Self {
+            trie,
+            symbols,
+            node_offsets: vec![0; trie.nodes.len()],
+            child_offset_sizes: vec![1; trie.edges.len()],
+            total_size: 0,
+        };
+
+        layout.layout_until_stable();
+
+        layout
+    }
+
     fn layout_until_stable(&mut self) {
+        verbose_timing_phase!("Layout trie");
+
         loop {
             let mut offset = 0;
-
-            for index in 0..self.nodes.len() {
-                self.nodes[index].offset = offset;
-                self.nodes[index].size = self.node_size(index);
-                offset += self.nodes[index].size;
+            for index in 0..self.node_offsets.len() {
+                self.node_offsets[index] = offset;
+                offset += self.node_size(index);
             }
 
             let mut changed = false;
-
-            for edge in &mut self.edges {
-                let offset_size = uleb128_size(self.nodes[edge.child].offset as u64);
-                if edge.child_offset_size != offset_size {
-                    edge.child_offset_size = offset_size;
+            for (edge, size) in self.trie.edges.iter().zip(&mut self.child_offset_sizes) {
+                let offset_size = uleb128_size(self.node_offsets[edge.child] as u64);
+                if *size != offset_size {
+                    *size = offset_size;
                     changed = true;
                 }
             }
 
             if !changed {
+                self.total_size = offset;
                 break;
             }
         }
     }
 
     fn node_size(&self, node_index: usize) -> usize {
-        let node = &self.nodes[node_index];
-        let terminal_size = node
-            .address
-            .map_or(0, |address| regular_export_size(node.flags, address));
+        let node = &self.trie.nodes[node_index];
+        let terminal_size = node.symbol.map_or(0, |index| {
+            let symbol = &self.symbols[index];
+            regular_export_size(symbol.flags, symbol.address)
+        });
+
         uleb128_size(terminal_size as u64)
             + terminal_size
             + 1
             + self
+                .trie
                 .node_edges(node_index)
-                .map(|edge| edge.label.len() + 1 + edge.child_offset_size)
+                .zip(&self.child_offset_sizes[node.first_edge..])
+                .map(|(edge, offset_size)| edge.label.len() + 1 + offset_size)
                 .sum::<usize>()
     }
 
+    fn encoded_size(&self) -> usize {
+        self.total_size
+    }
+
     fn encode(&self) -> Vec<u8> {
-        let total_size = self.nodes.last().map_or(0, |node| node.offset + node.size);
+        verbose_timing_phase!("Encode trie");
+
+        let total_size = self.encoded_size();
         let mut out = Vec::with_capacity(total_size);
 
-        for (node_index, node) in self.nodes.iter().enumerate() {
-            debug_assert_eq!(out.len(), node.offset);
+        for (node_index, node) in self.trie.nodes.iter().enumerate() {
+            debug_assert_eq!(out.len(), self.node_offsets[node_index]);
 
-            if let Some(address) = node.address {
-                write_uleb128(&mut out, regular_export_size(node.flags, address) as u64);
-                write_regular_export(&mut out, node.flags, address);
+            if let Some(index) = node.symbol {
+                let symbol = &self.symbols[index];
+
+                write_uleb128(
+                    &mut out,
+                    regular_export_size(symbol.flags, symbol.address) as u64,
+                );
+
+                write_regular_export(&mut out, symbol.flags, symbol.address);
             } else {
                 write_uleb128(&mut out, 0);
             }
 
             out.push(node.num_edges as u8);
 
-            for edge in self.node_edges(node_index) {
-                out.extend_from_slice(edge.label);
+            for edge in self.trie.node_edges(node_index) {
+                out.extend_from_slice(&self.symbols[edge.symbol].name[edge.label.clone()]);
                 out.push(0);
-                write_uleb128(&mut out, self.nodes[edge.child].offset as u64);
+                write_uleb128(&mut out, self.node_offsets[edge.child] as u64);
             }
         }
 
         debug_assert_eq!(out.len(), total_size);
         out
-    }
-
-    fn node_edges(&self, node_index: usize) -> impl Iterator<Item = &Edge<'data>> {
-        let node = &self.nodes[node_index];
-        self.edges[node.first_edge..node.first_edge + node.num_edges].iter()
     }
 }
 
@@ -266,7 +329,11 @@ mod tests {
     }
 
     fn check(symbols: &mut [Symbol]) {
-        let trie = build(symbols);
+        let trie = Trie::new(symbols);
+        let size = trie.compute_byte_size(symbols);
+        let trie = trie.encode(symbols);
+        assert_eq!(size, trie.len());
+        symbols.sort_unstable_by(|a, b| a.name.cmp(b.name));
 
         assert_eq!(
             parse_exports(&trie),
@@ -312,8 +379,10 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_trie() {
-        let mut symbols = [];
-        assert!(build(&mut symbols).is_empty());
+        let symbols = [];
+        let trie = Trie::new(&symbols);
+        assert_eq!(trie.compute_byte_size(&symbols), 0);
+        assert!(trie.encode(&symbols).is_empty());
     }
 
     #[test]
@@ -403,20 +472,25 @@ mod tests {
     #[test]
     fn maximum_addresses_give_a_conservative_size() {
         let names = (0..512)
+            .rev()
             .map(|index| format!("_shared_prefix_{index:04x}").into_bytes())
             .collect_vec();
 
-        let mut actual = names
+        let actual = names
             .iter()
             .enumerate()
             .map(|(index, name)| Symbol {
                 name,
                 address: 1_u64 << (index % 63),
-                flags: macho::ExportSymbolFlags(0),
+                flags: if index % 2 == 0 {
+                    macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION
+                } else {
+                    macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE.into()
+                },
             })
             .collect_vec();
 
-        let mut maximum = names
+        let maximum = names
             .iter()
             .map(|name| Symbol {
                 name,
@@ -425,6 +499,23 @@ mod tests {
             })
             .collect_vec();
 
-        assert!(build(&mut actual).len() <= build(&mut maximum).len());
+        let trie = Trie::new(&maximum);
+        let maximum_size = trie.compute_byte_size(&maximum);
+        let encoded = trie.encode(&actual);
+        assert!(encoded.len() <= maximum_size);
+        assert_eq!(encoded.len(), trie.compute_byte_size(&actual));
+        assert_eq!(encoded, Trie::new(&actual).encode(&actual));
+        assert_eq!(
+            parse_exports(&encoded),
+            actual
+                .iter()
+                .sorted_unstable_by_key(|symbol| symbol.name)
+                .map(|symbol| ParsedSymbol {
+                    name: symbol.name.to_vec(),
+                    address: symbol.address,
+                    flags: symbol.flags,
+                })
+                .collect_vec()
+        );
     }
 }
