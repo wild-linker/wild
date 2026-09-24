@@ -1325,7 +1325,7 @@ impl Architecture {
     }
 
     fn parse(name: &str) -> Result<Architecture> {
-        Self::from_str(name).map_err(|_| error!("Unknown arch '{name}'"))
+        Self::from_str(name).with_context(|| format!("Unknown arch '{name}'"))
     }
 }
 
@@ -6396,7 +6396,8 @@ fn verify_macho_tlv_descriptor_bindings(obj: &object::File, bytes: &[u8]) -> Res
             .context("Invalid chained fixups segment index")?;
         let segment_data = segment
             .data(e, bytes)
-            .map_err(|()| error!("Invalid Mach-O segment data"))?;
+            .ok()
+            .context("Invalid Mach-O segment data")?;
         for fixup in chained_segment.fixups(e, load_addr, segment_data) {
             let (offset, fixup) = fixup?;
             let address = segment

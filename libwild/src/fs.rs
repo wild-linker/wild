@@ -208,7 +208,7 @@ pub trait OutputFileData: Send {
 ///         options: OutputOptions,
 ///     ) -> libwild::error::Result<Self::Output> {
 ///         let size = usize::try_from(options.size)
-///             .map_err(|_| libwild::error!("output is too large for this platform"))?;
+///             .context("output is too large for this platform")?;
 ///         Ok(Output {
 ///             path: path.to_path_buf(),
 ///             bytes: vec![0; size],

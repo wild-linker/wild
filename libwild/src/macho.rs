@@ -5,7 +5,6 @@ use crate::alignment::Alignment;
 use crate::args::macho::MachOArgs;
 use crate::bail;
 use crate::ensure;
-use crate::error;
 use crate::error::Context;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -597,7 +596,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
         let data = section
             .data(LE, self.data, section.offset(LE).into())
-            .map_err(|_e| error!("cannot get section data"))?;
+            .context("cannot get section data")?;
         copy_section_data(data, out);
 
         Ok(())

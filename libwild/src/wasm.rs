@@ -2220,7 +2220,7 @@ fn classify_data_reloc_ranges(
 /// Align `data_end` to [`STACK_ALIGNMENT`], then add the stack size.
 fn stack_high_after_data(data_end: u32, stack_size: u32) -> Result<u32> {
     let stack_base = u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
-        .map_err(|_| crate::error!("Wasm stack base overflow"))?;
+        .context("Wasm stack base overflow")?;
     stack_base
         .checked_add(stack_size)
         .context("Wasm stack pointer overflow")
@@ -2229,7 +2229,7 @@ fn stack_high_after_data(data_end: u32, stack_size: u32) -> Result<u32> {
 /// Align the end of static data for `__heap_base`.
 fn heap_base_after_data(data_end: u32) -> Result<u32> {
     u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
-        .map_err(|_| crate::error!("Wasm heap base overflow"))
+        .context("Wasm heap base overflow")
 }
 
 /// Initial `__stack_pointer` value for the chosen stack layout.
@@ -2318,8 +2318,7 @@ fn tls_reloc_value(abs_addr: Option<u32>, tls_base: u32, addend: i64) -> Result<
     let value = i64::from(offset)
         .checked_add(addend)
         .context("Wasm TLS relocation value overflow")?;
-    let value = i32::try_from(value)
-        .map_err(|_| crate::error!("Wasm TLS relocation value out of range"))?;
+    let value = i32::try_from(value).context("Wasm TLS relocation value out of range")?;
     Ok(value as u32)
 }
 
@@ -2345,7 +2344,7 @@ fn layout_object_data<'data>(
         // Linking `SegmentInfo.alignment` is a power-of-two exponent.
         let align = data_segment_alignment(input, original_index);
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
-            .map_err(|_| crate::error!("Wasm data segment alignment overflow"))?;
+            .context("Wasm data segment alignment overflow")?;
         let output_memory_offset = *memory_cursor;
         let encoded_output_size = output_data_segment_encoded_size(
             &segment.kind,
@@ -2511,8 +2510,8 @@ impl WasmObjectIndexMap {
                 if reloc.ty == RelocationType::MemoryAddrRelSleb {
                     let relative =
                         i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.addend;
-                    let relative = i32::try_from(relative)
-                        .map_err(|_| crate::error!("Wasm REL_SLEB relocation out of range"))?;
+                    let relative =
+                        i32::try_from(relative).context("Wasm REL_SLEB relocation out of range")?;
                     Ok(relative as u32)
                 } else if reloc.ty == RelocationType::MemoryAddrTlsSleb {
                     tls_reloc_value(addr, tls_base, reloc.addend)
@@ -4945,8 +4944,7 @@ fn fill_got_func_inits(
             .globals
             .get_mut(global_slot)
             .with_context(|| format!("GOT.func global slot {global_slot} out of range"))?;
-        let table_i32 = i32::try_from(slot)
-            .map_err(|_| crate::error!("GOT.func table index out of i32 range"))?;
+        let table_i32 = i32::try_from(slot).context("GOT.func table index out of i32 range")?;
         global.init_expr_body = Cow::Owned(encode_i32_const_body(table_i32));
     }
     Ok(())
@@ -5638,7 +5636,7 @@ fn ensure_memory_covers(
 /// `__heap_end` = end of initial linear memory (`memory.initial * page_size`).
 fn heap_end_from_initial_pages(initial_pages: u64) -> Result<u32> {
     u32::try_from(initial_pages.saturating_mul(wasm_page_size()))
-        .map_err(|_| crate::error!("Wasm initial memory size overflow"))
+        .context("Wasm initial memory size overflow")
 }
 
 /// Write stack-pointer init after static data layout.
@@ -6140,7 +6138,7 @@ where
             if layout_inputs.iter().any(input_has_tls_segments) {
                 let tls_align = max_tls_alignment(&layout_inputs);
                 memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
-                    .map_err(|_| crate::error!("Wasm TLS alignment overflow"))?;
+                    .context("Wasm TLS alignment overflow")?;
                 layout.tls_base = memory_cursor;
                 for (obj_idx, input) in layout_inputs.iter().enumerate() {
                     let tls_segments = layout_object_data(
@@ -6416,7 +6414,7 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
     let value = i64::from(base)
         .checked_add(addend)
         .context("Wasm relocation value overflow")?;
-    u32::try_from(value).map_err(|_| crate::error!("Wasm relocation value out of range"))
+    u32::try_from(value).context("Wasm relocation value out of range")
 }
 
 /// Apply addend policy. Relative table/memory bases already include the addend.

@@ -7,6 +7,7 @@ use crate::args::Modifiers;
 use crate::args::VersionMode;
 use crate::args::parse_number;
 use crate::bail;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform;
 use crate::platform::Args as _;
@@ -358,7 +359,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             |args, _, value| {
                 let size = parse_number(value)?;
                 args.z_stack_size = u32::try_from(size)
-                    .map_err(|_| crate::error!("-z stack-size is too large for Wasm32: {size}"))?;
+                    .with_context(|| format!("-z stack-size is too large for Wasm32: {size}"))?;
                 Ok(())
             },
         )

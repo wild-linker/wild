@@ -7,7 +7,6 @@ use crate::OutputKind;
 use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
-use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::malfunction_point_ret;
@@ -106,7 +105,7 @@ impl crate::platform::Arch for ElfX86_64 {
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
         let offset: i32 = (got_address.wrapping_sub(plt_address + 0xb) as i64)
             .try_into()
-            .map_err(|_| error!("PLT is more than 2GiB away from GOT"))?;
+            .context("PLT is more than 2GiB away from GOT")?;
         plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
         Ok(())
     }

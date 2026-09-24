@@ -11,7 +11,6 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf_writer;
 use crate::ensure;
-use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::expression_eval;
@@ -199,7 +198,8 @@ pub(crate) trait ElfWord: Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync
 
 impl ElfWord for u32 {
     fn from_u64(value: u64) -> Result<Self> {
-        u32::try_from(value).map_err(|_| error!("ELF word value 0x{value:x} does not fit in ELF32"))
+        u32::try_from(value)
+            .with_context(|| format!("ELF word value 0x{value:x} does not fit in ELF32"))
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {

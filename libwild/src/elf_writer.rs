@@ -584,14 +584,16 @@ impl<'out> VersionWriter<'out> {
     fn take_verneed(&mut self) -> Result<&'out mut Verneed> {
         let bytes = self.take_bytes(size_of::<Verneed>())?;
         Ok(object::from_bytes_mut(bytes)
-            .map_err(|_| error!("Incorrect .gnu.version_r alignment"))?
+            .ok()
+            .context("Incorrect .gnu.version_r alignment")?
             .0)
     }
 
     fn take_auxes(&mut self, version_count: u16) -> Result<&'out mut [Vernaux]> {
         let bytes = self.take_bytes(size_of::<Vernaux>() * usize::from(version_count))?;
         object::slice_from_all_bytes_mut::<Vernaux>(bytes)
-            .map_err(|_| error!("Invalid .gnu.version_r allocation"))
+            .ok()
+            .context("Invalid .gnu.version_r allocation")
     }
 
     fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
@@ -603,14 +605,16 @@ impl<'out> VersionWriter<'out> {
     fn take_verdef(&mut self) -> Result<&'out mut Verdef> {
         let bytes = self.take_bytes_d(size_of::<Verdef>())?;
         Ok(object::from_bytes_mut::<Verdef>(bytes)
-            .map_err(|_| error!("Incorrect .gnu.version_d alignment"))?
+            .ok()
+            .context("Incorrect .gnu.version_d alignment")?
             .0)
     }
 
     fn take_verdaux(&mut self) -> Result<&'out mut Verdaux> {
         let bytes = self.take_bytes_d(size_of::<Verdaux>())?;
         Ok(object::from_bytes_mut::<Verdaux>(bytes)
-            .map_err(|_| error!("Incorrect .gnu.version_d aux alignment"))?
+            .ok()
+            .context("Incorrect .gnu.version_d aux alignment")?
             .0)
     }
 
@@ -4152,7 +4156,8 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
 
     let header: &mut elf::FileHeader<C> =
         from_bytes_mut(buffers.get_mut(crate::part_id::FILE_HEADER))
-            .map_err(|_| error!("Invalid file header allocation"))?
+            .ok()
+            .context("Invalid file header allocation")?
             .0;
     populate_file_header::<C, A>(layout, &prelude.header_info, header)?;
 
@@ -4657,7 +4662,8 @@ fn write_gnu_property_notes<C: ElfClass>(
 ) -> Result {
     let (note_header, mut rest) =
         from_bytes_mut::<elf::NoteHeader<C>>(buffers.get_mut(part_id::NOTE_GNU_PROPERTY))
-            .map_err(|_| error!("Insufficient .note.gnu.property allocation"))?;
+            .ok()
+            .context("Insufficient .note.gnu.property allocation")?;
     note_header.set_name_size(GNU_NOTE_NAME.len() as u32);
     note_header.set_descriptor_size(
         (layout.format_specific.gnu_property_notes.len() as u64 * C::GNU_PROPERTY_ENTRY_SIZE)
@@ -4772,9 +4778,11 @@ fn write_sysv_hash_table<C: ElfClass>(
     header_bytes[4..8].copy_from_slice(&sysv_hash_layout.chain_count.to_le_bytes());
 
     let (buckets, rest) = object::slice_from_bytes_mut::<u32>(rest, bucket_count)
-        .map_err(|_| error!("Insufficient bytes for .hash buckets"))?;
+        .ok()
+        .context("Insufficient bytes for .hash buckets")?;
     let (chains, rest) = object::slice_from_bytes_mut::<u32>(rest, chain_count)
-        .map_err(|_| error!("Insufficient bytes for .hash chains"))?;
+        .ok()
+        .context("Insufficient bytes for .hash chains")?;
 
     debug_assert!(rest.is_empty());
 
@@ -4816,7 +4824,8 @@ fn write_gnu_hash_tables<C: ElfClass>(
 
     let buffer = buffers.get_mut(part_id::GNU_HASH);
     let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffer)
-        .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
+        .ok()
+        .context("Insufficient .gnu.hash allocation")?;
     let e = LittleEndian;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
@@ -4831,14 +4840,16 @@ fn write_gnu_hash_tables<C: ElfClass>(
         "Insufficient bytes for .gnu.hash bloom filter"
     );
     let (bloom, rest) = rest.split_at_mut(bloom_size);
-    let bloom = <[elf::Word<C>]>::mut_from_bytes(bloom)
-        .map_err(|_| error!("Invalid .gnu.hash bloom filter size"))?;
+    let bloom =
+        <[elf::Word<C>]>::mut_from_bytes(bloom).context("Invalid .gnu.hash bloom filter size")?;
     let (buckets, rest) =
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
-            .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
+            .ok()
+            .context("Insufficient bytes for .gnu.hash buckets")?;
     let (chains, rest) =
         object::slice_from_bytes_mut::<u32>(rest, layout.dynamic_symbol_definitions.len())
-            .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
+            .ok()
+            .context("Insufficient bytes for .gnu.hash chains")?;
 
     debug_assert_eq!(rest.len(), 0);
 

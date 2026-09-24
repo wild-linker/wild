@@ -11,7 +11,6 @@
 //! the full TBD v4 format, including the shape used by most system libraries.
 
 use crate::ensure;
-use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use itertools::Itertools;
@@ -139,7 +138,7 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         .reexported_libraries
         .iter()
         .at_most_one()
-        .map_err(|_| error!("expected just a single exported library"))?
+        .context("expected just a single exported library")?
     {
         ensure!(
             exported_libraries.targets.contains(&ARM64_LIB_ARCH),

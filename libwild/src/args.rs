@@ -1379,7 +1379,9 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
 }
 
 pub(crate) fn parse_number(s: &str) -> Result<u64> {
-    crate::parsing::parse_number(s).map_err(|()| crate::error!("Invalid number: {s}"))
+    crate::parsing::parse_number(s)
+        .ok()
+        .with_context(|| format!("Invalid number: {s}"))
 }
 
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {

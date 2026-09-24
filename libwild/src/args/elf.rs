@@ -863,7 +863,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             |args, _, value| {
                 args.cet_report = value
                     .parse::<CetReport>()
-                    .map_err(|_| error!("unknown -z cet-report= value '{value}'"))?;
+                    .with_context(|| format!("unknown -z cet-report= value '{value}'"))?;
                 Ok(())
             },
         )

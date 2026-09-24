@@ -5,7 +5,7 @@
 
 use crate::Result;
 use crate::bail;
-use crate::error;
+use crate::error::Context as _;
 use object::LittleEndian;
 use object::elf::SectionFlags;
 
@@ -94,11 +94,11 @@ pub(crate) trait WritableNoteHeader {
 }
 
 fn narrow_u32(value: u64, field: &str) -> Result<u32> {
-    u32::try_from(value).map_err(|_| error!("{field} value 0x{value:x} does not fit in ELF32"))
+    u32::try_from(value).with_context(|| format!("{field} value 0x{value:x} does not fit in ELF32"))
 }
 
 fn narrow_i32(value: i64, field: &str) -> Result<i32> {
-    i32::try_from(value).map_err(|_| error!("{field} value {value} does not fit in ELF32"))
+    i32::try_from(value).with_context(|| format!("{field} value {value} does not fit in ELF32"))
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -215,7 +215,7 @@ fn set_section_flags32(
     value: SectionFlags,
 ) -> Result {
     out.set_u64(LittleEndian, object::elf::SectionFlags(value.0))
-        .map_err(|_| error!("sh_flags value 0x{:x} does not fit in ELF32", value.0))?;
+        .with_context(|| format!("sh_flags value 0x{:x} does not fit in ELF32", value.0))?;
     Ok(())
 }
 
@@ -351,7 +351,7 @@ fn set_dynamic_tag32(
     value: object::elf::DynamicTag,
 ) -> Result {
     out.set_i64(LittleEndian, value)
-        .map_err(|_| error!("dynamic tag {} does not fit in ELF32", value.0))?;
+        .with_context(|| format!("dynamic tag {} does not fit in ELF32", value.0))?;
     Ok(())
 }
 
@@ -405,7 +405,7 @@ impl WritableRela for object::elf::Rela32<LittleEndian> {
             bail!("relocation symbol index {symbol} does not fit in ELF32");
         }
         u8::try_from(r_type.0)
-            .map_err(|_| error!("relocation type {r_type} does not fit in ELF32"))?;
+            .with_context(|| format!("relocation type {r_type} does not fit in ELF32"))?;
         self.set_r_info(LittleEndian, symbol, r_type);
         Ok(())
     }
