@@ -59,15 +59,21 @@ jobs:
             benchmarks/performance_guard
           sparse-checkout-cone-mode: false
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          cache: true
+          # Sources live under baseline/ and candidate/, so there is no
+          # root Cargo.lock for setup-soldr's yank audit and cache key.
+          lockfile: candidate/Cargo.lock
+      - name: Install pinned toolchain for both revisions
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Build both revisions identically
         shell: bash
         run: |
           set -euo pipefail
-          cargo +"$RUST_TOOLCHAIN" build --manifest-path baseline/Cargo.toml --package wild-linker --profile release
-          cargo +"$RUST_TOOLCHAIN" build --manifest-path candidate/Cargo.toml --package wild-linker --profile release
+          RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" soldr cargo build --manifest-path baseline/Cargo.toml --package wild-linker --profile release
+          RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" soldr cargo build --manifest-path candidate/Cargo.toml --package wild-linker --profile release
           mkdir -p "$RUNNER_TEMP/wild-performance-binaries"
           cp baseline/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/baseline-wild"
           cp candidate/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/candidate-wild"

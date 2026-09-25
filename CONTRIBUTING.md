@@ -69,6 +69,12 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
 
 then use `cargo test` as usual.
 
+### Local builds with soldr
+
+Optionally, use [soldr](https://github.com/zackees/soldr): `soldr cargo build` and `soldr cargo test`
+use the toolchain pinned in `rust-toolchain.toml` (1.98.1) and cache builds with zccache. CI uses
+`zackees/setup-soldr@v0`. Plain `cargo` still works.
+
 ## Running tests for other architectures on x86_64
 
 Wild supports testing on non-native architectures using QEMU.

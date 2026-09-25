@@ -110,12 +110,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
+      # Cross-target builds use plain cargo: soldr's zccache wrapping and
+      # linker injection would compile/link target objects with the host
+      # toolchain.
+      # The solo toolchain cache is keyed without targets, so a restored
+      # toolchain can claim a target's rust-std is installed without its files.
+      - uses: zackees/setup-soldr@v0
         with:
-          targets: ${{ matrix.target }}
+          cache: true
+          linker: platform-default
+          solo-toolchain-cache: false
+      - run: rustup target add ${{ matrix.target }}
       - run: rustc --version
-      - uses: Swatinem/rust-cache@v2
       - run: cp -f ${{ matrix.config }} .cargo/config.toml
       - run: cargo build --target ${{ matrix.target }}
 
@@ -133,12 +139,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
+      # Cross-target builds use plain cargo: soldr's zccache wrapping and
+      # linker injection would compile/link target objects with the host
+      # toolchain.
+      # The solo toolchain cache is keyed without targets, so a restored
+      # toolchain can claim a target's rust-std is installed without its files.
+      - uses: zackees/setup-soldr@v0
         with:
-          targets: wasm32-wasip1
+          cache: true
+          linker: platform-default
+          solo-toolchain-cache: false
+      - run: rustup target add wasm32-wasip1
       - run: rustc --version
-      - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-wasip1
       - run: cp -f .cargo/config.toml.cross-wasm32p1 .cargo/config.toml
       # -p libwild prevents integration tests from running. they depend on
@@ -155,12 +167,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
+      - uses: zackees/setup-soldr@v0
         with:
-          targets: wasm32-wasip1
+          cache: true
+          solo-toolchain-cache: false
+      - run: rustup target add wasm32-wasip1
       - run: rustc --version
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2.87.18
         with:
           tool: wasm-tools
@@ -168,7 +180,7 @@ jobs:
         uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: '48.0.0'
-      - run: cargo test --features wasm -- wasm
+      - run: soldr cargo test --features wasm -- wasm
 
   macho-build:
     name: Test Mach-O (AArch64)
@@ -183,15 +195,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
-      - run: rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: zackees/setup-soldr@v0
         with:
-          env-vars: ImageVersion
+          cache: true
+      - run: rustc --version
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
-      - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci --workspace --features macho
+      - run: soldr cargo build --profile ci --workspace --no-default-features
+      - run: soldr cargo test --profile ci --workspace --features macho
 
   windows-build:
     name: Build Windows (x86_64)
@@ -201,11 +211,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
+      - uses: zackees/setup-soldr@v0
+        with:
+          cache: true
       - run: rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --profile ci --workspace --no-default-features
+      - run: soldr cargo build --profile ci --workspace --no-default-features
 
   minimal-versions:
     runs-on: ubuntu-24.04
@@ -216,14 +226,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
-        id: rust-toolchain
+      - uses: zackees/setup-soldr@v0
+        with:
+          cache: true
       - run: rustc --version
       - uses: taiki-e/install-action@v2.87.18
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo minimal-versions --direct test --profile ci
+      # Plain cargo: under soldr's compile cache, the cc-built plugin shim
+      # object in libwild's build script goes missing before `ar` runs.
+      # setup-soldr exports CLICOLOR_FORCE/FORCE_COLOR, which makes wild colour
+      # its --sym-info output and breaks the link-args/sym-info regex.
+      - run: env -u CLICOLOR_FORCE -u FORCE_COLOR cargo minimal-versions --direct test --profile ci
 
   clippy:
     name: Clippy

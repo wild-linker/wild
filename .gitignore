@@ -24,3 +24,9 @@ fakes-debug/sde-cet-checker-out.txt
 *.bench-results
 .DS_Store
 *.rcgu.o
+# Cargo home state that `soldr cargo` keeps in the repo-local .cargo directory.
+/.cargo/.global-cache
+/.cargo/.package-cache
+/.cargo/.package-cache-mutate
+/.cargo/git/
+/.cargo/registry/
