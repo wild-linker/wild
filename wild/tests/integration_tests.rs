@@ -99,7 +99,6 @@
 //!   shared=true|false: Asserts the memory is shared.
 //!
 //! ExpectFuncTypeCount:{count} (Wasm) Asserts the type section has exactly {count} function types.
-//!
 
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
