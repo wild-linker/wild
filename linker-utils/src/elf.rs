@@ -444,7 +444,13 @@ pub enum RelocationKind {
     /// R_RISCV_SET_ULEB128 and R_RISCV_SUB_ULEB128 relocation pair and fill the space with a
     /// single ULEB128-encoded value. This is achieved by prepending the redundant 0x80 byte as
     /// necessary. The linker must not alter the length of the ULEB128-encoded value.
-    PairSubtractionULEB128(object::elf::RelocationType),
+    /// TODO: add target-specific prefix to the name
+    PairSubtractionULEB128Set,
+
+    /// Subtract addresses from a preceding ADD_ULEB128 relocation and encode the value using
+    /// ULEB128.
+    /// TODO: add target-specific prefix to the name
+    PairSubtractionULEB128Add,
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
@@ -903,7 +909,7 @@ impl RelocationInstruction {
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationSize {
-    ByteSize(usize),
+    ByteSize(u8),
     BitMasking(BitMask),
 }
 
@@ -921,8 +927,8 @@ impl fmt::Display for RelocationSize {
 impl RelocationSize {
     #[must_use]
     pub const fn bit_mask_aarch64(
-        bit_start: u32,
-        bit_end: u32,
+        bit_start: u8,
+        bit_end: u8,
         instruction: AArch64Instruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
@@ -934,8 +940,8 @@ impl RelocationSize {
 
     #[must_use]
     pub const fn bit_mask_riscv(
-        bit_start: u32,
-        bit_end: u32,
+        bit_start: u8,
+        bit_end: u8,
         instruction: RiscVInstruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
@@ -947,8 +953,8 @@ impl RelocationSize {
 
     #[must_use]
     pub const fn bit_mask_loongarch64(
-        bit_start: u32,
-        bit_end: u32,
+        bit_start: u8,
+        bit_end: u8,
         instruction: LoongArch64Instruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
@@ -960,8 +966,8 @@ impl RelocationSize {
 
     #[must_use]
     pub const fn bit_mask_ppc64(
-        bit_start: u32,
-        bit_end: u32,
+        bit_start: u8,
+        bit_end: u8,
         instruction: Ppc64Instruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
@@ -994,6 +1000,7 @@ pub struct BitMask {
 }
 
 pub const SIZE_2KB: u64 = 1 << 11;
+pub const SIZE_32KB: u64 = 1 << 15;
 pub const SIZE_4KB: u64 = 1 << 12;
 pub const SIZE_2GB: u64 = 1 << 31;
 pub const SIZE_4GB: u64 = 1 << 32;
@@ -1001,12 +1008,42 @@ pub const SIZE_4GB: u64 = 1 << 32;
 pub const PAGE_MASK_4KB: u64 = SIZE_4KB - 1;
 pub const PAGE_MASK_4GB: u64 = SIZE_4GB - 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    Size2KB,
+    Size4KB,
+    Size32KB,
+    Size4GiB,
+}
+
+impl Size {
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        match self {
+            Self::Size2KB => SIZE_2KB,
+            Self::Size4KB => PAGE_MASK_4KB,
+            Self::Size32KB => SIZE_32KB,
+            Self::Size4GiB => PAGE_MASK_4GB,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn bias_from_value(value: u64) -> Option<Self> {
+        match value {
+            0 => None,
+            SIZE_2KB => Some(Self::Size2KB),
+            SIZE_32KB => Some(Self::Size32KB),
+            _ => panic!("unsupported relocation bias"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum PageMask {
-    SymbolPlusAddendAndPosition(u64),
-    GotEntryAndPosition(u64),
-    GotBase(u64),
-    Position(u64),
+    SymbolPlusAddendAndPosition(Size),
+    GotEntryAndPosition(Size),
+    GotBase(Size),
+    Position(Size),
 }
 
 // Allow range (half-open) of a computed value of a relocation
@@ -1077,8 +1114,8 @@ pub struct RelocationKindInfo {
     pub size: RelocationSize,
     pub mask: Option<PageMask>,
     pub range: AllowedRange,
-    pub alignment: usize,
-    pub bias: u64,
+    pub alignment: u8,
+    pub bias: Option<Size>,
     /// Whether this relocation type supports range-extension thunks.
     pub thunkable: bool,
     /// Whether this relocation assumes an implicit addend at the place of the relocation.
@@ -1089,7 +1126,7 @@ impl RelocationKindInfo {
     #[inline(always)]
     fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
-            (value as usize).is_multiple_of(self.alignment),
+            (value as usize).is_multiple_of(usize::from(self.alignment)),
             "Relocation {value} not aligned to {} bytes",
             self.alignment
         );
@@ -1107,7 +1144,10 @@ impl RelocationKindInfo {
     pub fn write_to_buffer(self, value: u64, output: &mut [u8]) -> Result<()> {
         self.verify(value as i64)?;
 
-        if matches!(self.kind, RelocationKind::PairSubtractionULEB128(..)) {
+        if matches!(
+            self.kind,
+            RelocationKind::PairSubtractionULEB128Set | RelocationKind::PairSubtractionULEB128Add
+        ) {
             let mut writer = Cursor::new([0u8; u64::BITS.div_ceil(7) as usize]);
             let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
             anyhow::ensure!(
@@ -1118,6 +1158,7 @@ impl RelocationKindInfo {
         } else {
             match self.size {
                 RelocationSize::ByteSize(byte_size) => {
+                    let byte_size = usize::from(byte_size);
                     anyhow::ensure!(
                         byte_size <= output.len(),
                         "Relocation outside of bounds of section"
@@ -1135,7 +1176,8 @@ impl RelocationKindInfo {
                     range,
                     instruction: insn,
                 }) => {
-                    let extracted_value = value.extract_bit_range(range.start..range.end);
+                    let extracted_value =
+                        value.extract_bit_range(u32::from(range.start)..u32::from(range.end));
                     let negative = (value as i64).is_negative();
                     let output_len = output.len();
                     insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
@@ -1158,6 +1200,7 @@ impl RelocationKindInfo {
         let RelocationSize::ByteSize(rel_size) = self.size else {
             anyhow::bail!("Unexpected size for the addition/subtraction relocation");
         };
+        let rel_size = usize::from(rel_size);
         read_data[..rel_size]
             .copy_from_slice(&content[offset_in_section..offset_in_section + rel_size]);
         let current_value = u64::from_le_bytes(read_data);
@@ -1184,7 +1227,7 @@ impl RelocationKindInfo {
 
 impl BitMask {
     #[must_use]
-    pub const fn new(instruction: RelocationInstruction, bit_start: u32, bit_end: u32) -> Self {
+    pub const fn new(instruction: RelocationInstruction, bit_start: u8, bit_end: u8) -> Self {
         Self {
             instruction,
             range: BitRange {

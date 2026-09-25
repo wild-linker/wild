@@ -15,6 +15,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::Sign;
+use linker_utils::elf::Size;
 use std::borrow::Cow;
 
 pub(crate) struct MachOAArch64;
@@ -132,7 +133,7 @@ impl crate::platform::Arch for MachOAArch64 {
                 (
                     rel_kind,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+                    Some(PageMask::SymbolPlusAddendAndPosition(Size::Size4KB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
                     false,
@@ -156,7 +157,7 @@ impl crate::platform::Arch for MachOAArch64 {
                 (
                     RelocationKind::GotRelative,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+                    Some(PageMask::SymbolPlusAddendAndPosition(Size::Size4KB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
                     false,
@@ -196,7 +197,7 @@ impl crate::platform::Arch for MachOAArch64 {
         };
         Ok(RelocationKindInfo {
             alignment,
-            bias: 0,
+            bias: None,
             kind,
             mask,
             range,

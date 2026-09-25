@@ -877,6 +877,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
                 rel_info.size
             );
         };
+        let byte_size = usize::from(byte_size);
         let bytes = out
             .get(offset_in_section as usize..)
             .and_then(|bytes| bytes.get(..byte_size))

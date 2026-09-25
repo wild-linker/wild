@@ -3313,7 +3313,8 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
-        | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
+        | RelocationKind::PairSubtractionULEB128Set
+        | RelocationKind::PairSubtractionULEB128Add => ValueFlags::DIRECT,
         RelocationKind::SymbolSize => ValueFlags::SYMBOL_SIZE,
         RelocationKind::None
         | RelocationKind::AbsoluteLowPart

@@ -166,6 +166,7 @@ fn apply_section_relocations<
         let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
             continue;
         };
+        let num_bytes = usize::from(num_bytes);
 
         let new_value = match r_type.kind {
             RelocationKind::Absolute => {
