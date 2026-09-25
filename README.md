@@ -127,6 +127,8 @@ If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore)
 much appreciated. The more sponsorship I get the longer I can continue to work on this project full
 time.
 
+Also, The Wild project is supported by the Rust Foundation's Rust Innovation Lab: https://rustfoundation.org/media/welcoming-wild-to-the-rust-innovation-lab/
+
 ## Code of Conduct
 
 The Wild project adheres to the [Rust code of
