@@ -38,20 +38,7 @@ The following platforms / architectures are currently supported:
 * LoongArch64 on Linux
 * PPC64LE on Linux (initial support)
 
-The following features are supported:
-
-* Output to statically linked, non-relocatable binaries
-* Output to statically linked, position-independent binaries (static-PIE)
-* Output to dynamically linked binaries
-* Output to shared objects (.so files)
-* Rust proc-macros, when linked with Wild work
-* Most of the top downloaded crates on crates.io have been tested with Wild and pass their tests
-* Debug info (DWARF)
-* GNU jobserver support
-* Linker script support. See the [linker script support matrix](LINKER_SCRIPT_SUPPORT.md) for details.
-* Linker plugin LTO
-
-Here are some of the larger things that aren't yet done:
+Here are some of the bigger things we're looking ahead to:
 
 * Incremental linking
 * Mach-O support
