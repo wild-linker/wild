@@ -38,3 +38,33 @@ measurement logic.
 `full-lto-none-control` isolates non-hashing work. It is never presented as the
 realistic result: ordinary and debug-heavy/full-LTO workloads both include
 `--build-id=fast`. No output-size scaling claim is made by this suite.
+
+## Comparing fork revisions (issue #14)
+
+`compare_revisions.py` benchmarks already-built Wild binaries against a baseline
+with one Hyperfine run per case (`ordinary-none`, `large-debug-none`,
+`full-lto-none`, `large-debug-fast`). The first `--build` is the baseline. Any
+other build more than `--noise-percent` (default 2%) slower on any case exits 1:
+drop that change.
+
+```sh
+git fetch upstream
+git worktree add ../wild-upstream upstream/main
+git worktree add ../wild-pr5 upstream/main
+git -C ../wild-pr5 cherry-pick fc159eb4
+git worktree add ../wild-tip origin/main
+# rust-toolchain.toml pins the toolchain in each worktree.
+for tree in ../wild-upstream ../wild-pr5 ../wild-tip; do
+  (cd "$tree" && cargo build --release -p wild)
+done
+
+python3 benchmarks/performance_guard/prepare_workloads.py --output /tmp/wild-workloads
+python3 benchmarks/performance_guard/compare_revisions.py \
+  --manifest /tmp/wild-workloads/manifest.json \
+  --build "upstream-main=$(git -C ../wild-upstream rev-parse HEAD)=../wild-upstream/target/release/wild" \
+  --build "upstream-main+5=$(git -C ../wild-pr5 rev-parse HEAD)=../wild-pr5/target/release/wild" \
+  --build "fork-tip=$(git -C ../wild-tip rev-parse HEAD)=../wild-tip/target/release/wild" \
+  --runs 10 --output /tmp/wild-compare
+```
+
+Results are written to `results.json` and `results.md` in `--output`.

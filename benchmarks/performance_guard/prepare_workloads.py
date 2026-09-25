@@ -13,6 +13,28 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def generate_unit_source(unit: int, functions_per_unit: int) -> str:
+    """Return C source for one unit of retained functions plus a function-pointer table."""
+    lines = ["#include <stdint.h>"]
+    for function in range(functions_per_unit):
+        index = unit * functions_per_unit + function
+        lines.append(
+            f"__attribute__((noinline,used)) uint64_t f{index}(uint64_t x) "
+            f"{{ return (x * {index + 3}u) ^ {index * 2654435761 % (2**32)}u; }}"
+        )
+    lines.append("typedef uint64_t (*fn)(uint64_t);")
+    lines.append(
+        "__attribute__((used)) fn table_%d[] = {%s};"
+        % (
+            unit,
+            ",".join(
+                f"f{unit * functions_per_unit + i}" for i in range(functions_per_unit)
+            ),
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -48,25 +70,7 @@ def main() -> int:
     functions_per_unit = 220
     for unit in range(12):
         source = root / f"lto-{unit}.c"
-        lines = ["#include <stdint.h>"]
-        for function in range(functions_per_unit):
-            index = unit * functions_per_unit + function
-            lines.append(
-                f"__attribute__((noinline,used)) uint64_t f{index}(uint64_t x) "
-                f"{{ return (x * {index + 3}u) ^ {index * 2654435761 % (2**32)}u; }}"
-            )
-        lines.append("typedef uint64_t (*fn)(uint64_t);")
-        lines.append(
-            "__attribute__((used)) fn table_%d[] = {%s};"
-            % (
-                unit,
-                ",".join(
-                    f"f{unit * functions_per_unit + i}"
-                    for i in range(functions_per_unit)
-                ),
-            )
-        )
-        source.write_text("\n".join(lines) + "\n")
+        source.write_text(generate_unit_source(unit, functions_per_unit))
         obj = root / f"lto-{unit}.o"
         run(
             [
@@ -91,10 +95,41 @@ def main() -> int:
     run([args.clang, "-g", "-O1", "-flto", "-c", str(main_source), "-o", str(main_obj)])
     lto_objects.append(str(main_obj))
 
+    # A large non-LTO debug link: many translation units with debug info and retained
+    # function-pointer tables. Also used with --build-id=fast for the build-ID workload.
+    large_debug_objects: list[str] = []
+    large_functions_per_unit = 400
+    for unit in range(24):
+        source = root / f"large-debug-{unit}.c"
+        source.write_text(generate_unit_source(unit, large_functions_per_unit))
+        obj = root / f"large-debug-{unit}.o"
+        run(
+            [
+                args.clang,
+                "-g",
+                "-O1",
+                "-ffunction-sections",
+                "-c",
+                str(source),
+                "-o",
+                str(obj),
+            ]
+        )
+        large_debug_objects.append(str(obj))
+
+    large_main_source = root / "large-debug-main.c"
+    large_main_source.write_text(
+        "#include <stdint.h>\nextern uint64_t f0(uint64_t);\nint main(void) { (void)f0(0); return 0; }\n"
+    )
+    large_main_obj = root / "large-debug-main.o"
+    run([args.clang, "-g", "-O1", "-c", str(large_main_source), "-o", str(large_main_obj)])
+    large_debug_objects.append(str(large_main_obj))
+
     manifest = {
         "schema_version": 1,
         "ordinary": {"objects": [str(ordinary_o)], "link_flags": []},
         "full-lto": {"objects": lto_objects, "link_flags": ["-flto", "-O1"]},
+        "large-debug": {"objects": large_debug_objects, "link_flags": []},
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return 0
