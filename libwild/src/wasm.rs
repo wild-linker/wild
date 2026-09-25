@@ -8311,7 +8311,10 @@ mod tests {
             vec![void_ty.clone(), data_only_ty.clone()],
             Vec::new(),
         ));
-        assert_eq!(without_data_reloc.types, [void_ty.clone()]);
+        assert_eq!(
+            without_data_reloc.types.as_slice(),
+            std::slice::from_ref(&void_ty)
+        );
         assert_eq!(
             without_data_reloc.object_type_indices[0],
             [0, WASM_DEAD_INDEX]
