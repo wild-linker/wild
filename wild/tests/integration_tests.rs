@@ -1870,7 +1870,7 @@ impl Config {
             || self.requires_glibc && !cfg!(target_env = "gnu")
             || (arch != get_host_architecture()
                 && self.platform == PlatformKind::Elf
-                && (self.compiler == "clang" || !self.cross_enabled))
+                && !self.cross_enabled)
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
             || self.requires_glibc_version.as_ref().is_some_and(|version| {
@@ -3742,7 +3742,7 @@ fn get_c_compiler(
         (None, "gcc", CLanguage::C) => Ok("gcc".to_string()),
         (None, "gcc", CLanguage::Cpp) => Ok("g++".to_string()),
         (_, "clang", CLanguage::C) => Ok("clang".to_string()),
-        (_, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
+        (_, "clang" | "clang++", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
             Some(
                 arch @ (Architecture::AArch64
@@ -8007,11 +8007,20 @@ fn verify_platform_requirements(
             return Ok(());
         };
 
-        verify_command_success(
-            Command::new(&compiler)
-                .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
-                .args(&config.requires_compiler_flags),
-        )?;
+        let mut command = Command::new(&compiler);
+
+        add_cross_args(
+            &mut command,
+            &config.compiler_args.args,
+            cross_arch,
+            config.platform,
+        );
+
+        command
+            .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+            .args(&config.requires_compiler_flags);
+
+        verify_command_success(&mut command)?;
     }
 
     if !config.requires_linker_flags.is_empty() {

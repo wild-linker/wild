@@ -47,13 +47,14 @@
 
 //#AbstractConfig:clang-tls-desc-base:gcc-tls-desc-base
 //#Compiler:clang
-//#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#Arch: x86_64
 
 //#Config:clang-tls-desc:clang-tls-desc-base
+//#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 
 //#Config:clang-tls-desc-desc:clang-tls-desc-base
+//#RequiresCompilerFlags:-mtls-dialect=desc
 //#CompArgs:-mtls-dialect=desc -fPIC
 //#SkipArch: x86_64,riscv64
 
@@ -62,13 +63,17 @@
 //#Arch: x86_64
 
 //#Config:clang-tls-desc-shared:clang-tls-desc-shared-base
+//#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#CompSoArgs:-mtls-dialect=gnu2 -fPIC
 
 //#Config:clang-tls-desc-shared-desc:clang-tls-desc-shared-base
+//#RequiresCompilerFlags:-mtls-dialect=desc
 //#CompArgs:-mtls-dialect=desc -fPIC
 //#CompSoArgs:-mtls-dialect=desc -fPIC
 //#SkipArch: x86_64,riscv64
+// LoongArch GNU ld aligns the empty .eh_frame terminator to 4 instead of 8.
+//#DiffIgnore:section.eh_frame.alignment
 
 int get_value();
 
