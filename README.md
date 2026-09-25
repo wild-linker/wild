@@ -24,7 +24,7 @@ We run benchmarks on a few different systems:
 * [2020 era Intel-based laptop with 4 cores and 8 threads](benchmarks/lemp9.md)
 * [Raspberry Pi 5](benchmarks/raspberrypi.md)
 
-Linking Chromium with CREL relocations on the Ryzen system:
+For example, linking Chromium with CREL relocations on the Ryzen system:
 
 ![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-time.svg)
 
@@ -33,7 +33,7 @@ Linking Chromium with CREL relocations on the Ryzen system:
 The following platforms / architectures are currently supported:
 
 * x86-64 on Linux
-* ARM64 on Linux
+* AArch64 (ARM64) on Linux
 * RISC-V (riscv64gc) on Linux
 * LoongArch64 on Linux
 * PPC64LE on Linux (initial support)
