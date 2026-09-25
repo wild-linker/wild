@@ -8281,4 +8281,52 @@ mod tests {
             u32::try_from(pages * wasm_page_size()).unwrap()
         );
     }
+
+    fn merge_types_for_input(input: WasmObjectLayoutInput<'_>) -> MergedOutputTypes {
+        merge_live_output_types(
+            &[input],
+            &[ObjectImportResolutions::default()],
+            &LinkerDefinedIndices::default(),
+        )
+        .unwrap()
+    }
+
+    fn input_with_types(
+        types: Vec<FuncType>,
+        data_relocations: Vec<WasmRelocation>,
+    ) -> WasmObjectLayoutInput<'static> {
+        let mut input = layout_input_with_features(1, &[]);
+        input.types = types;
+        input.module_functions = vec![0];
+        input.data_relocations = data_relocations;
+        input
+    }
+
+    #[test]
+    fn data_type_index_leb_keeps_type_unused_elsewhere() {
+        let void_ty = FuncType::new([], []);
+        let data_only_ty = FuncType::new([wasmparser::ValType::I32], [wasmparser::ValType::I32]);
+
+        let without_data_reloc = merge_types_for_input(input_with_types(
+            vec![void_ty.clone(), data_only_ty.clone()],
+            Vec::new(),
+        ));
+        assert_eq!(without_data_reloc.types, [void_ty.clone()]);
+        assert_eq!(
+            without_data_reloc.object_type_indices[0],
+            [0, WASM_DEAD_INDEX]
+        );
+
+        let with_data_reloc = merge_types_for_input(input_with_types(
+            vec![void_ty.clone(), data_only_ty.clone()],
+            vec![WasmRelocation {
+                ty: RelocationType::TypeIndexLeb,
+                offset: 0,
+                index: 1,
+                addend: 0,
+            }],
+        ));
+        assert_eq!(with_data_reloc.types, [void_ty, data_only_ty]);
+        assert_eq!(with_data_reloc.object_type_indices[0], [0, 1]);
+    }
 }
