@@ -1,0 +1,5 @@
+# Development toolchain. The MSRV lives in Cargo.toml `rust-version`.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

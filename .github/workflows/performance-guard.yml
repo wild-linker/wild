@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      RUST_TOOLCHAIN: 1.97.1
+      RUST_TOOLCHAIN: 1.98.1
     steps:
       - name: Checkout exact candidate head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0

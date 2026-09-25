@@ -1181,6 +1181,6 @@ mod tests {
         })
         .unwrap_err();
 
-        assert_eq!(error.to_string(), "member 3 failed");
+        assert_eq!(error.to_string(), "member 3 failed\n");
     }
 }
