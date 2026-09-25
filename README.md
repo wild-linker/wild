@@ -107,6 +107,10 @@ pkgs.callPackage ./package { stdenv = wildStdenv; }
 
 to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md).
 
+## Contributing
+
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Chat server
 
 We have a Zulip server for Wild-related chat. You can join
