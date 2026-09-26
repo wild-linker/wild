@@ -62,6 +62,9 @@ jobs:
         uses: zackees/setup-soldr@v0
         with:
           cache: true
+          # wild never caches Rust toolchains (#18): rustup installs them in each
+          # job, and setup-soldr skips its toolchain scans with the cache off.
+          solo-toolchain-cache: false
           # Sources live under baseline/ and candidate/, so there is no
           # root Cargo.lock for setup-soldr's yank audit and cache key.
           lockfile: candidate/Cargo.lock
