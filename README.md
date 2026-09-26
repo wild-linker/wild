@@ -96,7 +96,7 @@ to use the latest unstable git revision of wild, see [the nix documentation](./n
 
 ## Contributing
 
-For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
+For more information on contributing to Wild, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Chat server
 
@@ -114,7 +114,7 @@ If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore)
 much appreciated. The more sponsorship I get the longer I can continue to work on this project full
 time.
 
-Also, The Wild project is supported by the Rust Foundation's Rust Innovation Lab: https://rustfoundation.org/media/welcoming-wild-to-the-rust-innovation-lab/
+Also, the Wild project is supported by the Rust Foundation's Rust Innovation Lab: https://rustfoundation.org/media/welcoming-wild-to-the-rust-innovation-lab/
 
 ## Code of Conduct
 
