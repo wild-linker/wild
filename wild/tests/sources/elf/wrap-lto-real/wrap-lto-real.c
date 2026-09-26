@@ -15,6 +15,8 @@
 //#Compiler:clang
 //#LinkerDriver:clang
 //#ReferenceLinkers:lld
+// RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
+//#DiffIgnore:section.text.alignment
 
 #include "../common/runtime.h"
 

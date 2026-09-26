@@ -182,6 +182,14 @@ impl crate::platform::Arch for MachOAArch64 {
                 1,
                 false,
             ),
+            object::macho::ARM64_RELOC_SUBTRACTOR => (
+                RelocationKind::MachoSubtraction,
+                RelocationSize::ByteSize(0),
+                None,
+                AllowedRange::no_check(),
+                1,
+                false,
+            ),
             object::macho::ARM64_RELOC_POINTER_TO_GOT => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (

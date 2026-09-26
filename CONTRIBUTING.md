@@ -132,7 +132,8 @@ WILD_TEST_CROSS=ppc64le cargo test
 WILD_TEST_CROSS=all cargo test
 ```
 
-This runs both native tests and architecture-specific tests. QEMU is used for executing binaries for non-native, while linking and diffing are performed natively. Note that cross-compilation only works with GCC and rustc tests; clang-based tests currently disable cross-compilation.
+This runs both native tests and architecture-specific tests. QEMU is used for executing binaries
+for non-native, while linking and diffing are performed natively.
 
 ## Configuration file for tests
 

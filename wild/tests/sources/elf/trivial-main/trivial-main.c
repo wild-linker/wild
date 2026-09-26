@@ -32,6 +32,8 @@
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
 //#DiffIgnore:rel.extra-got-plt-got
+// LoongArch GNU ld puts static IFUNC relocations in .rela.dyn instead of .rela.plt.
+//#DiffIgnore:section.rela.dyn
 
 //#Config:clang-static-pie-no-relax:default
 //#Compiler:clang

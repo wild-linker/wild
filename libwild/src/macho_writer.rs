@@ -828,7 +828,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     .entered();
 
     let rel_info = A::relocation_from_raw(rel)?;
-    if matches!(rel_info.kind, RelocationKind::MachoAddition) {
+    if matches!(
+        rel_info.kind,
+        RelocationKind::MachoAddition | RelocationKind::MachoSubtraction
+    ) {
         return Ok(());
     }
 
@@ -865,6 +868,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             RelocationKind::MachoAddition => {
                 // lld treats the value as signed 24-bit integral type
                 addend = u64::from(previous_rel.r_symbolnum).sign_extend(23);
+            }
+            RelocationKind::MachoSubtraction => {
+                let (subtractor, _, _) = get_resolution(previous_rel, object_layout, layout)?;
+                addend = subtractor.raw_value.wrapping_neg();
             }
             _ => {}
         }

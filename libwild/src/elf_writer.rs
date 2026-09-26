@@ -3787,7 +3787,9 @@ fn apply_relocation<
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
-        RelocationKind::Alignment | RelocationKind::MachoAddition => unreachable!(),
+        RelocationKind::Alignment
+        | RelocationKind::MachoAddition
+        | RelocationKind::MachoSubtraction => unreachable!(),
     };
 
     let offset_in_section = offset_in_section as usize;
@@ -4148,7 +4150,7 @@ fn write_prelude<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let (a, b) = rayon::join(
         || {
             if let Some(scan) = &layout.gdb_index_data {
-                timing_phase!("Write GDB index");
+                verbose_timing_phase!("Write GDB index");
                 crate::gdb_index::write_gdb_index(gdb_buf, layout, scan)
             } else {
                 Ok(())

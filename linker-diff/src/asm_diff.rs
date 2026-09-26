@@ -2563,7 +2563,8 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::PairSubtractionULEB128Add
             | RelocationKind::None
             | RelocationKind::Alignment
-            | RelocationKind::MachoAddition => 0,
+            | RelocationKind::MachoAddition
+            | RelocationKind::MachoSubtraction => 0,
         };
 
         relative_to &= A::get_relocation_base_mask(&relocation_info);
@@ -2788,7 +2789,8 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::PairSubtractionULEB128Set
         | RelocationKind::PairSubtractionULEB128Add
         | RelocationKind::Alignment
-        | RelocationKind::MachoAddition => {
+        | RelocationKind::MachoAddition
+        | RelocationKind::MachoSubtraction => {
             return None;
         }
     };
@@ -3819,7 +3821,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PairSubtractionULEB128Set
                 | RelocationKind::PairSubtractionULEB128Add
                 | RelocationKind::Alignment
-                | RelocationKind::MachoAddition => Ok(Referent::Absolute(raw_value)),
+                | RelocationKind::MachoAddition
+                | RelocationKind::MachoSubtraction => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase

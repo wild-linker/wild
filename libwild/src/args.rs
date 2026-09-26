@@ -161,6 +161,7 @@ impl Args {
         &mut self,
         input: F,
     ) -> Result {
+        let _thread_guard = crate::timing::enter_linker_thread();
         timing_phase!("Parse args");
 
         self.common_mut().save_dir = SaveDir::new(input())?;

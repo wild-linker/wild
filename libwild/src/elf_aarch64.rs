@@ -82,6 +82,20 @@ impl crate::platform::Arch for ElfAArch64 {
             | object::elf::R_AARCH64_CONDBR19
             | object::elf::R_AARCH64_JUMP26
             | object::elf::R_AARCH64_TSTBR14 => Some(place.wrapping_add(4)),
+            object::elf::R_AARCH64_PREL16
+            | object::elf::R_AARCH64_PREL32
+            | object::elf::R_AARCH64_PREL64
+            | object::elf::R_AARCH64_ADR_PREL_LO21
+            | object::elf::R_AARCH64_ADR_PREL_PG_HI21
+            | object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC
+            | object::elf::R_AARCH64_MOVW_PREL_G0
+            | object::elf::R_AARCH64_MOVW_PREL_G0_NC
+            | object::elf::R_AARCH64_MOVW_PREL_G1
+            | object::elf::R_AARCH64_MOVW_PREL_G1_NC
+            | object::elf::R_AARCH64_MOVW_PREL_G2
+            | object::elf::R_AARCH64_MOVW_PREL_G2_NC
+            | object::elf::R_AARCH64_MOVW_PREL_G3
+            | object::elf::R_AARCH64_LD_PREL_LO19 => Some(place),
             _ => None,
         }
     }
