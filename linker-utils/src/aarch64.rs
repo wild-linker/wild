@@ -2,11 +2,11 @@ use crate::bit_misc::BitExtraction;
 use crate::elf::AArch64Instruction;
 use crate::elf::AllowedRange;
 use crate::elf::PageMask;
+use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::Sign;
-use crate::elf::Size;
 use crate::relaxation::RelocationModifier;
 use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
@@ -310,14 +310,14 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_ADR_PREL_PG_HI21 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::SymbolPlusAddendAndPosition(Size::Size4KB)),
+            Some(PageMask::SymbolPlusAddendAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),
         object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::SymbolPlusAddendAndPosition(Size::Size4KB)),
+            Some(PageMask::SymbolPlusAddendAndPosition(PageMask::Size4KB)),
             AllowedRange::no_check(),
             1,
         ),
@@ -535,7 +535,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_ADR_GOT_PAGE => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition(Size::Size4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),
@@ -549,7 +549,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_LD64_GOTPAGE_LO15 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask_aarch64(3, 15, AArch64Instruction::LdSt),
-            Some(PageMask::GotBase(Size::Size4KB)),
+            Some(PageMask::GotBase(PageMask::Size4KB)),
             AllowedRange::from_bit_size(15, Sign::Unsigned),
             8,
         ),
@@ -565,7 +565,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_TLSGD_ADR_PAGE21 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition(Size::Size4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),
@@ -602,7 +602,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_TLSLD_ADR_PAGE21 => (
             RelocationKind::TlsLd,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition(Size::Size4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),
@@ -780,7 +780,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition(Size::Size4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),
@@ -948,7 +948,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 => (
             RelocationKind::TlsDesc,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition(Size::Size4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMask::Size4KB)),
             AllowedRange::from_bit_size(33, Sign::Signed),
             1,
         ),

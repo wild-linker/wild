@@ -444,13 +444,11 @@ pub enum RelocationKind {
     /// R_RISCV_SET_ULEB128 and R_RISCV_SUB_ULEB128 relocation pair and fill the space with a
     /// single ULEB128-encoded value. This is achieved by prepending the redundant 0x80 byte as
     /// necessary. The linker must not alter the length of the ULEB128-encoded value.
-    /// TODO: add target-specific prefix to the name
-    PairSubtractionULEB128Set,
+    PairSubtractionULEB128RiscV,
 
     /// Subtract addresses from a preceding ADD_ULEB128 relocation and encode the value using
     /// ULEB128.
-    /// TODO: add target-specific prefix to the name
-    PairSubtractionULEB128Add,
+    PairSubtractionULEB128LoongArch,
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
@@ -1013,26 +1011,38 @@ pub const PAGE_MASK_4KB: u64 = SIZE_4KB - 1;
 pub const PAGE_MASK_4GB: u64 = SIZE_4GB - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Size {
-    Size2KB,
+pub enum PageMask {
     Size4KB,
-    Size32KB,
     Size4GiB,
 }
 
-impl Size {
+impl PageMask {
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        match self {
+            Self::Size4KB => PAGE_MASK_4KB,
+            Self::Size4GiB => PAGE_MASK_4GB,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bias {
+    Size2KB,
+    Size32KB,
+}
+
+impl Bias {
     #[must_use]
     pub const fn value(self) -> u64 {
         match self {
             Self::Size2KB => SIZE_2KB,
-            Self::Size4KB => PAGE_MASK_4KB,
             Self::Size32KB => SIZE_32KB,
-            Self::Size4GiB => PAGE_MASK_4GB,
         }
     }
 
     #[must_use]
-    pub(crate) const fn bias_from_value(value: u64) -> Option<Self> {
+    pub(crate) const fn from_value(value: u64) -> Option<Self> {
         match value {
             0 => None,
             SIZE_2KB => Some(Self::Size2KB),
@@ -1044,10 +1054,10 @@ impl Size {
 
 #[derive(Debug, Clone, Copy)]
 pub enum PageMask {
-    SymbolPlusAddendAndPosition(Size),
-    GotEntryAndPosition(Size),
-    GotBase(Size),
-    Position(Size),
+    SymbolPlusAddendAndPosition(PageMask),
+    GotEntryAndPosition(PageMask),
+    GotBase(PageMask),
+    Position(PageMask),
 }
 
 // Allow range (half-open) of a computed value of a relocation
@@ -1119,7 +1129,7 @@ pub struct RelocationKindInfo {
     pub mask: Option<PageMask>,
     pub range: AllowedRange,
     pub alignment: u8,
-    pub bias: Option<Size>,
+    pub bias: Option<Bias>,
     /// Whether this relocation type supports range-extension thunks.
     pub thunkable: bool,
     /// Whether this relocation assumes an implicit addend at the place of the relocation.
@@ -1150,7 +1160,8 @@ impl RelocationKindInfo {
 
         if matches!(
             self.kind,
-            RelocationKind::PairSubtractionULEB128Set | RelocationKind::PairSubtractionULEB128Add
+            RelocationKind::PairSubtractionULEB128RiscV
+                | RelocationKind::PairSubtractionULEB128LoongArch
         ) {
             let mut writer = Cursor::new([0u8; u64::BITS.div_ceil(7) as usize]);
             let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");

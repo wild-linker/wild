@@ -10,12 +10,12 @@
 //! `bias`, so `@ha`/`@lo` pairs stay correct across the full signed 32-bit TOC range.
 
 use crate::elf::AllowedRange;
+use crate::elf::Bias;
 use crate::elf::Ppc64Instruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::Sign;
-use crate::elf::Size;
 use crate::relaxation::RelocationModifier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +139,7 @@ pub const fn relocation_type_from_raw(
         mask: None,
         range,
         alignment,
-        bias: Size::bias_from_value(bias),
+        bias: Bias::from_value(bias),
         thunkable: false,
         implicit_addend: false,
     })

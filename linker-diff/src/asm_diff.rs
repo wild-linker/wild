@@ -2559,8 +2559,8 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
             | RelocationKind::TlsDescCall
-            | RelocationKind::PairSubtractionULEB128Set
-            | RelocationKind::PairSubtractionULEB128Add
+            | RelocationKind::PairSubtractionULEB128RiscV
+            | RelocationKind::PairSubtractionULEB128LoongArch
             | RelocationKind::None
             | RelocationKind::Alignment
             | RelocationKind::MachoAddition
@@ -2786,8 +2786,8 @@ fn value_kind_for_relocation<A: Arch>(
         RelocationKind::SymbolSize
         | RelocationKind::TlsDescCall
         | RelocationKind::None
-        | RelocationKind::PairSubtractionULEB128Set
-        | RelocationKind::PairSubtractionULEB128Add
+        | RelocationKind::PairSubtractionULEB128RiscV
+        | RelocationKind::PairSubtractionULEB128LoongArch
         | RelocationKind::Alignment
         | RelocationKind::MachoAddition
         | RelocationKind::MachoSubtraction => {
@@ -3818,8 +3818,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelative
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
-                | RelocationKind::PairSubtractionULEB128Set
-                | RelocationKind::PairSubtractionULEB128Add
+                | RelocationKind::PairSubtractionULEB128RiscV
+                | RelocationKind::PairSubtractionULEB128LoongArch
                 | RelocationKind::Alignment
                 | RelocationKind::MachoAddition
                 | RelocationKind::MachoSubtraction => Ok(Referent::Absolute(raw_value)),

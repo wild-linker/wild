@@ -3314,8 +3314,8 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
-        | RelocationKind::PairSubtractionULEB128Set
-        | RelocationKind::PairSubtractionULEB128Add
+        | RelocationKind::PairSubtractionULEB128RiscV
+        | RelocationKind::PairSubtractionULEB128LoongArch
         | RelocationKind::MachoSubtraction => ValueFlags::DIRECT,
         RelocationKind::SymbolSize => ValueFlags::SYMBOL_SIZE,
         RelocationKind::None
