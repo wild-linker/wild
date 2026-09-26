@@ -216,7 +216,7 @@ pub(crate) fn merge_strings<'data, P: Platform>(
     output_sections: &OutputSections<P>,
     args: &P::Args,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
-    timing_phase!("Merge strings");
+    verbose_timing_phase!("Merge strings");
 
     let mut output_string_sections = output_sections.new_section_map::<MergedStringsSection>();
 

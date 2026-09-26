@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::macho::ResolvedUnwindInfo;
 use crate::macho::UnwindInfoWithRelocs;
 use crate::symbol_db::SymbolId;
-use crate::timing_phase;
+use crate::verbose_timing_phase;
 use anyhow::Context;
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -122,7 +122,7 @@ fn encode_personality_fn_index(encoding: u32, personality_idx: usize) -> u32 {
 }
 
 pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Result<u64> {
-    timing_phase!("Estimate compact unwind section size");
+    verbose_timing_phase!("Estimate compact unwind section size");
 
     let personalities_to_idx: HashMap<SymbolId, usize> = unwind_info_entries
         .iter()
@@ -187,7 +187,7 @@ pub(crate) fn build(
     section_size: usize,
     unwind_info_entries: &[ResolvedUnwindInfo],
 ) -> Result<Vec<u8>> {
-    timing_phase!("Encode compact unwind section");
+    verbose_timing_phase!("Encode compact unwind section");
 
     if unwind_info_entries.is_empty() {
         return Ok(Vec::new());

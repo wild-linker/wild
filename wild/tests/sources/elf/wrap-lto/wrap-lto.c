@@ -13,6 +13,14 @@
 //#Compiler:clang
 //#LinkerDriver:clang
 //#ReferenceLinkers:lld
+//#SkipArch:ppc64le
+// RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
+//#DiffIgnore:section.text.alignment
+
+//#Config:clang-ppc64le:clang
+//#Arch:ppc64le
+// LLD 21 fails to define .TOC. when linking this LTO input.
+//#ReferenceLinkers:bfd
 
 #include "../common/runtime.h"
 

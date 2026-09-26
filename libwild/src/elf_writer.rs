@@ -4137,7 +4137,7 @@ fn write_prelude<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let (a, b) = rayon::join(
         || {
             if let Some(scan) = &layout.gdb_index_data {
-                timing_phase!("Write GDB index");
+                verbose_timing_phase!("Write GDB index");
                 crate::gdb_index::write_gdb_index(gdb_buf, layout, scan)
             } else {
                 Ok(())

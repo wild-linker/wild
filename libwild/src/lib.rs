@@ -62,6 +62,9 @@ pub(crate) mod thunks;
 #[cfg(test)]
 mod tidy_tests;
 pub(crate) mod timing;
+pub(crate) use timing::timing_guard;
+pub(crate) use timing::timing_phase;
+pub(crate) use timing::verbose_timing_phase;
 pub(crate) mod trie;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
@@ -115,6 +118,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// jobserver tokens, then cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(mut args: Args) -> error::Result {
+    let _thread_guard = timing::enter_linker_thread();
     let thread_pool = args.common_mut().build_thread_pool()?;
     thread_pool.pool.install(move || -> error::Result {
         let linker = Linker::new();
@@ -193,6 +197,7 @@ impl Linker<OsFileSystem> {
 
 impl<F: FileSystem> Linker<F> {
     pub fn with_file_system(file_system: F) -> Self {
+        let thread_guard = timing::enter_linker_thread();
         let (guard_a, guard_b) = timing_guard!("Link");
 
         Self {
@@ -201,7 +206,7 @@ impl<F: FileSystem> Linker<F> {
             linker_plugin_arena: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
-            _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
+            _link_scope: vec![Box::new(guard_a), Box::new(guard_b), Box::new(thread_guard)],
         }
     }
 
