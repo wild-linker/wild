@@ -3,6 +3,7 @@
 use crate::FileSystem;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
+use crate::args::CommonArgs;
 use crate::bail;
 use crate::env;
 use crate::error::Context as _;
@@ -77,7 +78,8 @@ impl SaveDir {
             let mut files_to_copy = HashSet::default();
             collect_input_paths(
                 &state.args,
-                input_data.resolved_sysroot.as_deref(),
+                parsed_args,
+                input_data.logical_sysroot.as_deref(),
                 &mut files_to_copy,
             )?;
             files_to_copy.extend(
@@ -152,7 +154,12 @@ impl SaveDir {
     }
 }
 
-fn resolve_saved_path(value: &str, kind: PathKind, sysroot: Option<&Path>) -> Result<PathBuf> {
+fn resolve_saved_path(
+    value: &str,
+    kind: PathKind,
+    args: &impl platform::Args,
+    sysroot: Option<&Path>,
+) -> Result<PathBuf> {
     let path = Path::new(value);
     let path = if matches!(kind, PathKind::Input) {
         crate::linker_script::maybe_forced_sysroot(path, sysroot)
@@ -161,11 +168,14 @@ fn resolve_saved_path(value: &str, kind: PathKind, sysroot: Option<&Path>) -> Re
     } else {
         Cow::Borrowed(path)
     };
-    Ok(std::path::absolute(&path)?)
+    Ok(std::path::absolute(
+        args.common().resolve_input_path(&path),
+    )?)
 }
 
 fn collect_input_paths(
     args: &[SavedArg],
+    parsed_args: &impl platform::Args,
     sysroot: Option<&Path>,
     paths: &mut HashSet<PathBuf>,
 ) -> Result {
@@ -176,9 +186,9 @@ fn collect_input_paths(
                 kind: kind @ (PathKind::File | PathKind::Input),
                 ..
             } => {
-                paths.insert(resolve_saved_path(value, *kind, sysroot)?);
+                paths.insert(resolve_saved_path(value, *kind, parsed_args, sysroot)?);
             }
-            SavedArg::ResponseFile(args) => collect_input_paths(args, sysroot, paths)?,
+            SavedArg::ResponseFile(args) => collect_input_paths(args, parsed_args, sysroot, paths)?,
             _ => {}
         }
     }
@@ -252,11 +262,19 @@ impl SaveDirState {
         input_data: &FileLoader<'_, impl FileSystem>,
     ) -> Result {
         for filename in filenames {
-            self.copy_file(&std::path::absolute(filename)?, input_data)?;
+            self.copy_file(
+                &std::path::absolute(filename)?,
+                input_data,
+                parsed_args.common(),
+            )?;
         }
 
         for path in &input_data.resolved_framework_search_path {
-            self.copy_file(&std::path::absolute(path)?, input_data)?;
+            self.copy_file(
+                &std::path::absolute(parsed_args.common().resolve_input_path(path))?,
+                input_data,
+                parsed_args.common(),
+            )?;
         }
 
         let run_with_file = self.dir.join("run-with");
@@ -289,7 +307,8 @@ impl SaveDirState {
         let mut at_file_counter = 0usize;
         self.write_args(
             &self.args,
-            input_data.resolved_sysroot.as_deref(),
+            args,
+            input_data.logical_sysroot.as_deref(),
             &mut args_buf,
             &mut setup_buf,
             &mut at_file_counter,
@@ -297,7 +316,7 @@ impl SaveDirState {
         )?;
 
         for path in framework_search_path {
-            let path = std::path::absolute(path)?;
+            let path = std::path::absolute(args.common().resolve_input_path(path))?;
             if self.output_path(&path).is_dir() {
                 write_script_arg_separator(&mut args_buf)?;
                 write_saved_path_arg(&mut args_buf, "-F", &path, false)?;
@@ -325,6 +344,7 @@ impl SaveDirState {
     fn write_args(
         &self,
         args: &[SavedArg],
+        parsed_args: &impl platform::Args,
         sysroot: Option<&Path>,
         out: &mut dyn Write,
         setup_out: &mut dyn Write,
@@ -337,6 +357,7 @@ impl SaveDirState {
                     // Expand nested response files inline into the current file.
                     self.write_args(
                         args_from_file,
+                        parsed_args,
                         sysroot,
                         out,
                         setup_out,
@@ -357,6 +378,7 @@ impl SaveDirState {
                         let mut noop_setup: Vec<u8> = Vec::new();
                         self.write_args(
                             args_from_file,
+                            parsed_args,
                             sysroot,
                             &mut at_out,
                             &mut noop_setup,
@@ -394,7 +416,7 @@ impl SaveDirState {
                     if matches!(kind, PathKind::Output) {
                         write_relocated_arg(out, prefix, "OUT", "", is_rsp_file)?;
                     } else {
-                        let path = resolve_saved_path(value, *kind, sysroot)?;
+                        let path = resolve_saved_path(value, *kind, parsed_args, sysroot)?;
                         if self.output_path(&path).exists() {
                             write_saved_path_arg(out, prefix, &path, is_rsp_file)?;
                         } else {
@@ -418,6 +440,7 @@ impl SaveDirState {
         &self,
         source_path: &Path,
         input_data: &FileLoader<'_, impl FileSystem>,
+        common: &CommonArgs,
     ) -> Result {
         let dest_path = self.output_path(source_path);
 
@@ -428,7 +451,7 @@ impl SaveDirState {
         // The parent directory might be an actual directory or it might be a symlink. Either way,
         // we want to copy it before we copy our file.
         if let Some(parent) = source_path.parent() {
-            self.copy_file(parent, input_data)?;
+            self.copy_file(parent, input_data, common)?;
         }
 
         // We need to check again if `dest_path` exists because paths containing ".." mean that
@@ -449,7 +472,7 @@ impl SaveDirState {
                 .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
 
             if target.is_absolute() {
-                self.copy_file(&target, input_data)?;
+                self.copy_file(&target, input_data, common)?;
                 target = make_relative_path(&target, directory).with_context(|| {
                     format!(
                         "Failed to make path `{}` relative to `{}` while copying symlink",
@@ -459,7 +482,7 @@ impl SaveDirState {
                 })?;
             } else {
                 let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target, input_data)?;
+                self.copy_file(&absolute_target, input_data, common)?;
             }
 
             if let Err(error) = create_symlink(&target, &dest_path) {
@@ -473,7 +496,7 @@ impl SaveDirState {
             if let Ok(data) = std::fs::read(source_path) {
                 match FileKind::identify_bytes(&data, false) {
                     Ok(FileKind::ThinArchive) => {
-                        self.handle_thin_archive(source_path, input_data)?;
+                        self.handle_thin_archive(source_path, input_data, common)?;
                     }
                     Ok(FileKind::Text) => {
                         let is_in_sysroot = input_data.is_in_sysroot(source_path);
@@ -488,7 +511,8 @@ impl SaveDirState {
                             if let Ok(updated_bytes) = make_linker_script_relative(
                                 &data,
                                 source_path,
-                                input_data.resolved_sysroot.as_deref(),
+                                input_data.logical_sysroot.as_deref(),
+                                common,
                             ) {
                                 std::fs::write(dest_path, updated_bytes)?;
                                 return Ok(());
@@ -520,6 +544,7 @@ impl SaveDirState {
         &self,
         path: &Path,
         input_data: &FileLoader<'_, impl FileSystem>,
+        common: &CommonArgs,
     ) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
@@ -537,7 +562,7 @@ impl SaveDirState {
                     }
                     let absolute_entry_path = parent_path.join(entry_path);
 
-                    self.copy_file(&absolute_entry_path, input_data)?;
+                    self.copy_file(&absolute_entry_path, input_data, common)?;
                 }
                 ArchiveEntry::Regular(_) => {}
             }
@@ -561,6 +586,7 @@ fn make_linker_script_relative(
     bytes: &[u8],
     source_path: &Path,
     sysroot: Option<&Path>,
+    args: &CommonArgs,
 ) -> Result<Vec<u8>> {
     let script = LinkerScript::parse(bytes, source_path)?;
     let script_dir = source_path.parent().context("Invalid path")?;
@@ -572,7 +598,14 @@ fn make_linker_script_relative(
     // global string replacement, where one replacement can modify text
     // introduced by an earlier replacement.
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    collect_path_edits(&script.commands, base_ptr, script_dir, sysroot, &mut edits)?;
+    collect_path_edits(
+        &script.commands,
+        base_ptr,
+        script_dir,
+        sysroot,
+        args,
+        &mut edits,
+    )?;
 
     // Sort by offset descending so earlier byte positions remain valid as we
     // apply later edits.
@@ -593,6 +626,7 @@ fn collect_path_edits(
     base_ptr: usize,
     script_dir: &Path,
     sysroot: Option<&Path>,
+    args: &CommonArgs,
     edits: &mut Vec<(usize, usize, String)>,
 ) -> Result {
     for command in commands {
@@ -604,46 +638,55 @@ fn collect_path_edits(
                 let path_str = std::str::from_utf8(arg).context("Path isn't valid UTF-8")?;
                 let path = Path::new(path_str);
 
-                let replacement = if path.is_absolute() {
-                    let Some(rel) = make_relative_path(path, script_dir) else {
-                        continue;
-                    };
-                    Some(rel.to_str().context("Path isn't valid UTF-8")?.to_owned())
-                } else if sysroot.is_none() {
-                    if let Some(forced) = crate::linker_script::maybe_forced_sysroot(path, None) {
-                        if forced.is_absolute() {
-                            let Some(rel) = make_relative_path(&forced, script_dir) else {
-                                continue;
-                            };
-                            Some(rel.to_str().context("Path isn't valid UTF-8")?.to_owned())
-                        } else {
-                            Some(
-                                forced
-                                    .to_str()
-                                    .context("Path isn't valid UTF-8")?
-                                    .to_owned(),
-                            )
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(replacement) = replacement {
+                if let Some(replacement) =
+                    rewrite_script_input_path(path, script_dir, sysroot, args)?
+                {
                     let offset = arg.as_ptr() as usize - base_ptr;
                     edits.push((offset, arg.len(), replacement));
                 }
             }
             crate::linker_script::Command::Group(subs)
             | crate::linker_script::Command::AsNeeded(subs) => {
-                collect_path_edits(subs, base_ptr, script_dir, sysroot, edits)?;
+                collect_path_edits(subs, base_ptr, script_dir, sysroot, args, edits)?;
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+fn rewrite_script_input_path(
+    path: &Path,
+    script_dir: &Path,
+    sysroot: Option<&Path>,
+    args: &CommonArgs,
+) -> Result<Option<String>> {
+    let path = if path.is_absolute() {
+        Cow::Borrowed(path)
+    } else if sysroot.is_none()
+        && let Some(forced) = crate::linker_script::maybe_forced_sysroot(path, None)
+    {
+        Cow::Owned(forced.into_path_buf())
+    } else {
+        return Ok(None);
+    };
+
+    let replacement = if path.is_absolute() {
+        let physical = std::path::absolute(args.resolve_input_path(&path))?;
+        let Some(relative) = make_relative_path(&physical, script_dir) else {
+            return Ok(None);
+        };
+        relative
+    } else {
+        path.into_owned()
+    };
+
+    Ok(Some(
+        replacement
+            .to_str()
+            .context("Path isn't valid UTF-8")?
+            .to_owned(),
+    ))
 }
 
 /// Removes any backtracking components (`..`) and the next component from `path`
@@ -968,7 +1011,8 @@ mod tests {
         let script_path = Path::new("/work/scripts/script.ld");
 
         // Without sysroot: forced sysroot paths are made relative
-        let without_sysroot = make_linker_script_relative(script, script_path, None).unwrap();
+        let without_sysroot =
+            make_linker_script_relative(script, script_path, None, &CommonArgs::default()).unwrap();
         let without_str = std::str::from_utf8(&without_sysroot).unwrap();
         assert_eq!(
             without_str,
@@ -976,9 +1020,13 @@ mod tests {
         );
 
         // With sysroot: forced sysroot paths remain untouched (evaluated against --sysroot=$D/...)
-        let with_sysroot =
-            make_linker_script_relative(script, script_path, Some(Path::new("/my/sysroot")))
-                .unwrap();
+        let with_sysroot = make_linker_script_relative(
+            script,
+            script_path,
+            Some(Path::new("/my/sysroot")),
+            &CommonArgs::default(),
+        )
+        .unwrap();
         let with_str = std::str::from_utf8(&with_sysroot).unwrap();
         assert_eq!(
             with_str,
@@ -997,7 +1045,8 @@ mod tests {
         // Forced path appears before its absolute counterpart.
         let script = b"GROUP ( =/lib/libvalue.a /lib/libvalue.a )";
         let script_path = Path::new("/work/scripts/script.ld");
-        let result = make_linker_script_relative(script, script_path, None).unwrap();
+        let result =
+            make_linker_script_relative(script, script_path, None, &CommonArgs::default()).unwrap();
         let result_str = std::str::from_utf8(&result).unwrap();
         assert_eq!(
             result_str,
@@ -1006,7 +1055,8 @@ mod tests {
 
         // Reversed order: absolute path before forced path.
         let script = b"GROUP ( /lib/libvalue.a =/lib/libvalue.a )";
-        let result = make_linker_script_relative(script, script_path, None).unwrap();
+        let result =
+            make_linker_script_relative(script, script_path, None, &CommonArgs::default()).unwrap();
         let result_str = std::str::from_utf8(&result).unwrap();
         assert_eq!(
             result_str,
@@ -1015,7 +1065,8 @@ mod tests {
 
         // $SYSROOT variant overlapping with a plain absolute path.
         let script = b"GROUP ( $SYSROOT/lib/libvalue.a /lib/libvalue.a )";
-        let result = make_linker_script_relative(script, script_path, None).unwrap();
+        let result =
+            make_linker_script_relative(script, script_path, None, &CommonArgs::default()).unwrap();
         let result_str = std::str::from_utf8(&result).unwrap();
         assert_eq!(
             result_str,
@@ -1029,7 +1080,8 @@ mod tests {
     fn make_linker_script_relative_as_needed() {
         let script = b"GROUP ( AS_NEEDED ( /usr/lib/libm.so -lc =/lib/librt.a ) )";
         let script_path = Path::new("/work/scripts/script.ld");
-        let result = make_linker_script_relative(script, script_path, None).unwrap();
+        let result =
+            make_linker_script_relative(script, script_path, None, &CommonArgs::default()).unwrap();
         let result_str = std::str::from_utf8(&result).unwrap();
         assert_eq!(
             result_str,

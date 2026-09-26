@@ -6,6 +6,7 @@ use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::archive::EntryMeta;
+use crate::args::CommonArgs;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
@@ -52,7 +53,10 @@ pub(crate) struct FileLoader<'data, F: FileSystem> {
     /// Effective framework directories, shared by input lookup and reproducer generation.
     pub(crate) resolved_framework_search_path: Vec<Box<Path>>,
 
-    pub(crate) resolved_sysroot: Option<PathBuf>,
+    /// Prefix for input paths, before virtual-root mapping.
+    pub(crate) logical_sysroot: Option<PathBuf>,
+
+    physical_sysroot: Option<PathBuf>,
 
     pub(crate) resolved_lib_search_path: Vec<Box<Path>>,
 
@@ -104,7 +108,7 @@ pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);
 pub(crate) struct InputFile<D: InputFileData> {
     pub(crate) filename: PathBuf,
 
-    /// The filename prior to path search. If this is absolute, then `filename` will be the same.
+    /// The filename prior to path search and virtual-root mapping.
     original_filename: PathBuf,
 
     pub(crate) modifiers: Modifiers,
@@ -180,7 +184,8 @@ struct TemporaryState<'data, 'paths, P: Platform, F: FileSystem> {
     args: &'data P::Args,
     lib_search_path: &'paths [Box<Path>],
     framework_search_path: &'paths [Box<Path>],
-    sysroot: Option<&'paths Path>,
+    logical_sysroot: Option<&'paths Path>,
+    physical_sysroot: Option<&'paths Path>,
     has_plugin: bool,
 
     inputs_by_path: Mutex<HashMap<PathBuf, InputLoadInfo>>,
@@ -272,12 +277,16 @@ impl<'data> AuxiliaryFiles<'data> {
         file_system: &F,
     ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
-            if file_system.file_type(path).is_ok() {
-                path.to_owned()
-            } else if let Some(found) = search_for_file(file_system, lib_search_path, None, path) {
+            let resolved = args.common().resolve_input_path(path);
+
+            if file_system.file_type(&resolved).is_ok() {
+                resolved.into_owned()
+            } else if let Some(found) =
+                search_for_file(file_system, args.common(), lib_search_path, None, path)
+            {
                 found
             } else {
-                path.to_owned()
+                resolved.into_owned()
             }
         };
 
@@ -299,7 +308,8 @@ impl<'data> AuxiliaryFiles<'data> {
             retain_symbols_data: args
                 .retain_symbols_path()
                 .map(|path| {
-                    let data = read_auxiliary_data(path, inputs_arena, file_system)?;
+                    let path = args.common().resolve_input_path(path);
+                    let data = read_auxiliary_data(&path, inputs_arena, file_system)?;
                     std::str::from_utf8(data.raw)
                         .with_context(|| format!("Invalid UTF-8 in `{}`", path.display()))
                 })
@@ -319,13 +329,14 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             file_system,
             has_dynamic: false,
             resolved_framework_search_path: Vec::new(),
-            resolved_sysroot: None,
+            logical_sysroot: None,
+            physical_sysroot: None,
             resolved_lib_search_path: Vec::new(),
         }
     }
 
     pub(crate) fn is_in_sysroot(&self, path: &Path) -> bool {
-        self.resolved_sysroot.as_ref().is_some_and(|sysroot| {
+        self.physical_sysroot.as_ref().is_some_and(|sysroot| {
             self.file_system
                 .canonicalize(path)
                 .is_ok_and(|path| path.starts_with(sysroot))
@@ -340,17 +351,24 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
-        self.resolved_sysroot = args.sysroot().map(|path| {
-            self.file_system
-                .canonicalize(path)
-                .unwrap_or_else(|_| path.to_owned())
+        self.logical_sysroot = args.sysroot().map(|path| {
+            if args.common().chroot.is_some() {
+                path.to_owned()
+            } else {
+                self.file_system
+                    .canonicalize(path)
+                    .unwrap_or_else(|_| path.to_owned())
+            }
         });
+        self.physical_sysroot = args
+            .common()
+            .resolve_physical_sysroot(self.logical_sysroot.as_deref(), self.file_system.as_ref())?;
 
         self.resolved_lib_search_path = args
             .lib_search_path()
             .iter()
             .map(|path| {
-                args.resolve_sysroot_path(path, self.resolved_sysroot.as_deref())
+                args.resolve_sysroot_path(path, self.logical_sysroot.as_deref())
                     .unwrap_or_else(|| path.clone())
             })
             .collect();
@@ -364,7 +382,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         for input in inputs {
             let resolved_input = match &input.spec {
                 InputSpec::File(path) => args
-                    .resolve_sysroot_path(path, self.resolved_sysroot.as_deref())
+                    .resolve_sysroot_path(path, self.logical_sysroot.as_deref())
                     .map(|path| Input {
                         spec: InputSpec::File(path),
                         search_first: input.search_first.clone(),
@@ -374,6 +392,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             };
             let input = resolved_input.as_ref().unwrap_or(input);
             let path = input.path(
+                args.common(),
                 &self.resolved_lib_search_path,
                 &self.resolved_framework_search_path,
                 self.file_system.as_ref(),
@@ -402,7 +421,8 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             args,
             lib_search_path: &self.resolved_lib_search_path,
             framework_search_path: &self.resolved_framework_search_path,
-            sysroot: self.resolved_sysroot.as_deref(),
+            logical_sysroot: self.logical_sysroot.as_deref(),
+            physical_sysroot: self.physical_sysroot.as_deref(),
             has_plugin: plugin.is_some(),
             inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
@@ -553,7 +573,8 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
 fn process_linker_script<'data, I: InputFileData>(
     input_file: &'data InputFile<I>,
-    sysroot: Option<&Path>,
+    logical_sysroot: Option<&Path>,
+    physical_sysroot: Option<&Path>,
     file_system: &impl FileSystem,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
@@ -561,7 +582,8 @@ fn process_linker_script<'data, I: InputFileData>(
 
     let script_path = file_system.canonicalize(&input_file.filename)?;
     let directory = script_path.parent().expect("expected an absolute path");
-    let script_is_in_sysroot = sysroot.is_some_and(|sysroot| script_path.starts_with(sysroot));
+    let script_is_in_sysroot =
+        physical_sysroot.is_some_and(|sysroot| script_path.starts_with(sysroot));
 
     let mut extra_inputs = Vec::new();
 
@@ -569,8 +591,11 @@ fn process_linker_script<'data, I: InputFileData>(
         input.search_first = Some(directory.to_owned());
 
         if let InputSpec::File(file) = &mut input.spec
-            && let Some(new_file) =
-                crate::linker_script::maybe_apply_sysroot(script_is_in_sysroot, file, sysroot)
+            && let Some(new_file) = crate::linker_script::maybe_apply_sysroot(
+                script_is_in_sysroot,
+                file,
+                logical_sysroot,
+            )
         {
             *file = new_file;
         }
@@ -654,7 +679,14 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         match entry? {
             ArchiveEntry::Thin(entry) => {
-                entry_paths.push(parent_path.join(entry.ident.as_path()));
+                let member = entry.ident.as_path();
+
+                entry_paths.push(
+                    state
+                        .args
+                        .common()
+                        .resolve_input_from_physical_dir(&member, parent_path),
+                );
             }
             ArchiveEntry::Regular(_) => {}
         }
@@ -663,6 +695,7 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
     let results = entry_paths
         .into_par_iter()
         .map(|entry_path| {
+            let entry_path = state.file_system.absolute_path(&entry_path)?;
             let (input, file) = state
                 .file_system
                 .open_input(&entry_path, state.args.common().prepopulate_maps)
@@ -792,8 +825,12 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
                     P::SUPPORTS_LINKER_SCRIPTS,
                     "Unsupported input file type (text): {input_ref}"
                 );
-                let script =
-                    process_linker_script(input_file, self.sysroot, self.file_system.as_ref())?;
+                let script = process_linker_script(
+                    input_file,
+                    self.logical_sysroot,
+                    self.physical_sysroot,
+                    self.file_system.as_ref(),
+                )?;
 
                 let file_indexes = script
                     .extra_inputs
@@ -845,6 +882,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
         let paths = input.path(
+            self.args.common(),
             self.lib_search_path,
             self.framework_search_path,
             self.file_system.as_ref(),
@@ -993,6 +1031,7 @@ fn read_auxiliary_data<'data, F: FileSystem>(
 impl Input {
     fn path(
         &self,
+        args: &CommonArgs,
         lib_search_path: &[Box<Path>],
         framework_search_path: &[Box<Path>],
         file_system: &impl FileSystem,
@@ -1002,6 +1041,7 @@ impl Input {
                 if self.search_first.is_some()
                     && let Some(path) = search_for_file(
                         file_system,
+                        args,
                         lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
@@ -1013,7 +1053,11 @@ impl Input {
                     });
                 }
                 Ok(InputPath {
-                    absolute: file_system.absolute_path(p)?,
+                    absolute: if self.modifiers.temporary {
+                        file_system.absolute_path(p)?
+                    } else {
+                        file_system.absolute_path(&args.resolve_input_path(p))?
+                    },
                     original: p.as_ref().to_owned(),
                 })
             }
@@ -1025,6 +1069,7 @@ impl Input {
                 filenames.push(PathBuf::from(format!("lib{lib_name}.a")));
                 if let Some((path, filename_index)) = search_for_files(
                     file_system,
+                    args,
                     lib_search_path,
                     self.search_first.as_ref(),
                     &filenames,
@@ -1037,6 +1082,7 @@ impl Input {
                 let filename = format!("lib{lib_name}.tbd");
                 if let Some(path) = search_for_file(
                     file_system,
+                    args,
                     lib_search_path,
                     self.search_first.as_ref(),
                     &filename,
@@ -1051,6 +1097,7 @@ impl Input {
             InputSpec::Search(filename) => {
                 if let Some(path) = search_for_file(
                     file_system,
+                    args,
                     lib_search_path,
                     self.search_first.as_ref(),
                     filename.as_ref(),
@@ -1068,8 +1115,9 @@ impl Input {
                     PathBuf::from(format!("{framework}.tbd")),
                     PathBuf::from(framework),
                 ];
+
                 if let Some((path, filename_index)) =
-                    search_for_files(file_system, framework_search_path, None, &filenames)
+                    search_for_files(file_system, args, framework_search_path, None, &filenames)
                 {
                     return Ok(InputPath {
                         absolute: file_system.absolute_path(&path)?,
@@ -1084,19 +1132,23 @@ impl Input {
 
 fn search_for_file(
     file_system: &impl FileSystem,
+    args: &CommonArgs,
     lib_search_path: &[Box<Path>],
     search_first: Option<&PathBuf>,
     filename: impl AsRef<Path>,
 ) -> Option<PathBuf> {
     let filename = filename.as_ref();
+
     if let Some(search_first) = search_first {
-        let path = search_first.join(filename);
+        let path = args.resolve_input_from_physical_dir(filename, search_first);
+
         if file_system.file_type(&path).is_ok() {
             return Some(path);
         }
     }
     for dir in lib_search_path {
-        let path = dir.join(filename);
+        let path = args.resolve_input_path(&dir.join(filename)).into_owned();
+
         if file_system.file_type(&path).is_ok() {
             return Some(path);
         }
@@ -1106,23 +1158,35 @@ fn search_for_file(
 
 fn search_for_files(
     file_system: &impl FileSystem,
+    args: &CommonArgs,
     lib_search_path: &[Box<Path>],
     search_first: Option<&PathBuf>,
     filenames: &[PathBuf],
 ) -> Option<(PathBuf, usize)> {
-    let search_dir = |dir: &Path| {
-        filenames.iter().enumerate().find_map(|(index, filename)| {
-            let path = dir.join(filename);
+    let script_candidates = search_first.into_iter().flat_map(|directory| {
+        filenames
+            .iter()
+            .map(|filename| args.resolve_input_from_physical_dir(filename, directory))
+            .enumerate()
+    });
+    let library_candidates = lib_search_path.iter().flat_map(|directory| {
+        filenames
+            .iter()
+            .map(|filename| {
+                args.resolve_input_path(&directory.join(filename))
+                    .into_owned()
+            })
+            .enumerate()
+    });
+
+    script_candidates
+        .chain(library_candidates)
+        .find_map(|(index, path)| {
             file_system
                 .file_type(&path)
                 .is_ok()
                 .then_some((path, index))
         })
-    };
-
-    search_first
-        .and_then(|dir| search_dir(dir))
-        .or_else(|| lib_search_path.iter().find_map(|dir| search_dir(dir)))
 }
 
 const FILE_INDEX_BITS: u32 = 8;
@@ -1257,6 +1321,7 @@ mod tests {
     use super::FileLoader;
     use super::Input;
     use super::InputSpec;
+    use crate::args::CommonArgs;
     use crate::args::macho::MachOArgs;
     use crate::error::Result;
     use crate::fs::FileSystem;
@@ -1317,6 +1382,7 @@ mod tests {
 
     #[test]
     fn input_paths_use_file_system_namespace() {
+        let args = CommonArgs::default();
         let lib_search_path = [Path::new("libs").into()];
         for (spec, search_first, filename) in [
             (
@@ -1340,7 +1406,9 @@ mod tests {
                 modifiers: Default::default(),
             };
 
-            let resolved = input.path(&lib_search_path, &[], &file_system).unwrap();
+            let resolved = input
+                .path(&args, &lib_search_path, &[], &file_system)
+                .unwrap();
             assert_eq!(resolved.absolute, path, "{input:?}");
             assert_eq!(resolved.original, Path::new(filename));
 
@@ -1352,14 +1420,14 @@ mod tests {
 
             assert_eq!(
                 direct
-                    .path(&lib_search_path, &[], &file_system)
+                    .path(&args, &lib_search_path, &[], &file_system)
                     .unwrap()
                     .absolute,
                 resolved.absolute
             );
 
             let os_path = direct
-                .path(&lib_search_path, &[], &crate::fs::OsFileSystem)
+                .path(&args, &lib_search_path, &[], &crate::fs::OsFileSystem)
                 .unwrap();
 
             assert_eq!(os_path.absolute, std::path::absolute(&path).unwrap());
@@ -1372,7 +1440,7 @@ mod tests {
 
             assert_eq!(
                 absolute
-                    .path(&lib_search_path, &[], &crate::fs::OsFileSystem)
+                    .path(&args, &lib_search_path, &[], &crate::fs::OsFileSystem)
                     .unwrap()
                     .absolute,
                 os_path.absolute
@@ -1395,7 +1463,12 @@ mod tests {
             };
 
             let resolved = input
-                .path(&[], &framework_search_path, &file_system)
+                .path(
+                    &CommonArgs::default(),
+                    &[],
+                    &framework_search_path,
+                    &file_system,
+                )
                 .unwrap();
             assert_eq!(resolved.absolute, path);
             assert_eq!(resolved.original, Path::new(filename));
@@ -1404,29 +1477,44 @@ mod tests {
 
     #[test]
     fn input_loading_uses_custom_file_system_for_framework_directories() {
-        let file_system = MemoryFileSystem {
-            entries: [
-                (PathBuf::from("/sdk/vendor"), FileType::Directory),
-                (PathBuf::from("/vendor/Foo.framework/Foo"), FileType::File),
-            ]
-            .into(),
-        };
-        let mut args = MachOArgs {
-            sysroot: Some(Path::new("/sdk").into()),
-            ..Default::default()
-        };
-        args.parse(["-F/vendor", "-framework", "Foo"].into_iter())
-            .unwrap();
-        let arena = Arena::new();
-        let mut loader = FileLoader::new(&arena, Arc::new(file_system));
-        let result =
-            loader.load_inputs::<crate::macho::MachO>(&args.common.inputs, &args, &mut None);
-        assert!(
-            result
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("Couldn't find framework `Foo`")
-        );
+        for chroot in [None, Some("/virtual-root"), Some("relative-root")] {
+            let mut common = CommonArgs::default();
+            common.chroot = chroot.map(|path| Path::new(path).into());
+            let file_system = MemoryFileSystem {
+                entries: [
+                    (
+                        common
+                            .resolve_input_path(Path::new("/sdk/vendor"))
+                            .into_owned(),
+                        FileType::Directory,
+                    ),
+                    (
+                        common
+                            .resolve_input_path(Path::new("/vendor/Foo.framework/Foo"))
+                            .into_owned(),
+                        FileType::File,
+                    ),
+                ]
+                .into(),
+            };
+            let mut args = MachOArgs {
+                common,
+                sysroot: Some(Path::new("/sdk").into()),
+                ..Default::default()
+            };
+            args.parse(["-F/vendor", "-framework", "Foo"].into_iter())
+                .unwrap();
+            let arena = Arena::new();
+            let mut loader = FileLoader::new(&arena, Arc::new(file_system));
+            let result =
+                loader.load_inputs::<crate::macho::MachO>(&args.common.inputs, &args, &mut None);
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("Couldn't find framework `Foo`")
+            );
+        }
     }
 }

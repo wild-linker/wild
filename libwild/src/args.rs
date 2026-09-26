@@ -18,6 +18,7 @@ use crate::env;
 use crate::error::Context;
 use crate::error::Result;
 use crate::fs::FileReplacementMode;
+use crate::fs::FileSystem;
 use crate::fs::FileWriteMode;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
@@ -87,6 +88,7 @@ pub struct CommonArgs {
     pub(crate) madvise_huge_pages: Option<bool>,
     pub(crate) save_dir: SaveDir,
 
+    pub(crate) chroot: Option<PathBuf>,
     pub(crate) prepopulate_maps: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) should_fork: bool,
@@ -344,6 +346,7 @@ impl Default for CommonArgs {
             file_write_mode: None,
             fallocate_output_file: None,
             madvise_huge_pages: None,
+            chroot: None,
             prepopulate_maps: false,
             debug_fuel: None,
             should_fork: true,
@@ -378,6 +381,41 @@ fn default_warning_callback(warning: Warning) {
 }
 
 impl CommonArgs {
+    /// Applies the virtual root to absolute input paths. The result can still be relative and
+    /// is not canonicalized. Paths already mapped through the virtual root must not be passed in.
+    pub(crate) fn resolve_input_path<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
+        if let Some(root) = &self.chroot
+            && let Ok(relative) = path.strip_prefix("/")
+        {
+            Cow::Owned(root.join(relative))
+        } else {
+            Cow::Borrowed(path)
+        }
+    }
+
+    pub(crate) fn resolve_input_from_physical_dir(&self, path: &Path, directory: &Path) -> PathBuf {
+        if path.is_absolute() {
+            self.resolve_input_path(path).into_owned()
+        } else {
+            directory.join(path)
+        }
+    }
+
+    pub(crate) fn resolve_physical_sysroot(
+        &self,
+        sysroot: Option<&Path>,
+        file_system: &impl FileSystem,
+    ) -> Result<Option<PathBuf>> {
+        let Some(sysroot) = sysroot else {
+            return Ok(None);
+        };
+        let physical = self.resolve_input_path(sysroot);
+        file_system
+            .canonicalize(&physical)
+            .or_else(|_| file_system.absolute_path(&physical))
+            .map(Some)
+    }
+
     pub(crate) fn report_unrecognized(&self) -> Result {
         if !self.unrecognized_options.is_empty() {
             let options_list = self.unrecognized_options.join(", ");
@@ -636,7 +674,8 @@ impl Default for Modifiers {
 pub(crate) struct Input {
     pub(crate) spec: InputSpec,
     /// A directory to search first. Only present when the input came from a linker script, in
-    /// which case this is the directory containing the linker script.
+    /// which case this is the physical directory containing the linker script, already resolved
+    /// through `--chroot`. Library search paths remain logical and require that mapping.
     pub(crate) search_first: Option<PathBuf>,
     pub(crate) modifiers: Modifiers,
 }
@@ -1562,6 +1601,16 @@ impl std::str::FromStr for CounterKind {
 }
 
 fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
+    parser
+        .declare_with_param()
+        .long("chroot")
+        .help("Prefix absolute input paths with the supplied directory")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.omit_argument();
+            args.common_mut().chroot = (!value.is_empty()).then(|| PathBuf::from(value));
+            Ok(())
+        });
+
     parser
         .declare()
         .long("verbose")
