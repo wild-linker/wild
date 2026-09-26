@@ -1011,12 +1011,12 @@ pub const PAGE_MASK_4KB: u64 = SIZE_4KB - 1;
 pub const PAGE_MASK_4GB: u64 = SIZE_4GB - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageMask {
+pub enum PageMaskPattern {
     Size4KB,
     Size4GiB,
 }
 
-impl PageMask {
+impl PageMaskPattern {
     #[must_use]
     pub const fn value(self) -> u64 {
         match self {
@@ -1054,10 +1054,10 @@ impl Bias {
 
 #[derive(Debug, Clone, Copy)]
 pub enum PageMask {
-    SymbolPlusAddendAndPosition(PageMask),
-    GotEntryAndPosition(PageMask),
-    GotBase(PageMask),
-    Position(PageMask),
+    SymbolPlusAddendAndPosition(PageMaskPattern),
+    GotEntryAndPosition(PageMaskPattern),
+    GotBase(PageMaskPattern),
+    Position(PageMaskPattern),
 }
 
 // Allow range (half-open) of a computed value of a relocation
