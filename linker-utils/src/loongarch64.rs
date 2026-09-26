@@ -1,7 +1,9 @@
 use crate::elf::AllowedRange;
+use crate::elf::Bias;
 use crate::elf::LoongArch64Instruction;
 use crate::elf::PAGE_MASK_4KB;
 use crate::elf::PageMask;
+use crate::elf::PageMaskPattern;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
@@ -184,7 +186,7 @@ pub const fn relocation_type_from_raw(
             0,
         ),
         object::elf::R_LARCH_SUB_ULEB128 => (
-            RelocationKind::PairSubtractionULEB128(object::elf::R_LARCH_ADD_ULEB128),
+            RelocationKind::PairSubtractionULEB128LoongArch,
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
@@ -227,7 +229,9 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_PCALA_HI20 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::SymbolPlusAddendAndPosition(
+                PageMaskPattern::Size4KB,
+            )),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -296,7 +300,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_GOT_PC_HI20 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMaskPattern::Size4KB)),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -424,7 +428,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_TLS_IE_PC_HI20 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMaskPattern::Size4KB)),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -492,7 +496,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_TLS_LD_PC_HI20 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMaskPattern::Size4KB)),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -508,7 +512,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_TLS_GD_PC_HI20 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMaskPattern::Size4KB)),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -525,7 +529,7 @@ pub const fn relocation_type_from_raw(
         object::elf::R_LARCH_TLS_DESC_PC_HI20 => (
             RelocationKind::TlsDesc,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PageMaskPattern::Size4KB)),
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
@@ -621,7 +625,7 @@ pub const fn relocation_type_from_raw(
         mask,
         range,
         alignment,
-        bias,
+        bias: Bias::from_value(bias),
         thunkable: false,
         implicit_addend: false,
     })

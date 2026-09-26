@@ -3,8 +3,8 @@ use std::ops::Range;
 // Half-opened range bounded inclusively below and exclusively above: [`start`, `end`)
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct BitRange {
-    pub start: u32,
-    pub end: u32,
+    pub start: u8,
+    pub end: u8,
 }
 
 pub trait BitExtraction {

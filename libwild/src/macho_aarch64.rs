@@ -10,6 +10,7 @@ use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::PageMask;
+use linker_utils::elf::PageMaskPattern;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -132,7 +133,9 @@ impl crate::platform::Arch for MachOAArch64 {
                 (
                     rel_kind,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+                    Some(PageMask::SymbolPlusAddendAndPosition(
+                        PageMaskPattern::Size4KB,
+                    )),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
                     false,
@@ -156,7 +159,9 @@ impl crate::platform::Arch for MachOAArch64 {
                 (
                     RelocationKind::GotRelative,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+                    Some(PageMask::SymbolPlusAddendAndPosition(
+                        PageMaskPattern::Size4KB,
+                    )),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
                     false,
@@ -204,7 +209,7 @@ impl crate::platform::Arch for MachOAArch64 {
         };
         Ok(RelocationKindInfo {
             alignment,
-            bias: 0,
+            bias: None,
             kind,
             mask,
             range,

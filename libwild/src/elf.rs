@@ -4209,21 +4209,21 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
 
     match mask {
         PageMask::SymbolPlusAddendAndPosition(mask) => PageMaskValue {
-            symbol_plus_addend: !mask,
-            place: !mask,
+            symbol_plus_addend: !mask.value(),
+            place: !mask.value(),
             ..Default::default()
         },
         PageMask::GotEntryAndPosition(mask) => PageMaskValue {
-            got_entry: !mask,
-            place: !mask,
+            got_entry: !mask.value(),
+            place: !mask.value(),
             ..Default::default()
         },
         PageMask::GotBase(mask) => PageMaskValue {
-            got: !mask,
+            got: !mask.value(),
             ..Default::default()
         },
         PageMask::Position(mask) => PageMaskValue {
-            place: !mask,
+            place: !mask.value(),
             ..Default::default()
         },
     }
@@ -6315,7 +6315,7 @@ fn materialize_relocation_requirements<
         // Dynamic absolute relocations write a full address, so narrower references need
         // a copy relocation or canonical PLT even when the section is writable.
         let is_narrow_absolute = rel_kind == RelocationKind::Absolute
-            && classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as usize);
+            && classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8);
 
         if is_narrow_absolute && symbol_db.output_kind.is_position_independent() {
             bail!(

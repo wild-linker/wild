@@ -395,7 +395,7 @@ impl Arch for X86_64 {
         // relocation and the next instruction. This isn't necessarily true, but is for the cases
         // where we need to compute this value.
         if let linker_utils::elf::RelocationSize::ByteSize(b) = relocation_info.size {
-            b as u64
+            u64::from(b)
         } else {
             0
         }

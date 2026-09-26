@@ -101,6 +101,7 @@ use crate::writable_elf::WritableRelr as _;
 use crate::writable_elf::WritableSectionHeader as _;
 use crate::writable_elf::WritableSymbol as _;
 use hashbrown::HashMap;
+use linker_utils::elf::Bias;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -3409,7 +3410,7 @@ fn apply_relocation<
         None
     };
     let mask = get_page_mask(rel_info.mask);
-    let bias = rel_info.bias;
+    let bias = rel_info.bias.map_or(0, Bias::value);
     // For ppc64 calls, branch to the callee's local entry point (we share its TOC, so the global
     // entry's r2 setup is unnecessary). Zero for every other architecture and relocation.
     let branch_local_entry = if rel_info.size.is_ppc64_branch() {
@@ -3595,7 +3596,13 @@ fn apply_relocation<
                 ),
             }
         }
-        RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+        kind @ (RelocationKind::PairSubtractionULEB128RiscV
+        | RelocationKind::PairSubtractionULEB128LoongArch) => {
+            let expected_r_type = match kind {
+                RelocationKind::PairSubtractionULEB128RiscV => object::elf::R_RISCV_SET_ULEB128,
+                RelocationKind::PairSubtractionULEB128LoongArch => object::elf::R_LARCH_ADD_ULEB128,
+                _ => unreachable!(),
+            };
             get_pair_subtraction_relocation_value::<C, A, R>(
                 object_layout,
                 rel,
@@ -3903,7 +3910,7 @@ fn maybe_get_thunk_for_relocation<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
         let mask = get_page_mask(rel_info.mask);
         let new_value = thunk_address
-            .wrapping_add(rel_info.bias)
+            .wrapping_add(rel_info.bias.map_or(0, Bias::value))
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place));
 
@@ -4011,7 +4018,15 @@ fn apply_debug_relocation<
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
-            RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+            kind @ (RelocationKind::PairSubtractionULEB128RiscV
+            | RelocationKind::PairSubtractionULEB128LoongArch) => {
+                let expected_r_type = match kind {
+                    RelocationKind::PairSubtractionULEB128RiscV => object::elf::R_RISCV_SET_ULEB128,
+                    RelocationKind::PairSubtractionULEB128LoongArch => {
+                        object::elf::R_LARCH_ADD_ULEB128
+                    }
+                    _ => unreachable!(),
+                };
                 get_pair_subtraction_relocation_value::<C, A, R>(
                     object_layout,
                     rel,
@@ -4088,7 +4103,7 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
         Ok(0)
     } else if resolution.flags.is_interposable()
         && section_info.is_writable
-        && rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as usize)
+        && rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as u8)
     {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,

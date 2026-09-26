@@ -118,7 +118,7 @@ impl RelaxationKind {
             mask: None,
             range: AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             alignment: 1,
-            bias: 0,
+            bias: None,
             thunkable: false,
             implicit_addend: false,
         }
@@ -433,7 +433,7 @@ pub const fn relocation_type_from_raw(
             1,
         ),
         object::elf::R_RISCV_SUB_ULEB128 => (
-            RelocationKind::PairSubtractionULEB128(object::elf::R_RISCV_SET_ULEB128),
+            RelocationKind::PairSubtractionULEB128RiscV,
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
@@ -453,7 +453,7 @@ pub const fn relocation_type_from_raw(
         mask,
         range,
         alignment,
-        bias: 0,
+        bias: None,
         thunkable: false,
         implicit_addend: false,
     })
