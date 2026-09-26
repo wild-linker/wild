@@ -531,8 +531,11 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
             };
 
             let encoding = match fixup.kind {
-                FixupKind::Rebase => {
-                    let value = u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?);
+                FixupKind::Rebase { target_address } => {
+                    let value = match target_address {
+                        Some(address) => address,
+                        None => u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?),
+                    };
                     let target = value
                         .checked_sub(image_base)
                         .context("Rebase target is before the image base")?;
