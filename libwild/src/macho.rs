@@ -60,6 +60,7 @@ use object::Endianness;
 use object::SectionIndex;
 use object::SymbolIndex;
 use object::macho;
+use object::macho::ARM64_RELOC_SUBTRACTOR;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
 use object::macho::N_PEXT;
@@ -1374,17 +1375,20 @@ impl platform::Platform for MachO {
         scope: &rayon::Scope<'scope>,
     ) -> Result {
         // TODO
+        let mut prev_rel = None;
         for rel in state.relocations(section_index)?.relocations {
             process_relocation::<A>(
                 state,
                 common,
                 rel,
+                prev_rel,
                 section_index,
                 false,
                 resources,
                 queue,
                 scope,
             )?;
+            prev_rel = Some(rel);
         }
         Ok(())
     }
@@ -1673,6 +1677,7 @@ impl platform::Platform for MachO {
                 object,
                 common,
                 rel,
+                None,
                 section_index,
                 false,
                 resources,
@@ -1732,6 +1737,7 @@ impl platform::Platform for MachO {
                 object,
                 common,
                 rel,
+                None,
                 section_index,
                 relocation_field_offset == PERSONALITY_FIELD_OFFSET,
                 resources,
@@ -2603,6 +2609,7 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     object: &layout::ObjectLayoutState<'data, MachO>,
     common: &mut CommonGroupState<'data, MachO>,
     rel: &Relocation,
+    prev_rel: Option<&Relocation>,
     section_index: object::SectionIndex,
     is_unwind_personality: bool,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,
@@ -2677,8 +2684,10 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             object.sections[section_index.0],
             SectionSlot::InitFunc(_) | SectionSlot::CompactUnwind(_)
         );
+        let is_subtractor_pair =
+            prev_rel.is_some_and(|rel| rel.info(LE).r_type == ARM64_RELOC_SUBTRACTOR);
 
-        if is_absolute_pointer && !is_consumed {
+        if is_absolute_pointer && !is_consumed && !is_subtractor_pair {
             let kind = if is_rebase {
                 Some(PendingFixupKind::Rebase)
             } else if from_dynamic_lib {
