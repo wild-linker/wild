@@ -36,6 +36,29 @@ use std::borrow::Cow;
 
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
+    pub(crate) has_linker_script: bool,
+}
+
+impl<'data> LayoutRules<'data> {
+    pub(crate) fn is_orphan<P: Platform>(
+        &self,
+        section_name: &[u8],
+        file_name: Option<&[u8]>,
+        section_header: &impl SectionHeader,
+    ) -> bool {
+        if section_header.should_exclude() {
+            return false;
+        }
+
+        if let Some(rule) = self.section_rules.lookup_rule(section_name, file_name) {
+            if rule.outcome == SectionRuleOutcome::Discard {
+                return false;
+            }
+            self.has_linker_script && !rule.from_linker_script
+        } else {
+            true
+        }
+    }
 }
 
 #[derive(Default)]
@@ -96,6 +119,9 @@ pub(crate) struct SectionRule<'data> {
 
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
+
+    /// Whether the rule was defined in a linker script.
+    from_linker_script: bool,
 }
 
 /// What should be done with a particular input section.
@@ -518,14 +544,18 @@ impl<'data> LayoutRulesBuilder<'data> {
     }
 
     pub(crate) fn build<P: Platform>(mut self, args: &P::Args) -> LayoutRules<'data> {
-        let section_rules = if self.rules.is_empty() {
-            SectionRules::from_rules(&P::default_layout_rules(args))
-        } else {
+        let has_linker_script = !self.rules.is_empty();
+        let section_rules = if has_linker_script {
             P::linker_script_rules_pre_build(&mut self);
             SectionRules::from_rules(&self.rules)
+        } else {
+            SectionRules::from_rules(&P::default_layout_rules(args))
         };
 
-        LayoutRules { section_rules }
+        LayoutRules {
+            section_rules,
+            has_linker_script,
+        }
     }
 
     pub(crate) fn add_section_rule(&mut self, rule: SectionRule<'data>) {
@@ -557,6 +587,7 @@ impl<'data> SectionRule<'data> {
             name_matcher,
             input_file_pattern: compiled_file_pattern,
             outcome,
+            from_linker_script: true,
         })
     }
 
@@ -633,6 +664,7 @@ impl<'data> SectionRule<'data> {
             name_matcher: SectionNameMatcher::Prefix(name),
             input_file_pattern: None,
             outcome: SectionRuleOutcome::SortedSection(SectionOutputInfo::keep(section_id)),
+            from_linker_script: false,
         }
     }
 
@@ -644,6 +676,7 @@ impl<'data> SectionRule<'data> {
             name_matcher: SectionNameMatcher::Exact(Cow::Borrowed(name)),
             input_file_pattern: None,
             outcome,
+            from_linker_script: false,
         }
     }
 
@@ -655,6 +688,7 @@ impl<'data> SectionRule<'data> {
             name_matcher: SectionNameMatcher::Prefix(name),
             input_file_pattern: None,
             outcome,
+            from_linker_script: false,
         }
     }
 }
@@ -682,6 +716,16 @@ impl<'data> SectionRules<'data> {
         map
     }
 
+    pub(crate) fn lookup_rule(
+        &self,
+        section_name: &[u8],
+        file_name: Option<&[u8]>,
+    ) -> Option<&SectionRule<'data>> {
+        let hash = section_name_prefix_hash(section_name)?;
+        self.rules
+            .find(hash, |rule| rule.matches(section_name, file_name))
+    }
+
     #[inline(always)]
     pub(crate) fn lookup<P: Platform>(
         &self,
@@ -693,11 +737,7 @@ impl<'data> SectionRules<'data> {
             return SectionRuleOutcome::Discard;
         }
 
-        if let Some(hash) = section_name_prefix_hash(section_name)
-            && let Some(rule) = self
-                .rules
-                .find(hash, |rule| rule.matches(section_name, file_name))
-        {
+        if let Some(rule) = self.lookup_rule(section_name, file_name) {
             return rule.outcome;
         }
 

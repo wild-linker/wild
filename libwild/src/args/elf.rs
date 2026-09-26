@@ -13,6 +13,7 @@ use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
 use crate::args::FileReplacementMode;
 use crate::args::Modifiers;
+use crate::args::OrphanHandling;
 use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
@@ -151,6 +152,7 @@ pub struct ElfArgs {
     pub(crate) debug_compression_kind: Option<CompressionKind>,
     pub(crate) sort_section: Option<SortSectionMode>,
     pub(crate) output_format_endian: Option<Endianness>,
+    pub(crate) orphan_handling: OrphanHandling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +427,7 @@ impl Default for ElfArgs {
             sort_section: None,
             gdb_index: false,
             output_format_endian: None,
+            orphan_handling: OrphanHandling::Place,
         }
     }
 }
@@ -2018,6 +2021,17 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    parser
+        .declare_with_param()
+        .long("orphan-handling")
+        .help("Control how orphan sections are handled. An orphan section is one not specifically mentioned in a linker script")
+        .execute(|args, _modifier_stack, value| {
+            args.orphan_handling = value
+                .parse::<OrphanHandling>()
+                .map_err(|_| error!("Invalid orphan handling value {value}"))?;
+            Ok(())
+        });
+
     super::declare_common_args(&mut parser);
 
     add_silently_ignored_flags(&mut parser);
@@ -2196,6 +2210,10 @@ impl platform::Args for ElfArgs {
 
     fn should_emit_got_plt_syms(&self) -> bool {
         self.got_plt_syms
+    }
+
+    fn orphan_handling(&self) -> OrphanHandling {
+        self.orphan_handling
     }
 
     fn copy_relocations_enabled(&self) -> crate::args::CopyRelocations {

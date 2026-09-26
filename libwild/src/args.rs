@@ -641,6 +641,16 @@ pub(crate) enum UnresolvedSymbols {
     IgnoreAll,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum OrphanHandling {
+    #[default]
+    Place,
+    Warn,
+    Error,
+    Discard,
+}
+
 /// Describes how a platform spells its options. GNU-style platforms use the default, whereas
 /// link.exe-style platforms accept a `/` prefix, ignore case and attach values with `:`.
 #[derive(Clone, Copy)]

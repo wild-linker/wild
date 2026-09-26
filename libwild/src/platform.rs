@@ -1606,6 +1606,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    fn orphan_handling(&self) -> crate::args::OrphanHandling {
+        crate::args::OrphanHandling::Place
+    }
+
     fn should_export_all_dynamic_symbols(&self) -> bool;
 
     /// Returns whether all symbols from the specified input should be exported as dynamic symbols.
