@@ -12,6 +12,10 @@
 //#ExpectSym:exit_syscall
 //#ExpectSection:.symtab
 
+//#Config:retain-symbols-only-keep-debug:only-keep-debug
+//#LinkArgs:--retain-symbols-file ./retain.txt --only-keep-debug
+//#ExpectSection:.text type=8
+
 //#Config:only-keep-debug-compressed:default
 //#LinkArgs:--only-keep-debug --compress-debug-sections=zlib
 //#RunEnabled:false

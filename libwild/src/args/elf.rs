@@ -79,6 +79,7 @@ pub struct ElfArgs {
     pub(crate) needs_nodelete_handling: bool,
     pub(crate) copy_relocations: CopyRelocations,
     pub(crate) sysroot: Option<Box<Path>>,
+    retain_symbols_path: Option<PathBuf>,
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
     pub(crate) entry: Option<String>,
@@ -386,6 +387,7 @@ impl Default for ElfArgs {
             no_undefined: None,
             allow_shlib_undefined: false,
             sysroot: None,
+            retain_symbols_path: None,
             dependency_file: None,
             undefined: Vec::new(),
             relro: true,
@@ -565,6 +567,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
                 *path = new_path;
             }
         }
+    }
+
+    if let Some(path) = args.retain_symbols_path.take() {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read `{}`", path.display()))?;
+        args.strip = Strip::Retain(
+            contents
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| line.as_bytes().to_owned())
+                .collect(),
+        );
     }
 
     if let Some(error) = args.emulation_error.take() {
@@ -962,6 +976,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack| {
             args.strip_requested = true;
             args.strip = Strip::All;
+            args.retain_symbols_path = None;
             Ok(())
         });
 
@@ -973,6 +988,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack| {
             args.strip_requested = true;
             args.strip = Strip::Debug;
+            args.retain_symbols_path = None;
             Ok(())
         });
 
@@ -983,6 +999,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack| {
             args.only_keep_debug_requested = true;
             args.strip = Strip::OnlyKeepDebug;
+            args.retain_symbols_path = None;
             Ok(())
         });
 
@@ -1698,24 +1715,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             One symbol per line.",
         )
         .execute(|args, _modifier_stack, value| {
-            // The performance this flag is not especially optimised. For one, we copy each string
-            // to the heap. We also do two lookups in the hashset for each symbol. This is a pretty
-            // obscure flag that we don't expect to be used much, so at this stage, it doesn't seem
-            // worthwhile to optimise it.
-            let contents = std::fs::read_to_string(value)
-                .with_context(|| format!("Failed to read `{value}`"))?;
-            args.strip = Strip::Retain(
-                contents
-                    .lines()
-                    .filter_map(|l| {
-                        if l.is_empty() {
-                            None
-                        } else {
-                            Some(l.as_bytes().to_owned())
-                        }
-                    })
-                    .collect(),
-            );
+            args.retain_symbols_path = Some(PathBuf::from(value));
             Ok(())
         });
 
