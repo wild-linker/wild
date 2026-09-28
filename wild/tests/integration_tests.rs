@@ -2419,10 +2419,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
     let mut output_path = None;
     let mut auto_add = true;
     for part in parts {
-        if let Some(value) = part
-            .strip_prefix("template(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        if let Some(value) = part.strip_circumfix("template(", ")") {
             ensure!(template.is_none(), "Duplicate template modifier");
             let template_parts = value.split(' ').map(str::to_owned).collect_vec();
             if !template_parts.iter().any(|a| {
@@ -2434,10 +2431,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
                 );
             }
             template = Some(template_parts);
-        } else if let Some(value) = part
-            .strip_prefix("as(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        } else if let Some(value) = part.strip_circumfix("as(", ")") {
             ensure!(output_path.is_none(), "Duplicate as modifier");
             let path = PathBuf::from(value);
             ensure!(!path.as_os_str().is_empty(), "as() path must not be empty");

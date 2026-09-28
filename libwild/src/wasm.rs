@@ -7791,6 +7791,14 @@ fn send_wasm_definition_request<'data, 'scope, A: platform::Arch<Platform = Wasm
     }
 }
 
+/// Byte offset and length of `name` within `data`. Names outside `data` are recorded as empty.
+fn name_range_in(data: &[u8], name: &str) -> (u32, u32) {
+    let Some(range) = data.subslice_range(name.as_bytes()) else {
+        return (0, 0);
+    };
+    (range.start as u32, (range.end - range.start) as u32)
+}
+
 /// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
 /// section entry. In Wasm relocatable objects, undefined symbols in the linking section may
 /// omit their name; the canonical name is carried by the import entry instead.
@@ -7810,8 +7818,6 @@ fn backfill_unnamed_import_symbols(
         return Ok(());
     }
 
-    let data_start = data.as_ptr() as usize;
-
     // Parse the import section to build name lookup tables indexed by function/global import
     // ordinal.
     let Some(import_payload) = standard_section_index
@@ -7828,8 +7834,7 @@ fn backfill_unnamed_import_symbols(
     let mut global_import_names: Vec<(u32, u32)> = Vec::new();
     for import in import_reader.into_imports() {
         let import = import?;
-        let name_ptr = import.name.as_ptr() as usize - data_start;
-        let name_entry = (name_ptr as u32, import.name.len() as u32);
+        let name_entry = name_range_in(data, import.name);
         match import.ty {
             TypeRef::Func(_) | TypeRef::FuncExact(_) => func_import_names.push(name_entry),
             TypeRef::Global(_) => global_import_names.push(name_entry),
@@ -7866,11 +7871,7 @@ fn parse_linking_subsections<'data>(
     segment_infos: &mut Vec<WasmSegmentInfo<'data>>,
     init_funcs: &mut Vec<WasmInitFunc>,
 ) -> Result {
-    let data_start = data.as_ptr() as usize;
-    let to_name_range = |s: &str| -> (u32, u32) {
-        let start = s.as_ptr() as usize - data_start;
-        (start as u32, s.len() as u32)
-    };
+    let to_name_range = |s: &str| name_range_in(data, s);
     for sub in linking.subsections() {
         let sub = sub?;
         match sub {

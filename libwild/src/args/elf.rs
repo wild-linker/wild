@@ -1385,7 +1385,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("thread-count")
         .help("Set the number of threads to use")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
+            args.common_mut().num_threads = Some(NonZeroUsize::from_str_radix(value, 10)?);
             Ok(())
         });
 
