@@ -2,6 +2,7 @@ exclude = [
   ".cargo-home/**",
   ".cargo/git/**",
   ".cargo/registry/**",
+  ".direnv/**",
   "external_test_suites/**",
   "target/**",
 ]
