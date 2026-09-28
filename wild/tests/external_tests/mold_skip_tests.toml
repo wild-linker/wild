@@ -51,12 +51,7 @@ tests = [
 
 [skipped_groups.version_script]
 reason = "Version script support"
-tests = [
-  "version-script15.sh",
-  "empty-default-symver.sh",
-  "linker-script-version.sh",
-  "version-script23.sh",
-]
+tests = ["empty-default-symver.sh", "linker-script-version.sh"]
 
 [skipped_groups.z_options]
 reason = "Related to -z"
