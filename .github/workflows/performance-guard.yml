@@ -40,18 +40,32 @@ jobs:
           base_sha=$(git merge-base HEAD "origin/$BASE_REF")
           candidate_sha=$(git rev-parse HEAD)
           test "$candidate_sha" = "$EXPECTED_HEAD"
-          echo "base=$base_sha" >> "$GITHUB_OUTPUT"
-          echo "candidate=$candidate_sha" >> "$GITHUB_OUTPUT"
+          # Output must match upstream wild, so equivalence is checked against the newest commit of
+          # this repository's `upstream` branch (a mirror of wild-linker/wild main) that the PR
+          # contains, rather than against the fork's merge base.
+          git fetch --no-tags origin upstream:refs/remotes/origin/upstream
+          upstream_sha=$(git merge-base HEAD origin/upstream)
+          {
+            echo "base=$base_sha"
+            echo "candidate=$candidate_sha"
+            echo "upstream=$upstream_sha"
+          } >> "$GITHUB_OUTPUT"
       - name: Checkout merge base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
           ref: ${{ steps.revisions.outputs.base }}
           persist-credentials: false
           path: baseline
+      - name: Checkout upstream reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ steps.revisions.outputs.upstream }}
+          persist-credentials: false
+          path: upstream
       - name: Checkout trusted performance guard
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
-          ref: 6164591eaeeefb36e3605960e9b66d1d835111d3
+          ref: e5b85389d4aa9a74a33ad9c63a57dc9fe324a1c6
           persist-credentials: false
           path: trusted-action
           sparse-checkout: |
@@ -77,9 +91,12 @@ jobs:
           set -euo pipefail
           RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" soldr cargo build --manifest-path baseline/Cargo.toml --package wild-linker --profile release
           RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" soldr cargo build --manifest-path candidate/Cargo.toml --package wild-linker --profile release
+          # Upstream has no rust-toolchain.toml; build it with the same pinned toolchain.
+          RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" SOLDR_ALLOW_UNPINNED=1 soldr cargo build --manifest-path upstream/Cargo.toml --package wild-linker --profile release
           mkdir -p "$RUNNER_TEMP/wild-performance-binaries"
           cp baseline/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/baseline-wild"
           cp candidate/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/candidate-wild"
+          cp upstream/target/release/wild "$RUNNER_TEMP/wild-performance-binaries/upstream-wild"
           chmod 0555 "$RUNNER_TEMP/wild-performance-binaries/"*
           sha256sum "$RUNNER_TEMP/wild-performance-binaries/"* > "$RUNNER_TEMP/wild-performance-binaries/SHA256SUMS"
       - name: Record environment metadata
@@ -89,6 +106,7 @@ jobs:
           {
             echo "baseline_sha=${{ steps.revisions.outputs.base }}"
             echo "candidate_sha=${{ steps.revisions.outputs.candidate }}"
+            echo "upstream_sha=${{ steps.revisions.outputs.upstream }}"
             echo "runner_image=${ImageOS:-unknown}-${ImageVersion:-unknown}"
             uname -a
             lscpu
@@ -105,6 +123,8 @@ jobs:
           candidate: ${{ runner.temp }}/wild-performance-binaries/candidate-wild
           baseline-sha: ${{ steps.revisions.outputs.base }}
           candidate-sha: ${{ steps.revisions.outputs.candidate }}
+          reference: ${{ runner.temp }}/wild-performance-binaries/upstream-wild
+          reference-sha: ${{ steps.revisions.outputs.upstream }}
           performance-claim: ${{ contains(github.event.pull_request.labels.*.name, 'performance') }}
           output: candidate/performance-evidence
       - name: Upload machine-readable evidence and chart

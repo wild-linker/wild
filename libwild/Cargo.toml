@@ -34,7 +34,6 @@ jobserver.workspace = true
 leb128.workspace = true
 libc.workspace = true
 libloading = { workspace = true, optional = true }
-md-5.workspace = true
 memchr.workspace = true
 memmap2.workspace = true
 object = { workspace = true, features = ["write_std"] }
@@ -42,7 +41,6 @@ perfetto-recorder.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
-sha1.workspace = true
 sha2.workspace = true
 sharded-offset-map.workspace = true
 sharded-vec-writer.workspace = true
@@ -53,7 +51,6 @@ symbolic-demangle.workspace = true
 thread_local.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-twox-hash.workspace = true
 uuid.workspace = true
 wasm-encoder.workspace = true
 wasmparser.workspace = true

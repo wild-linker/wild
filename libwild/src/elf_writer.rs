@@ -144,7 +144,6 @@ use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelBridge as _;
 use rayon::iter::ParallelIterator as _;
-use rayon::slice::ParallelSlice as _;
 use rayon::slice::ParallelSliceMut as _;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -220,21 +219,11 @@ fn write_gnu_build_id_note<C: ElfClass>(
     layout: &ElfLayout<C>,
 ) -> Result {
     let hash_placeholder;
-    let md5_placeholder;
-    let sha1_placeholder;
     let uuid_placeholder;
     let build_id = match build_id_option {
         BuildIdOption::Fast => {
-            hash_placeholder = compute_fast_hash(sized_output);
-            hash_placeholder.as_slice()
-        }
-        BuildIdOption::Md5 => {
-            md5_placeholder = compute_md5_hash(sized_output);
-            md5_placeholder.as_slice()
-        }
-        BuildIdOption::Sha1 => {
-            sha1_placeholder = compute_sha1_hash(sized_output);
-            sha1_placeholder.as_slice()
+            hash_placeholder = compute_hash(sized_output);
+            hash_placeholder.as_bytes()
         }
         BuildIdOption::Hex(hex) => hex.as_slice(),
         BuildIdOption::Uuid => {
@@ -260,98 +249,11 @@ fn write_gnu_build_id_note<C: ElfClass>(
     Ok(())
 }
 
-fn compute_fast_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; size_of::<u128>()] {
+fn compute_hash(sized_output: &SizedOutput<impl OutputFileData>) -> blake3::Hash {
     timing_phase!("Compute build ID");
-    fast_build_id(&sized_output.out)
-}
-
-fn fast_build_id(bytes: &[u8]) -> [u8; size_of::<u128>()] {
-    const PARALLEL_THRESHOLD: usize = 4 * 1024 * 1024;
-    const CHUNK_SIZE: usize = 1024 * 1024;
-
-    if bytes.len() < PARALLEL_THRESHOLD {
-        return twox_hash::XxHash3_128::oneshot(bytes).to_le_bytes();
-    }
-
-    let chunk_hashes = bytes
-        .par_chunks(CHUNK_SIZE)
-        .map(twox_hash::XxHash3_128::oneshot)
-        .collect::<Vec<_>>();
-    let mut combined =
-        Vec::with_capacity(size_of::<u64>() + chunk_hashes.len() * size_of::<u128>());
-    combined.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-    for hash in chunk_hashes {
-        combined.extend_from_slice(&hash.to_le_bytes());
-    }
-    twox_hash::XxHash3_128::oneshot(&combined).to_le_bytes()
-}
-
-fn compute_md5_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; 16] {
-    timing_phase!("Compute build ID");
-    use md5::Digest as _;
-    md5::Md5::digest(&*sized_output.out).into()
-}
-
-fn compute_sha1_hash(sized_output: &SizedOutput<impl OutputFileData>) -> [u8; 20] {
-    timing_phase!("Compute build ID");
-    use sha1::Digest as _;
-    sha1::Sha1::digest(&*sized_output.out).into()
-}
-
-#[cfg(test)]
-mod build_id_tests {
-    use super::fast_build_id;
-
-    #[test]
-    fn named_build_id_algorithms_match_standard_vectors() {
-        use md5::Digest as _;
-
-        let md5: [u8; 16] = md5::Md5::digest(b"abc").into();
-        let sha1: [u8; 20] = sha1::Sha1::digest(b"abc").into();
-        assert_eq!(
-            md5.as_slice(),
-            hex::decode("900150983cd24fb0d6963f7d28e17f72")
-                .unwrap()
-                .as_slice()
-        );
-        assert_eq!(
-            sha1.as_slice(),
-            hex::decode("a9993e364706816aba3e25717850c26c9cd0d89d")
-                .unwrap()
-                .as_slice()
-        );
-    }
-
-    #[test]
-    fn fast_build_id_hashes_every_output_byte_deterministically() {
-        let original = (0_u8..=255).cycle().take(8192).collect::<Vec<_>>();
-        let expected = fast_build_id(&original);
-
-        assert_eq!(expected.len(), size_of::<u128>());
-        assert_eq!(expected, fast_build_id(&original));
-
-        for index in [0, original.len() / 2, original.len() - 1] {
-            let mut changed = original.clone();
-            changed[index] ^= 1;
-            assert_ne!(expected, fast_build_id(&changed));
-        }
-    }
-
-    #[test]
-    fn parallel_fast_build_id_hashes_chunk_boundaries_and_tail() {
-        let original = (0_u8..=255)
-            .cycle()
-            .take(5 * 1024 * 1024 + 17)
-            .collect::<Vec<_>>();
-        let expected = fast_build_id(&original);
-
-        assert_eq!(expected, fast_build_id(&original));
-        for index in [1024 * 1024 - 1, 1024 * 1024, original.len() - 1] {
-            let mut changed = original.clone();
-            changed[index] ^= 1;
-            assert_ne!(expected, fast_build_id(&changed));
-        }
-    }
+    blake3::Hasher::new()
+        .update_rayon(&sized_output.out)
+        .finalize()
 }
 
 fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
