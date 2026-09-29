@@ -33,6 +33,7 @@ use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_section_id::SectionIdRange;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -1021,7 +1022,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
-    let mut input_offset = symbol.value();
+    let input_offset = symbol.value();
 
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend
@@ -1029,6 +1030,12 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     // addend into account up-front before we determine which string we're pointing at. This is a
     // bit weird, but seems to match what other linkers do.
     let symbol_has_name = symbol.has_name();
+    let part_id = section_part_ids[input_section_id.as_usize()];
+    let target = MergedStringTarget {
+        merge_slot: *merge_slot,
+        section_id: part_id.output_section_id::<P>(),
+        symbol_value: input_offset,
+    };
     if !symbol_has_name {
         // We're computing a resolution for an unnamed symbol, just use the value of 0 for now.
         // We'll compute the address later when we're processing relocations that reference the
@@ -1036,20 +1043,81 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
         if zero_unnamed {
             return Ok(Some(0));
         }
-        input_offset = input_offset.wrapping_add(addend as u64);
+        return target
+            .unnamed_address(addend, merged_strings, merged_string_start_addresses)
+            .map(Some);
     }
 
-    let part_id = section_part_ids[input_section_id.as_usize()];
-    let section_id = part_id.output_section_id::<P>();
-    let strings_section = merged_strings.get(section_id);
-    let string_offset = find_string(*merge_slot, input_offset, strings_section)?;
-    let bucket_base =
-        merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
-    let mut address = bucket_base + string_offset.offset_in_bucket();
-    if symbol_has_name {
-        address = address.wrapping_add(addend as u64);
+    let string_offset = find_string(
+        target.merge_slot,
+        input_offset,
+        merged_strings.get(target.section_id),
+    )?;
+    let bucket_base = merged_string_start_addresses
+        .addresses
+        .get(target.section_id)[string_offset.bucket()];
+    Ok(Some(
+        (bucket_base + string_offset.offset_in_bucket()).wrapping_add(addend as u64),
+    ))
+}
+
+/// The parts of a merged-string lookup that depend only on the symbol. Debug info references
+/// `.debug_str` through its unnamed section symbol with a different addend for every string, so
+/// computing these once per symbol leaves only the string lookup per relocation.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MergedStringTarget {
+    merge_slot: StringMergeSectionSlot,
+    section_id: OutputSectionId,
+    symbol_value: u64,
+}
+
+impl MergedStringTarget {
+    /// Returns the target for an unnamed symbol in a string-merge section, or None for a named
+    /// symbol or one in any other kind of section.
+    pub(crate) fn for_unnamed_symbol<'data, P: Platform>(
+        symbol_index: object::SymbolIndex,
+        object: &P::File<'data>,
+        sections: &[SectionSlot],
+        section_part_ids: &[PartId],
+        section_id_range: SectionIdRange,
+    ) -> Result<Option<Self>> {
+        let symbol = object.symbol(symbol_index)?;
+        let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
+            return Ok(None);
+        };
+        let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
+            return Ok(None);
+        };
+        if symbol.has_name() {
+            return Ok(None);
+        }
+        let input_section_id = section_id_range.input_to_id(section_index);
+        Ok(Some(Self {
+            merge_slot: *merge_slot,
+            section_id: section_part_ids[input_section_id.as_usize()].output_section_id::<P>(),
+            symbol_value: symbol.value(),
+        }))
     }
-    Ok(Some(address))
+
+    /// The output address referenced by an unnamed symbol plus `addend`. The addend selects the
+    /// string, matching what other linkers do for section references.
+    #[inline(always)]
+    pub(crate) fn unnamed_address(
+        self,
+        addend: i64,
+        merged_strings: &OutputSectionMap<MergedStringsSection>,
+        merged_string_start_addresses: &MergedStringStartAddresses,
+    ) -> Result<u64> {
+        let input_offset = self.symbol_value.wrapping_add(addend as u64);
+        let string_offset = find_string(
+            self.merge_slot,
+            input_offset,
+            merged_strings.get(self.section_id),
+        )?;
+        let bucket_base =
+            merged_string_start_addresses.addresses.get(self.section_id)[string_offset.bucket()];
+        Ok(bucket_base + string_offset.offset_in_bucket())
+    }
 }
 
 fn find_string(

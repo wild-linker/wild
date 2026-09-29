@@ -135,3 +135,145 @@ jobs:
           path: candidate/performance-evidence/
           if-no-files-found: error
           retention-days: 30
+
+  capture-ab:
+    # A real debug-heavy link, where the synthetic guard workloads above are too small to show
+    # write-phase work: Wild itself built with fat LTO and full debug info (one ~250 MB object),
+    # captured with WILD_SAVE_BASE and relinked by the merge base and the PR head. The PR head's
+    # output must also match upstream wild's byte for byte. Runs on PRs labelled `performance`.
+    name: Real full-LTO link A/B (merge base vs PR head, upstream byte identity)
+    if: contains(github.event.pull_request.labels.*.name, 'performance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_TOOLCHAIN: 1.98.1
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Resolve merge base and upstream reference
+        id: revisions
+        working-directory: candidate
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          git fetch --no-tags https://github.com/wild-linker/wild.git main:refs/remotes/upstream/main
+          # The upstream reference is the newest upstream commit this PR contains, so identity is
+          # checked against the upstream code the fork is built on.
+          {
+            echo "base=$(git merge-base HEAD "origin/$BASE_REF")"
+            echo "candidate=$(git rev-parse HEAD)"
+            echo "upstream=$(git merge-base HEAD upstream/main)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create worktrees for merge base and upstream
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach ../baseline "${{ steps.revisions.outputs.base }}"
+          git worktree add --detach ../upstream "${{ steps.revisions.outputs.upstream }}"
+      - name: Install pinned Rust toolchain
+        uses: zackees/setup-soldr@v0
+        with:
+          cache: true
+          solo-toolchain-cache: false
+          lockfile: candidate/Cargo.lock
+      - name: Build baseline, candidate and upstream identically
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          mkdir -p "$RUNNER_TEMP/bins"
+          for tree in baseline candidate upstream; do
+            RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" SOLDR_ALLOW_UNPINNED=1 soldr cargo build \
+              --manifest-path "$tree/Cargo.toml" --package wild-linker --profile release
+            cp "$tree/target/release/wild" "$RUNNER_TEMP/bins/$tree-wild"
+          done
+          sha256sum "$RUNNER_TEMP/bins/"*
+      - name: Capture a fat-LTO debug link of Wild
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Plain cargo: soldr's compile cache isn't wanted for a one-off fat-LTO build.
+          cd candidate
+          env -u CLICOLOR_FORCE -u FORCE_COLOR \
+            RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" \
+            CARGO_PROFILE_RELEASE_LTO=fat \
+            CARGO_PROFILE_RELEASE_DEBUG=full \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+            CARGO_TARGET_DIR="$RUNNER_TEMP/lto-target" \
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+            RUSTFLAGS="-Clink-arg=--ld-path=$RUNNER_TEMP/bins/baseline-wild" \
+            WILD_SAVE_BASE="$RUNNER_TEMP/capture" \
+            cargo build --release --package wild-linker --bin wild
+          # The biggest capture is the wild binary's own link.
+          capture=$(du -s "$RUNNER_TEMP/capture"/*/ | sort -n | tail -1 | cut -f2)
+          echo "CAPTURE=$capture" >> "$GITHUB_ENV"
+          du -sh "$capture"
+      - name: Prepare a job-private perf collector
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Follows zackees/mimalloc-pprof ci/perf_access.py: never relax perf_event_paranoid;
+          # grant CAP_PERFMON to a private copy of the kernel-matched perf ELF instead.
+          sudo apt-get install -y -qq "linux-tools-$(uname -r)" linux-tools-common >/dev/null 2>&1 || true
+          elf="/usr/lib/linux-tools/$(uname -r)/perf"
+          perf_bin=perf
+          if [ -x "$elf" ]; then
+            install -d -m 0700 "$RUNNER_TEMP/perf"
+            cp "$elf" "$RUNNER_TEMP/perf/perf-private"
+            sudo -n chown "root:$(id -g)" "$RUNNER_TEMP/perf/perf-private" &&
+              sudo -n chmod 0550 "$RUNNER_TEMP/perf/perf-private" &&
+              sudo -n setcap cap_perfmon=ep "$RUNNER_TEMP/perf/perf-private" &&
+              perf_bin="$RUNNER_TEMP/perf/perf-private"
+          fi
+          echo "PERF_BIN=$perf_bin" >> "$GITHUB_ENV"
+          echo "perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid) perf=$perf_bin"
+      - name: Paired A/B with upstream byte identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          {
+            echo "## Real full-LTO link A/B"
+            echo
+            echo "- Baseline (merge base): \`${{ steps.revisions.outputs.base }}\`"
+            echo "- Candidate (PR head): \`${{ steps.revisions.outputs.candidate }}\`"
+            echo "- Upstream reference: \`${{ steps.revisions.outputs.upstream }}\`"
+            echo "- Runner: $(nproc) CPUs, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"
+            echo
+          } > evidence/summary.md
+          for mode in none fast; do
+            # Ubuntu's clang passes --build-id, so the capture has one; a later flag overrides it.
+            extra="--build-id=$mode"
+            reference=(--reference "$RUNNER_TEMP/bins/upstream-wild")
+            printf '### --build-id=%s\n\n' "$mode" >> evidence/summary.md
+            python3 candidate/benchmarks/performance_guard/capture_ab.py \
+              --capture "$CAPTURE" \
+              --baseline "$RUNNER_TEMP/bins/baseline-wild" \
+              --candidate "$RUNNER_TEMP/bins/candidate-wild" \
+              "${reference[@]}" \
+              --extra="$extra" \
+              --perf "$PERF_BIN" \
+              --pairs 30 \
+              --output "evidence/capture-ab-$mode.json" \
+              --markdown evidence/summary.md
+            echo >> evidence/summary.md
+          done
+          cat evidence/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload A/B evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: capture-ab-${{ steps.revisions.outputs.candidate }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30

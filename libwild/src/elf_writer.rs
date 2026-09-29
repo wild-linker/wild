@@ -84,6 +84,7 @@ use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
+use crate::string_merging::MergedStringTarget;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
@@ -2957,11 +2958,43 @@ struct DebugSymbolResolution<C: ElfClass> {
     symbol_index: object::SymbolIndex,
     section_index: Option<object::SectionIndex>,
     resolution: Option<Resolution<elf::Elf<C>>>,
+    fast_value: DebugFastValue,
 }
 
-#[derive(Default)]
+/// How an absolute debug relocation against a symbol gets its value, decided once per symbol so
+/// the per-relocation work in [`try_apply_debug_relocation_fast`] is an add and a store.
+#[derive(Clone, Copy, Debug)]
+enum DebugFastValue {
+    /// The value is this base plus the addend.
+    Base(u64),
+    /// The symbol's section was discarded or never loaded, so the value is the tombstone.
+    Tombstone,
+    /// An unnamed symbol in a string-merge section, such as `.debug_str`'s section symbol. The
+    /// addend picks the string.
+    MergedString(MergedStringTarget),
+    /// Needs the full path: merged strings, ifuncs, and anything that might report an error.
+    Slow,
+}
+
+/// Number of entries in [`DebugSymbolCache`]. A power of two, so the slot is the low bits of the
+/// symbol index.
+const DEBUG_SYMBOL_CACHE_SLOTS: usize = 256;
+
+/// A direct-mapped cache of symbol resolutions for debug relocations, local to one relocation
+/// shard. `.debug_info` interleaves references to a few hot symbols (the `.debug_str` and
+/// `.debug_line` section symbols) with references to code, so a single "previous symbol" entry
+/// misses about half the time. A few hundred slots catch nearly all of the repeats while staying
+/// small enough to live in L1/L2.
 struct DebugSymbolCache<C: ElfClass> {
-    previous: Option<DebugSymbolResolution<C>>,
+    slots: Box<[Option<DebugSymbolResolution<C>>]>,
+}
+
+impl<C: ElfClass> Default for DebugSymbolCache<C> {
+    fn default() -> Self {
+        Self {
+            slots: vec![None; DEBUG_SYMBOL_CACHE_SLOTS].into_boxed_slice(),
+        }
+    }
 }
 
 impl<C: ElfClass> DebugSymbolCache<C> {
@@ -2971,13 +3004,14 @@ impl<C: ElfClass> DebugSymbolCache<C> {
         symbol_index: object::SymbolIndex,
         resolve: impl FnOnce() -> Result<DebugSymbolResolution<C>>,
     ) -> Result<DebugSymbolResolution<C>> {
-        if let Some(previous) = self.previous
-            && previous.symbol_index == symbol_index
+        let slot = &mut self.slots[symbol_index.0 % DEBUG_SYMBOL_CACHE_SLOTS];
+        if let Some(cached) = *slot
+            && cached.symbol_index == symbol_index
         {
-            return Ok(previous);
+            return Ok(cached);
         }
         let resolved = resolve()?;
-        self.previous = Some(resolved);
+        *slot = Some(resolved);
         Ok(resolved)
     }
 }
@@ -3108,6 +3142,105 @@ fn debug_relocation_shard_ranges_parallel(
     Ok(Some(ranges))
 }
 
+/// Splits relocations into `shard_count` equal runs by index. Each shard owns the output from
+/// its first relocation's offset up to the next shard's first offset (the first shard starts at
+/// zero). Returns None if those start offsets go backwards or past the end of the output. Unlike
+/// [`debug_relocation_shard_ranges_parallel`], this reads one offset per shard: whether every
+/// relocation fits its shard is checked as it's applied.
+fn speculative_debug_relocation_shard_ranges(
+    relocation_count: usize,
+    output_len: usize,
+    shard_count: usize,
+    offset_at: impl Fn(usize) -> u64,
+) -> Option<Vec<DebugRelocationShardRange>> {
+    let shard_count = shard_count.min(relocation_count);
+    if shard_count < 2 {
+        return None;
+    }
+    let starts = (0..shard_count)
+        .map(|shard| relocation_count * shard / shard_count)
+        .collect::<Vec<_>>();
+    let mut ranges = Vec::with_capacity(shard_count);
+    for (shard, &start) in starts.iter().enumerate() {
+        let end = starts.get(shard + 1).copied().unwrap_or(relocation_count);
+        let output_start = if shard == 0 {
+            0
+        } else {
+            usize::try_from(offset_at(start)).ok()?
+        };
+        let output_end = match starts.get(shard + 1) {
+            Some(&next) => usize::try_from(offset_at(next)).ok()?,
+            None => output_len,
+        };
+        if output_start > output_end || output_end > output_len {
+            return None;
+        }
+        ranges.push(DebugRelocationShardRange {
+            relocations: start..end,
+            output: output_start..output_end,
+        });
+    }
+    Some(ranges)
+}
+
+/// Applies debug relocations in parallel shards without first checking that they're sorted.
+/// Returns false if any relocation fails, including one that falls outside its shard's output.
+/// The caller must then reapply everything in order, so this is only for architectures where
+/// [`Arch::DEBUG_RELOCATIONS_OVERWRITE`] holds.
+fn try_apply_debug_rela_relocations_speculatively<
+    'data,
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    out: &mut [u8],
+    section_index: object::SectionIndex,
+    relocations: &[elf::Rela<C>],
+    layout: &ElfLayout<'data, C>,
+    shard_count: usize,
+) -> bool {
+    debug_assert!(A::DEBUG_RELOCATIONS_OVERWRITE);
+    let Some(ranges) =
+        speculative_debug_relocation_shard_ranges(relocations.len(), out.len(), shard_count, |i| {
+            elf::ElfRela::<C>::new(relocations[i]).offset()
+        })
+    else {
+        return false;
+    };
+
+    let mut remaining = out;
+    let mut shards = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        let (shard_out, rest) = remaining.split_at_mut(range.output.end - range.output.start);
+        remaining = rest;
+        shards.push((range.relocations, range.output.start, shard_out));
+    }
+
+    shards
+        .into_par_iter()
+        .map(|(range, output_offset, shard_out)| {
+            let previous = range
+                .start
+                .checked_sub(1)
+                .map(|index| elf::ElfRela::new(relocations[index]));
+            apply_debug_relocations_impl::<C, A, elf::ElfRela<C>, _>(
+                object,
+                shard_out,
+                section_index,
+                relocations[range]
+                    .iter()
+                    .copied()
+                    .map(elf::ElfRela::new)
+                    .map(Ok),
+                layout,
+                output_offset as u64,
+                previous,
+            )
+            .is_ok()
+        })
+        .all(|ok| ok)
+}
+
 fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     object: &ObjectLayout<'data, elf::Elf<C>>,
     out: &mut [u8],
@@ -3127,6 +3260,31 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
 
     let shard_count =
         rayon::current_num_threads().min(relocations.len().div_ceil(PARALLEL_DEBUG_RELOCATION_MIN));
+    if A::DEBUG_RELOCATIONS_OVERWRITE {
+        if !try_apply_debug_rela_relocations_speculatively::<C, A>(
+            object,
+            out,
+            section_index,
+            relocations,
+            layout,
+            shard_count,
+        ) {
+            // Some relocation didn't fit its shard, or failed. Every debug relocation on this
+            // architecture overwrites its bytes with a value that doesn't depend on them, so
+            // reapplying all of them in order gives exactly the serial result, including any
+            // error.
+            return apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
+                object,
+                out,
+                section_index,
+                relocations.iter().copied().map(elf::ElfRela::new).map(Ok),
+                layout,
+            );
+        }
+        record_debug_relocations(object, section_index, layout, relocations.len());
+        return Ok(());
+    }
+
     let Some(ranges) = debug_relocation_shard_ranges_parallel(
         relocations.len(),
         out.len(),
@@ -3256,6 +3414,7 @@ fn apply_debug_relocations_impl<
         ..Default::default()
     };
     let mut symbol_cache = DebugSymbolCache::default();
+    let mut info_cache = None;
 
     for rel in relocations {
         relocation_count += 1;
@@ -3264,6 +3423,24 @@ fn apply_debug_relocations_impl<
         let shard_offset = offset_in_section
             .checked_sub(output_offset)
             .context("Debug relocation precedes its output shard")?;
+        if shard_offset > out.len() as u64 {
+            bail!(
+                "Debug relocation at offset 0x{offset_in_section:x} is past the end of its output"
+            );
+        }
+        if try_apply_debug_relocation_fast::<C, A, R>(
+            object,
+            shard_offset,
+            &rel,
+            layout,
+            tombstone_value,
+            out,
+            &mut symbol_cache,
+            &mut info_cache,
+        ) {
+            relocation_cache.previous = Some(rel);
+            continue;
+        }
         apply_debug_relocation::<C, A, R>(
             object,
             shard_offset,
@@ -3307,6 +3484,54 @@ mod debug_relocation_shard_tests {
     use super::DebugSymbolCache;
     use super::DebugSymbolResolution;
     use super::debug_relocation_shard_ranges_parallel;
+    use super::speculative_debug_relocation_shard_ranges;
+
+    #[test]
+    fn speculative_shards_split_output_at_shard_start_offsets() {
+        let offsets = [0, 4, 8, 12, 16, 20, 24, 28];
+        let ranges =
+            speculative_debug_relocation_shard_ranges(offsets.len(), 32, 4, |i| offsets[i])
+                .unwrap();
+        assert_eq!(
+            ranges,
+            vec![
+                DebugRelocationShardRange {
+                    relocations: 0..2,
+                    output: 0..8,
+                },
+                DebugRelocationShardRange {
+                    relocations: 2..4,
+                    output: 8..16,
+                },
+                DebugRelocationShardRange {
+                    relocations: 4..6,
+                    output: 16..24,
+                },
+                DebugRelocationShardRange {
+                    relocations: 6..8,
+                    output: 24..32,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn speculative_shards_reject_backwards_or_out_of_bounds_starts() {
+        // Shard starts go backwards.
+        let offsets = [0, 4, 20, 24, 8, 12, 28, 30];
+        assert!(
+            speculative_debug_relocation_shard_ranges(offsets.len(), 32, 4, |i| offsets[i])
+                .is_none()
+        );
+        // A shard starts past the end of the output.
+        let offsets = [0, 4, 8, 12, 40, 44, 48, 52];
+        assert!(
+            speculative_debug_relocation_shard_ranges(offsets.len(), 32, 4, |i| offsets[i])
+                .is_none()
+        );
+        // Too few relocations to split.
+        assert!(speculative_debug_relocation_shard_ranges(1, 32, 4, |_| 0).is_none());
+    }
 
     #[test]
     fn preflight_splits_sorted_non_overlapping_relocations() {
@@ -3412,7 +3637,7 @@ mod debug_relocation_shard_tests {
     }
 
     #[test]
-    fn debug_symbol_cache_reuses_only_adjacent_symbols() {
+    fn debug_symbol_cache_reuses_recent_symbols() {
         let resolve_count = std::cell::Cell::new(0);
         let mut cache = DebugSymbolCache::<crate::elf::Class64>::default();
         let resolve = |symbol_index| {
@@ -3421,6 +3646,7 @@ mod debug_relocation_shard_tests {
                 symbol_index,
                 section_index: Some(object::SectionIndex(symbol_index.0 + 1)),
                 resolution: None,
+                fast_value: super::DebugFastValue::Slow,
             })
         };
 
@@ -3441,7 +3667,18 @@ mod debug_relocation_shard_tests {
         assert_eq!(first.section_index, repeated.section_index);
         assert_ne!(first.symbol_index, different.symbol_index);
         assert_eq!(first.symbol_index, returned.symbol_index);
-        assert_eq!(resolve_count.get(), 3);
+        // 7 and 8 occupy different slots, so returning to 7 is a hit.
+        assert_eq!(resolve_count.get(), 2);
+
+        // A symbol that maps to 7's slot evicts it.
+        let colliding = object::SymbolIndex(7 + super::DEBUG_SYMBOL_CACHE_SLOTS);
+        cache
+            .get_or_insert_with(colliding, || resolve(colliding))
+            .unwrap();
+        cache
+            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
+            .unwrap();
+        assert_eq!(resolve_count.get(), 4);
     }
 }
 
@@ -4580,6 +4817,137 @@ fn maybe_get_thunk_for_relocation<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     );
 }
 
+fn resolve_debug_symbol<'data, C: ElfClass>(
+    object_layout: &ObjectLayout<'data, elf::Elf<C>>,
+    symbol_index: object::SymbolIndex,
+    layout: &ElfLayout<C>,
+) -> Result<DebugSymbolResolution<C>> {
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let resolution = layout
+        .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
+        .or_else(|| {
+            section_index.and_then(|section_index| {
+                let section_address =
+                    object_layout.section_resolutions[section_index.0].address()?;
+                let output_offset = opt_input_to_output(
+                    object_layout.section_relax_deltas.get(section_index.0),
+                    crate::platform::Symbol::value(sym),
+                );
+
+                Some(Resolution {
+                    raw_value: section_address + output_offset,
+                    dynamic_symbol_index: None,
+                    flags: ValueFlags::empty(),
+                    format_specific: Default::default(),
+                })
+            })
+        });
+
+    let in_merge_strings = section_index.is_some_and(|section_index| {
+        matches!(
+            object_layout.sections[section_index.0],
+            SectionSlot::MergeStrings(..)
+        )
+    });
+    let merged_string = || -> Result<DebugFastValue> {
+        Ok(MergedStringTarget::for_unnamed_symbol::<elf::Elf<C>>(
+            symbol_index,
+            object_layout.object,
+            &object_layout.sections,
+            &layout.symbol_db.section_part_ids,
+            object_layout.section_id_range,
+        )?
+        .map_or(DebugFastValue::Slow, DebugFastValue::MergedString))
+    };
+    // Mirrors `apply_debug_relocation`: `Resolution::value_with_addend` only looks up a merged
+    // string when `raw_value` is zero and the symbol is in a merge-strings section, and an
+    // unresolved symbol in a merge-strings section takes the same lookup.
+    let fast_value = match resolution {
+        Some(resolution) if resolution.flags.is_ifunc() => DebugFastValue::Slow,
+        Some(resolution) if resolution.raw_value == 0 && in_merge_strings => merged_string()?,
+        Some(resolution) => DebugFastValue::Base(resolution.raw_value),
+        None => match section_index {
+            None => DebugFastValue::Tombstone,
+            Some(section_index) => match object_layout.sections[section_index.0] {
+                SectionSlot::Discard | SectionSlot::Unloaded(..) => DebugFastValue::Tombstone,
+                SectionSlot::MergeStrings(..) => merged_string()?,
+                _ => DebugFastValue::Slow,
+            },
+        },
+    };
+
+    Ok(DebugSymbolResolution {
+        symbol_index,
+        section_index,
+        resolution,
+        fast_value,
+    })
+}
+
+/// Applies an absolute debug relocation whose value is a base plus addend or a tombstone, which
+/// covers nearly all DWARF relocations. Returns false, having written nothing, for anything else
+/// or anything that fails, so [`apply_debug_relocation`] handles it and reports any error.
+#[inline(always)]
+fn try_apply_debug_relocation_fast<
+    'data,
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+    R: Relocation<Platform = elf::Elf<C>>,
+>(
+    object_layout: &ObjectLayout<'data, elf::Elf<C>>,
+    offset_in_section: u64,
+    rel: &R,
+    layout: &ElfLayout<C>,
+    section_tombstone_value: u64,
+    out: &mut [u8],
+    symbol_cache: &mut DebugSymbolCache<C>,
+    info_cache: &mut Option<(object::elf::RelocationType, RelocationKindInfo)>,
+) -> bool {
+    let Some(symbol_index) = rel.symbol() else {
+        return false;
+    };
+    let r_type = rel.raw_type();
+    let rel_info = match *info_cache {
+        Some((cached_type, info)) if cached_type == r_type => info,
+        _ => {
+            let Ok(info) = A::relocation_from_raw(r_type) else {
+                return false;
+            };
+            *info_cache = Some((r_type, info));
+            info
+        }
+    };
+    if rel_info.kind != RelocationKind::Absolute {
+        return false;
+    }
+    let Ok(symbol) = symbol_cache.get_or_insert_with(symbol_index, || {
+        resolve_debug_symbol(object_layout, symbol_index, layout)
+    }) else {
+        return false;
+    };
+    let value = match symbol.fast_value {
+        DebugFastValue::Base(base) => base.wrapping_add(rel.addend() as u64),
+        DebugFastValue::Tombstone => section_tombstone_value,
+        DebugFastValue::MergedString(target) => {
+            let Ok(address) = target.unnamed_address(
+                rel.addend(),
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            ) else {
+                return false;
+            };
+            address
+        }
+        DebugFastValue::Slow => return false,
+    };
+    let Some(place) = out.get_mut(offset_in_section as usize..) else {
+        return false;
+    };
+    rel_info.write_to_buffer(value, place).is_ok()
+}
+
+#[inline(never)]
 fn apply_debug_relocation<
     'data,
     C: ElfClass,
@@ -4601,32 +4969,7 @@ fn apply_debug_relocation<
     // Keep the last lookup local to each parallel shard so those runs avoid repeating symbol-table,
     // section, and merged-resolution work while retaining constant memory usage.
     let symbol = symbol_cache.get_or_insert_with(symbol_index, || {
-        let sym = object_layout.object.symbol(symbol_index)?;
-        let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
-        let resolution = layout
-            .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
-            .or_else(|| {
-                section_index.and_then(|section_index| {
-                    let section_address =
-                        object_layout.section_resolutions[section_index.0].address()?;
-                    let output_offset = opt_input_to_output(
-                        object_layout.section_relax_deltas.get(section_index.0),
-                        crate::platform::Symbol::value(sym),
-                    );
-
-                    Some(Resolution {
-                        raw_value: section_address + output_offset,
-                        dynamic_symbol_index: None,
-                        flags: ValueFlags::empty(),
-                        format_specific: Default::default(),
-                    })
-                })
-            });
-        Ok(DebugSymbolResolution {
-            symbol_index,
-            section_index,
-            resolution,
-        })
+        resolve_debug_symbol(object_layout, symbol_index, layout)
     })?;
     let section_index = symbol.section_index;
 

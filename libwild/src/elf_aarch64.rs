@@ -60,6 +60,8 @@ impl crate::platform::Arch for ElfAArch64 {
     type Relaxation = Relaxation;
     type Platform = Elf64;
 
+    const DEBUG_RELOCATIONS_OVERWRITE: bool = true;
+
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_AARCH64
     }
