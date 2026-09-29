@@ -171,8 +171,7 @@ pub(crate) struct InputLinkerScript<'data> {
 struct TemporaryState<'data, P: Platform, F: FileSystem> {
     args: &'data P::Args,
 
-    /// Mapping from paths to the index in `files` at which we'll place the result.
-    path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
+    inputs_by_path: Mutex<HashMap<PathBuf, InputLoadInfo>>,
 
     next_file_load_index: AtomicUsize,
 
@@ -181,6 +180,12 @@ struct TemporaryState<'data, P: Platform, F: FileSystem> {
     inputs_arena: &'data Arena<InputFile<F::Input>>,
 
     file_system: Arc<F>,
+}
+
+struct InputLoadInfo {
+    index: FileLoadIndex,
+    /// True if every request for this path uses --as-needed. Only applied to shared libraries.
+    as_needed: bool,
 }
 
 struct LoadedFile<'data, P: Platform, I: InputFileData> {
@@ -298,13 +303,14 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
-        let mut path_to_load_index = HashMap::new();
+        let mut inputs_by_path: HashMap<PathBuf, InputLoadInfo> = HashMap::new();
 
         let mut initial_work = Vec::with_capacity(inputs.len());
         for input in inputs {
             let path = input.path(args, self.file_system.as_ref())?;
-            path_to_load_index
+            inputs_by_path
                 .entry(path.absolute.clone())
+                .and_modify(|info| info.as_needed &= input.modifiers.as_needed)
                 .or_insert_with(|| {
                     let file_index = FileLoadIndex(initial_work.len());
 
@@ -315,13 +321,16 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
                         referenced_by: None,
                     });
 
-                    file_index
+                    InputLoadInfo {
+                        index: file_index,
+                        as_needed: input.modifiers.as_needed,
+                    }
                 });
         }
 
         let temporary_state = TemporaryState {
             args,
-            path_to_load_index: Mutex::new(path_to_load_index),
+            inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
             inputs_arena: self.inputs_arena,
@@ -342,7 +351,15 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         // files pulled in.
         let mut files_by_index = Vec::new();
         files_by_index.resize_with(temporary_state.files.len(), || None);
-        for file in temporary_state.files {
+        let inputs_by_path = temporary_state.inputs_by_path.into_inner().unwrap();
+        for mut file in temporary_state.files {
+            if let LoadedFileState::Loaded(_, InputRecord::Object(Ok(object))) = &mut file.state
+                && object.is_dynamic()
+            {
+                let as_needed = inputs_by_path[object.input.file.filename].as_needed;
+                object.modifiers.as_needed = as_needed;
+                object.input.file.modifiers.as_needed = as_needed;
+            }
             let entry = &mut files_by_index[file.index.0];
             assert!(
                 entry.is_none(),
@@ -751,16 +768,23 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
     ) -> Result<FileLoadIndex> {
         let paths = input.path(self.args, self.file_system.as_ref())?;
 
-        let mut path_to_load_index = self.path_to_load_index.lock().unwrap();
+        let mut inputs_by_path = self.inputs_by_path.lock().unwrap();
 
-        let index = match path_to_load_index.entry(paths.absolute.clone()) {
-            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
+        let index = match inputs_by_path.entry(paths.absolute.clone()) {
+            hashbrown::hash_map::Entry::Occupied(mut e) => {
+                let info = e.get_mut();
+                info.as_needed &= input.modifiers.as_needed;
+                info.index
+            }
             hashbrown::hash_map::Entry::Vacant(e) => {
                 let new_index =
                     FileLoadIndex(self.next_file_load_index.fetch_add(1, Ordering::Relaxed));
-                e.insert(new_index);
+                e.insert(InputLoadInfo {
+                    index: new_index,
+                    as_needed: input.modifiers.as_needed,
+                });
 
-                drop(path_to_load_index);
+                drop(inputs_by_path);
 
                 let request = OpenFileRequest {
                     file_index: new_index,
