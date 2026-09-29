@@ -13,6 +13,14 @@ inputs:
   candidate-sha:
     description: Exact candidate source revision
     required: true
+  reference:
+    description: Absolute path to an upstream Wild executable. When set, the candidate's output must be structurally equivalent to this one instead of the merge base's. Timing still compares merge base and candidate.
+    required: false
+    default: ""
+  reference-sha:
+    description: Exact upstream source revision of the reference executable
+    required: false
+    default: ""
   performance-claim:
     description: Whether this PR carries the performance label
     required: false
@@ -59,14 +67,20 @@ runs:
         INPUT_CANDIDATE_SHA: ${{ inputs.candidate-sha }}
         INPUT_PERFORMANCE_CLAIM: ${{ inputs.performance-claim }}
         INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_REFERENCE: ${{ inputs.reference }}
+        INPUT_REFERENCE_SHA: ${{ inputs.reference-sha }}
       run: |
         claim=()
         if [[ "$INPUT_PERFORMANCE_CLAIM" == 'true' ]]; then claim=(--performance-claim); fi
+        reference=()
+        if [[ -n "$INPUT_REFERENCE" ]]; then
+          reference=(--reference "$INPUT_REFERENCE" --reference-sha "$INPUT_REFERENCE_SHA")
+        fi
         python3 "${{ github.action_path }}/../../../benchmarks/performance_guard/guard.py" \
           --policy "${{ github.action_path }}/../../../benchmarks/performance_guard/policy.json" \
           --manifest "$RUNNER_TEMP/wild-performance-workloads/manifest.json" \
           --baseline "$INPUT_BASELINE" --candidate "$INPUT_CANDIDATE" \
           --baseline-sha "$INPUT_BASELINE_SHA" --candidate-sha "$INPUT_CANDIDATE_SHA" \
           --hyperfine "$PERF_GUARD_TOOLS/hyperfine" --poop "$PERF_GUARD_TOOLS/poop" \
-          --output "$INPUT_OUTPUT" "${claim[@]}"
+          --output "$INPUT_OUTPUT" "${claim[@]}" "${reference[@]}"
         cat "$INPUT_OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"

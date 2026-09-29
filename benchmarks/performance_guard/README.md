@@ -22,6 +22,13 @@ record in `.comment`; all other comment records are preserved. For
 other section, including allocated runtime content and unrelated non-allocated
 structure, remain failures.
 
+When the action is given a `reference` binary (upstream wild), the candidate's
+normalized output must match the reference's instead of the merge base's. The
+fork's output is required to match upstream, so a PR that restores upstream
+output passes even though it changes the output relative to the merge base.
+Whether the candidate still matches the merge base is recorded in the report
+as `baseline_equivalent`. Timing always compares merge base and candidate.
+
 Deployment uses two PRs. The first lands the action, policy, driver, workloads, and
 tests without a workflow. After that PR merges, a second PR adds the workflow and
 pins this action to the durable merge commit on `origin/main`. The benchmarked PR

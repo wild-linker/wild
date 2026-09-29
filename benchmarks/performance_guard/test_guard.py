@@ -129,6 +129,47 @@ class GuardTest(unittest.TestCase):
                 self.normalized_hash(candidate, root / "candidate-normalized"),
             )
 
+    def verify_with(self, sources):
+        """Runs verify_case where each link just copies the given executable."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name)
+        outputs = {name: directory / f"{name}.elf" for name in sources}
+        commands = {name: f"cp {source} {outputs[name]}" for name, source in sources.items()}
+        case = {"name": "case", "build_id": "none"}
+        return guard.verify_case(case, commands, outputs, directory)
+
+    def other_fixture(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        source = Path(directory.name) / "other.c"
+        source.write_text("int value = 42;\nint main(void) { return value - 42; }\n")
+        output = Path(directory.name) / "other"
+        subprocess.run(["cc", str(source), "-o", str(output)], check=True)
+        return output
+
+    def test_reference_replaces_baseline_as_equivalence_target(self):
+        other = self.other_fixture()
+        result = self.verify_with(
+            {"baseline": other, "candidate": self.fixture, "reference": self.fixture}
+        )
+        self.assertEqual(result["equivalence_target"], "reference")
+        self.assertFalse(result["baseline_equivalent"])
+
+    def test_candidate_must_match_reference(self):
+        other = self.other_fixture()
+        with self.assertRaisesRegex(guard.GuardError, "reference and candidate"):
+            self.verify_with(
+                {"baseline": self.fixture, "candidate": self.fixture, "reference": other}
+            )
+
+    def test_without_reference_candidate_must_match_baseline(self):
+        other = self.other_fixture()
+        with self.assertRaisesRegex(guard.GuardError, "baseline and candidate"):
+            self.verify_with({"baseline": other, "candidate": self.fixture})
+        result = self.verify_with({"baseline": self.fixture, "candidate": self.fixture})
+        self.assertEqual(result["equivalence_target"], "baseline")
+
     def test_slowdown_is_regression(self):
         result = guard.classify([1.0] * 12, [1.03] * 12, 1.5, 1.5)
         self.assertEqual(result["status"], "regression")

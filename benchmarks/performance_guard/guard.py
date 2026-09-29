@@ -210,7 +210,13 @@ def verify_case(
     outputs: dict[str, Path],
     evidence: Path,
 ) -> dict[str, Any]:
-    for name in ("baseline", "candidate"):
+    """Runs every link, executes every output and checks structural equivalence.
+
+    With a ``reference`` link (upstream wild), the candidate must match the reference: the fork's
+    output is required to match upstream's, so a PR that restores upstream output is correct even
+    though it differs from the merge base. Without one, the candidate must match the baseline.
+    """
+    for name in commands:
         run_checked(["bash", "-c", commands[name]])
         run_checked([str(outputs[name])])
     hashes = {name: sha256(path) for name, path in outputs.items()}
@@ -222,15 +228,18 @@ def verify_case(
             normalized,
             remove_build_id=case["build_id"] == "fast",
         )
-    equivalent = normalized_hashes["baseline"] == normalized_hashes["candidate"]
+    target = "reference" if "reference" in normalized_hashes else "baseline"
+    equivalent = normalized_hashes[target] == normalized_hashes["candidate"]
     if not equivalent:
         raise GuardError(
-            f"{case['name']}: baseline and candidate outputs are not structurally equivalent"
+            f"{case['name']}: {target} and candidate outputs are not structurally equivalent"
         )
     return {
         "sha256": hashes,
         "normalized_sha256": normalized_hashes,
+        "equivalence_target": target,
         "structurally_equivalent": True,
+        "baseline_equivalent": normalized_hashes["baseline"] == normalized_hashes["candidate"],
         "executed": True,
     }
 
@@ -348,6 +357,12 @@ def main() -> int:
     parser.add_argument("--baseline-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--performance-claim", action="store_true")
+    parser.add_argument(
+        "--reference",
+        type=Path,
+        help="untimed upstream wild whose output the candidate must match instead of the baseline's",
+    )
+    parser.add_argument("--reference-sha")
     args = parser.parse_args()
     policy = json.loads(args.policy.read_text())
     args.output.mkdir(parents=True, exist_ok=True)
@@ -356,10 +371,8 @@ def main() -> int:
     script = Path(__file__).with_name("run_link.py").resolve()
     cases = []
     for case in policy["cases"]:
-        outputs = {
-            name: link_outputs / f"{case['name']}-{name}.elf"
-            for name in ("baseline", "candidate")
-        }
+        linked = ("baseline", "candidate", "reference") if args.reference else ("baseline", "candidate")
+        outputs = {name: link_outputs / f"{case['name']}-{name}.elf" for name in linked}
         commands = {
             "baseline": command_for(
                 script,
@@ -376,6 +389,14 @@ def main() -> int:
                 outputs["candidate"],
             ),
         }
+        if args.reference:
+            commands["reference"] = command_for(
+                script,
+                args.manifest.resolve(),
+                case,
+                args.reference.resolve(),
+                outputs["reference"],
+            )
         correctness = verify_case(case, commands, outputs, link_outputs)
         samples = {"baseline": [], "candidate": []}
         block = 0
@@ -471,6 +492,15 @@ def main() -> int:
             "path": str(args.candidate.resolve()),
             "sha256": sha256(args.candidate),
         },
+        "reference": (
+            {
+                "source_sha": args.reference_sha,
+                "path": str(args.reference.resolve()),
+                "sha256": sha256(args.reference),
+            }
+            if args.reference
+            else None
+        ),
         "tools": {"hyperfine": "1.20.0", "poop": "0.5.0"},
         "environment": {
             "platform": platform.platform(),
