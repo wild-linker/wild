@@ -5113,6 +5113,7 @@ impl Assertions {
         self.verify_gdb_index_symbols(&obj)?;
         self.verify_gdb_index_distinct_addr_cus(&obj)?;
         self.verify_strings(&bytes)?;
+        verify_elf_section_header_zero(&obj)?;
         verify_no_overlapping_sections(&obj)?;
         if !self.skip_overlap_segments_check {
             verify_no_overlapping_segments(&obj)?;
@@ -6035,6 +6036,31 @@ fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>
         .section_by_name(".gdb_index")
         .with_context(|| format!("{directive}: .gdb_index section not found"))?;
     Ok(section.data()?.to_vec())
+}
+
+fn verify_elf_section_header_zero(obj: &object::File) -> Result {
+    // Can't use Object::sections() since it skips header zero.
+    let section_type = match obj {
+        object::File::Elf32(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        object::File::Elf64(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        _ => return Ok(()),
+    };
+
+    if let Some(section_type) = section_type {
+        ensure!(
+            section_type == object::elf::SHT_NULL,
+            "Section header zero must be SHT_NULL, got {section_type:?}",
+        );
+    }
+    Ok(())
 }
 
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
