@@ -2471,7 +2471,7 @@ fn data_index_immediates(body: &[u8]) -> Result<Vec<DataIndexImm>> {
         let at = data_index_leb_offset(body, pos as usize)?;
         imms.push(DataIndexImm {
             offset: at,
-            len: uleb_u32_len(body.get(at..).unwrap_or_default())?,
+            len: uleb128_len(body.get(at..).unwrap_or_default())?,
             index,
         });
     }
@@ -2484,22 +2484,16 @@ fn data_index_leb_offset(body: &[u8], op_pos: usize) -> Result<usize> {
         "expected bulk-memory prefix at function byte {op_pos}"
     );
     let mut cursor = op_pos + 1;
-    cursor += uleb_u32_len(body.get(cursor..).unwrap_or_default())?;
+    cursor += uleb128_len(body.get(cursor..).unwrap_or_default())?;
     Ok(cursor)
 }
 
-fn uleb_u32_len(bytes: &[u8]) -> Result<usize> {
-    let mut shift = 0;
-    for (i, &byte) in bytes.iter().take(5).enumerate() {
-        if shift == 28 && (byte & 0xf0) != 0 {
-            bail!("Wasm LEB128 integer too large");
-        }
-        if byte & 0x80 == 0 {
-            return Ok(i + 1);
-        }
-        shift += 7;
-    }
-    bail!("Wasm LEB128 integer too long")
+fn uleb128_len(bytes: &[u8]) -> Result<usize> {
+    let mut cursor = bytes;
+    let before = cursor.len();
+    leb128::read::unsigned(&mut cursor)
+        .map_err(|err| crate::error!("invalid Wasm LEB128: {err}"))?;
+    Ok(before - cursor.len())
 }
 
 fn remap_body_data_indices(
@@ -2563,6 +2557,8 @@ fn apply_data_index_fixups(
     }
     new_bytes.extend_from_slice(&old[cursor..]);
 
+    // `code_offset` stays the input payload offset. Shift later relocations by the
+    // bytes inserted or removed so that `offset - code_offset` still indexes the rewritten body.
     let code_offset = i64::from(body.code_offset);
     for reloc in relocs.iter_mut() {
         let rel = i64::from(reloc.offset) - code_offset;
