@@ -509,6 +509,10 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
             let offset_in_segment = fixup.address - segment.sizes.mem_offset;
             let file_offset = segment.sizes.file_offset + usize::try_from(offset_in_segment)?;
             let page_index = offset_in_segment / MACHO_PAGE_ALIGNMENT.value();
+            ensure!(
+                page_index == 0,
+                "Only fixups in the first page of each segment are currently supported"
+            );
 
             let next_fixup = fixups
                 .peek()
