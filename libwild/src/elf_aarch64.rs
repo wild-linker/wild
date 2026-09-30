@@ -95,7 +95,8 @@ impl crate::platform::Arch for ElfAArch64 {
             | object::elf::R_AARCH64_MOVW_PREL_G2
             | object::elf::R_AARCH64_MOVW_PREL_G2_NC
             | object::elf::R_AARCH64_MOVW_PREL_G3
-            | object::elf::R_AARCH64_LD_PREL_LO19 => Some(place),
+            | object::elf::R_AARCH64_LD_PREL_LO19
+            | object::elf::R_AARCH64_PLT32 => Some(place),
             _ => None,
         }
     }
@@ -216,6 +217,15 @@ impl crate::platform::Arch for ElfAArch64 {
                 }
                 _ => None,
             };
+        }
+
+        if relocation_kind == object::elf::R_AARCH64_PLT32 && !interposable {
+            relocation.kind = RelocationKind::Relative;
+            return Some(Relaxation {
+                kind: RelaxationKind::NoOp,
+                rel_info: relocation,
+                mandatory: output_kind.is_static_executable(),
+            });
         }
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a

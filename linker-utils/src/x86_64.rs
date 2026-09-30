@@ -380,7 +380,7 @@ pub const fn relocation_from_raw(
         mask: None,
         range,
         alignment: 1,
-        bias: 0,
+        bias: None,
         thunkable: false,
         implicit_addend: false,
     })

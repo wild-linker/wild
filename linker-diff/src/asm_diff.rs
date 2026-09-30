@@ -2559,10 +2559,12 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
             | RelocationKind::TlsDescCall
-            | RelocationKind::PairSubtractionULEB128(..)
+            | RelocationKind::PairSubtractionULEB128RiscV
+            | RelocationKind::PairSubtractionULEB128LoongArch
             | RelocationKind::None
             | RelocationKind::Alignment
-            | RelocationKind::MachoAddition => 0,
+            | RelocationKind::MachoAddition
+            | RelocationKind::MachoSubtraction => 0,
         };
 
         relative_to &= A::get_relocation_base_mask(&relocation_info);
@@ -2784,9 +2786,11 @@ fn value_kind_for_relocation<A: Arch>(
         RelocationKind::SymbolSize
         | RelocationKind::TlsDescCall
         | RelocationKind::None
-        | RelocationKind::PairSubtractionULEB128(..)
+        | RelocationKind::PairSubtractionULEB128RiscV
+        | RelocationKind::PairSubtractionULEB128LoongArch
         | RelocationKind::Alignment
-        | RelocationKind::MachoAddition => {
+        | RelocationKind::MachoAddition
+        | RelocationKind::MachoSubtraction => {
             return None;
         }
     };
@@ -3814,9 +3818,11 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelative
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
-                | RelocationKind::PairSubtractionULEB128(..)
+                | RelocationKind::PairSubtractionULEB128RiscV
+                | RelocationKind::PairSubtractionULEB128LoongArch
                 | RelocationKind::Alignment
-                | RelocationKind::MachoAddition => Ok(Referent::Absolute(raw_value)),
+                | RelocationKind::MachoAddition
+                | RelocationKind::MachoSubtraction => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
@@ -3995,7 +4001,7 @@ impl BinAttributes {
 
 fn relocation_num_bytes(info: RelocationKindInfo) -> usize {
     match info.size {
-        linker_utils::elf::RelocationSize::ByteSize(b) => b,
+        linker_utils::elf::RelocationSize::ByteSize(b) => usize::from(b),
         linker_utils::elf::RelocationSize::BitMasking(mask) => {
             (mask.range.end.div_ceil(8) - mask.range.start / 8) as usize
         }

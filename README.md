@@ -7,6 +7,44 @@ Wild is a linker with the goal of being very fast for iterative development.
 The plan is to eventually make it incremental, however that isn't yet implemented. It is however
 already pretty fast even without incremental linking.
 
+### Documentation quick links
+
+* [Usage](USAGE.md)
+* [Frequently asked questions](FAQ.md)
+* [Linker script support](LINKER_SCRIPT_SUPPORT.md)
+
+## Benchmarks
+
+The goal of Wild is to eventually be very fast via incremental linking. However, we also want to be
+as fast as we can be for non-incremental linking and for the initial link when incremental linking is enabled. See [BENCHMARKING.md](BENCHMARKING.md) for details on running benchmarks.
+
+We run benchmarks on a few different systems:
+
+* [Ryzen 9 9955HX (16 core, 32 thread)](benchmarks/ryzen-9955hx.md)
+* [2020 era Intel-based laptop with 4 cores and 8 threads](benchmarks/lemp9.md)
+* [Raspberry Pi 5](benchmarks/raspberrypi.md)
+
+For example, linking Chromium with CREL relocations on the Ryzen system:
+
+![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-time.svg)
+
+## Feature support
+
+The following platforms / architectures are currently supported:
+
+* x86-64 on Linux
+* AArch64 (ARM64) on Linux
+* RISC-V (riscv64gc) on Linux
+* LoongArch64 on Linux
+* PPC64LE on Linux (initial support)
+
+Here are some of the bigger things we're looking ahead to:
+
+* Incremental linking
+* Mach-O support
+* WebAssembly support
+* Windows support
+
 ## Installation
 
 ### From GitHub releases
@@ -54,273 +92,11 @@ in
 pkgs.callPackage ./package { stdenv = wildStdenv; }
 ```
 
-to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md)
-
-## Using as your default linker
-
-Being a drop-in replacement, Wild can be used similarly to other linkers by being invoked by GCC or
-Clang. Meaning you have several options:
-
-* Clang's exclusive option `--ld-path=wild`
-* GCC 16.1+ and Clang's option `-fuse-ld=wild` (note that Clang requires `ld.wild` binary/symlink)
-* Generally supported `-B <path>`, where `<path>` is the directory containing `ld` that points to
-  `wild`
-
-### ELF
-
-Below are examples of integrating Wild with various build systems.
-
-#### Rust (Cargo)
-
-You can use one of the options mentioned above in `~/.cargo/config.toml`:
-
-```toml
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-Clink-arg=--ld-path=wild"]
-```
-
-Or:
-
-```toml
-[target.x86_64-unknown-linux-gnu]
-# linker = "clang" # Uncomment this line if your GCC is older than version 16.
-rustflags = ["-Clink-arg=-fuse-ld=wild"]
-```
-
-#### CMake
-
-CMake 4.4 or later supports Wild directly when used with Clang or GCC 16 or later. You can select
-Wild as the linker by adding `-DCMAKE_LINKER_TYPE=WILD` to the cmake command-line.
-
-For older versions of cmake, see the generic instructions below.
-
-#### C/C++ (autotools, meson, old CMake etc.)
-
-Usually setting `LDFLAGS` is enough, but there are projects that implement their own solutions:
-
-```sh
-export LDFLAGS="${LDFLAGS} -fuse-ld=wild"
-```
-
-Or (especially useful for older GCC versions), create a symlink `ld` pointing to `wild` and pass the
-directory to GCC:
-
-```sh
-ln -s /usr/bin/wild /tmp/ld
-
-export CFLAGS="${CFLAGS} -B/tmp"
-export CXXFLAGS="${CXXFLAGS} -B/tmp"
-export LDFLAGS="${LDFLAGS} -B/tmp"
-```
-
-Then configure the project (you might need to remove the configuration cache first) and run your
-usual build steps.
-
-Due to the complexity of these build systems, you might want to verify that Wild was used to link a
-binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary).
-
-#### Illumos specific Cargo configuration:
-
-```toml
-[target.x86_64-unknown-illumos]
-# Absolute path to clang - on OmniOS this is likely something like /opt/ooce/bin/clang.
-linker = "/usr/bin/clang"
-
-rustflags = [
-    # Will silently delegate to GNU ld or Sun ld unless the absolute path to Wild is provided.
-    "-Clink-arg=-fuse-ld=/absolute/path/to/wild"
-]
-```
-
-### WebAssembly
-
-Wasm linking is experimental. Install Wild with the `wasm` feature:
-
-```sh
-cargo install --locked --features wasm wild-linker
-```
-
-#### Rust (Cargo)
-
-Pass the `wild` binary and `-C linker-flavor=wasm-ld`. The same flags apply to `wasm32-unknown-unknown`.
-
-```sh
-RUSTFLAGS="-C linker=path/to/wild -C linker-flavor=wasm-ld" \
-  cargo build --target wasm32-wasip1
-```
-
-```toml
-[target.wasm32-wasip1]
-rustflags = ["-C", "linker=path/to/wild", "-C", "linker-flavor=wasm-ld"]
-```
-
-#### C and C++ (Clang)
-
-As with ELF, point Clang at a directory that contains a `wasm-ld` symlink to `wild`. `-fuse-ld=lld` makes Clang look up that `wasm-ld`. `clang++` takes the same flags.
-
-```sh
-mkdir -p /tmp/wild
-ln -sf "$(command -v wild)" /tmp/wild/wasm-ld
-
-clang --target=wasm32-wasi -B/tmp/wild -fuse-ld=lld hello.c -o hello.wasm
-```
-
-For autotools, Meson, and similar drivers:
-
-```sh
-export CC="clang --target=wasm32-wasi"
-export CXX="clang++ --target=wasm32-wasi"
-export LDFLAGS="${LDFLAGS} -B/tmp/wild -fuse-ld=lld"
-```
-
-#### CMake
-
-Pass a directory that contains a `wasm-ld` symlink to `wild` and `-fuse-ld=lld`. For C++, set `CMAKE_CXX_COMPILER=clang++` and `CMAKE_CXX_COMPILER_TARGET=wasm32-wasi` as well.
-
-```sh
-cmake -S . -B build \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_C_COMPILER_TARGET=wasm32-wasi \
-  -DCMAKE_EXE_LINKER_FLAGS="-B/tmp/wild -fuse-ld=lld" \
-  -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
-```
-
-## Using wild in CI
-
-If you'd like to use Wild as your linker for Rust code in CI, see
-[wild-action](https://github.com/wild-linker/action).
-
-## Q&A
-
-### Why another linker?
-
-Mold is already very fast, however it doesn't do incremental linking and the author has stated that
-they don't intend to. Wild doesn't do incremental linking yet, but that is the end-goal. By writing
-Wild in Rust, it's hoped that the complexity of incremental linking will be achievable.
-
-### What's working?
-
-The following platforms / architectures are currently supported:
-
-* x86-64 on Linux
-* ARM64 on Linux
-* RISC-V (riscv64gc) on Linux
-* LoongArch64 on Linux (initial support)
-* PPC64LE on Linux (initial support)
-
-The following is working with the caveat that there may be bugs:
-
-* Output to statically linked, non-relocatable binaries
-* Output to statically linked, position-independent binaries (static-PIE)
-* Output to dynamically linked binaries
-* Output to shared objects (.so files)
-* Rust proc-macros, when linked with Wild work
-* Most of the top downloaded crates on crates.io have been tested with Wild and pass their tests
-* Debug info
-* GNU jobserver support
-* Partial linker script support. See the [linker script support matrix](LINKER_SCRIPT_SUPPORT.md) for details.
-* Linker plugin LTO - [known issues](https://github.com/wild-linker/wild/issues?q=is%3Aissue%20state%3Aopen%20label%3ALTO)
-
-### What isn't yet supported?
-
-Here are some of the larger things that aren't yet done, roughly sorted by current priority:
-
-* Incremental linking
-* More complex linker scripts
-* Mach-O support
-* Windows support
-
-### How can I verify that Wild was used to link a binary?
-
-Install `readelf` (available from binutils package), then run:
-
-```sh
-readelf --string-dump .comment my-executable
-```
-
-Look for a line like:
-
-```
-Linker: Wild version 0.1.0
-```
-
-You can probably also get away with `strings` (also available from binutils package):
-
-```sh
-strings my-executable | grep 'Linker:'
-```
-
-### Where did the name come from?
-
-It's somewhat of a tradition for linkers to end with the letters "ld". e.g. "GNU ld, "gold", "lld",
-"mold". Since the end-goal is for the linker to be incremental, an "I" is added. Let's say the "W"
-stands for "Wild", since recursive acronyms are popular in open-source projects.
-
-## Benchmarks
-
-The goal of Wild is to eventually be very fast via incremental linking. However, we also want to be
-as fast as we can be for non-incremental linking and for the initial link when incremental linking
-is enabled.
-
-All benchmarks are run with output to a tmpfs. See [BENCHMARKING.md](BENCHMARKING.md) for details on
-running benchmarks.
-
-We run benchmarks on a few different systems:
-
-* [Ryzen 9 9955HX (16 core, 32 thread)](benchmarks/ryzen-9955hx.md)
-* [2020 era Intel-based laptop with 4 cores and 8 threads](benchmarks/lemp9.md)
-* [Raspberry Pi 5](benchmarks/raspberrypi.md)
-
-Here's a few highlights.
-
-### Ryzen 9955HX (16 core, 32 thread)
-
-First, we link the Chrome web browser (or technically, Chromium).
-
-![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-time.svg)
-
-Memory consumption when linking Chromium:
-
-![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-memory.svg)
-
-librustc-driver is the shared object where most of the code in the Rust compiler lives. This
-benchmark shows the time to link it.
-
-![Benchmark of linking librustc-driver](benchmarks/images/ryzen-9955hx/librustc-driver-time.svg)
-
-For something much smaller, this is the time to link Wild itself. This also shows a few different
-Wild versions, so you can see how the link time has been tracking over releases.
-
-![Benchmark of linking wild](benchmarks/images/ryzen-9955hx/wild-time.svg)
-
-### Raspberry Pi 5
-
-Here's linking rust-analyzer on a Raspberry Pi 5.
-
-![Time to link rust-analyzer-no-debug](benchmarks/images/raspberrypi/rust-analyzer-no-debug-time.svg)
-
-## Linking Rust code
-
-The following is a `cargo test` command-line that can be used to build and test a crate using Wild.
-This has been run successfully on a few popular crates (e.g. ripgrep, serde, tokio, rand, bitflags).
-It assumes that the "wild" binary is on your path. It also depends on the Clang compiler being
-installed, since GCC doesn't allow using an arbitrary linker.
-
-```sh
-RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
-```
-
-Alternatively, with `ld.wild` symlink pointing at `wild`:
-```sh
-RUSTFLAGS="-Clinker=clang -Clink-args=-fuse-ld=wild" cargo test
-```
+to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md).
 
 ## Contributing
 
-For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-For a high-level overview of Wild's design, see [DESIGN.md](DESIGN.md).
+For more information on contributing to Wild, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Chat server
 
@@ -338,7 +114,9 @@ If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore)
 much appreciated. The more sponsorship I get the longer I can continue to work on this project full
 time.
 
-# Code of Conduct
+Also, the Wild project is supported by the Rust Foundation's Rust Innovation Lab: https://rustfoundation.org/media/welcoming-wild-to-the-rust-innovation-lab/
+
+## Code of Conduct
 
 The Wild project adheres to the [Rust code of
 conduct](https://rust-lang.org/policies/code-of-conduct/). If you have any moderation concerns or

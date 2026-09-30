@@ -343,7 +343,7 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
     let text_segment = get_text_segment_layout(layout)?;
     let image_base = text_segment.sizes.mem_offset;
 
-    let mut symbols = layout
+    let symbols = layout
         .dynamic_symbol_definitions
         .iter()
         .map(|symbol| {
@@ -389,7 +389,15 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(crate::trie::build(&mut symbols))
+    let Some(FileLayout::Epilogue(epilogue)) = layout
+        .group_layouts
+        .last()
+        .and_then(|group| group.files.last())
+    else {
+        bail!("Epilogue layout not found at expected offset");
+    };
+
+    Ok(epilogue.format_specific.exports_trie.encode(&symbols))
 }
 
 fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
@@ -523,8 +531,11 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
             };
 
             let encoding = match fixup.kind {
-                FixupKind::Rebase => {
-                    let value = u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?);
+                FixupKind::Rebase { target_address } => {
+                    let value = match target_address {
+                        Some(address) => address,
+                        None => u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?),
+                    };
                     let target = value
                         .checked_sub(image_base)
                         .context("Rebase target is before the image base")?;
@@ -828,7 +839,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     .entered();
 
     let rel_info = A::relocation_from_raw(rel)?;
-    if matches!(rel_info.kind, RelocationKind::MachoAddition) {
+    if matches!(
+        rel_info.kind,
+        RelocationKind::MachoAddition | RelocationKind::MachoSubtraction
+    ) {
         return Ok(());
     }
 
@@ -866,6 +880,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
                 // lld treats the value as signed 24-bit integral type
                 addend = u64::from(previous_rel.r_symbolnum).sign_extend(23);
             }
+            RelocationKind::MachoSubtraction => {
+                let (subtractor, _, _) = get_resolution(previous_rel, object_layout, layout)?;
+                addend = subtractor.raw_value.wrapping_neg();
+            }
             _ => {}
         }
     }
@@ -877,6 +895,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
                 rel_info.size
             );
         };
+        let byte_size = usize::from(byte_size);
         let bytes = out
             .get(offset_in_section as usize..)
             .and_then(|bytes| bytes.get(..byte_size))

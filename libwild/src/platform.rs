@@ -1300,6 +1300,8 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
 
     /// Returns whether the section has no contents in the file (zero initialised).
     fn is_no_bits(&self) -> bool;
+
+    fn is_null(&self) -> bool;
 }
 
 pub(crate) trait SectionType:
@@ -1604,6 +1606,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_emit_got_plt_syms(&self) -> bool {
         false
+    }
+
+    fn orphan_handling(&self) -> crate::args::OrphanHandling {
+        crate::args::OrphanHandling::Place
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool;

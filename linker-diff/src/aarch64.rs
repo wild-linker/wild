@@ -273,7 +273,7 @@ impl Arch for AArch64 {
                 PageMask::SymbolPlusAddendAndPosition(mask)
                 | PageMask::GotEntryAndPosition(mask)
                 | PageMask::GotBase(mask),
-            ) => !mask,
+            ) => !mask.value(),
             _ => u64::MAX,
         }
     }
@@ -387,8 +387,8 @@ const CHAINS: &[&[RType]] = &[
 
 const REL_ADR_PAGE: BitMask = BitMask::new(
     RelocationInstruction::AArch64(AArch64Instruction::Adr),
-    SIZE_4KB.trailing_zeros(),
-    SIZE_4KB.trailing_zeros() + 21,
+    SIZE_4KB.trailing_zeros() as u8,
+    SIZE_4KB.trailing_zeros() as u8 + 21,
 );
 
 const REL_LDR_OFFSET: BitMask = BitMask::new(

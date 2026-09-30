@@ -43,7 +43,7 @@ jobs:
 
     container:
       # Note: when updating this image hash, update the other occurrences in this file too.
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-086d0ec2f071492c0931ce3aac4140720c169926
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b"
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-086d0ec2f071492c0931ce3aac4140720c169926"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -99,7 +99,7 @@ jobs:
             target: powerpc64le-unknown-linux-gnu
             config: .cargo/config.toml.cross-ppc64le
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-086d0ec2f071492c0931ce3aac4140720c169926
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-086d0ec2f071492c0931ce3aac4140720c169926
     steps:
       - name: Setup Wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
@@ -142,7 +142,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-086d0ec2f071492c0931ce3aac4140720c169926
     steps:
       - uses: actions/checkout@v7
         with:
@@ -200,7 +200,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-fc8fa6975269300dacfc3c8fff06b3ba2f96721b
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-086d0ec2f071492c0931ce3aac4140720c169926
     steps:
       - uses: actions/checkout@v7
         with:
@@ -223,7 +223,7 @@ jobs:
           persist-credentials: false
       # This is where we check that we're not using features from a more recent rust version. When
       # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
         with:
           components: clippy

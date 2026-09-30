@@ -27,6 +27,8 @@ path = [
   "PACKAGING.md",
   "README.md",
   "RELEASING.md",
+  "FAQ.md",
+  "USAGE.md",
   "REUSE.toml",
   "benchmarks/**",
   "cackle.toml",

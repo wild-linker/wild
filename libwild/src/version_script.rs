@@ -702,10 +702,7 @@ pub(crate) fn parse_matcher<'data>(
     let token = token.trim_ascii_end();
 
     Ok(ParsedSymbolMatcher::Single(
-        if let Some(unquoted) = token
-            .strip_prefix(b"\"")
-            .and_then(|t| t.strip_suffix(b"\""))
-        {
+        if let Some(unquoted) = token.strip_circumfix(b"\"", b"\"") {
             SymbolMatcher::Exact(unquoted)
         } else if token == b"*" {
             SymbolMatcher::MatchesAll

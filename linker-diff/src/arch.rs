@@ -59,6 +59,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
         if let Some(info) = relaxation.new_r_type.opt_relocation_info() {
             match info.size {
                 linker_utils::elf::RelocationSize::ByteSize(num_bytes) => {
+                    let num_bytes = usize::from(num_bytes);
                     let mask_len = (relocation_offset + num_bytes).max(byte_range.num_bytes);
 
                     mask.bitmask.resize(mask_len, 0xff);

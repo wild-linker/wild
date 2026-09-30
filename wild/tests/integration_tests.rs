@@ -62,7 +62,7 @@
 //! supported for ELF.
 //!
 //! ExpectDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RUNPATH, DT_FLAGS) is
-//! present in the .dynamic section.
+//! present in the .dynamic section. An optional `count=N` asserts the exact number of entries.
 //!
 //! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
 //! absent from the .dynamic section.
@@ -2009,7 +2009,7 @@ struct Assertions {
     contains_strings: Vec<String>,
     expect_dynamic: bool,
     expected_load_alignments: Vec<u64>,
-    expected_dynamic_entries: Vec<String>,
+    expected_dynamic_entries: Vec<ExpectedDynamicEntry>,
     absent_dynamic_entries: Vec<String>,
     expected_sections: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
@@ -2034,6 +2034,12 @@ struct Assertions {
     expected_program_headers: Vec<ExpectedProgramHeaders>,
     absent_program_headers: Vec<ProgramHeaderType>,
     skip_overlap_segments_check: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedDynamicEntry {
+    tag: String,
+    count: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2419,10 +2425,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
     let mut output_path = None;
     let mut auto_add = true;
     for part in parts {
-        if let Some(value) = part
-            .strip_prefix("template(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        if let Some(value) = part.strip_circumfix("template(", ")") {
             ensure!(template.is_none(), "Duplicate template modifier");
             let template_parts = value.split(' ').map(str::to_owned).collect_vec();
             if !template_parts.iter().any(|a| {
@@ -2434,10 +2437,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
                 );
             }
             template = Some(template_parts);
-        } else if let Some(value) = part
-            .strip_prefix("as(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        } else if let Some(value) = part.strip_circumfix("as(", ")") {
             ensure!(output_path.is_none(), "Duplicate as modifier");
             let path = PathBuf::from(value);
             ensure!(!path.as_os_str().is_empty(), "as() path must not be empty");
@@ -2742,10 +2742,26 @@ fn process_directive(
                     match_range,
                 });
         }
-        "ExpectDynamic" => config
-            .assertions
-            .expected_dynamic_entries
-            .push(arg.to_owned()),
+        "ExpectDynamic" => {
+            let mut parts = arg.split_whitespace();
+            let tag = parts.next().context("ExpectDynamic requires a tag name")?;
+            let mut count = None;
+
+            for property in parts {
+                let value = property
+                    .strip_prefix("count=")
+                    .with_context(|| format!("Unknown ExpectDynamic property `{property}`"))?;
+                count = Some(value.parse()?);
+            }
+
+            config
+                .assertions
+                .expected_dynamic_entries
+                .push(ExpectedDynamicEntry {
+                    tag: tag.to_owned(),
+                    count,
+                });
+        }
         "NoDynamic" => config
             .assertions
             .absent_dynamic_entries
@@ -5119,6 +5135,7 @@ impl Assertions {
         self.verify_gdb_index_symbols(&obj)?;
         self.verify_gdb_index_distinct_addr_cus(&obj)?;
         self.verify_strings(&bytes)?;
+        verify_elf_section_header_zero(&obj)?;
         verify_no_overlapping_sections(&obj)?;
         if !self.skip_overlap_segments_check {
             verify_no_overlapping_segments(&obj)?;
@@ -5784,12 +5801,12 @@ impl Assertions {
         let Ok(entries) = object::pod::slice_from_all_bytes::<object::elf::Dyn64<_>>(data) else {
             bail!("Unexpected .dynamic section length {:#x}", data.len());
         };
-        let mut found_tags: HashSet<String> = HashSet::new();
+        let mut found_tags: HashMap<&str, usize> = HashMap::new();
 
         for entry in entries {
             let tag = entry.d_tag.get(endian);
             if let Some(name) = dynamic_tag_name(tag) {
-                found_tags.insert(name.to_string());
+                *found_tags.entry(name).or_default() += 1;
             }
 
             if tag == object::elf::DT_NULL {
@@ -5798,16 +5815,24 @@ impl Assertions {
         }
 
         for expected in &self.expected_dynamic_entries {
-            if !found_tags.contains(expected.as_str()) {
+            let tag = &expected.tag;
+            if !found_tags.contains_key(tag.as_str()) {
                 bail!(
-                    "Expected dynamic entry `{expected}` not found. Found: {:?}",
+                    "Expected dynamic entry `{tag}` not found. Found: {:?}",
                     found_tags
+                );
+            }
+            if let Some(count) = expected.count {
+                let actual = found_tags[tag.as_str()];
+                ensure!(
+                    actual == count,
+                    "Expected {count} `{tag}` entries, found {actual}"
                 );
             }
         }
 
         for absent in &self.absent_dynamic_entries {
-            if found_tags.contains(absent.as_str()) {
+            if found_tags.contains_key(absent.as_str()) {
                 bail!("Dynamic entry `{absent}` should be absent but was found");
             }
         }
@@ -6041,6 +6066,31 @@ fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>
         .section_by_name(".gdb_index")
         .with_context(|| format!("{directive}: .gdb_index section not found"))?;
     Ok(section.data()?.to_vec())
+}
+
+fn verify_elf_section_header_zero(obj: &object::File) -> Result {
+    // Can't use Object::sections() since it skips header zero.
+    let section_type = match obj {
+        object::File::Elf32(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        object::File::Elf64(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        _ => return Ok(()),
+    };
+
+    if let Some(section_type) = section_type {
+        ensure!(
+            section_type == object::elf::SHT_NULL,
+            "Section header zero must be SHT_NULL, got {section_type:?}",
+        );
+    }
+    Ok(())
 }
 
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
