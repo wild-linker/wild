@@ -85,6 +85,7 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use std::iter;
 use std::mem::offset_of;
 use std::num::NonZeroU8;
 use std::num::NonZeroU64;
@@ -366,6 +367,7 @@ pub(crate) struct ImportedSymbolWithResolution {
 struct PendingFixup {
     file_id: FileId,
     section_index: SectionIndex,
+    output_section_id: OutputSectionId,
     offset_in_section: u64,
     kind: PendingFixupKind,
 }
@@ -1897,11 +1899,6 @@ impl platform::Platform for MachO {
             })
             .sum::<u64>();
 
-        // TODO: Since we currently only support one page per segment, this is fine as a cap. But
-        // once we support multiple pages, we should figure out how to find exactly how many
-        // `page_start`s were emitted.
-        fixup_table_size += CHAINED_FIXUP_PAGE_START_SIZE * MAX_SEGMENT_COUNT as u64;
-
         mem_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
             alignment::USIZE.align_up(fixup_table_size),
@@ -1944,6 +1941,43 @@ impl platform::Platform for MachO {
         _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
+    }
+
+    fn apply_late_size_adjustments_epilogue(
+        _state: &mut Self::EpilogueLayoutExt,
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        format_specific: &Self::FinaliseSizesExt<'_>,
+        _args: &Self::Args,
+    ) -> Result {
+        const PAGE_SIZE: u64 = alignment::MACHO_PAGE_ALIGNMENT.value();
+
+        // Addresses aren't available yet, so estimate the number of pages that can contain fixups
+        // from the combined size of every output section containing one. The GOT must be included
+        // as both imported and local GOT slots can require fixups.
+        let fixup_section_size = format_specific
+            .pending_fixups
+            .iter()
+            .map(|fixup| fixup.output_section_id)
+            .chain(iter::once(output_section_id::GOT))
+            .unique()
+            .map(|section_id| {
+                let part_range = section_id.part_id_range::<MachO>();
+                current_sizes
+                    .values_in_range(part_range)
+                    // For being sure, round each part to a page size.
+                    .map(|v| v.next_multiple_of(PAGE_SIZE))
+                    .sum::<u64>()
+            })
+            .sum::<u64>();
+        let estimated_page_count = fixup_section_size.div_ceil(PAGE_SIZE);
+
+        extra_sizes.increment(
+            part_id::CHAINED_FIXUP_TABLE,
+            alignment::USIZE.align_up(CHAINED_FIXUP_PAGE_START_SIZE * estimated_page_count),
+        );
+        Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(
@@ -2746,6 +2780,9 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
                 common.format_specific.pending_fixups.push(PendingFixup {
                     file_id: object.file_id,
                     section_index,
+                    output_section_id: object
+                        .section_part_id(section_index, &resources.symbol_db.section_part_ids)
+                        .output_section_id::<MachO>(),
                     offset_in_section: u64::from(rel_info.r_address),
                     kind,
                 });
