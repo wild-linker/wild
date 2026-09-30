@@ -1965,7 +1965,8 @@ impl platform::Platform for MachO {
                 let part_range = section_id.part_id_range::<MachO>();
                 current_sizes
                     .values_in_range(part_range)
-                    // For being sure, round each part to a page size.
+                    // For being sure, round each part to a page size (the number of such output
+                    // sections is rather limited and we're wasting only 2B per page).
                     .map(|v| v.next_multiple_of(MACHO_PAGE_ALIGNMENT_VALUE))
                     .sum::<u64>()
             })
