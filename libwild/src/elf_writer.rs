@@ -161,6 +161,8 @@ use uuid::Uuid;
 use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
 
+mod debug_relocations;
+
 type ElfLayout<'data, C> = Layout<'data, elf::Elf<C>>;
 
 /// A cache for managing ELF relocations and optimization of relocation entries.
@@ -2464,7 +2466,7 @@ fn write_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
         elf::RelocationList::Rela(rela) => {
-            apply_debug_rela_relocations::<C, A>(object, out, section_index, rela, layout)
+            debug_relocations::apply_rela::<C, A>(object, out, section_index, rela, layout)
         }
         elf::RelocationList::Crel(crel_iter) => {
             apply_debug_relocations::<C, A, elf::ElfCrel<C>, _>(
@@ -3002,20 +3004,7 @@ fn apply_debug_relocations_impl<
     output_offset: u64,
     previous: Option<R>,
 ) -> Result<usize> {
-    let section_name = object.object.section_name(section_index)?;
-
-    // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
-    // However, the change is premature as consumers of the DWARF format don't fully support
-    // the new tombstone values.
-    //
-    // Link: https://dwarfstd.org/issues/200609.1.html
-    let tombstone_value: u64 =
-        if section_name == DEBUG_LOC_SECTION_NAME || section_name == DEBUG_RANGES_SECTION_NAME {
-            // These sections use zero as a list terminator.
-            1
-        } else {
-            0
-        };
+    let tombstone_value = debug_tombstone_value(object.object.section_name(section_index)?);
 
     let mut relocation_count = 0;
     let mut relocation_cache = RelocationCache {
@@ -3048,6 +3037,21 @@ fn apply_debug_relocations_impl<
         relocation_cache.previous = Some(rel);
     }
     Ok(relocation_count)
+}
+
+/// The value written by a debug relocation against a discarded section.
+fn debug_tombstone_value(section_name: &[u8]) -> u64 {
+    // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
+    // However, the change is premature as consumers of the DWARF format don't fully support
+    // the new tombstone values.
+    //
+    // Link: https://dwarfstd.org/issues/200609.1.html
+    if section_name == DEBUG_LOC_SECTION_NAME || section_name == DEBUG_RANGES_SECTION_NAME {
+        // These sections use zero as a list terminator.
+        1
+    } else {
+        0
+    }
 }
 
 fn record_debug_relocations<C: ElfClass>(

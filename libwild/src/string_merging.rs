@@ -33,6 +33,7 @@ use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_section_id::SectionIdRange;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -1034,15 +1035,33 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
 
     let part_id = section_part_ids[input_section_id.as_usize()];
     let section_id = part_id.output_section_id::<P>();
-    let strings_section = merged_strings.get(section_id);
-    let string_offset = find_string(*merge_slot, input_offset, strings_section)?;
-    let bucket_base =
-        merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
-    let mut address = bucket_base + string_offset.offset_in_bucket();
+    let mut address = merged_string_address(
+        *merge_slot,
+        section_id,
+        input_offset,
+        merged_strings,
+        merged_string_start_addresses,
+    )?;
     if symbol_has_name {
         address = address.wrapping_add(addend as u64);
     }
     Ok(Some(address))
+}
+
+/// Returns the output address of the merged string at `input_offset` in the input section
+/// `merge_slot`, which was merged into `section_id`.
+#[inline(always)]
+pub(crate) fn merged_string_address(
+    merge_slot: StringMergeSectionSlot,
+    section_id: OutputSectionId,
+    input_offset: u64,
+    merged_strings: &OutputSectionMap<MergedStringsSection>,
+    merged_string_start_addresses: &MergedStringStartAddresses,
+) -> Result<u64> {
+    let string_offset = find_string(merge_slot, input_offset, merged_strings.get(section_id))?;
+    let bucket_base =
+        merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
+    Ok(bucket_base + string_offset.offset_in_bucket())
 }
 
 fn find_string(
