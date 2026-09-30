@@ -646,6 +646,10 @@ mod tests {
 
     #[test]
     fn copying_over_a_hard_link_to_the_source_keeps_the_source() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("input.rlib");
         let dest = dir.path().join("saved.rlib");
