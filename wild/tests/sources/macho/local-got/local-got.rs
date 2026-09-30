@@ -1,7 +1,6 @@
 // TODO: For now, LTO is required for this test since we have a single page limit.
-// We also require `-link-dead-code=y` and the `__eh_frame` DiffIgnore assertion since we don't have
-// `-dead_strip` support yet.
-//#CompArgs:-C link-dead-code=y -C lto=y -C opt-level=2
+// We require the `__eh_frame` DiffIgnore assertion since we don't have `-dead_strip` support yet.
+//#CompArgs:-C lto=y -C opt-level=2
 //#DiffIgnore:section.__eh_frame.attributes
 // lld and ld both use lazy binding, but we use chained fixups here.
 //#DiffIgnore:section.__stub_helper

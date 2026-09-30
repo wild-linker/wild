@@ -67,6 +67,8 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "dynamic",
     // __init_offsets is emitted by default
     "init_offsets",
+    // TODO: Implement -dead_strip: https://github.com/wild-linker/wild/issues/2069
+    "dead_strip",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[];
@@ -135,7 +137,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_gc_sections(&self) -> bool {
-        // TODO: Mach-O needs proper support for GC and -dead_strip.
+        // TODO: Implement Mach-O GC: https://github.com/wild-linker/wild/issues/2069
         false
     }
 
@@ -378,6 +380,7 @@ mod tests {
         "/bar/lib",
         "main.o",
         "-lc++",
+        "-dead_strip",
     ];
 
     fn input1_assertions(args: &MachOArgs) {
