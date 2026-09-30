@@ -368,7 +368,7 @@ impl SaveDirState {
             if let Err(error) = create_symlink(&target, &dest_path) {
                 // If we can't create a symlink, then fall back to copying. If that fails, then
                 // return the error from when we tried to create the symlink.
-                if std::fs::copy(&target, &dest_path).is_err() {
+                if copy_without_truncating(&target, &dest_path).is_err() {
                     return Err(error);
                 }
             }
@@ -397,7 +397,7 @@ impl SaveDirState {
                             if let Ok(updated_bytes) =
                                 make_linker_script_relative(&data, source_path)
                             {
-                                std::fs::write(dest_path, updated_bytes)?;
+                                write_without_truncating(&dest_path, &updated_bytes)?;
                                 return Ok(());
                             }
                         }
@@ -409,7 +409,7 @@ impl SaveDirState {
             // To save disk space, we first attempt to hard link the file. If that fails, then just
             // copy it.
             if std::fs::hard_link(source_path, &dest_path).is_err() {
-                std::fs::copy(source_path, &dest_path).with_context(|| {
+                copy_without_truncating(source_path, &dest_path).with_context(|| {
                     format!(
                         "Failed to copy `{}` to `{}`",
                         source_path.display(),
@@ -512,6 +512,36 @@ fn normalize_abs_path(path: &Path) -> Option<PathBuf> {
 
 /// Returns a relative path to reach `target` from `directory`. Both must be absolute paths.
 /// Returns `None` if the paths are invalid (e.g. contain backtracking past the root).
+/// Copies `source` to `dest` by way of a temporary file that's then renamed over `dest`, rather
+/// than by opening `dest` for writing. `dest` may already exist as a hard link to `source`, for
+/// example when another link using the same save directory has just linked it, and
+/// `std::fs::copy` would then truncate `source` itself before copying from it.
+fn copy_without_truncating(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let temporary = temporary_sibling(dest);
+    std::fs::copy(source, &temporary)?;
+    std::fs::rename(&temporary, dest)
+}
+
+/// Writes `contents` to `dest` without writing through an existing `dest`. See
+/// [`copy_without_truncating`].
+fn write_without_truncating(dest: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let temporary = temporary_sibling(dest);
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(&temporary, dest)
+}
+
+/// A path next to `path` that no other process will use.
+fn temporary_sibling(path: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(
+        ".wild-save-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    path.with_file_name(name)
+}
+
 fn make_relative_path(target: &Path, directory: &Path) -> Option<PathBuf> {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
@@ -613,6 +643,28 @@ fn shell_escape_string(value: &'_ str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copying_over_a_hard_link_to_the_source_keeps_the_source() {
+        // Sandboxed hosts (WASI) don't have a temp dir.
+        if crate::host::os::SANDBOXED {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("input.rlib");
+        let dest = dir.path().join("saved.rlib");
+        std::fs::write(&source, b"library contents").unwrap();
+        // What a concurrent link using the same save directory leaves behind.
+        std::fs::hard_link(&source, &dest).unwrap();
+
+        copy_without_truncating(&source, &dest).unwrap();
+        write_without_truncating(&dest, b"rewritten").unwrap();
+
+        assert_eq!(std::fs::read(&source).unwrap(), b"library contents");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"rewritten");
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 2, "temporary files must be renamed away");
+    }
 
     fn test_make_relative_path(target: &Path, directory: &Path) {
         let relative = make_relative_path(target, directory).unwrap();
