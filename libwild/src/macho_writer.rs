@@ -1281,18 +1281,31 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         let segment_addresses =
             segment.sizes.mem_offset..segment.sizes.mem_offset + segment.sizes.mem_size;
 
-        let segment_fixups = layout
+        let fixup_pages = layout
             .format_specific
             .fixups
             .iter()
-            .filter(|fixup| segment_addresses.contains(&fixup.address));
-        let Some(last_fixup) = segment_fixups.clone().next_back() else {
+            .filter(|fixup| segment_addresses.contains(&fixup.address))
+            .map(|fixup| {
+                let offset_in_segment = fixup.address - segment.sizes.mem_offset;
+                (
+                    offset_in_segment / MACHO_PAGE_ALIGNMENT_VALUE,
+                    offset_in_segment % MACHO_PAGE_ALIGNMENT_VALUE,
+                )
+            })
+            .dedup_by(|left, right| left.0 == right.0)
+            .map(|(page_index, first_fixup_offset)| {
+                Ok((
+                    usize::try_from(page_index)?,
+                    u16::try_from(first_fixup_offset)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let Some(&(last_page_index, _)) = fixup_pages.last() else {
             continue;
         };
 
-        let page_count = usize::try_from(
-            (last_fixup.address - segment.sizes.mem_offset) / MACHO_PAGE_ALIGNMENT_VALUE + 1,
-        )?;
+        let page_count = last_page_index + 1;
         let page_count_u16 = u16::try_from(page_count).context("Too many chained fixup pages")?;
         let starts_in_segment_len = size_of::<ChainedStartsInSegment>()
             + page_count * CHAINED_FIXUP_PAGE_START_SIZE as usize;
@@ -1320,16 +1333,12 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         starts_in_segment.max_valid_pointer.set(LE, 0);
         starts_in_segment.page_count.set(LE, page_count_u16);
 
-        page_starts.fill(U16::new(LE, DYLD_CHAINED_PTR_START_NONE));
-        for fixup in segment_fixups {
-            let offset_in_segment = fixup.address - segment.sizes.mem_offset;
-            let page_index = usize::try_from(offset_in_segment / MACHO_PAGE_ALIGNMENT_VALUE)?;
-            if page_starts[page_index].get(LE) == DYLD_CHAINED_PTR_START_NONE {
-                page_starts[page_index].set(
-                    LE,
-                    u16::try_from(offset_in_segment % MACHO_PAGE_ALIGNMENT_VALUE)?,
-                );
-            }
+        let mut fixup_pages = fixup_pages.into_iter().peekable();
+        for (page_index, page_start) in page_starts.iter_mut().enumerate() {
+            let first_fixup_offset = fixup_pages
+                .next_if(|(fixup_page_index, _)| *fixup_page_index == page_index)
+                .map_or(DYLD_CHAINED_PTR_START_NONE, |(_, offset)| offset);
+            page_start.set(LE, first_fixup_offset);
         }
 
         starts_in_segment_offset += starts_in_segment_len;
