@@ -257,7 +257,7 @@ jobs:
     env:
       # rust-toolchain.toml selects the development toolchain; this job intentionally overrides it
       # to check the MSRV.
-      RUSTUP_TOOLCHAIN: "1.98.0"
+      RUSTUP_TOOLCHAIN: "1.98.1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -265,7 +265,7 @@ jobs:
       # This is where we check that we're not using features from a more recent rust version. When
       # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
       # rust-toolchain.toml is the development toolchain; RUSTUP_TOOLCHAIN above overrides it here.
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.98.1
         id: rust-toolchain
         with:
           components: clippy
