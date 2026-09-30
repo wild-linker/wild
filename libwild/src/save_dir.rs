@@ -268,13 +268,13 @@ impl SaveDirState {
 
             if let Some(mut path) = arg.strip_prefix("-o") {
                 if path.is_empty() {
-                    path = args.next().map(|s| s.as_str()).unwrap_or_default();
+                    path = args.next().map_or_default(|s| s.as_str());
                 }
                 out.write_all(b"-o $OUT")?;
                 *original_output_file = Some(path.to_owned());
             } else if let Some(mut dir) = arg.strip_prefix("-L") {
                 if dir.is_empty() {
-                    dir = args.next().map(|s| s.as_str()).unwrap_or_default();
+                    dir = args.next().map_or_default(|s| s.as_str());
                 }
 
                 let dir = std::path::absolute(dir)?;

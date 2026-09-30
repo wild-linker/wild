@@ -3564,8 +3564,7 @@ impl<'data> AddressIndex<'data> {
     pub(crate) fn symbols_at_address(&self, address: u64) -> &[object::SymbolIndex] {
         self.symbols_by_address
             .get(&address)
-            .map(|s| s.as_slice())
-            .unwrap_or_default()
+            .map_or_default(|s| s.as_slice())
     }
 
     pub(crate) fn relocation_at_address(&self, address: u64) -> Option<&object::Relocation> {

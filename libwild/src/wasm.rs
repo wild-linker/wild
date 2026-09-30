@@ -111,8 +111,6 @@ pub(crate) mod part_id {
     #[expect(dead_code)]
     pub(crate) const WASM_START: PartId = SinglePartSectionId::WasmStart.part_id();
     pub(crate) const WASM_ELEMENT: PartId = SinglePartSectionId::WasmElement.part_id();
-    // TODO(wasm): Implement data-count emission.
-    #[expect(dead_code)]
     pub(crate) const WASM_DATA_COUNT: PartId = SinglePartSectionId::WasmDataCount.part_id();
     pub(crate) const WASM_CODE: PartId = SinglePartSectionId::WasmCode.part_id();
     pub(crate) const WASM_DATA: PartId = SinglePartSectionId::WasmData.part_id();
@@ -620,12 +618,14 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
     pub(crate) reloc_range: Range<u32>,
     /// Section-payload offset of the first data byte.
     pub(crate) payload_start: u32,
-    /// Output memory index after index remapping.
+    /// Output memory index after index remapping. Unused for passive segments.
     pub(crate) output_memory_index: u32,
-    /// Byte offset within the output module's linear memory where the payload is placed.
+    /// Byte offset within the output module's linear memory. Unused for passive segments.
     pub(crate) output_memory_offset: u32,
     /// Encoded size of this segment within the output data section payload.
     pub(crate) encoded_output_size: u32,
+    /// Passive segments are not placed in linear memory.
+    pub(crate) passive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1598,6 +1598,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) encoded_sections: WasmEncodedSections,
     pub(crate) code_section_size: u64,
     pub(crate) data_section_size: u64,
+    /// A live function contains `memory.init` or `data.drop`.
+    code_references_data_segment: bool,
     /// Linker-synthesized `{export}.command_export` wrappers and their name-section names.
     command_export_wrapper_names: Vec<(u32, String)>,
 }
@@ -1612,6 +1614,7 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) memory: Option<Vec<u8>>,
     pub(crate) table: Option<Vec<u8>>,
     pub(crate) element: Option<Vec<u8>>,
+    pub(crate) data_count: Option<Vec<u8>>,
     // Custom `name` section.
     pub(crate) name: Option<Vec<u8>>,
     // Custom `target_features` section.
@@ -1628,6 +1631,7 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_ELEMENT, self.element.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_DATA_COUNT, self.data_count.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_NAME, self.name.as_ref());
         add_encoded_section_size(
             sizes,
@@ -2093,6 +2097,21 @@ impl<'data> WasmLayout<'data> {
         }
 
         {
+            timing_phase!("Encode Wasm data count section");
+            // Validators reject `memory.init` / `data.drop` without this section. A remaining
+            // passive segment emits it too.
+            if self.code_references_data_segment
+                || output_data_has_passive(&self.object_data_layouts)
+            {
+                let count = output_data_segment_count(&self.object_data_layouts);
+                self.encoded_sections.data_count =
+                    Some(encode_wasm_section(&wasm_encoder::DataCountSection {
+                        count,
+                    }));
+            }
+        }
+
+        {
             timing_phase!("Compute Wasm code/data section sizes");
             self.code_section_size = compute_code_section_size(&self.function_bodies);
             self.data_section_size = compute_data_section_size(&self.object_data_layouts);
@@ -2158,28 +2177,28 @@ fn output_i32_const_init_expr_size(offset: u32) -> u32 {
 }
 
 fn output_data_segment_encoded_size(
-    kind: &DataKind<'_>,
     data_len: usize,
     output_memory_offset: u32,
     output_memory_index: u32,
+    passive: bool,
 ) -> Result<u32> {
     let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
     let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
-    match kind {
-        DataKind::Passive => bail!("passive data segments are not emitted"),
-        DataKind::Active { .. } => {
-            let init_len = output_i32_const_init_expr_size(output_memory_offset);
-            let header = if output_memory_index == 0 {
-                1
-            } else {
-                1 + uleb128_size(u64::from(output_memory_index)) as u32
-            };
-            Ok(header
-                .checked_add(init_len)
-                .and_then(|n| n.checked_add(payload_len))
-                .context("Wasm data segment size overflow")?)
-        }
+    if passive {
+        return payload_len
+            .checked_add(1)
+            .context("Wasm data segment size overflow");
     }
+    let init_len = output_i32_const_init_expr_size(output_memory_offset);
+    let header = if output_memory_index == 0 {
+        1
+    } else {
+        1 + uleb128_size(u64::from(output_memory_index)) as u32
+    };
+    header
+        .checked_add(init_len)
+        .and_then(|n| n.checked_add(payload_len))
+        .context("Wasm data segment size overflow")
 }
 
 /// Map data-section relocations onto owning segments as ranges into `relocs`.
@@ -2340,25 +2359,30 @@ fn layout_object_data<'data>(
         if data_segment_is_tls(input, original_index) != want_tls {
             continue;
         }
-        let DataKind::Active { memory_index, .. } = segment.kind else {
-            bail!("passive data segments are not emitted");
+        let (output_memory_index, output_memory_offset, passive) = match segment.kind {
+            DataKind::Passive => (0, 0, true),
+            DataKind::Active { memory_index, .. } => {
+                let output_memory_index =
+                    remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
+                // Linking `SegmentInfo.alignment` is a power-of-two exponent.
+                let align = data_segment_alignment(input, original_index);
+                *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
+                    .context("Wasm data segment alignment overflow")?;
+                let output_memory_offset = *memory_cursor;
+                *memory_cursor = memory_cursor
+                    .checked_add(
+                        u32::try_from(segment.data.len()).context("Wasm data segment too large")?,
+                    )
+                    .context("Wasm output memory offset overflow")?;
+                (output_memory_index, output_memory_offset, false)
+            }
         };
-        let output_memory_index =
-            remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
-        // Linking `SegmentInfo.alignment` is a power-of-two exponent.
-        let align = data_segment_alignment(input, original_index);
-        *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
-            .context("Wasm data segment alignment overflow")?;
-        let output_memory_offset = *memory_cursor;
         let encoded_output_size = output_data_segment_encoded_size(
-            &segment.kind,
             segment.data.len(),
             output_memory_offset,
             output_memory_index,
+            passive,
         )?;
-        *memory_cursor = memory_cursor
-            .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
-            .context("Wasm output memory offset overflow")?;
         let (reloc_range, payload_start) = segment_reloc_ranges
             .get(filtered_idx)
             .cloned()
@@ -2371,16 +2395,228 @@ fn layout_object_data<'data>(
             output_memory_index,
             output_memory_offset,
             encoded_output_size,
+            passive,
         });
     }
     Ok(segments)
 }
 
-fn compute_data_section_size(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u64 {
-    let segment_count: u32 = object_data_layouts
+fn output_data_segment_count(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u32 {
+    object_data_layouts
         .iter()
         .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
-        .sum();
+        .sum()
+}
+
+fn output_data_has_passive(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> bool {
+    object_data_layouts
+        .iter()
+        .flatten()
+        .any(|segment| segment.passive)
+}
+
+/// Original data-segment index to output index. Missing entries were removed by GC.
+fn output_data_segment_indices(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> Result<Vec<Vec<Option<u32>>>> {
+    let mut next = 0u32;
+    let mut maps = Vec::with_capacity(object_data_layouts.len());
+    for segments in object_data_layouts {
+        let mut by_original = Vec::new();
+        for segment in segments {
+            let slot = segment.segment_index as usize;
+            if slot >= by_original.len() {
+                by_original.resize(slot + 1, None);
+            }
+            ensure!(
+                by_original[slot].is_none(),
+                "duplicate Wasm data segment index {}",
+                segment.segment_index
+            );
+            by_original[slot] = Some(next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm data segment count overflow"))?;
+        }
+        maps.push(by_original);
+    }
+    Ok(maps)
+}
+
+struct DataIndexImm {
+    offset: usize,
+    len: usize,
+    index: u32,
+}
+
+/// `memory.init` and `data.drop` carry a data-segment index immediate. No relocation type names it.
+fn data_index_immediates(body: &[u8]) -> Result<Vec<DataIndexImm>> {
+    let reader = BinaryReader::new(body, 0);
+    let mut ops = wasmparser::FunctionBody::new(reader)
+        .get_operators_reader()
+        .map_err(crate::error::Error::from)
+        .context("failed to parse Wasm function body")?;
+    let mut imms = Vec::new();
+    while !ops.eof() {
+        let pos = ops.original_position();
+        let op = ops
+            .read()
+            .map_err(crate::error::Error::from)
+            .context("failed to parse Wasm function body")?;
+
+        let (wasmparser::Operator::MemoryInit {
+            data_index: index, ..
+        }
+        | wasmparser::Operator::DataDrop { data_index: index }) = op
+        else {
+            continue;
+        };
+
+        let at = data_index_leb_offset(body, pos as usize)?;
+        imms.push(DataIndexImm {
+            offset: at,
+            len: uleb128_len(body.get(at..).unwrap_or_default())?,
+            index,
+        });
+    }
+    Ok(imms)
+}
+
+fn data_index_leb_offset(body: &[u8], op_pos: usize) -> Result<usize> {
+    ensure!(
+        body.get(op_pos) == Some(&0xfc),
+        "expected bulk-memory prefix at function byte {op_pos}"
+    );
+    let mut cursor = op_pos + 1;
+    cursor += uleb128_len(body.get(cursor..).unwrap_or_default())?;
+    Ok(cursor)
+}
+
+fn uleb128_len(bytes: &[u8]) -> Result<usize> {
+    let mut cursor = bytes;
+    let before = cursor.len();
+    leb128::read::unsigned(&mut cursor)
+        .map_err(|err| crate::error!("invalid Wasm LEB128: {err}"))?;
+    Ok(before - cursor.len())
+}
+
+fn remap_body_data_indices(
+    body: &mut WasmFunctionBody<'_>,
+    output_indices: &[Option<u32>],
+    relocs: &mut [WasmRelocation],
+) -> Result<bool> {
+    let mut imms = data_index_immediates(&body.bytes)?;
+    if imms.is_empty() {
+        return Ok(false);
+    }
+    for imm in &mut imms {
+        imm.index = output_indices
+            .get(imm.index as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                crate::error!(
+                    "memory.init/data.drop references data segment {}, which is not in the output",
+                    imm.index
+                )
+            })?;
+    }
+    apply_data_index_fixups(body, &imms, relocs)?;
+    Ok(true)
+}
+
+fn apply_data_index_fixups(
+    body: &mut WasmFunctionBody<'_>,
+    imms: &[DataIndexImm],
+    relocs: &mut [WasmRelocation],
+) -> Result {
+    let resize = imms
+        .iter()
+        .any(|imm| uleb128_size(u64::from(imm.index)) != imm.len);
+    if !resize {
+        let bytes = body.bytes.to_mut();
+        for imm in imms {
+            let written = write_uleb128(&mut bytes[imm.offset..], u64::from(imm.index));
+            ensure!(
+                written == imm.len,
+                "Wasm data index LEB width changed unexpectedly"
+            );
+        }
+        return Ok(());
+    }
+
+    let old = body.bytes.as_ref();
+    let mut new_bytes = Vec::with_capacity(old.len());
+    let mut cursor = 0usize;
+    for imm in imms {
+        ensure!(
+            imm.offset >= cursor && imm.offset + imm.len <= old.len(),
+            "Wasm data index fixup is outside the function body"
+        );
+        new_bytes.extend_from_slice(&old[cursor..imm.offset]);
+        let mut buf = [0u8; 5];
+        let written = write_uleb128(&mut buf, u64::from(imm.index));
+        new_bytes.extend_from_slice(&buf[..written]);
+        cursor = imm.offset + imm.len;
+    }
+    new_bytes.extend_from_slice(&old[cursor..]);
+
+    // `code_offset` stays the input payload offset. Shift later relocations by the
+    // bytes inserted or removed so that `offset - code_offset` still indexes the rewritten body.
+    let code_offset = i64::from(body.code_offset);
+    for reloc in relocs.iter_mut() {
+        let rel = i64::from(reloc.offset) - code_offset;
+        let mut shift = 0i64;
+        for imm in imms {
+            let new_len = uleb128_size(u64::from(imm.index)) as i64;
+            if rel >= (imm.offset + imm.len) as i64 {
+                shift += new_len - imm.len as i64;
+            }
+        }
+        if shift != 0 {
+            let updated = i64::from(reloc.offset)
+                .checked_add(shift)
+                .ok_or_else(|| crate::error!("Wasm relocation offset overflow"))?;
+            reloc.offset = u32::try_from(updated)
+                .map_err(|_| crate::error!("Wasm relocation offset overflow"))?;
+        }
+    }
+    body.bytes = Cow::Owned(new_bytes);
+    Ok(())
+}
+
+fn remap_data_segment_immediates(
+    bodies: &mut [WasmFunctionBody<'_>],
+    object_code_relocations: &mut [Vec<WasmRelocation>],
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> Result<bool> {
+    let output_indices = output_data_segment_indices(object_data_layouts)?;
+    let mut referenced = false;
+    for body in bodies.iter_mut() {
+        let object_index = body.object_index;
+        let reloc_range = body.reloc_range.clone();
+        let indices = output_indices.get(object_index).ok_or_else(|| {
+            crate::error!("Wasm function body object index {object_index} out of range")
+        })?;
+        let relocs = object_code_relocations
+            .get_mut(object_index)
+            .ok_or_else(|| {
+                crate::error!("Wasm code relocations for object {object_index} missing")
+            })?;
+        let start = reloc_range.start as usize;
+        let end = reloc_range.end as usize;
+        let body_relocs = relocs.get_mut(start..end).ok_or_else(|| {
+            crate::error!("Wasm function relocation range {start}..{end} is out of range")
+        })?;
+        if remap_body_data_indices(body, indices, body_relocs)? {
+            referenced = true;
+        }
+    }
+    Ok(referenced)
+}
+
+fn compute_data_section_size(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u64 {
+    let segment_count = output_data_segment_count(object_data_layouts);
     if segment_count == 0 {
         return 0;
     }
@@ -2425,7 +2661,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) global_indices: Vec<u32>,
     pub(crate) memory_indices: Vec<u32>,
     pub(crate) table_indices: Vec<u32>,
-    pub(crate) data_addresses: Vec<Option<u32>>,
+    pub(crate) data_addresses: Vec<WasmDataAddress>,
     pub(crate) got_mem_globals: Vec<Option<u32>>,
     pub(crate) got_func_globals: Vec<Option<u32>>,
     pub(crate) function_symbol_redirects: Vec<Option<u32>>,
@@ -2511,6 +2747,7 @@ impl WasmObjectIndexMap {
                     .with_context(|| {
                         format!("data address for symbol index {} out of range", reloc.index)
                     })?;
+                let addr = memory_address_base(addr)?;
                 if reloc.ty == RelocationType::MemoryAddrRelSleb {
                     let relative =
                         i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.addend;
@@ -3082,13 +3319,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
         } else {
             file.data_segments()?
         };
-        for segment in &all_data_segments {
-            if let DataKind::Passive = segment.kind {
-                unsupported_output.push("passive data segment");
-                break;
-            }
-        }
-
         let all_module_functions = file.module_functions()?;
         let all_function_bodies = if decoded.ready {
             decoded.function_bodies
@@ -4846,12 +5076,14 @@ fn fill_got_mem_inits(
             GotMemDef::Object {
                 object_index,
                 symbol_offset,
-            } => layout.object_index_maps[object_index]
-                .data_addresses
-                .get(symbol_offset)
-                .copied()
-                .context("GOT.mem missing data address for definition")?
-                .unwrap_or(0),
+            } => {
+                let addr = layout.object_index_maps[object_index]
+                    .data_addresses
+                    .get(symbol_offset)
+                    .copied()
+                    .context("GOT.mem missing data address for definition")?;
+                memory_address_base(addr)?.unwrap_or(0)
+            }
             GotMemDef::LinkerDefined(known) => known
                 .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
                 .with_context(|| {
@@ -6200,6 +6432,15 @@ where
         }
     }
 
+    {
+        timing_phase!("Remap Wasm data segment immediates");
+        layout.code_references_data_segment = remap_data_segment_immediates(
+            &mut layout.function_bodies,
+            &mut layout.object_code_relocations,
+            &layout.object_data_layouts,
+        )?;
+    }
+
     let init_function_calls =
         collect_sorted_init_function_calls(&layout_inputs, &layout.object_index_maps)?;
     let call_ctors_body = indices
@@ -6467,39 +6708,71 @@ pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<
     }
 }
 
-fn data_segment_memory_offsets_by_original_index(
-    object_data_layout: &[WasmDataSegmentLayout<'_>],
-) -> Vec<Option<u32>> {
-    let max_index = object_data_layout
-        .iter()
-        .map(|s| s.segment_index)
-        .max()
-        .map_or(0, |i| i as usize);
-    let mut by_original = vec![None; max_index.saturating_add(1)];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum WasmDataAddress {
+    /// Segment was GC'd, or the symbol has no placement. Memory relocations write 0.
+    #[default]
+    Missing,
+    Placed(u32),
+    /// Segment is in the output but has no linear address.
+    Passive,
+}
+
+const PASSIVE_DATA_RELOC_ERROR: &str =
+    "relocation to a Wasm passive data segment is not supported yet";
+
+fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
+    match addr {
+        WasmDataAddress::Placed(value) => Ok(Some(value)),
+        WasmDataAddress::Missing => Ok(None),
+        WasmDataAddress::Passive => bail!("{PASSIVE_DATA_RELOC_ERROR}"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SegmentPlace {
+    Absent,
+    Active(u32),
+    Passive,
+}
+
+fn data_segment_places(object_data_layout: &[WasmDataSegmentLayout<'_>]) -> Vec<SegmentPlace> {
+    let mut by_original = Vec::new();
     for segment in object_data_layout {
-        let idx = segment.segment_index as usize;
-        by_original[idx] = Some(segment.output_memory_offset);
+        let slot = segment.segment_index as usize;
+        if slot >= by_original.len() {
+            by_original.resize(slot + 1, SegmentPlace::Absent);
+        }
+        by_original[slot] = if segment.passive {
+            SegmentPlace::Passive
+        } else {
+            SegmentPlace::Active(segment.output_memory_offset)
+        };
     }
     by_original
 }
 
-/// Address of a defined data symbol, or `None` when its segment was GC'd.
+/// Address of a defined data symbol. `Missing` when its segment was GC'd.
 fn try_data_symbol_memory_address(
-    segment_memory_offsets: &[Option<u32>],
+    segment_places: &[SegmentPlace],
     sym: &WasmSymbol,
-) -> Result<Option<u32>> {
+) -> Result<WasmDataAddress> {
     ensure!(
         sym.kind == WasmSymbolKind::Data,
         "memory address relocation references non-data symbol"
     );
-    let Some(Some(segment_base)) = segment_memory_offsets.get(sym.index as usize) else {
-        return Ok(None);
+    let Some(place) = segment_places.get(sym.index as usize).copied() else {
+        return Ok(WasmDataAddress::Missing);
     };
-    Ok(Some(
-        segment_base
-            .checked_add(sym.offset)
-            .context("Wasm data symbol address overflow")?,
-    ))
+    match place {
+        SegmentPlace::Absent => Ok(WasmDataAddress::Missing),
+        SegmentPlace::Passive => Ok(WasmDataAddress::Passive),
+        SegmentPlace::Active(segment_base) => Ok(WasmDataAddress::Placed(
+            segment_base
+                .checked_add(sym.offset)
+                .context("Wasm data symbol address overflow")?,
+        )),
+    }
 }
 
 /// Wasm symbols synthesized by the linker.
@@ -6612,9 +6885,9 @@ fn compute_data_addresses(
     heap_end: Option<u32>,
     stack_first: bool,
 ) -> Result {
-    let segment_offsets_by_object: Vec<Vec<Option<u32>>> = object_data_layouts
+    let segment_places_by_object: Vec<Vec<SegmentPlace>> = object_data_layouts
         .iter()
-        .map(|layout| data_segment_memory_offsets_by_original_index(layout))
+        .map(|layout| data_segment_places(layout))
         .collect();
 
     for (obj_idx, (index_map, symbols)) in object_index_maps
@@ -6622,7 +6895,7 @@ fn compute_data_addresses(
         .zip(per_object_symbols.iter())
         .enumerate()
     {
-        let mut data_addresses = vec![None; symbols.len()];
+        let mut data_addresses = vec![WasmDataAddress::Missing; symbols.len()];
         for (sym_idx, sym) in symbols.iter().enumerate() {
             if sym.kind != WasmSymbolKind::Data {
                 continue;
@@ -6630,11 +6903,8 @@ fn compute_data_addresses(
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
             if !sym.is_undefined() {
-                if let Some(addr) =
-                    try_data_symbol_memory_address(&segment_offsets_by_object[obj_idx], sym)?
-                {
-                    data_addresses[sym_idx] = Some(addr);
-                }
+                data_addresses[sym_idx] =
+                    try_data_symbol_memory_address(&segment_places_by_object[obj_idx], sym)?;
                 continue;
             }
 
@@ -6646,12 +6916,10 @@ fn compute_data_addresses(
                 let def_sym =
                     per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
                 if !def_sym.is_undefined() {
-                    if let Some(addr) = try_data_symbol_memory_address(
-                        &segment_offsets_by_object[def_obj_idx],
+                    data_addresses[sym_idx] = try_data_symbol_memory_address(
+                        &segment_places_by_object[def_obj_idx],
                         &def_sym,
-                    )? {
-                        data_addresses[sym_idx] = Some(addr);
-                    }
+                    )?;
                     continue;
                 }
             }
@@ -6662,7 +6930,7 @@ fn compute_data_addresses(
                 && let Some(address) =
                     known.data_address(data_start, data_end, stack_size, heap_end, stack_first)?
             {
-                data_addresses[sym_idx] = Some(address);
+                data_addresses[sym_idx] = WasmDataAddress::Placed(address);
             }
         }
         index_map.data_addresses = data_addresses;
@@ -7688,6 +7956,28 @@ fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
             for i in range {
                 let reloc = object.format_specific.code_relocations[i];
                 note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
+            }
+            // The data index is an immediate, so it is not a relocation edge.
+            let body = object
+                .format_specific
+                .function_bodies
+                .get(ordinal as usize)
+                .ok_or_else(|| crate::error!("Wasm GC function ordinal {ordinal} out of range"))?;
+            let imms = data_index_immediates(&body.bytes)?;
+            let segment_count = object.format_specific.gc_data_segments.len();
+            for imm in imms {
+                ensure!(
+                    (imm.index as usize) < segment_count,
+                    "memory.init/data.drop data segment {} is out of range ({segment_count} segments)",
+                    imm.index
+                );
+                enqueue_wasm_gc_unit::<A>(
+                    object,
+                    WasmGcUnit::DataSegment(imm.index),
+                    resources,
+                    queue,
+                    scope,
+                );
             }
         }
         WasmGcUnit::DataSegment(ordinal) => {

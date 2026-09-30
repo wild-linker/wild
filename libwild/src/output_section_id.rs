@@ -801,9 +801,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 } else {
                     let new_id = self.section_infos.add_new(SectionOutputInfo {
                         kind: SectionKind::Primary(identity),
-                        section_attributes: attributes
-                            .map(|attr| P::apply_linker_script_attributes(attr, Default::default()))
-                            .unwrap_or_default(),
+                        section_attributes: attributes.map_or_default(|attr| {
+                            P::apply_linker_script_attributes(attr, Default::default())
+                        }),
                         min_alignment,
                         location_info: location_info.cloned(),
                         secondary_order: None,

@@ -252,6 +252,8 @@ pub trait OutputFileData: Send {
 ///
 ///     let arguments = [
 ///         "wild",
+///         "-flavor",
+///         "gnu",
 ///         "-m",
 ///         "elf_x86_64",
 ///         "-shared",
@@ -276,6 +278,7 @@ pub trait OutputFileData: Send {
 ///     // std::fs::write("libx.so", &output)?;
 ///     Ok(())
 /// }
+/// run().unwrap();
 /// ```
 pub trait FileSystem: Send + Sync + 'static {
     type Input: InputFileData;
@@ -290,6 +293,12 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Returns the type of the file at `path`.
     fn file_type(&self, path: &Path) -> Result<FileType>;
+
+    /// Like std::path::absolute. Filesystems without a "working directory" can just use default
+    /// no-op implementation.
+    fn absolute_path(&self, path: &Path) -> Result<PathBuf> {
+        Ok(path.to_owned())
+    }
 
     /// Resolves symbolic links and returns the canonical absolute path.
     fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
@@ -432,6 +441,10 @@ impl FileSystem for OsFileSystem {
 
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         Ok(std::fs::canonicalize(path)?)
+    }
+
+    fn absolute_path(&self, path: &Path) -> Result<PathBuf> {
+        Ok(std::path::absolute(path)?)
     }
 
     fn remove_file(&self, path: &Path) -> Result<()> {

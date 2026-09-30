@@ -282,8 +282,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             .chain(
                 self.sparse
                     .as_ref()
-                    .map(|sparse| sparse.contents.iter())
-                    .unwrap_or_default()
+                    .map_or_default(|sparse| sparse.contents.iter())
                     .map(|(part_id, value)| (*part_id, value)),
             )
     }
