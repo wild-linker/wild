@@ -152,7 +152,7 @@ pub(crate) struct InputRef<'data> {
 
 #[derive(Debug)]
 struct InputPath {
-    /// An absolute path to the file.
+    /// An absolute path to the file if that makes sense for the FileSystem.
     absolute: PathBuf,
 
     /// The file as specified on the command line. In the case of an argument like -lfoo, this will
@@ -307,7 +307,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
         let mut initial_work = Vec::with_capacity(inputs.len());
         for input in inputs {
-            let path = input.path(args, self.file_system.as_ref())?;
+            let path = input.path(args.lib_search_path(), self.file_system.as_ref())?;
             inputs_by_path
                 .entry(path.absolute.clone())
                 .and_modify(|info| info.as_needed &= input.modifiers.as_needed)
@@ -568,10 +568,10 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
     input_file: &'data InputFile<F::Input>,
     state: &TemporaryState<'data, P, F>,
 ) -> Result<LoadedFileState<'data, P, F::Input>> {
-    let absolute_path = &input_file.filename;
-    let parent_path = absolute_path.parent().unwrap();
+    let input_path = &input_file.filename;
+    let parent_path = input_path.parent().unwrap();
     let modifiers = input_file.modifiers;
-    let archive_display = absolute_path.display().to_string();
+    let archive_display = input_path.display().to_string();
 
     // Collect thin-member paths first.
     let mut entry_paths = Vec::new();
@@ -678,15 +678,12 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
         request: OpenFileRequest,
         scope: &Scope<'scope>,
     ) -> Result<LoadedFileState<'data, P, F::Input>> {
-        let absolute_path = &request.paths.absolute;
-        verbose_timing_phase!(
-            "Open file",
-            path = absolute_path.to_string_lossy().to_string()
-        );
+        let input_path = &request.paths.absolute;
+        verbose_timing_phase!("Open file", path = input_path.to_string_lossy().to_string());
 
         let result = self
             .file_system
-            .open_input(absolute_path.as_path(), self.args.common().prepopulate_maps);
+            .open_input(input_path.as_path(), self.args.common().prepopulate_maps);
         let (data, file) = match request.referenced_by.as_ref() {
             Some(referenced_by) => {
                 result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
@@ -695,7 +692,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
         }?;
 
         let input_file = self.inputs_arena.alloc(InputFile {
-            filename: absolute_path.to_owned(),
+            filename: input_path.to_owned(),
             original_filename: request.paths.original,
             modifiers: request.modifiers,
             data: Some(data),
@@ -739,7 +736,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
             }
             FileKind::MachOStubLibrary => {
                 let defined_library = parse_defined_library(str::from_utf8(input_file.data())?)
-                    .with_context(|| format!("Failed to process `{}`", absolute_path.display()))?;
+                    .with_context(|| format!("Failed to process `{}`", input_path.display()))?;
                 tracing::debug!(file = ?input_file.filename, symbols = defined_library.symbols.len(),
                     weak_symbols = defined_library.weak_symbols.len(), "loaded TBD library");
                 Ok(LoadedFileState::StubLibrary(input_file, defined_library))
@@ -750,7 +747,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
             _ => {
                 verbose_timing_phase!(
                     "Process input",
-                    path = absolute_path.to_string_lossy().to_string()
+                    path = input_path.to_string_lossy().to_string()
                 );
                 let parsed = self.process_input(input_ref, file.as_ref(), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
@@ -766,7 +763,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
         scope: &Scope<'scope>,
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
-        let paths = input.path(self.args, self.file_system.as_ref())?;
+        let paths = input.path(self.args.lib_search_path(), self.file_system.as_ref())?;
 
         let mut inputs_by_path = self.inputs_by_path.lock().unwrap();
 
@@ -909,24 +906,28 @@ fn read_script_data<'data, F: FileSystem>(
 }
 
 impl Input {
-    fn path(&self, args: &impl platform::Args, file_system: &impl FileSystem) -> Result<InputPath> {
+    fn path(
+        &self,
+        lib_search_path: &[Box<Path>],
+        file_system: &impl FileSystem,
+    ) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()
                     && let Some(path) = search_for_file(
                         file_system,
-                        args.lib_search_path(),
+                        lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
                     )
                 {
                     return Ok(InputPath {
-                        absolute: std::path::absolute(path)?,
+                        absolute: file_system.absolute_path(&path)?,
                         original: p.as_ref().to_owned(),
                     });
                 }
                 Ok(InputPath {
-                    absolute: p.as_ref().to_owned(),
+                    absolute: file_system.absolute_path(p)?,
                     original: p.as_ref().to_owned(),
                 })
             }
@@ -938,24 +939,24 @@ impl Input {
                 filenames.push(PathBuf::from(format!("lib{lib_name}.a")));
                 if let Some((path, filename_index)) = search_for_files(
                     file_system,
-                    args.lib_search_path(),
+                    lib_search_path,
                     self.search_first.as_ref(),
                     &filenames,
                 ) {
                     return Ok(InputPath {
-                        absolute: std::path::absolute(&path)?,
+                        absolute: file_system.absolute_path(&path)?,
                         original: filenames[filename_index].clone(),
                     });
                 }
                 let filename = format!("lib{lib_name}.tbd");
                 if let Some(path) = search_for_file(
                     file_system,
-                    args.lib_search_path(),
+                    lib_search_path,
                     self.search_first.as_ref(),
                     &filename,
                 ) {
                     return Ok(InputPath {
-                        absolute: std::path::absolute(&path)?,
+                        absolute: file_system.absolute_path(&path)?,
                         original: PathBuf::from(filename),
                     });
                 }
@@ -964,12 +965,12 @@ impl Input {
             InputSpec::Search(filename) => {
                 if let Some(path) = search_for_file(
                     file_system,
-                    args.lib_search_path(),
+                    lib_search_path,
                     self.search_first.as_ref(),
                     filename.as_ref(),
                 ) {
                     return Ok(InputPath {
-                        absolute: std::path::absolute(&path)?,
+                        absolute: file_system.absolute_path(&path)?,
                         original: PathBuf::from(filename.as_ref()),
                     });
                 }
@@ -1145,6 +1146,133 @@ impl<'data, P: Platform> InputRecord<'data, P> {
         match self {
             InputRecord::Object(Ok(obj)) => obj.is_dynamic(),
             _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Input;
+    use super::InputSpec;
+    use crate::error::Result;
+    use crate::fs::FileSystem;
+    use crate::fs::FileType;
+    use crate::fs::OsInputFile;
+    use crate::fs::OsOutputFile;
+    use crate::fs::OutputOptions;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct MemoryFileSystem {
+        path: PathBuf,
+    }
+
+    impl FileSystem for MemoryFileSystem {
+        type Input = OsInputFile;
+        type Output = OsOutputFile;
+
+        fn open_input(
+            &self,
+            _path: &Path,
+            _prepopulate_maps: bool,
+        ) -> Result<(Self::Input, Option<Arc<std::fs::File>>)> {
+            unreachable!()
+        }
+
+        fn file_type(&self, path: &Path) -> Result<FileType> {
+            if path == self.path {
+                Ok(FileType::File)
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound).into())
+            }
+        }
+
+        fn canonicalize(&self, _path: &Path) -> Result<PathBuf> {
+            unreachable!()
+        }
+
+        fn remove_file(&self, _path: &Path) -> Result<()> {
+            unreachable!()
+        }
+
+        fn rename_file(&self, _path: &Path, _new_path: &Path) -> Result<()> {
+            unreachable!()
+        }
+
+        fn create_output(&self, _path: Arc<Path>, _options: OutputOptions) -> Result<Self::Output> {
+            unreachable!()
+        }
+
+        fn write_auxiliary(&self, _path: &Path, _bytes: &[u8]) -> Result {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn input_paths_use_file_system_namespace() {
+        let lib_search_path = [Path::new("libs").into()];
+        for (spec, search_first, filename) in [
+            (
+                InputSpec::File(Path::new("main.o").into()),
+                Some(PathBuf::from("libs")),
+                "main.o",
+            ),
+            (InputSpec::Lib("foo".into()), None, "libfoo.so"),
+            (InputSpec::Lib("foo".into()), None, "libfoo.a"),
+            (InputSpec::Lib("foo".into()), None, "libfoo.tbd"),
+            (InputSpec::Search("foo.o".into()), None, "foo.o"),
+        ] {
+            let file_system = MemoryFileSystem {
+                path: Path::new("libs").join(filename),
+            };
+
+            let input = Input {
+                spec,
+                search_first,
+                modifiers: Default::default(),
+            };
+
+            let resolved = input.path(&lib_search_path, &file_system).unwrap();
+            assert_eq!(resolved.absolute, file_system.path, "{input:?}");
+            assert_eq!(resolved.original, Path::new(filename));
+
+            let direct = Input {
+                spec: InputSpec::File(file_system.path.clone().into()),
+                search_first: None,
+                modifiers: Default::default(),
+            };
+
+            assert_eq!(
+                direct
+                    .path(&lib_search_path, &file_system)
+                    .unwrap()
+                    .absolute,
+                resolved.absolute
+            );
+
+            let os_path = direct
+                .path(&lib_search_path, &crate::fs::OsFileSystem)
+                .unwrap();
+
+            assert_eq!(
+                os_path.absolute,
+                std::path::absolute(&file_system.path).unwrap()
+            );
+
+            let absolute = Input {
+                spec: InputSpec::File(os_path.absolute.clone().into()),
+                search_first: None,
+                modifiers: Default::default(),
+            };
+
+            assert_eq!(
+                absolute
+                    .path(&lib_search_path, &crate::fs::OsFileSystem)
+                    .unwrap()
+                    .absolute,
+                os_path.absolute
+            );
         }
     }
 }
