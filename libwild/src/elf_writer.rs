@@ -2887,7 +2887,7 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
             object,
             out,
             section_index,
-            relocations.iter().copied().map(elf::ElfRela::new).map(Ok),
+            relocations.iter().map(elf::ElfRela::from_raw).map(Ok),
             layout,
         );
     }
@@ -2910,7 +2910,7 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
             object,
             out,
             section_index,
-            relocations.iter().copied().map(elf::ElfRela::new).map(Ok),
+            relocations.iter().map(elf::ElfRela::from_raw).map(Ok),
             layout,
         );
     };
@@ -2946,8 +2946,7 @@ fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<
                 section_index,
                 relocations[range]
                     .iter()
-                    .copied()
-                    .map(elf::ElfRela::new)
+                    .map(elf::ElfRela::from_raw)
                     .map(Ok),
                 layout,
                 output_offset as u64,
@@ -3191,7 +3190,7 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 table_writer,
                 trace,
                 eh_frame_section,
-                relocations.iter().copied().map(elf::ElfRela::new),
+                relocations.iter().map(elf::ElfRela::from_raw),
             )
         }
         elf::RelocationList::Crel(relocations) => {

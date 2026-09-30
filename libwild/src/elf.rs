@@ -522,14 +522,34 @@ pub(crate) struct File<'data, C: ElfClass> {
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
 
+/// A RELA relocation, decoded from its on-disk form up front. Holding native integers rather
+/// than the raw, byte-aligned `Rela` means each field is a plain load, instead of reassembling
+/// it from a stack copy of the raw bytes.
 #[derive(Clone, Copy)]
 pub(crate) struct ElfRela<C: ElfClass> {
-    raw: Rela<C>,
+    offset: u64,
+    addend: i64,
+    sym: u32,
+    r_type: object::elf::RelocationType,
+    class: PhantomData<C>,
 }
 
 impl<C: ElfClass> ElfRela<C> {
+    #[inline(always)]
     pub(crate) fn new(raw: Rela<C>) -> Self {
-        Self { raw }
+        Self::from_raw(&raw)
+    }
+
+    #[inline(always)]
+    pub(crate) fn from_raw(raw: &Rela<C>) -> Self {
+        use object::read::elf::Rela as _;
+        Self {
+            offset: raw.r_offset(LittleEndian).into(),
+            addend: raw.r_addend(LittleEndian).into(),
+            sym: raw.r_sym(LittleEndian, false),
+            r_type: raw.r_type(LittleEndian, false),
+            class: PhantomData,
+        }
     }
 }
 
@@ -538,19 +558,19 @@ impl<C: ElfClass> Relocation for ElfRela<C> {
     type Platform = Elf<C>;
 
     fn symbol(&self) -> Option<object::SymbolIndex> {
-        object::read::elf::Rela::symbol(&self.raw, LittleEndian, false)
+        (self.sym != 0).then_some(object::SymbolIndex(self.sym as usize))
     }
 
     fn raw_type(&self) -> object::elf::RelocationType {
-        object::read::elf::Rela::r_type(&self.raw, LittleEndian, false)
+        self.r_type
     }
 
     fn offset(&self) -> u64 {
-        object::read::elf::Rela::r_offset(&self.raw, LittleEndian).into()
+        self.offset
     }
 
     fn addend(&self) -> i64 {
-        object::read::elf::Rela::r_addend(&self.raw, LittleEndian).into()
+        self.addend
     }
 }
 
@@ -613,7 +633,7 @@ impl<'data, C: ElfClass> RelocationSequence<'data> for RelaSequence<'data, C> {
     type Rel = ElfRela<C>;
 
     fn rel_iter(&self) -> impl Iterator<Item = ElfRela<C>> {
-        self.0.iter().copied().map(|raw| ElfRela { raw })
+        self.0.iter().map(ElfRela::from_raw)
     }
 
     fn subsequence(&self, range: Range<usize>) -> Self {
