@@ -1,0 +1,8 @@
+# This ensures that developers are all using the same rustc version, which avoids us seeing
+# different clippy warnings.
+
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"
+components = ["clippy"]
+targets = ["wasm32-wasip1"]
