@@ -2751,14 +2751,6 @@ struct DebugRelocationShardSummary {
     max_write_end: u64,
 }
 
-#[derive(Clone, Copy)]
-struct DebugSymbolResolution<C: ElfClass> {
-    symbol_index: object::SymbolIndex,
-    section_index: Option<object::SectionIndex>,
-    resolution: Option<Resolution<elf::Elf<C>>>,
-    fast_value: DebugFastValue,
-}
-
 /// How an absolute debug relocation against a symbol gets its value, decided once per symbol so
 /// the per-relocation work in [`try_apply_debug_relocation_fast`] is an add and a store.
 #[derive(Clone, Copy, Debug)]
@@ -2774,43 +2766,91 @@ enum DebugFastValue {
     Slow,
 }
 
+/// How to write an absolute debug relocation of one type, extracted from its
+/// [`RelocationKindInfo`]: a plain little-endian store of `size` bytes after a range check.
+#[derive(Clone, Copy)]
+struct DebugAbsoluteWrite {
+    r_type: object::elf::RelocationType,
+    size: u8,
+    range: linker_utils::elf::AllowedRange,
+}
+
+impl DebugAbsoluteWrite {
+    /// Returns None for relocation types that need more than a plain store, which then take the
+    /// slow path.
+    fn new(r_type: object::elf::RelocationType, info: &RelocationKindInfo) -> Option<Self> {
+        let RelocationSize::ByteSize(size @ (4 | 8)) = info.size else {
+            return None;
+        };
+        (info.kind == RelocationKind::Absolute && info.alignment == 1).then_some(Self {
+            r_type,
+            size,
+            range: info.range,
+        })
+    }
+
+    #[inline(always)]
+    fn write(self, value: u64, out: &mut [u8]) -> bool {
+        if !self.range.contains(value as i64) {
+            return false;
+        }
+        // Fixed-size arms, so that each is a single store rather than a variable-length copy.
+        let written = match self.size {
+            4 => out
+                .first_chunk_mut()
+                .map(|place: &mut [u8; 4]| *place = (value as u32).to_le_bytes()),
+            8 => out
+                .first_chunk_mut()
+                .map(|place: &mut [u8; 8]| *place = value.to_le_bytes()),
+            _ => None,
+        };
+        written.is_some()
+    }
+}
+
+/// Recently used [`DebugAbsoluteWrite`]s, indexed by the low bit of the relocation type. DWARF
+/// alternates between a 32-bit and a 64-bit absolute type, and on x86-64 and AArch64 those have
+/// different low bits, so both stay cached. Entries are checked against the type, so types that
+/// share a slot only cost cache misses.
+type DebugWriteCache = [Option<DebugAbsoluteWrite>; 2];
+
 /// Number of entries in [`DebugSymbolCache`]. A power of two, so the slot is the low bits of the
 /// symbol index.
-const DEBUG_SYMBOL_CACHE_SLOTS: usize = 256;
+const DEBUG_SYMBOL_CACHE_SLOTS: usize = 32;
 
 /// A direct-mapped cache of symbol resolutions for debug relocations, local to one relocation
 /// shard. `.debug_info` interleaves references to a few hot symbols (the `.debug_str` and
 /// `.debug_line` section symbols) with references to code, so a single "previous symbol" entry
-/// misses about half the time. A few hundred slots catch nearly all of the repeats while staying
-/// small enough to live in L1/L2.
-struct DebugSymbolCache<C: ElfClass> {
-    slots: Box<[Option<DebugSymbolResolution<C>>]>,
+/// misses about half the time. A few dozen slots catch nearly all of the repeats. The slots live
+/// on the stack, because a cache is created for every debug section and most sections are small.
+struct DebugSymbolCache {
+    slots: [Option<(object::SymbolIndex, DebugFastValue)>; DEBUG_SYMBOL_CACHE_SLOTS],
 }
 
-impl<C: ElfClass> Default for DebugSymbolCache<C> {
+impl Default for DebugSymbolCache {
     fn default() -> Self {
         Self {
-            slots: vec![None; DEBUG_SYMBOL_CACHE_SLOTS].into_boxed_slice(),
+            slots: [None; DEBUG_SYMBOL_CACHE_SLOTS],
         }
     }
 }
 
-impl<C: ElfClass> DebugSymbolCache<C> {
+impl DebugSymbolCache {
     #[inline(always)]
     fn get_or_insert_with(
         &mut self,
         symbol_index: object::SymbolIndex,
-        resolve: impl FnOnce() -> Result<DebugSymbolResolution<C>>,
-    ) -> Result<DebugSymbolResolution<C>> {
+        resolve: impl FnOnce() -> Result<DebugFastValue>,
+    ) -> Result<DebugFastValue> {
         let slot = &mut self.slots[symbol_index.0 % DEBUG_SYMBOL_CACHE_SLOTS];
-        if let Some(cached) = *slot
-            && cached.symbol_index == symbol_index
+        if let Some((cached_index, value)) = *slot
+            && cached_index == symbol_index
         {
-            return Ok(cached);
+            return Ok(value);
         }
-        let resolved = resolve()?;
-        *slot = Some(resolved);
-        Ok(resolved)
+        let value = resolve()?;
+        *slot = Some((symbol_index, value));
+        Ok(value)
     }
 }
 
@@ -3212,7 +3252,7 @@ fn apply_debug_relocations_impl<
         ..Default::default()
     };
     let mut symbol_cache = DebugSymbolCache::default();
-    let mut info_cache = None;
+    let mut write_cache = DebugWriteCache::default();
 
     for rel in relocations {
         relocation_count += 1;
@@ -3234,7 +3274,7 @@ fn apply_debug_relocations_impl<
             tombstone_value,
             out,
             &mut symbol_cache,
-            &mut info_cache,
+            &mut write_cache,
         ) {
             relocation_cache.previous = Some(rel);
             continue;
@@ -3247,7 +3287,6 @@ fn apply_debug_relocations_impl<
             tombstone_value,
             out,
             &relocation_cache,
-            &mut symbol_cache,
         )
         .with_context(|| {
             format!(
@@ -3278,9 +3317,9 @@ fn record_debug_relocations<C: ElfClass>(
 
 #[cfg(test)]
 mod debug_relocation_shard_tests {
+    use super::DebugFastValue;
     use super::DebugRelocationShardRange;
     use super::DebugSymbolCache;
-    use super::DebugSymbolResolution;
     use super::debug_relocation_shard_ranges_parallel;
     use super::speculative_debug_relocation_shard_ranges;
 
@@ -3437,45 +3476,31 @@ mod debug_relocation_shard_tests {
     #[test]
     fn debug_symbol_cache_reuses_recent_symbols() {
         let resolve_count = std::cell::Cell::new(0);
-        let mut cache = DebugSymbolCache::<crate::elf::Class64>::default();
-        let resolve = |symbol_index| {
-            resolve_count.set(resolve_count.get() + 1);
-            Ok(DebugSymbolResolution {
-                symbol_index,
-                section_index: Some(object::SectionIndex(symbol_index.0 + 1)),
-                resolution: None,
-                fast_value: super::DebugFastValue::Slow,
-            })
+        let mut cache = DebugSymbolCache::default();
+        let mut get = |symbol_index: usize| {
+            let value = cache
+                .get_or_insert_with(object::SymbolIndex(symbol_index), || {
+                    resolve_count.set(resolve_count.get() + 1);
+                    Ok(DebugFastValue::Base(symbol_index as u64))
+                })
+                .unwrap();
+            let DebugFastValue::Base(base) = value else {
+                panic!("Unexpected cached value {value:?}");
+            };
+            base
         };
 
-        let first = cache
-            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
-            .unwrap();
-        let repeated = cache
-            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
-            .unwrap();
-        let different = cache
-            .get_or_insert_with(object::SymbolIndex(8), || resolve(object::SymbolIndex(8)))
-            .unwrap();
-        let returned = cache
-            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
-            .unwrap();
-
-        assert_eq!(first.symbol_index, repeated.symbol_index);
-        assert_eq!(first.section_index, repeated.section_index);
-        assert_ne!(first.symbol_index, different.symbol_index);
-        assert_eq!(first.symbol_index, returned.symbol_index);
+        assert_eq!(get(7), 7);
+        assert_eq!(get(7), 7);
+        assert_eq!(get(8), 8);
         // 7 and 8 occupy different slots, so returning to 7 is a hit.
+        assert_eq!(get(7), 7);
         assert_eq!(resolve_count.get(), 2);
 
         // A symbol that maps to 7's slot evicts it.
-        let colliding = object::SymbolIndex(7 + super::DEBUG_SYMBOL_CACHE_SLOTS);
-        cache
-            .get_or_insert_with(colliding, || resolve(colliding))
-            .unwrap();
-        cache
-            .get_or_insert_with(object::SymbolIndex(7), || resolve(object::SymbolIndex(7)))
-            .unwrap();
+        let colliding = 7 + super::DEBUG_SYMBOL_CACHE_SLOTS;
+        assert_eq!(get(colliding), colliding as u64);
+        assert_eq!(get(7), 7);
         assert_eq!(resolve_count.get(), 4);
     }
 }
@@ -4615,19 +4640,26 @@ fn maybe_get_thunk_for_relocation<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     );
 }
 
-fn resolve_debug_symbol<'data, C: ElfClass>(
+/// The resolution used for a symbol referenced from a debug section: the merged resolution if the
+/// symbol has one, otherwise the address of the symbol within its section.
+fn debug_symbol_resolution<'data, C: ElfClass>(
     object_layout: &ObjectLayout<'data, elf::Elf<C>>,
+    sym: &elf::SymtabEntry<C>,
     symbol_index: object::SymbolIndex,
+    section_index: Option<object::SectionIndex>,
     layout: &ElfLayout<C>,
-) -> Result<DebugSymbolResolution<C>> {
-    let sym = object_layout.object.symbol(symbol_index)?;
-    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
-    let resolution = layout
+) -> Option<Resolution<elf::Elf<C>>> {
+    layout
         .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
         .or_else(|| {
             section_index.and_then(|section_index| {
                 let section_address =
                     object_layout.section_resolutions[section_index.0].address()?;
+                // Include the symbol's offset within the section (adjusted for any relaxation
+                // deltas). This is necessary on architectures like RISC-V and LoongArch64 where
+                // debug info references local symbols (e.g. .LFB0, .LFE0) whose value is their
+                // offset within the section, rather than section symbols where the offset is
+                // encoded in the relocation addend.
                 let output_offset = opt_input_to_output(
                     object_layout.section_relax_deltas.get(section_index.0),
                     crate::platform::Symbol::value(sym),
@@ -4640,7 +4672,21 @@ fn resolve_debug_symbol<'data, C: ElfClass>(
                     format_specific: Default::default(),
                 })
             })
-        });
+        })
+}
+
+/// Decides how absolute debug relocations against `symbol_index` get their value. This must agree
+/// with [`apply_debug_relocation`], which handles everything that returns
+/// [`DebugFastValue::Slow`].
+fn debug_fast_value<'data, C: ElfClass>(
+    object_layout: &ObjectLayout<'data, elf::Elf<C>>,
+    symbol_index: object::SymbolIndex,
+    layout: &ElfLayout<C>,
+) -> Result<DebugFastValue> {
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let resolution =
+        debug_symbol_resolution(object_layout, sym, symbol_index, section_index, layout);
 
     let in_merge_strings = section_index.is_some_and(|section_index| {
         matches!(
@@ -4658,10 +4704,10 @@ fn resolve_debug_symbol<'data, C: ElfClass>(
         )?
         .map_or(DebugFastValue::Slow, DebugFastValue::MergedString))
     };
-    // Mirrors `apply_debug_relocation`: `Resolution::value_with_addend` only looks up a merged
-    // string when `raw_value` is zero and the symbol is in a merge-strings section, and an
-    // unresolved symbol in a merge-strings section takes the same lookup.
-    let fast_value = match resolution {
+    // `Resolution::value_with_addend` only looks up a merged string when `raw_value` is zero and
+    // the symbol is in a merge-strings section, and an unresolved symbol in a merge-strings
+    // section takes the same lookup.
+    Ok(match resolution {
         Some(resolution) if resolution.flags.is_ifunc() => DebugFastValue::Slow,
         Some(resolution) if resolution.raw_value == 0 && in_merge_strings => merged_string()?,
         Some(resolution) => DebugFastValue::Base(resolution.raw_value),
@@ -4673,13 +4719,6 @@ fn resolve_debug_symbol<'data, C: ElfClass>(
                 _ => DebugFastValue::Slow,
             },
         },
-    };
-
-    Ok(DebugSymbolResolution {
-        symbol_index,
-        section_index,
-        resolution,
-        fast_value,
     })
 }
 
@@ -4699,32 +4738,33 @@ fn try_apply_debug_relocation_fast<
     layout: &ElfLayout<C>,
     section_tombstone_value: u64,
     out: &mut [u8],
-    symbol_cache: &mut DebugSymbolCache<C>,
-    info_cache: &mut Option<(object::elf::RelocationType, RelocationKindInfo)>,
+    symbol_cache: &mut DebugSymbolCache,
+    write_cache: &mut DebugWriteCache,
 ) -> bool {
     let Some(symbol_index) = rel.symbol() else {
         return false;
     };
     let r_type = rel.raw_type();
-    let rel_info = match *info_cache {
-        Some((cached_type, info)) if cached_type == r_type => info,
+    let slot = &mut write_cache[(r_type.0 & 1) as usize];
+    let plan = match *slot {
+        Some(plan) if plan.r_type == r_type => plan,
         _ => {
-            let Ok(info) = A::relocation_from_raw(r_type) else {
+            let Some(plan) = A::relocation_from_raw(r_type)
+                .ok()
+                .and_then(|info| DebugAbsoluteWrite::new(r_type, &info))
+            else {
                 return false;
             };
-            *info_cache = Some((r_type, info));
-            info
+            *slot = Some(plan);
+            plan
         }
     };
-    if rel_info.kind != RelocationKind::Absolute {
-        return false;
-    }
-    let Ok(symbol) = symbol_cache.get_or_insert_with(symbol_index, || {
-        resolve_debug_symbol(object_layout, symbol_index, layout)
+    let Ok(fast_value) = symbol_cache.get_or_insert_with(symbol_index, || {
+        debug_fast_value(object_layout, symbol_index, layout)
     }) else {
         return false;
     };
-    let value = match symbol.fast_value {
+    let value = match fast_value {
         DebugFastValue::Base(base) => base.wrapping_add(rel.addend() as u64),
         DebugFastValue::Tombstone => section_tombstone_value,
         DebugFastValue::MergedString(target) => {
@@ -4742,7 +4782,7 @@ fn try_apply_debug_relocation_fast<
     let Some(place) = out.get_mut(offset_in_section as usize..) else {
         return false;
     };
-    rel_info.write_to_buffer(value, place).is_ok()
+    plan.write(value, place)
 }
 
 #[inline(never)]
@@ -4759,23 +4799,17 @@ fn apply_debug_relocation<
     section_tombstone_value: u64,
     out: &mut [u8],
     relocation_cache: &RelocationCache<R>,
-    symbol_cache: &mut DebugSymbolCache<C>,
 ) -> Result<()> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
-
-    // Rust debug sections commonly contain long runs of relocations against the same symbol.
-    // Keep the last lookup local to each parallel shard so those runs avoid repeating symbol-table,
-    // section, and merged-resolution work while retaining constant memory usage.
-    let symbol = symbol_cache.get_or_insert_with(symbol_index, || {
-        resolve_debug_symbol(object_layout, symbol_index, layout)
-    })?;
-    let section_index = symbol.section_index;
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
     let addend = rel.addend();
     let r_type = rel.raw_type();
     let rel_info = A::relocation_from_raw(r_type)?;
 
-    let resolution = symbol.resolution;
+    let resolution =
+        debug_symbol_resolution(object_layout, sym, symbol_index, section_index, layout);
 
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
