@@ -137,11 +137,14 @@ jobs:
           retention-days: 30
 
   capture-ab:
-    # A real debug-heavy link, where the synthetic guard workloads above are too small to show
-    # write-phase work: Wild itself built with fat LTO and full debug info (one ~250 MB object),
-    # captured with WILD_SAVE_BASE and relinked by the merge base and the PR head. The PR head's
-    # output must also match upstream wild's byte for byte. Runs on PRs labelled `performance`.
-    name: Real full-LTO link A/B (merge base vs PR head, upstream byte identity)
+    # Real links, where the synthetic guard workloads above are too small to show write-phase
+    # work. Two of the benchmarks from benchmarks/performance_guard/README.md fit a hosted runner:
+    # `wild-lto-debug` (Wild built with fat LTO and full debug info, one ~250 MB object) and
+    # `wild` (Wild's ordinary release build). Both are captured with WILD_SAVE_BASE and relinked
+    # by the merge base and the PR head, interleaved, into the per-benchmark statistics table that
+    # upstream performance PRs carry. The PR head's output must also match upstream wild's byte for
+    # byte. Runs on PRs labelled `performance`.
+    name: Real link A/B tables (merge base vs PR head, upstream byte identity)
     if: contains(github.event.pull_request.labels.*.name, 'performance')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -198,77 +201,89 @@ jobs:
             cp "$tree/target/release/wild" "$RUNNER_TEMP/bins/$tree-wild"
           done
           sha256sum "$RUNNER_TEMP/bins/"*
-      - name: Capture a fat-LTO debug link of Wild
+      - name: Test the PR's performance tooling
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s candidate/benchmarks/performance_guard -p 'test_*.py' -v
+      - name: Capture Wild's own links (wild-lto-debug and wild)
         shell: bash
         run: |
           set -euo pipefail
-          # Plain cargo: soldr's compile cache isn't wanted for a one-off fat-LTO build.
-          cd candidate
-          env -u CLICOLOR_FORCE -u FORCE_COLOR \
-            RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" \
+          shopt -s inherit_errexit
+          # Plain cargo: soldr's compile cache isn't wanted for one-off capture builds.
+          # Prints the save-dir of the wild binary's own link (build scripts are captured too).
+          capture_wild() {
+            local name=$1
+            shift
+            (cd candidate && env -u CLICOLOR_FORCE -u FORCE_COLOR \
+              RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" \
+              CARGO_TARGET_DIR="$RUNNER_TEMP/target-$name" \
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+              RUSTFLAGS="-Clink-arg=--ld-path=$RUNNER_TEMP/bins/baseline-wild" \
+              WILD_SAVE_BASE="$RUNNER_TEMP/capture-$name" \
+              "$@" cargo build --release --package wild-linker --bin wild >&2)
+            local dir
+            dir=$(dirname "$(grep -l -E '^# Original output file: .*/wild-[0-9a-f]+$' \
+              "$RUNNER_TEMP/capture-$name"/*/run-with | head -1)")
+            du -sh "$dir" >&2
+            echo "$dir"
+          }
+          lto=$(capture_wild wild-lto-debug env \
             CARGO_PROFILE_RELEASE_LTO=fat \
             CARGO_PROFILE_RELEASE_DEBUG=full \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
-            CARGO_TARGET_DIR="$RUNNER_TEMP/lto-target" \
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
-            RUSTFLAGS="-Clink-arg=--ld-path=$RUNNER_TEMP/bins/baseline-wild" \
-            WILD_SAVE_BASE="$RUNNER_TEMP/capture" \
-            cargo build --release --package wild-linker --bin wild
-          # The biggest capture is the wild binary's own link.
-          capture=$(du -s "$RUNNER_TEMP/capture"/*/ | sort -n | tail -1 | cut -f2)
-          echo "CAPTURE=$capture" >> "$GITHUB_ENV"
-          du -sh "$capture"
-      - name: Prepare a job-private perf collector
-        shell: bash
-        run: |
-          set -uo pipefail
-          # Follows zackees/mimalloc-pprof ci/perf_access.py: never relax perf_event_paranoid;
-          # grant CAP_PERFMON to a private copy of the kernel-matched perf ELF instead.
-          sudo apt-get install -y -qq "linux-tools-$(uname -r)" linux-tools-common >/dev/null 2>&1 || true
-          elf="/usr/lib/linux-tools/$(uname -r)/perf"
-          perf_bin=perf
-          if [ -x "$elf" ]; then
-            install -d -m 0700 "$RUNNER_TEMP/perf"
-            cp "$elf" "$RUNNER_TEMP/perf/perf-private"
-            sudo -n chown "root:$(id -g)" "$RUNNER_TEMP/perf/perf-private" &&
-              sudo -n chmod 0550 "$RUNNER_TEMP/perf/perf-private" &&
-              sudo -n setcap cap_perfmon=ep "$RUNNER_TEMP/perf/perf-private" &&
-              perf_bin="$RUNNER_TEMP/perf/perf-private"
-          fi
-          echo "PERF_BIN=$perf_bin" >> "$GITHUB_ENV"
-          echo "perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid) perf=$perf_bin"
-      - name: Paired A/B with upstream byte identity
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1)
+          plain=$(capture_wild wild env)
+          {
+            echo "CAPTURE_WILD_LTO_DEBUG=$lto"
+            echo "CAPTURE_WILD=$plain"
+          } >> "$GITHUB_ENV"
+      - name: Paired A/B tables with upstream byte identity
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence
+          base=${{ steps.revisions.outputs.base }}
+          cand=${{ steps.revisions.outputs.candidate }}
           {
-            echo "## Real full-LTO link A/B"
+            echo "## Real link A/B"
             echo
-            echo "- Baseline (merge base): \`${{ steps.revisions.outputs.base }}\`"
-            echo "- Candidate (PR head): \`${{ steps.revisions.outputs.candidate }}\`"
-            echo "- Upstream reference: \`${{ steps.revisions.outputs.upstream }}\`"
+            echo "- #1 baseline (merge base): \`$base\`"
+            echo "- #2 candidate (PR head): \`$cand\`"
+            echo "- Upstream reference for byte identity: \`${{ steps.revisions.outputs.upstream }}\`"
             echo "- Runner: $(nproc) CPUs, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"
             echo
+            echo "Tables compare against the fork's merge base, not upstream main; see"
+            echo "benchmarks/performance_guard/README.md for the upstream-PR table."
+            echo
           } > evidence/summary.md
-          for mode in none fast; do
+          status=0
+          for bench in wild-lto-debug wild; do
+            case $bench in
+              wild-lto-debug) capture=$CAPTURE_WILD_LTO_DEBUG ;;
+              wild) capture=$CAPTURE_WILD ;;
+            esac
+            printf '### %s\n\n' "$bench" >> evidence/summary.md
+            ab=(python3 candidate/benchmarks/performance_guard/capture_ab.py
+              --capture "$capture" --benchmark "$bench"
+              --baseline "$RUNNER_TEMP/bins/baseline-wild" --baseline-label "merge-base ${base:0:12}"
+              --candidate "$RUNNER_TEMP/bins/candidate-wild" --candidate-label "pr-head ${cand:0:12}"
+              --reference "$RUNNER_TEMP/bins/upstream-wild")
+            # The table: the capture's own arguments, with --no-fork so rusage is the linker's.
+            "${ab[@]}" --extra=--no-fork --pairs 30 --max-pairs 5000 --budget-seconds 240 \
+              --output "evidence/table-$bench.json" --markdown evidence/summary.md || status=1
             # Ubuntu's clang passes --build-id, so the capture has one; a later flag overrides it.
-            extra="--build-id=$mode"
-            reference=(--reference "$RUNNER_TEMP/bins/upstream-wild")
-            printf '### --build-id=%s\n\n' "$mode" >> evidence/summary.md
-            python3 candidate/benchmarks/performance_guard/capture_ab.py \
-              --capture "$CAPTURE" \
-              --baseline "$RUNNER_TEMP/bins/baseline-wild" \
-              --candidate "$RUNNER_TEMP/bins/candidate-wild" \
-              "${reference[@]}" \
-              --extra="$extra" \
-              --perf "$PERF_BIN" \
-              --pairs 30 \
-              --output "evidence/capture-ab-$mode.json" \
-              --markdown evidence/summary.md
+            for mode in none fast; do
+              printf '\nIdentity with `--build-id=%s`:\n\n' "$mode" >> evidence/summary.md
+              "${ab[@]}" --extra="--build-id=$mode --no-fork" --pairs 0 --warmups 1 \
+                --output "evidence/identity-$bench-$mode.json" --markdown evidence/summary.md || status=1
+            done
             echo >> evidence/summary.md
           done
           cat evidence/summary.md >> "$GITHUB_STEP_SUMMARY"
+          python3 candidate/benchmarks/performance_guard/pr_table.py evidence/table-*.json \
+            > evidence/pr-table.md || status=1
+          exit $status
       - name: Upload A/B evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

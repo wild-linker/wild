@@ -389,3 +389,9 @@ cargo run --bin benchmark-runner -- \
     bench --config benchmarks/ryzen-9955hx.toml --saves ~/save --tmp /ram/%fs/out linker1 linker2 linker3
 cargo run --bin benchmark-runner -- report
 ```
+
+### Tables for performance pull requests
+
+This fork's requirements for performance PRs sent upstream (a per-benchmark statistics table
+comparing the PR head against upstream `main`, and the tool that produces it) are in
+[benchmarks/performance_guard/README.md](benchmarks/performance_guard/README.md#upstream-performance-prs-the-per-benchmark-table).

@@ -15,3 +15,8 @@
 - `main` is the fork: its own commits rebased on `upstream`. To take new upstream work, fast-forward `upstream`, then rebase `main` onto it.
 - PR branches come off `main` and target `main`.
 - The performance guard requires a PR's output to match wild built from the newest `upstream` commit the PR contains, so keep `upstream` exactly equal to what `main` is rebased on.
+
+## Performance PRs
+
+- Every performance PR proposed to `wild-linker/wild` must include the per-benchmark statistics table described in `benchmarks/performance_guard/README.md` ("Upstream performance PRs"), comparing the exact PR head against the exact upstream `main` it is based on.
+- Generate the tables with `benchmarks/performance_guard/capture_ab.py` and paste the output of `pr_table.py`; never hand-type or edit the numbers. Fork CI's tables (the `performance` label) compare against the fork's merge base and are not a substitute.

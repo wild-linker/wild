@@ -1,3 +1,5 @@
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,33 +8,56 @@ import capture_ab
 
 
 class CaptureAbTest(unittest.TestCase):
-    def test_parse_perf_reads_counters_and_skips_unsupported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "perf.csv"
-            path.write_text(
-                "# started on Mon Sep 28\n"
-                "\n"
-                "455.70,msec,task-clock,455700000,100.00,5.998,CPUs utilized\n"
-                "1383462596,,cycles:u,455000000,100.00,,\n"
-                "<not supported>,,dTLB-load-misses:u,0,100.00,,\n"
-            )
-            counters = capture_ab.parse_perf(path)
-        self.assertEqual(counters, {"task-clock": 455.70, "cycles:u": 1383462596.0})
-
-    def test_parse_perf_converts_nanosecond_task_clock_to_ms(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "perf.csv"
-            path.write_text("334053834.5,ns,task-clock,334053834,100.00,,\n")
-            counters = capture_ab.parse_perf(path)
-        self.assertAlmostEqual(counters["task-clock"], 334.0538345)
-
     def test_summarise_takes_median_per_metric(self):
         summary = capture_ab.summarise(
-            [{"wall_ms": 3.0, "cycles:u": 10.0}, {"wall_ms": 1.0}, {"wall_ms": 2.0, "cycles:u": 30.0}]
+            [{"wall_ms": 3.0, "cycles": 10.0}, {"wall_ms": 1.0}, {"wall_ms": 2.0, "cycles": 30.0}]
         )
         self.assertEqual(summary["wall_ms"]["median"], 2.0)
         self.assertEqual(summary["wall_ms"]["min"], 1.0)
-        self.assertEqual(summary["cycles:u"]["median"], 20.0)
+        self.assertEqual(summary["cycles"]["median"], 20.0)
+
+    def test_keep_going_honours_minimum_budget_and_cap(self):
+        self.assertTrue(capture_ab.keep_going(3, 100.0, 5, 5, 0))  # below minimum
+        self.assertFalse(capture_ab.keep_going(5, 0.0, 5, 5, 60))  # cap reached
+        self.assertTrue(capture_ab.keep_going(5, 10.0, 5, 50, 60))  # within budget
+        self.assertFalse(capture_ab.keep_going(5, 61.0, 5, 50, 60))  # budget spent
+        self.assertFalse(capture_ab.keep_going(0, 0.0, 0, 0, 0))  # identity-only
+
+    def test_counters_disabled_report_reason(self):
+        counters = capture_ab.Counters(enabled=False)
+        self.assertEqual(counters.available, [])
+        self.assertIn("--no-counters", counters.reason)
+
+    def test_run_once_measures_a_fake_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp)
+            run_with = capture / "run-with"
+            # Like a real save-dir script: the linker is the first argument, then `--` and extras.
+            run_with.write_text('#!/bin/sh\nlinker="$1"; shift; [ "$1" = -- ] && shift\n'
+                                'exec "$linker" "$OUT" "$@"\n')
+            linker = capture / "linker"
+            linker.write_text('#!/bin/sh\necho "$@" > "$1"\n')
+            for path in (run_with, linker):
+                path.chmod(path.stat().st_mode | stat.S_IXUSR)
+            out = capture / "out"
+            counters = capture_ab.Counters()
+            sample = capture_ab.run_once(capture, linker, out, counters, ["--no-fork"], None)
+            self.assertEqual(out.read_text(), f"{out} --no-fork\n")
+        for key in ("wall_ms", "user_ms", "sys_ms", "max_rss_kib"):
+            self.assertIn(key, sample)
+        self.assertGreater(sample["wall_ms"], 0)
+        self.assertGreater(sample["max_rss_kib"], 0)
+        for name, _ in counters.available:
+            self.assertGreater(sample[name], 0, name)
+
+    def test_run_once_raises_on_linker_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp)
+            run_with = capture / "run-with"
+            run_with.write_text("#!/bin/sh\nexit 3\n")
+            run_with.chmod(0o755)
+            with self.assertRaises(capture_ab.subprocess.CalledProcessError):
+                capture_ab.run_once(capture, Path("/bin/true"), capture / "o", None, [], None)
 
 
 if __name__ == "__main__":
