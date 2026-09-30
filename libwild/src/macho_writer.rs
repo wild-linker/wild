@@ -1,5 +1,4 @@
 use crate::OutputFileData;
-use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::alignment::MACHO_PAGE_ALIGNMENT_VALUE;
 use crate::bail;
 use crate::elf::get_page_mask;
@@ -1323,7 +1322,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
             .set(LE, u32::try_from(starts_in_segment_len)?);
         starts_in_segment
             .page_size
-            .set(LE, MACHO_PAGE_ALIGNMENT.value() as u16);
+            .set(LE, MACHO_PAGE_ALIGNMENT_VALUE as u16);
         starts_in_segment
             .pointer_format
             .set(LE, DYLD_CHAINED_PTR_64_OFFSET);

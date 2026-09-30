@@ -2,6 +2,7 @@ use crate::FileSystem;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
+use crate::alignment::MACHO_PAGE_ALIGNMENT_VALUE;
 use crate::args::macho::MachOArgs;
 use crate::bail;
 use crate::ensure;
@@ -1951,8 +1952,6 @@ impl platform::Platform for MachO {
         format_specific: &Self::FinaliseSizesExt<'_>,
         _args: &Self::Args,
     ) -> Result {
-        const PAGE_SIZE: u64 = alignment::MACHO_PAGE_ALIGNMENT.value();
-
         // Addresses aren't available yet, so estimate the number of pages that can contain fixups
         // from the combined size of every output section containing one. The GOT must be included
         // as both imported and local GOT slots can require fixups.
@@ -1967,12 +1966,12 @@ impl platform::Platform for MachO {
                 current_sizes
                     .values_in_range(part_range)
                     // For being sure, round each part to a page size.
-                    .map(|v| v.next_multiple_of(PAGE_SIZE))
+                    .map(|v| v.next_multiple_of(MACHO_PAGE_ALIGNMENT_VALUE))
                     .sum::<u64>()
             })
             .sum::<u64>();
-        let estimated_page_count = fixup_section_size.div_ceil(PAGE_SIZE);
 
+        let estimated_page_count = fixup_section_size.div_ceil(MACHO_PAGE_ALIGNMENT_VALUE);
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
             alignment::USIZE.align_up(CHAINED_FIXUP_PAGE_START_SIZE * estimated_page_count),
