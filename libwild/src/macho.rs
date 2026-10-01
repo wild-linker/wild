@@ -1955,7 +1955,7 @@ impl platform::Platform for MachO {
         // Addresses aren't available yet, so estimate the number of pages that can contain fixups
         // from the combined size of every output section containing one. The GOT must be included
         // as both imported and local GOT slots can require fixups.
-        let fixup_section_size = format_specific
+        let estimated_page_count = format_specific
             .pending_fixups
             .iter()
             .map(|fixup| fixup.output_section_id)
@@ -1967,12 +1967,11 @@ impl platform::Platform for MachO {
                     .values_in_range(part_range)
                     // For being sure, round each part to a page size (the number of such output
                     // sections is rather limited and we're wasting only 2B per page).
-                    .map(|v| v.next_multiple_of(MACHO_PAGE_ALIGNMENT_VALUE))
+                    .map(|v| v.div_ceil(MACHO_PAGE_ALIGNMENT_VALUE))
                     .sum::<u64>()
             })
             .sum::<u64>();
 
-        let estimated_page_count = fixup_section_size.div_ceil(MACHO_PAGE_ALIGNMENT_VALUE);
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
             alignment::USIZE.align_up(CHAINED_FIXUP_PAGE_START_SIZE * estimated_page_count),

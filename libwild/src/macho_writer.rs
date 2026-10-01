@@ -1312,10 +1312,6 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         // Accounts for both seg_count and __PAGEZERO.
         starts_in_image[i + 2].set(LE, u32::try_from(starts_in_segment_offset)?);
         let starts_in_segment = take_mut::<ChainedStartsInSegment>(&mut rest)?;
-        let (page_starts, new_rest) = slice_from_bytes_mut::<U16<Endianness>>(rest, page_count)
-            .ok()
-            .context("Invalid chained fixups page starts allocation")?;
-        rest = new_rest;
 
         starts_in_segment
             .size
@@ -1333,10 +1329,12 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         starts_in_segment.page_count.set(LE, page_count_u16);
 
         let mut fixup_pages = fixup_pages.into_iter().peekable();
-        for (page_index, page_start) in page_starts.iter_mut().enumerate() {
+        for page_index in 0..page_count {
             let first_fixup_offset = fixup_pages
                 .next_if(|(fixup_page_index, _)| *fixup_page_index == page_index)
                 .map_or(DYLD_CHAINED_PTR_START_NONE, |(_, offset)| offset);
+            let page_start = take_mut::<U16<Endianness>>(&mut rest)
+                .context("Invalid chained fixups page starts allocation")?;
             page_start.set(LE, first_fixup_offset);
         }
 
