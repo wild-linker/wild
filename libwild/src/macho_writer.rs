@@ -1351,9 +1351,6 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         .context("Invalid chained fixups imports allocation")?;
 
     // 4) fill up all imported symbols chunked by the pages
-    // TODO: support more pages
-    assert!(symbols.len() < MACHO_PAGE_ALIGNMENT_VALUE as usize / size_of::<u32>());
-
     let sorted_symbols = &layout.format_specific.imported_symbols;
     let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
     let mut str_offset = 0;
