@@ -26,6 +26,8 @@ path = [
   "LINKER_SCRIPT_SUPPORT.md",
   "PACKAGING.md",
   "AGENTS.md",
+  "HOW_TO_PR_UPSTREAM.md",
+  ".claude/**",
   "README.md",
   "RELEASING.md",
   "FAQ.md",
