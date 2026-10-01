@@ -89,7 +89,7 @@ jobs:
           n="wild-linker-${VERSION_TAG}-${{ matrix.target }}"
           mkdir "$n"
           cp "target/${{ matrix.target }}/dist/wild" "$n"
-          cp README.md LICENSE* CHANGELOG.md "$n"
+          cp README.md LICENSE-* CHANGELOG.md "$n"
           readelf -p .comment "$n/wild" | grep "Linker: Wild" || echo "::warning::'$n' wasn't linked with wild"
           tar zcf $n.tar.gz $n
 
