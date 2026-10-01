@@ -559,6 +559,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
+    if let Some(sysroot) = &args.sysroot {
+        for path in &mut args.lib_search_path {
+            if let Some(new_path) = maybe_forced_sysroot(path, sysroot) {
+                *path = new_path;
+            }
+        }
+    }
+
     if let Some(error) = args.emulation_error.take() {
         return Err(error);
     }
@@ -653,16 +661,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
-            let handle_sysroot = |path| {
-                args.sysroot
-                    .as_ref()
-                    .and_then(|sysroot| maybe_forced_sysroot(path, sysroot))
-                    .unwrap_or_else(|| Box::from(path))
-            };
-
-            let dir = handle_sysroot(Path::new(value));
             args.common_mut().save_dir.handle_file(value);
-            args.lib_search_path.push(dir);
+            args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
 
@@ -1777,11 +1777,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.common_mut().save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
-            for path in &mut args.lib_search_path {
-                if let Some(new_path) = maybe_forced_sysroot(path, &sysroot) {
-                    *path = new_path;
-                }
-            }
             Ok(())
         });
 
