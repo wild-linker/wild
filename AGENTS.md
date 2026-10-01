@@ -9,6 +9,13 @@
 - Never fall back to `wild-linker/wild` when a requested operation is unavailable on `zackees/wild`. If the fork has Issues disabled, permissions are missing, or another repository setting blocks the operation, stop and report that blocker to the user.
 - Read-only upstream research is allowed when useful. It does not authorize writing to upstream.
 
+## Cross-repository links
+
+- **Internal (`zackees/wild`) PRs, issues, comments and commit messages never link to `wild-linker/wild`.** That includes `wild-linker/wild#N`, `wild#N`-style shorthand that resolves upstream, and URLs to upstream PRs, issues or comments. GitHub turns each one into a permanent "mentioned this" entry in the upstream timeline, visible to the maintainers, and editing or deleting the text afterwards doesn't remove it. Refer to upstream items in plain text, e.g. "upstream PR 2634". Never use a bare `#2634` either: in the fork it links to a fork item.
+- Internal items may reference other `zackees/wild` items freely (`#N`, `zackees/wild#N`).
+- Upstream PRs, comments and commit messages may link other upstream items (`#N`). They never link `zackees/wild` items.
+- Squash merges copy the PR title and description into the commit message, so check both before merging.
+
 ## Branches
 
 - `upstream` mirrors `wild-linker/wild` `main`. Only fast-forward it to upstream's `main`; never commit to it.

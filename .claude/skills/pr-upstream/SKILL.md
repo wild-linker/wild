@@ -31,10 +31,13 @@ followed. Do these steps in order and don't skip any.
      `*AI generated description: authored by [AI](https://github.com/zackees/clud), approved by Zach Vorhies*`.
    - Then Summary, Benchmarks (or Repro and When it fails for bug fixes), and Design.
    - Keep it short. Mention AI nowhere else.
-7. **Get approval.** Show Zach Vorhies the final title, description and any comment text, and wait
+7. **Check the links.** The upstream description and comments may link upstream items only, never
+   `zackees/wild`. Any internal PR, issue or commit you create along the way, such as a `[bench]`
+   draft, must not link upstream; use plain text like "upstream PR 2634".
+8. **Get approval.** Show Zach Vorhies the final title, description and any comment text, and wait
    for an explicit OK. The header says "approved by Zach Vorhies", so nothing goes upstream without
    it.
-8. **Publish and follow up** (guide §5).
+9. **Publish and follow up** (guide §5).
    - Post a short comment when reviewers need to know about a change.
    - Cross-reference superseded or stacked PRs both ways.
    - Check `gh api rate_limit` before bursts, and don't hand-roll polling loops.

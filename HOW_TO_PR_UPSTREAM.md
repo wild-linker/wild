@@ -14,25 +14,25 @@ this document should need one review round, not three.
 - Branch from upstream's current `main`, not the fork's: `git fetch upstream && git worktree add
   -b up/<topic> ../wild-<topic> upstream/main`. Push `up/<topic>` to `origin` and open the PR from
   `zackees:up/<topic>`. Never include fork-only commits.
-- Keep the generic path unchanged. Every gain is weighed against complexity: #2620 merged
-  because it was "relatively simple" with a large speedup, while #2621 drew a tentative reject for
+- Keep the generic path unchanged. Every gain is weighed against complexity: upstream PR 2620 merged
+  because it was "relatively simple" with a large speedup, while upstream PR 2621 drew a tentative reject for
   adding "a whole new layer of abstraction", even though it was faster. Put an optimization in one
   private module with a single `pub(crate)` or `pub(super)` entry point that falls back to the
-  existing code for anything it doesn't handle (see #2634). Avoid new `Arch`/`Platform` trait items
+  existing code for anything it doesn't handle (see upstream PR 2634). Avoid new `Arch`/`Platform` trait items
   and edits spread across the arch files. Report the *central diff* (lines touched outside the new
   module) and keep it small.
 - Find the cost before designing the fix: `perf record` the link and `perf annotate` the hot loop.
-  The biggest wins in the #2621 work were store-forwarding stalls (byte-aligned structs such as the
+  The biggest wins in the upstream PR 2621 work were store-forwarding stalls (byte-aligned structs such as the
   raw `Rela` copied to the stack), a runtime division in an alignment check, and a variable-length
   `copy_from_slice` that compiled to a `memcpy` call.
 - One idea per PR. Measure each piece on its own before proposing it, and drop anything that is
-  noise on real links. In the #2621 work, a symbol cache produced most of the gain, and three small
+  noise on real links. In the upstream PR 2621 work, a symbol cache produced most of the gain, and three small
   standalone ideas were noise.
 
 ## 2. Benchmarks (mandatory for every performance PR)
 
 Every performance claim must come from the procedure below. Tables are pasted from the tool's
-output, never typed or edited. This is how the numbers in #2634 were produced.
+output, never typed or edited. This is how the numbers in upstream PR 2634 were produced.
 
 ### 2.1 Build the two binaries identically
 
@@ -73,7 +73,7 @@ RUSTFLAGS="-Clinker=clang -Clink-arg=--ld-path=$PWD/../wild-base/target/release/
 
 The small-link check is not optional. Per-call setup cost, such as a heap-allocated cache per debug
 section, is invisible on big links and dominant on links with thousands of small objects. That is
-what caused the "small slowdowns" on #2621.
+what caused the "small slowdowns" on upstream PR 2621.
 
 Name the benchmarks you didn't run in the PR and invite the maintainer to run them; David has the
 large captures.
@@ -101,7 +101,7 @@ python3 benchmarks/performance_guard/pr_table.py ~/bench/<topic>/*.json
 ```
 
 - Budgets: 600 seconds for `wild-lto-debug` and `wild`, 300 for `tinyc` and `cxxdbg`. That gave
-  n = 2,340 and 5,438 pairs for #2634 and confidence intervals of about 0.2%.
+  n = 2,340 and 5,438 pairs for upstream PR 2634 and confidence intervals of about 0.2%.
 - `--no-fork` is required, so peak RSS and CPU time are the linker's own.
 - Put outputs on tmpfs (`TMPDIR=/dev/shm/...`). On ext4, page faults followed each arm's output
   file rather than the binary, which once made a candidate look 28% worse in system time.
@@ -121,7 +121,7 @@ python3 benchmarks/performance_guard/pr_table.py ~/bench/<topic>/*.json
   a temporary build that makes the fast path always fail, and check output is still identical.
 - Changes that reorder or parallelise relocation application must stay correct on RISC-V and
   LoongArch, where some debug relocations read the bytes they patch. Normal-sized tests may never
-  reach your path; lower the threshold in a throwaway branch (as in #2634) and run the cross-arch
+  reach your path; lower the threshold in a throwaway branch (as in upstream PR 2634) and run the cross-arch
   CI.
 
 ### 2.5 Fork CI (4-vCPU runner numbers)
@@ -204,7 +204,7 @@ would cover them.
 ````
 
 - For bug fixes, replace Benchmarks with **Repro** (a minimal script you have actually run against
-  upstream's binary, with before and after results) and add **When it fails**, as in #2628.
+  upstream's binary, with before and after results) and add **When it fails**, as in upstream PR 2628.
 - Stacked PRs start with "Stacked on #N. Please review only the last commit."
 - Titles are release-notes friendly with a conventional prefix: `perf:`, `fix:`, `chore:`.
 - The first line is always the disclosure header, exactly as above and in italics:
@@ -215,6 +215,9 @@ would cover them.
 
 ## 5. After you open it
 
+- Links: an upstream PR may link other upstream PRs and issues (`#N`), never `zackees/wild` items.
+  Internal PRs, issues and commits never link upstream; see `AGENTS.md`, "Cross-repository links".
+  A cross-reference is permanent in the target's timeline, even if you later edit the text.
 - Editing a description notifies nobody. Post a short comment when reviewers need to know
   something changed.
 - Answer review concerns with data and a concrete plan, addressed to whoever raised them.
@@ -230,7 +233,7 @@ would cover them.
 
 - Before blaming a tool, reproduce the failure in a stock container and hash the suspect files.
   A "soldr cache bug" turned out to be toolchain rlibs zeroed through wild's save-dir hard links
-  (fixed in this fork by #41; proposed upstream as wild-linker/wild#2628).
+  (fixed in this fork by zackees/wild#41; proposed as upstream PR 2628).
   `find ~/.rustup ~/.soldr/rustup -path '*rustlib*' -size 0` finds that damage.
 - soldr's `stable` is rustc 1.98.0. Upstream checkouts have no toolchain file, so always pass
   `RUSTUP_TOOLCHAIN=1.98.1 SOLDR_ALLOW_UNPINNED=1`.
