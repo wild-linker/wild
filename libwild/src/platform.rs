@@ -772,6 +772,7 @@ pub(crate) trait Platform:
         _state: &mut Self::EpilogueLayoutExt,
         _current_sizes: &OutputSectionPartMap<u64>,
         _extra_sizes: &mut OutputSectionPartMap<u64>,
+        _output_sections: &OutputSections<Self>,
         _dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         _format_specific: &Self::FinaliseSizesExt<'_>,
         _args: &Self::Args,

@@ -86,7 +86,6 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
-use std::iter;
 use std::mem::offset_of;
 use std::num::NonZeroU8;
 use std::num::NonZeroU64;
@@ -1948,26 +1947,50 @@ impl platform::Platform for MachO {
         _state: &mut Self::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
+        output_sections: &crate::output_section_id::OutputSections<Self>,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
         format_specific: &Self::FinaliseSizesExt<'_>,
         _args: &Self::Args,
     ) -> Result {
         // Addresses aren't available yet, so estimate the number of pages that can contain fixups
-        // from the combined size of every output section containing one. The GOT must be included
-        // as both imported and local GOT slots can require fixups.
-        let estimated_page_count = format_specific
-            .pending_fixups
+        // from all sections in the __DATA and __DATA_CONST segments.
+
+        let data_like_sections = output_sections
+            .ids_with_info()
+            .filter_map(|(section_id, info)| {
+                if let SectionKind::Primary(identity) = info.kind
+                    && matches!(
+                        identity.format_specific(),
+                        Some(SegmentName::DATA | SegmentName::DATA_CONST)
+                    )
+                {
+                    Some(section_id)
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+
+        // Verify all the fixups are actually present in some of the data-like sections.
+        // TODO: iterate segments based on listed sections connected to the pending fixups
+        ensure!(
+            format_specific
+                .pending_fixups
+                .iter()
+                .all(|fixup| data_like_sections.contains(&fixup.output_section_id)),
+            "Fixup out of __DATA or __DATA_CONST segment"
+        );
+
+        let estimated_page_count = data_like_sections
             .iter()
-            .map(|fixup| fixup.output_section_id)
-            .chain(iter::once(output_section_id::GOT))
-            .unique()
             .map(|section_id| {
                 let part_range = section_id.part_id_range::<MachO>();
                 current_sizes
-                    .values_in_range(part_range)
-                    // For being sure, round each part to a page size (the number of such output
-                    // sections is rather limited and we're wasting only 2B per page).
-                    .map(|v| v.div_ceil(MACHO_PAGE_ALIGNMENT_VALUE))
+                    .in_range(part_range)
+                    .map(|(part_id, _)| {
+                        (current_sizes.get(part_id) + extra_sizes.get(part_id))
+                            .div_ceil(MACHO_PAGE_ALIGNMENT_VALUE)
+                    })
                     .sum::<u64>()
             })
             .sum::<u64>();

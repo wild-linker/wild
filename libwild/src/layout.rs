@@ -2375,7 +2375,12 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         unreachable!();
     };
 
-    epilogue.apply_late_size_adjustments(&mut last_group.common, &mut total_sizes, resources)?;
+    epilogue.apply_late_size_adjustments(
+        &mut last_group.common,
+        &mut total_sizes,
+        output_sections,
+        resources,
+    )?;
 
     let first_group = group_states.first_mut().unwrap();
     let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first_mut() else {
@@ -4232,6 +4237,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         total_sizes: &mut OutputSectionPartMap<u64>,
+        output_sections: &OutputSections<P>,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         let mut extra_sizes = common.mem_sizes.new_empty_like();
@@ -4242,6 +4248,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             &mut self.format_specific,
             total_sizes,
             &mut extra_sizes,
+            output_sections,
             resources.dynamic_symbol_definitions,
             resources.format_specific,
             resources.symbol_db.args,

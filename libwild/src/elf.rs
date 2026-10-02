@@ -1859,6 +1859,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         state: &mut crate::elf::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
+        _output_sections: &crate::output_section_id::OutputSections<Self>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         format_specific: &Self::FinaliseSizesExt<'_>,
         args: &ElfArgs,
