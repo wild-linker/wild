@@ -84,6 +84,9 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
+//! MaxFileSize:{bytes} Checks that the output binary is no larger than the specified number of
+//! bytes.
+//!
 //! ExpectFuncImport:{module}/{name}={count} (Wasm) Asserts that the import section has exactly
 //! {count} function imports with the given module and field name.
 //!
@@ -2007,6 +2010,7 @@ struct ParsedDepModifiers<'a> {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Assertions {
+    max_file_size: Option<usize>,
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
@@ -2618,6 +2622,7 @@ fn process_directive(
         }
         "DoesNotContain" => config.assertions.does_not_contain.push(arg.to_owned()),
         "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
+        "MaxFileSize" => config.assertions.max_file_size = Some(arg.trim().parse()?),
         "ExpectFuncImport" => {
             // module/name=count
             let (path, count_str) = arg.split_once('=').with_context(|| {
@@ -5167,6 +5172,15 @@ impl Assertions {
         let bytes =
             std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
 
+        if let Some(max_size) = self.max_file_size {
+            ensure!(
+                bytes.len() <= max_size,
+                "Output file `{}` is {} bytes, exceeding MaxFileSize of {max_size} bytes",
+                path.display(),
+                bytes.len(),
+            );
+        }
+
         // For Wasm modules.
         if bytes.starts_with(b"\0asm") {
             return self.check_wasm_path(path, linker_used);
@@ -5226,6 +5240,7 @@ impl Assertions {
     fn check_macho_path(&self, obj: &object::File, bytes: &[u8], linker_used: &Linker) -> Result {
         // Allowlist of assertion fields implemented for Mach-O.
         let supported = Assertions {
+            max_file_size: self.max_file_size,
             expected_symtab_entries: self.expected_symtab_entries.clone(),
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
             expected_entry: self.expected_entry.clone(),
@@ -5285,6 +5300,7 @@ impl Assertions {
     fn check_wasm_path(&self, path: &Path, linker_used: &Linker) -> Result {
         // Allowlist of assertion fields implemented for Wasm.
         let supported = Assertions {
+            max_file_size: self.max_file_size,
             expected_sections: self.expected_sections.clone(),
             absent_sections: self.absent_sections.clone(),
             does_not_contain: self.does_not_contain.clone(),

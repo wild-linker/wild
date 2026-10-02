@@ -6257,12 +6257,10 @@ fn compute_layout_sections<'data, P: Platform>(
                         file_offset = alignment.align_up_usize(file_offset);
                     }
 
-                    let file_size = if section_flags.is_alloc()
-                        && !output_sections.has_data_in_file(merge_target)
-                    {
-                        0
-                    } else {
+                    let file_size = if output_sections.has_data_in_file(merge_target) {
                         mem_size as usize
+                    } else {
+                        0
                     };
 
                     let (part_mem_offset, part_lma_offset) = if section_flags.is_alloc() {
