@@ -1954,7 +1954,6 @@ impl platform::Platform for MachO {
     ) -> Result {
         // Addresses aren't available yet, so estimate the number of pages that can contain fixups
         // from all sections in the __DATA and __DATA_CONST segments.
-
         let data_like_sections = output_sections
             .ids_with_info()
             .filter_map(|(section_id, info)| {
