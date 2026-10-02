@@ -1903,6 +1903,15 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         match sec {
             SectionSlot::Loaded(sec)
             | SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section: sec, .. }) => {
+                let part_id =
+                    object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+                if layout
+                    .compressed_debug_sections
+                    .get(part_id.output_section_id::<elf::Elf<C>>())
+                    .is_some()
+                {
+                    continue;
+                }
                 table_writer.reset_relr_run();
                 let input_header = object.object.section(section_index)?;
 

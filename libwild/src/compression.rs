@@ -375,7 +375,9 @@ fn build_regular_debug_section<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             for file_layout in &group_layout.files {
                 if let FileLayout::Object(object_layout) = file_layout {
                     for (idx, section_slot) in object_layout.sections.iter().enumerate() {
-                        if let SectionSlot::LoadedDebugInfo(_) = section_slot {
+                        if let SectionSlot::LoadedDebugInfo(_) | SectionSlot::Loaded(_) =
+                            section_slot
+                        {
                             let section_index = object::read::SectionIndex(idx);
                             let part_id = object_layout
                                 .section_part_id(section_index, &layout.symbol_db.section_part_ids);

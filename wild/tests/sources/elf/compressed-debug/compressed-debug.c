@@ -2,7 +2,7 @@
 //#CompArgs:-g
 //#Object:runtime.c
 //#DiffIgnore:section.debug_*
-//#ExpectSym:_start line=55
+//#ExpectSym:_start line=1234
 
 //#Config:zlib:default
 //#LinkArgs:--compress-debug-sections=zlib
@@ -14,6 +14,22 @@
 
 //#Config:none:default
 //#LinkArgs:--compress-debug-sections=none
+
+//#Config:script-none:none
+//#LinkerScript:debug-line.ld
+
+//#Config:script-zlib:zlib
+//#LinkerScript:debug-line.ld
+//#ExpectSection:.debug_line flags=C
+
+//#Config:script-zstd:zstd
+//#LinkerScript:debug-line.ld
+//#ExpectSection:.debug_line flags=C
+
+//#Config:script-only-keep-debug:script-zlib
+//#ReferenceLinkers:
+//#LinkArgs:--only-keep-debug
+//#RunEnabled:false
 
 #include "../common/runtime.h"
 
@@ -52,6 +68,7 @@ EXPAND_10(7)
 EXPAND_10(8)
 EXPAND_10(9)
 
+#line 1234
 void _start(void) {
   runtime_init();
   exit_syscall(42);
