@@ -63,8 +63,7 @@ pub(crate) fn get_source_info<C: ElfClass, A: Arch<Platform = Elf<C>>>(
         let comp_dir = unit
             .comp_dir
             .as_ref()
-            .map(|dir| path_from_bytes(dir))
-            .unwrap_or_default();
+            .map_or_default(|dir| path_from_bytes(dir));
 
         let mut rows = program.rows();
 

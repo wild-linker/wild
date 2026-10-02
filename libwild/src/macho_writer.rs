@@ -20,6 +20,7 @@ use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SegmentLayout;
 use crate::layout::SymbolCopyInfo;
+use crate::macho::BuildToolVersion;
 use crate::macho::BuildVersionCommand;
 use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
@@ -118,6 +119,7 @@ use object::macho::S_THREAD_LOCAL_REGULAR;
 use object::macho::S_THREAD_LOCAL_VARIABLES;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SegmentFlags;
+use object::macho::Tool;
 use object::slice_from_bytes_mut;
 use object::write::macho::CodeDirectory;
 use object::write::macho::CodeSignatureEncoder;
@@ -239,8 +241,11 @@ fn write_prelude<'data>(
     write_uuid_command(take_mut(&mut load_command_buffer)?);
 
     if layout.args().platform_version.is_some() {
-        let build_version_command = take_mut(&mut load_command_buffer)?;
-        write_build_version_command(layout, build_version_command)?;
+        let command_size = size_of::<BuildVersionCommand>() + size_of::<BuildToolVersion>();
+        let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
+        let build_version_command = take_mut(&mut command_buffer)?;
+        let build_tool_version = take_mut(&mut command_buffer)?;
+        write_build_version_command(layout, build_version_command, build_tool_version)?;
     }
 
     let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
@@ -343,7 +348,7 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
     let text_segment = get_text_segment_layout(layout)?;
     let image_base = text_segment.sizes.mem_offset;
 
-    let mut symbols = layout
+    let symbols = layout
         .dynamic_symbol_definitions
         .iter()
         .map(|symbol| {
@@ -389,7 +394,15 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(crate::trie::build(&mut symbols))
+    let Some(FileLayout::Epilogue(epilogue)) = layout
+        .group_layouts
+        .last()
+        .and_then(|group| group.files.last())
+    else {
+        bail!("Epilogue layout not found at expected offset");
+    };
+
+    Ok(epilogue.format_specific.exports_trie.encode(&symbols))
 }
 
 fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
@@ -523,8 +536,11 @@ fn write_chained_fixups(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
             };
 
             let encoding = match fixup.kind {
-                FixupKind::Rebase => {
-                    let value = u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?);
+                FixupKind::Rebase { target_address } => {
+                    let value = match target_address {
+                        Some(address) => address,
+                        None => u64::from_le_bytes(out[file_offset..file_offset + 8].try_into()?),
+                    };
                     let target = value
                         .checked_sub(image_base)
                         .context("Rebase target is before the image base")?;
@@ -1064,7 +1080,11 @@ fn write_entry_point_command(layout: &MachOLayout, command: &mut EntryPointComma
     Ok(())
 }
 
-fn write_build_version_command(layout: &MachOLayout, command: &mut BuildVersionCommand) -> Result {
+fn write_build_version_command(
+    layout: &MachOLayout,
+    command: &mut BuildVersionCommand,
+    tool: &mut BuildToolVersion,
+) -> Result {
     let platform_version = layout
         .args()
         .platform_version
@@ -1072,17 +1092,28 @@ fn write_build_version_command(layout: &MachOLayout, command: &mut BuildVersionC
         .ok_or("platform_version must be set")?;
 
     command.cmd.set(LE, LC_BUILD_VERSION);
-    command
-        .cmdsize
-        .set(LE, size_of::<BuildVersionCommand>() as u32);
+    command.cmdsize.set(
+        LE,
+        (size_of::<BuildVersionCommand>() + size_of::<BuildToolVersion>()) as u32,
+    );
     command.platform.set(LE, PLATFORM_MACOS);
     command
         .minos
         .set(LE, platform_version.minimum_version.get());
     command.sdk.set(LE, platform_version.sdk_version.get());
-    command.ntools.set(LE, 0);
-    // TODO: We could record Wild's version here, but Mach-O only defines tool IDs
-    // for Apple toolchain components, so leave the tools list empty for now.
+    command.ntools.set(LE, 1);
+
+    // Randomly picking a tool ID out of the supported list:
+    // https://docs.rs/object/latest/src/object/macho.rs.html#2776-2789
+    tool.tool.set(LE, Tool(1684826487));
+    tool.version.set(
+        LE,
+        macho::Version::new(
+            env!("CARGO_PKG_VERSION_MAJOR").parse()?,
+            env!("CARGO_PKG_VERSION_MINOR").parse()?,
+            env!("CARGO_PKG_VERSION_PATCH").parse()?,
+        ),
+    );
     Ok(())
 }
 

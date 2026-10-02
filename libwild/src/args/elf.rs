@@ -13,6 +13,7 @@ use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
 use crate::args::FileReplacementMode;
 use crate::args::Modifiers;
+use crate::args::OrphanHandling;
 use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
@@ -78,6 +79,7 @@ pub struct ElfArgs {
     pub(crate) needs_nodelete_handling: bool,
     pub(crate) copy_relocations: CopyRelocations,
     pub(crate) sysroot: Option<Box<Path>>,
+    retain_symbols_path: Option<PathBuf>,
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
     pub(crate) entry: Option<String>,
@@ -151,6 +153,10 @@ pub struct ElfArgs {
     pub(crate) debug_compression_kind: Option<CompressionKind>,
     pub(crate) sort_section: Option<SortSectionMode>,
     pub(crate) output_format_endian: Option<Endianness>,
+    pub(crate) orphan_handling: OrphanHandling,
+
+    pub(crate) only_keep_debug_requested: bool,
+    pub(crate) strip_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +171,7 @@ pub(crate) enum Strip {
     Debug,
     All,
     Retain(HashSet<Vec<u8>>),
+    OnlyKeepDebug,
 }
 
 #[derive(Debug)]
@@ -380,6 +387,7 @@ impl Default for ElfArgs {
             no_undefined: None,
             allow_shlib_undefined: false,
             sysroot: None,
+            retain_symbols_path: None,
             dependency_file: None,
             undefined: Vec::new(),
             relro: true,
@@ -425,6 +433,10 @@ impl Default for ElfArgs {
             sort_section: None,
             gdb_index: false,
             output_format_endian: None,
+            orphan_handling: OrphanHandling::Place,
+
+            only_keep_debug_requested: false,
+            strip_requested: false,
         }
     }
 }
@@ -529,6 +541,10 @@ impl ElfArgs {
             Architecture::Unsupported => Emulation::Unsupported,
         });
     }
+
+    pub(crate) fn only_keep_debug(&self) -> bool {
+        !self.should_output_partial_object() && matches!(self.strip, Strip::OnlyKeepDebug)
+    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
@@ -545,6 +561,26 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
+    if let Some(sysroot) = &args.sysroot {
+        for path in &mut args.lib_search_path {
+            if let Some(new_path) = maybe_forced_sysroot(path, sysroot) {
+                *path = new_path;
+            }
+        }
+    }
+
+    if let Some(path) = args.retain_symbols_path.take() {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read `{}`", path.display()))?;
+        args.strip = Strip::Retain(
+            contents
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| line.as_bytes().to_owned())
+                .collect(),
+        );
+    }
+
     if let Some(error) = args.emulation_error.take() {
         return Err(error);
     }
@@ -557,6 +593,23 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     if !args.rpath_set.is_empty() {
         args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
+    }
+
+    if args.only_keep_debug_requested
+        && args.strip_requested
+        && !args.should_output_partial_object()
+    {
+        bail!("--only-keep-debug is mutually exclusive with --strip-debug and --strip-all");
+    }
+
+    if args.only_keep_debug_requested
+        && matches!(args.build_id, BuildIdOption::Fast | BuildIdOption::Uuid)
+    {
+        bail!(
+            "--only-keep-debug with --build-id=fast or --build-id=uuid would produce a \
+             build-id that differs from the stripped binary. Use --build-id=none or \
+             --build-id=0x<hex> to specify a matching build-id explicitly."
+        );
     }
 
     args.common.report_unrecognized()?;
@@ -622,16 +675,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
-            let handle_sysroot = |path| {
-                args.sysroot
-                    .as_ref()
-                    .and_then(|sysroot| maybe_forced_sysroot(path, sysroot))
-                    .unwrap_or_else(|| Box::from(path))
-            };
-
-            let dir = handle_sysroot(Path::new(value));
             args.common_mut().save_dir.handle_file(value);
-            args.lib_search_path.push(dir);
+            args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
 
@@ -929,7 +974,9 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .short("s")
         .help("Strip all symbols")
         .execute(|args, _modifier_stack| {
+            args.strip_requested = true;
             args.strip = Strip::All;
+            args.retain_symbols_path = None;
             Ok(())
         });
 
@@ -939,7 +986,20 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .short("S")
         .help("Strip debug symbols")
         .execute(|args, _modifier_stack| {
+            args.strip_requested = true;
             args.strip = Strip::Debug;
+            args.retain_symbols_path = None;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("only-keep-debug")
+        .help("Retain only debug sections; convert alloc non-NOTE sections to SHT_NOBITS")
+        .execute(|args, _modifier_stack| {
+            args.only_keep_debug_requested = true;
+            args.strip = Strip::OnlyKeepDebug;
+            args.retain_symbols_path = None;
             Ok(())
         });
 
@@ -1385,7 +1445,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("thread-count")
         .help("Set the number of threads to use")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
+            args.common_mut().num_threads = Some(NonZeroUsize::from_str_radix(value, 10)?);
             Ok(())
         });
 
@@ -1655,24 +1715,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             One symbol per line.",
         )
         .execute(|args, _modifier_stack, value| {
-            // The performance this flag is not especially optimised. For one, we copy each string
-            // to the heap. We also do two lookups in the hashset for each symbol. This is a pretty
-            // obscure flag that we don't expect to be used much, so at this stage, it doesn't seem
-            // worthwhile to optimise it.
-            let contents = std::fs::read_to_string(value)
-                .with_context(|| format!("Failed to read `{value}`"))?;
-            args.strip = Strip::Retain(
-                contents
-                    .lines()
-                    .filter_map(|l| {
-                        if l.is_empty() {
-                            None
-                        } else {
-                            Some(l.as_bytes().to_owned())
-                        }
-                    })
-                    .collect(),
-            );
+            args.retain_symbols_path = Some(PathBuf::from(value));
             Ok(())
         });
 
@@ -1734,11 +1777,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.common_mut().save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
-            for path in &mut args.lib_search_path {
-                if let Some(new_path) = maybe_forced_sysroot(path, &sysroot) {
-                    *path = new_path;
-                }
-            }
             Ok(())
         });
 
@@ -2018,6 +2056,17 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    parser
+        .declare_with_param()
+        .long("orphan-handling")
+        .help("Control how orphan sections are handled. An orphan section is one not specifically mentioned in a linker script")
+        .execute(|args, _modifier_stack, value| {
+            args.orphan_handling = value
+                .parse::<OrphanHandling>()
+                .map_err(|_| error!("Invalid orphan handling value {value}"))?;
+            Ok(())
+        });
+
     super::declare_common_args(&mut parser);
 
     add_silently_ignored_flags(&mut parser);
@@ -2196,6 +2245,10 @@ impl platform::Args for ElfArgs {
 
     fn should_emit_got_plt_syms(&self) -> bool {
         self.got_plt_syms
+    }
+
+    fn orphan_handling(&self) -> OrphanHandling {
+        self.orphan_handling
     }
 
     fn copy_relocations_enabled(&self) -> crate::args::CopyRelocations {
@@ -2724,5 +2777,43 @@ mod tests {
             args.start_address_for_section(SectionName(b".text")),
             Some(0x600000)
         );
+    }
+
+    #[test]
+    fn test_only_keep_debug_flag_parsing() {
+        let args = parse_args(["--only-keep-debug"]);
+        assert!(args.only_keep_debug());
+    }
+
+    #[test]
+    fn test_only_keep_debug_conflicts_with_strip() {
+        let err = parse_args_err(["--only-keep-debug", "--strip-debug"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "--strip-all"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "-s"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "-S"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_only_keep_debug_build_id_validation() {
+        // Fast / UUID hash-based build-id should fail with --only-keep-debug
+        let err = parse_args_err(["--only-keep-debug", "--build-id=fast"]);
+        assert!(err.to_string().contains("differs from the stripped binary"));
+
+        let err = parse_args_err(["--only-keep-debug", "--build-id=uuid"]);
+        assert!(err.to_string().contains("differs from the stripped binary"));
+
+        // Explicit hex or none should succeed
+        let args = parse_args(["--only-keep-debug", "--build-id=none"]);
+        assert!(args.only_keep_debug());
+
+        let args = parse_args(["--only-keep-debug", "--build-id=0x1234abcd"]);
+        assert!(args.only_keep_debug());
     }
 }

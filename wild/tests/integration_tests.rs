@@ -62,7 +62,7 @@
 //! supported for ELF.
 //!
 //! ExpectDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RUNPATH, DT_FLAGS) is
-//! present in the .dynamic section.
+//! present in the .dynamic section. An optional `count=N` asserts the exact number of entries.
 //!
 //! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
 //! absent from the .dynamic section.
@@ -223,6 +223,12 @@
 //!
 //! TestHardLinks:{bool} Relink Wild's output after changing some bytes and creating a hard link.
 //! Verify that the hard linked alias isn't changed and the output is replaced.
+//!
+//! TestOnlyKeepDebug:{bool} Whether to perform additional testing of the --only-keep-debug flag.
+//! When true, re-links the same inputs with --strip-debug instead of --only-keep-debug and
+//! compares the two outputs: symbol addresses and section addresses must match, allocatable
+//! non-NOTE sections must be SHT_NOBITS, debug sections must exist and be non-empty, .symtab must
+//! exist, and build IDs (if present) must match.
 //!
 //! TestRelinkAfterRun:{bool} Run Wild's output, relink it at the same path, then run it again.
 //! Verifies that relinking replaces the output file rather than updating its inode in place.
@@ -1490,6 +1496,7 @@ struct Config {
     test_update_in_place: bool,
     test_hard_links: bool,
     test_relink_after_run: bool,
+    test_only_keep_debug: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
@@ -1906,6 +1913,7 @@ impl Config {
         self.linker_env.is_empty()
             && !self.test_update_in_place
             && !self.test_hard_links
+            && !self.test_only_keep_debug
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
@@ -2009,7 +2017,7 @@ struct Assertions {
     contains_strings: Vec<String>,
     expect_dynamic: bool,
     expected_load_alignments: Vec<u64>,
-    expected_dynamic_entries: Vec<String>,
+    expected_dynamic_entries: Vec<ExpectedDynamicEntry>,
     absent_dynamic_entries: Vec<String>,
     expected_sections: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
@@ -2034,6 +2042,12 @@ struct Assertions {
     expected_program_headers: Vec<ExpectedProgramHeaders>,
     absent_program_headers: Vec<ProgramHeaderType>,
     skip_overlap_segments_check: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedDynamicEntry {
+    tag: String,
+    count: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2289,6 +2303,7 @@ impl Config {
             test_update_in_place: false,
             test_hard_links: false,
             test_relink_after_run: false,
+            test_only_keep_debug: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
             available_linkers: linker_catalog.available.clone(),
@@ -2419,10 +2434,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
     let mut output_path = None;
     let mut auto_add = true;
     for part in parts {
-        if let Some(value) = part
-            .strip_prefix("template(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        if let Some(value) = part.strip_circumfix("template(", ")") {
             ensure!(template.is_none(), "Duplicate template modifier");
             let template_parts = value.split(' ').map(str::to_owned).collect_vec();
             if !template_parts.iter().any(|a| {
@@ -2434,10 +2446,7 @@ fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
                 );
             }
             template = Some(template_parts);
-        } else if let Some(value) = part
-            .strip_prefix("as(")
-            .and_then(|value| value.strip_suffix(')'))
-        {
+        } else if let Some(value) = part.strip_circumfix("as(", ")") {
             ensure!(output_path.is_none(), "Duplicate as modifier");
             let path = PathBuf::from(value);
             ensure!(!path.as_os_str().is_empty(), "as() path must not be empty");
@@ -2742,10 +2751,26 @@ fn process_directive(
                     match_range,
                 });
         }
-        "ExpectDynamic" => config
-            .assertions
-            .expected_dynamic_entries
-            .push(arg.to_owned()),
+        "ExpectDynamic" => {
+            let mut parts = arg.split_whitespace();
+            let tag = parts.next().context("ExpectDynamic requires a tag name")?;
+            let mut count = None;
+
+            for property in parts {
+                let value = property
+                    .strip_prefix("count=")
+                    .with_context(|| format!("Unknown ExpectDynamic property `{property}`"))?;
+                count = Some(value.parse()?);
+            }
+
+            config
+                .assertions
+                .expected_dynamic_entries
+                .push(ExpectedDynamicEntry {
+                    tag: tag.to_owned(),
+                    count,
+                });
+        }
         "NoDynamic" => config
             .assertions
             .absent_dynamic_entries
@@ -2777,7 +2802,13 @@ fn process_directive(
         "DiffEnabled" => config.should_diff = arg.parse()?,
         "DiffMatchAny" => config.diff_match_any = arg.parse()?,
         "RunEnabled" => config.should_run = arg.parse()?,
-        "RunDynSym" => config.run_dyn_sym = Some(arg.to_string()),
+        "RunDynSym" => {
+            config.run_dyn_sym = if arg.is_empty() {
+                None
+            } else {
+                Some(arg.to_string())
+            }
+        }
         "ReferenceLinkers" => {
             let refs: Vec<String> = arg
                 .split(',')
@@ -2960,6 +2991,9 @@ fn process_directive(
         "TestHardLinks" => {
             config.test_hard_links = arg.parse()?;
         }
+        "TestOnlyKeepDebug" => {
+            config.test_only_keep_debug = arg.parse()?;
+        }
         "TestRelinkAfterRun" => {
             config.test_relink_after_run = arg.parse()?;
         }
@@ -3028,6 +3062,10 @@ impl ProgramInputs {
 
         if config.test_hard_links && matches!(linker, Linker::Wild) {
             self.run_hard_links_test(&inputs, config, cross_arch, &link_output)?;
+        }
+
+        if config.test_only_keep_debug && linker.is_wild() {
+            self.run_only_keep_debug_test(&inputs, config, cross_arch, &link_output)?;
         }
 
         #[cfg(target_os = "macos")]
@@ -3150,6 +3188,47 @@ impl ProgramInputs {
                 cmd = updated_link_output.command,
             );
         }
+
+        Ok(())
+    }
+
+    /// When `TestOnlyKeepDebug:true`, re-links the same inputs with `--strip-debug` and
+    /// compares the two outputs to verify the invariants of the `--only-keep-debug` feature.
+    ///
+    /// The core invariant is that `--strip-debug` and `--only-keep-debug` must produce
+    /// identical virtual-address layouts for all allocatable sections and symbols.
+    fn run_only_keep_debug_test(
+        &self,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+        debug_output: &LinkOutput,
+    ) -> Result {
+        // Build a reference config: same inputs, but with --strip-debug instead of
+        // --only-keep-debug.
+        let mut ref_config = config.clone();
+        ref_config.config_name = format!("{}-reference", config.config_name);
+        let replace_flag = |args: &mut Vec<String>| {
+            for a in args.iter_mut() {
+                match a.as_str() {
+                    "--only-keep-debug" => *a = "--strip-debug".to_string(),
+                    "-Wl,--only-keep-debug" => *a = "-Wl,--strip-debug".to_string(),
+                    _ => {}
+                }
+            }
+        };
+        replace_flag(&mut ref_config.linker_args.args);
+        replace_flag(&mut ref_config.wild_extra_linker_args.args);
+        ref_config.test_only_keep_debug = false;
+
+        // Create the build directory for the reference config.
+        std::fs::create_dir_all(ref_config.build_dir())
+            .with_context(|| format!("Failed to create {}", ref_config.build_dir().display()))?;
+
+        let ref_output = Linker::Wild.link(self.name(), inputs, &ref_config, cross_arch)?;
+
+        verify_only_keep_debug(&ref_output.binary, &debug_output.binary)
+            .context("TestOnlyKeepDebug verification failed")?;
 
         Ok(())
     }
@@ -5119,6 +5198,7 @@ impl Assertions {
         self.verify_gdb_index_symbols(&obj)?;
         self.verify_gdb_index_distinct_addr_cus(&obj)?;
         self.verify_strings(&bytes)?;
+        verify_elf_section_header_zero(&obj)?;
         verify_no_overlapping_sections(&obj)?;
         if !self.skip_overlap_segments_check {
             verify_no_overlapping_segments(&obj)?;
@@ -5535,6 +5615,12 @@ impl Assertions {
             return Ok(());
         };
 
+        if let object::SectionFlags::Elf { sh_type, .. } = section.flags()
+            && sh_type == object::elf::SHT_NOBITS
+        {
+            return Ok(());
+        }
+
         let data = section.data()?;
         let mut reader = gimli::EndianSlice::new(data, gimli::LittleEndian);
         while !reader.is_empty() {
@@ -5753,7 +5839,7 @@ impl Assertions {
         // table.
         if self.expect_dynamic {
             ensure!(
-                obj.dynamic_symbol_table().is_some(),
+                obj.dynamic_symbol_table().is_some() || obj.section_by_name(".dynsym").is_some(),
                 "Expected a dynamic symbol table"
             );
         }
@@ -5784,12 +5870,12 @@ impl Assertions {
         let Ok(entries) = object::pod::slice_from_all_bytes::<object::elf::Dyn64<_>>(data) else {
             bail!("Unexpected .dynamic section length {:#x}", data.len());
         };
-        let mut found_tags: HashSet<String> = HashSet::new();
+        let mut found_tags: HashMap<&str, usize> = HashMap::new();
 
         for entry in entries {
             let tag = entry.d_tag.get(endian);
             if let Some(name) = dynamic_tag_name(tag) {
-                found_tags.insert(name.to_string());
+                *found_tags.entry(name).or_default() += 1;
             }
 
             if tag == object::elf::DT_NULL {
@@ -5798,16 +5884,24 @@ impl Assertions {
         }
 
         for expected in &self.expected_dynamic_entries {
-            if !found_tags.contains(expected.as_str()) {
+            let tag = &expected.tag;
+            if !found_tags.contains_key(tag.as_str()) {
                 bail!(
-                    "Expected dynamic entry `{expected}` not found. Found: {:?}",
+                    "Expected dynamic entry `{tag}` not found. Found: {:?}",
                     found_tags
+                );
+            }
+            if let Some(count) = expected.count {
+                let actual = found_tags[tag.as_str()];
+                ensure!(
+                    actual == count,
+                    "Expected {count} `{tag}` entries, found {actual}"
                 );
             }
         }
 
         for absent in &self.absent_dynamic_entries {
-            if found_tags.contains(absent.as_str()) {
+            if found_tags.contains_key(absent.as_str()) {
                 bail!("Dynamic entry `{absent}` should be absent but was found");
             }
         }
@@ -6043,6 +6137,31 @@ fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>
     Ok(section.data()?.to_vec())
 }
 
+fn verify_elf_section_header_zero(obj: &object::File) -> Result {
+    // Can't use Object::sections() since it skips header zero.
+    let section_type = match obj {
+        object::File::Elf32(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        object::File::Elf64(elf) => elf
+            .elf_section_table()
+            .iter()
+            .next()
+            .map(|section| section.sh_type.get(elf.endian())),
+        _ => return Ok(()),
+    };
+
+    if let Some(section_type) = section_type {
+        ensure!(
+            section_type == object::elf::SHT_NULL,
+            "Section header zero must be SHT_NULL, got {section_type:?}",
+        );
+    }
+    Ok(())
+}
+
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
     let mut ranges = Vec::new();
     for section in obj.sections() {
@@ -6098,6 +6217,135 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
             );
         }
     }
+    Ok(())
+}
+
+/// Verifies that `--only-keep-debug` output preserves symbols, section addresses, and build ID from
+/// the normal link, while converting allocatable non-NOTE sections to SHT_NOBITS.
+fn verify_only_keep_debug(stripped_path: &Path, debug_path: &Path) -> Result {
+    let stripped_bytes = std::fs::read(stripped_path).with_context(|| {
+        format!(
+            "Failed to read stripped output: {}",
+            stripped_path.display()
+        )
+    })?;
+    let debug_bytes = std::fs::read(debug_path)
+        .with_context(|| format!("Failed to read debug output: {}", debug_path.display()))?;
+
+    let stripped_obj = object::File::parse(stripped_bytes.as_slice())
+        .context("Failed to parse stripped output")?;
+    let debug_obj =
+        object::File::parse(debug_bytes.as_slice()).context("Failed to parse debug output")?;
+
+    // Compare symbol addresses. --strip-debug retains .symtab (only removes .debug_*
+    // sections), and --only-keep-debug retains the full symbol table. Empirically, across
+    // Wild, ld.bfd, and ld.lld, both outputs have identical .symtab entries. Every symbol
+    // in the stripped output must exist in the debug output with the same address.
+    let debug_symbols: HashMap<Vec<u8>, u64> = debug_obj
+        .symbols()
+        .filter(|s| !s.name_bytes().unwrap_or_default().is_empty())
+        .map(|s| (s.name_bytes().unwrap_or_default().to_vec(), s.address()))
+        .collect();
+
+    for sym in stripped_obj.symbols() {
+        let name = sym.name_bytes().unwrap_or_default();
+        if name.is_empty() || sym.is_undefined() {
+            continue;
+        }
+        if let Some(&debug_addr) = debug_symbols.get(name) {
+            ensure!(
+                sym.address() == debug_addr,
+                "Symbol `{}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
+                String::from_utf8_lossy(name),
+                sym.address(),
+                debug_addr,
+            );
+        } else {
+            bail!(
+                "Symbol `{}` present in stripped output but missing from debug output",
+                String::from_utf8_lossy(name),
+            );
+        }
+    }
+
+    // Compare section addresses. The debug output is a strict superset of the stripped
+    // output's sections (it additionally has .debug_* sections). Every section in the
+    // stripped output must exist in the debug output at the same address. Non-alloc
+    // sections (.comment, .symtab, etc.) have sh_addr=0 in both, so they match trivially.
+    let debug_sections: HashMap<String, u64> = debug_obj
+        .sections()
+        .filter_map(|s| s.name().ok().map(|n| (n.to_string(), s.address())))
+        .collect();
+
+    for sec in stripped_obj.sections() {
+        let name = sec.name().unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let debug_addr = debug_sections.get(name).ok_or_else(|| {
+            error!("Section `{name}` present in stripped output but missing from debug output")
+        })?;
+        ensure!(
+            sec.address() == *debug_addr,
+            "Section `{name}` address mismatch: stripped=0x{:x}, debug=0x{:x}",
+            sec.address(),
+            debug_addr,
+        );
+    }
+
+    // Build-id validation: both outputs should have matching build-id content.
+    let stripped_build_id = stripped_obj.section_by_name(".note.gnu.build-id");
+    let debug_build_id = debug_obj.section_by_name(".note.gnu.build-id");
+    match (stripped_build_id, debug_build_id) {
+        (Some(stripped_sec), Some(debug_sec)) => {
+            ensure!(
+                stripped_sec.data()? == debug_sec.data()?,
+                ".note.gnu.build-id content mismatch between stripped and debug output"
+            );
+        }
+        (None, None) => {}
+        (Some(_), None) => {
+            bail!(".note.gnu.build-id present in stripped output but missing from debug output");
+        }
+        (None, Some(_)) => {
+            bail!(".note.gnu.build-id present in debug output but absent from stripped output");
+        }
+    }
+
+    // Verify alloc non-NOTE sections in debug output are NOBITS (hollowed out).
+    for sec in debug_obj.sections() {
+        let flags = sec.flags();
+        if let object::SectionFlags::Elf { sh_flags, sh_type } = flags {
+            let is_alloc = (sh_flags.0 & object::elf::SHF_ALLOC.0) != 0;
+            let is_note = sh_type == object::elf::SHT_NOTE;
+            if is_alloc && !is_note {
+                ensure!(
+                    sh_type == object::elf::SHT_NOBITS,
+                    "Section `{}` is SHF_ALLOC and not NOTE, expected SHT_NOBITS, got type {:?}",
+                    sec.name().unwrap_or("?"),
+                    sh_type,
+                );
+            }
+        }
+    }
+
+    // Verify debug sections are retained and non-empty.
+    for debug_section_name in &[".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"] {
+        let sec = debug_obj
+            .section_by_name(debug_section_name)
+            .with_context(|| format!("Debug section `{debug_section_name}` missing from output"))?;
+        ensure!(
+            sec.size() > 0,
+            "Debug section `{debug_section_name}` exists but is empty",
+        );
+    }
+
+    // Verify .symtab is retained in the debug output.
+    ensure!(
+        debug_obj.section_by_name(".symtab").is_some(),
+        ".symtab section missing from debug output",
+    );
+
     Ok(())
 }
 

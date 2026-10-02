@@ -1,6 +1,7 @@
 ;;#RunEnabled:false
 ;;#LinkArgs:--no-gc-sections
 ;;#ExpectSection:Data
+;;#NoSection:DataCount
 
 (module
   (memory (export "memory") 1)

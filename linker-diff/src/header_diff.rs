@@ -384,7 +384,7 @@ pub(crate) fn diff_fields(
         }) {
             let values = ok
                 .iter()
-                .map(|o| o.values.get(k).map(|v| v.join(",")).unwrap_or_default())
+                .map(|o| o.values.get(k).map_or_default(|v| v.join(",")))
                 .collect();
             mismatches.push(Diff {
                 key: format!("{table_name}.{k}"),

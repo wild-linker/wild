@@ -27,13 +27,11 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
 
     let mut markdown = std::fs::read_to_string(&markdown_path).unwrap_or_default();
 
-    let mut existing_images: HashSet<PathBuf> = std::fs::read_dir(target_subdir)
-        .ok()
-        .map(|dir| {
+    let mut existing_images: HashSet<PathBuf> =
+        std::fs::read_dir(target_subdir).ok().map_or_default(|dir| {
             dir.filter_map(|ent| ent.ok().map(|ent| ent.path()))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     const UNGROUPED_HEADER: &str = "## UNGROUPED\n";
 

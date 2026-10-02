@@ -19,4 +19,6 @@ _start:
 .data
 .global value
 value:
-    .word target@plt - .
+    // Clang rejects `target@plt` as a relocation specifier on `.word`.
+    .reloc ., R_AARCH64_PLT32, target
+    .word 0

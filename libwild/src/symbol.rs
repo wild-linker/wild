@@ -1,7 +1,6 @@
 use crate::hash::PreHashed;
 use crate::platform;
 use std::fmt::Display;
-use std::ops::BitXor as _;
 
 /// A prehashed symbol that may or may not be versioned. Note, we have the enum as the outer layer
 /// and prehash inside the enum. It might be tempting to think that we should do this the other way
@@ -48,12 +47,15 @@ impl<'data> VersionedSymbolName<'data> {
         name: PreHashed<UnversionedSymbolName<'data>>,
         version: &'data [u8],
     ) -> PreHashed<VersionedSymbolName<'data>> {
+        // Note, we deliberately don't hash the version. This ensures that the default-version of a
+        // symbol and an unversioned symbol with the same name end up in the same bucket. This is
+        // important for ensuring deterministic output when multiple definitions exist.
         PreHashed::new(
             VersionedSymbolName {
                 name: *name,
                 version,
             },
-            name.hash().bitxor(crate::hash::hash_bytes(version)),
+            name.hash(),
         )
     }
 }

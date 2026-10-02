@@ -214,6 +214,7 @@ pub(crate) type ChainedFixupsHeader = object::macho::DyldChainedFixupsHeader<End
 pub(crate) type ChainedStartsInSegment = object::macho::DyldChainedStartsInSegment<Endianness>;
 pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 pub(crate) type BuildVersionCommand = object::macho::BuildVersionCommand<Endianness>;
+pub(crate) type BuildToolVersion = object::macho::BuildToolVersion<Endianness>;
 pub(crate) type UuidCommand = object::macho::UuidCommand<Endianness>;
 
 pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
@@ -338,6 +339,7 @@ pub(crate) struct FinaliseSizesExt {
     init_functions: Vec<SymbolId>,
     pending_fixups: Vec<PendingFixup>,
     unwind_info_entries: Vec<UnwindInfoWithRelocs>,
+    local_got_entries: Vec<SymbolId>,
 }
 
 #[derive(Debug, Default)]
@@ -382,7 +384,10 @@ pub(crate) struct Fixup {
 
 #[derive(Debug)]
 pub(crate) enum FixupKind {
-    Rebase,
+    Rebase {
+        // Used for obtaining the target symbol address in a local GOT entry.
+        target_address: Option<u64>,
+    },
     Bind {
         ordinal: u64,
         // Relocation base address used for getting to the implicit addend (None for synthesized
@@ -757,6 +762,10 @@ impl platform::SectionHeader for SectionHeader {
             self.flags.get(LE).typ(),
             S_ZEROFILL | S_GB_ZEROFILL | S_THREAD_LOCAL_ZEROFILL
         )
+    }
+
+    fn is_null(&self) -> bool {
+        false
     }
 }
 
@@ -1225,7 +1234,7 @@ impl platform::Platform for MachO {
     fn is_zero_sized_section_content(
         _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        todo!()
+        true
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
@@ -1288,7 +1297,11 @@ impl platform::Platform for MachO {
             state.symbol_id_range,
         )?;
 
-        create_dynamic_layout_ext(state.file_id(), resources)
+        if !state.format_specific.loaded {
+            return Ok(None);
+        }
+
+        Ok(Some(create_dynamic_layout_ext(state.file_id(), resources)?))
     }
 
     fn finalise_layout_stub<'data>(
@@ -1304,7 +1317,11 @@ impl platform::Platform for MachO {
             state.symbol_id_range,
         )?;
 
-        create_dynamic_layout_ext(state.file_id(), resources)
+        if !state.format_specific.loaded {
+            return Ok(None);
+        }
+
+        Ok(Some(create_dynamic_layout_ext(state.file_id(), resources)?))
     }
 
     fn take_dynsym_index(
@@ -1485,9 +1502,11 @@ impl platform::Platform for MachO {
         let mut init_functions = Vec::new();
         let mut pending_fixups = Vec::new();
         let mut unwind_info_entries = Vec::new();
+        let mut local_got_entries = Vec::new();
 
         for group in groups {
             pending_fixups.append(&mut group.common.format_specific.pending_fixups);
+            local_got_entries.append(&mut group.common.format_specific.local_got_entries);
             for file in &group.files {
                 match file {
                     layout::FileLayoutState::Object(state) => {
@@ -1520,12 +1539,18 @@ impl platform::Platform for MachO {
             }
         }
 
+        let imported_libraries = imported_libraries
+            .into_iter()
+            .unique_by(|&file_id| install_name(file_id, symbol_db))
+            .collect();
+
         Ok(FinaliseSizesExt {
             imported_libraries,
             imported_symbols,
             init_functions,
             pending_fixups,
             unwind_info_entries,
+            local_got_entries,
         })
     }
 
@@ -1585,6 +1610,18 @@ impl platform::Platform for MachO {
             }
         }
 
+        for symbol_id in finalise_sizes_ext.local_got_entries {
+            let resolution = resolutions
+                .get(symbol_id)
+                .context("Missing local GOT entry symbol resolution")?;
+            fixups.push(Fixup {
+                address: resolution.got_address()?,
+                kind: FixupKind::Rebase {
+                    target_address: Some(resolution.raw_value),
+                },
+            });
+        }
+
         for pending in finalise_sizes_ext.pending_fixups {
             let group = &group_layouts[pending.file_id.group()];
             let layout::FileLayout::Object(object) = &group.files[pending.file_id.file()] else {
@@ -1615,7 +1652,9 @@ impl platform::Platform for MachO {
                         ),
                     }
                 }
-                PendingFixupKind::Rebase => FixupKind::Rebase,
+                PendingFixupKind::Rebase => FixupKind::Rebase {
+                    target_address: None,
+                },
             };
 
             fixups.push(Fixup {
@@ -1818,7 +1857,10 @@ impl platform::Platform for MachO {
             .copied()
             .collect();
 
-        EpilogueLayoutExt { imported_symbols }
+        EpilogueLayoutExt {
+            imported_symbols,
+            ..Default::default()
+        }
     }
 
     fn apply_non_addressable_indexes_epilogue(
@@ -1872,7 +1914,7 @@ impl platform::Platform for MachO {
         // work around this for now by assuming all addresses will be u64::MAX. This gives us an
         // upper bound on how large the trie will be, but wastes some space in the file. TODO:
         // Figure out a good way to fix this.
-        let mut exports = dynamic_symbol_definitions
+        let exports = dynamic_symbol_definitions
             .iter()
             .map(|symbol| crate::trie::Symbol {
                 name: symbol.name,
@@ -1881,9 +1923,10 @@ impl platform::Platform for MachO {
             })
             .collect_vec();
 
+        state.exports_trie = crate::trie::Trie::new(&exports);
         mem_sizes.increment(
             part_id::EXPORTS_TRIE,
-            crate::trie::build(&mut exports).len() as u64,
+            state.exports_trie.compute_byte_size(&exports) as u64,
         );
         mem_sizes.increment(
             part_id::INIT_OFFSETS,
@@ -1990,7 +2033,7 @@ impl platform::Platform for MachO {
         allocate_load_cmd(size_of::<CodeSignatureCommand>());
         allocate_load_cmd(size_of::<UuidCommand>());
         if args.platform_version.is_some() {
-            allocate_load_cmd(size_of::<BuildVersionCommand>());
+            allocate_load_cmd(size_of::<BuildVersionCommand>() + size_of::<BuildToolVersion>());
         }
     }
 
@@ -2036,7 +2079,7 @@ impl platform::Platform for MachO {
         if flags.is_dynamic() && flags.needs_plt() {
             mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
         }
-        if flags.is_dynamic() && flags.needs_got() {
+        if flags.needs_got() {
             mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE);
         }
     }
@@ -2129,7 +2172,9 @@ impl platform::Platform for MachO {
             resolution.format_specific.got_address = Some(allocate_got(memory_offsets));
         } else if flags.needs_got() {
             let got_address = allocate_got(memory_offsets);
-            resolution.raw_value = got_address.get();
+            if !flags.has_link_time_address() {
+                resolution.raw_value = got_address.get();
+            }
             resolution.format_specific.got_address = Some(got_address);
         }
 
@@ -2356,20 +2401,19 @@ pub(crate) fn install_name<'data>(
 fn create_dynamic_layout_ext<'data>(
     target_file_id: FileId,
     resources: &layout::FinaliseLayoutResources<'_, 'data, MachO>,
-) -> Result<Option<DynamicLayoutExt>> {
-    let Some(index) = resources
+) -> Result<DynamicLayoutExt> {
+    let target_install_name = install_name(target_file_id, resources.symbol_db);
+    let index = resources
         .format_specific
         .imported_libraries
         .iter()
-        .position(|file_id| *file_id == target_file_id)
-    else {
-        return Ok(None);
-    };
+        .position(|&file_id| install_name(file_id, resources.symbol_db) == target_install_name)
+        .context("Internal error: Loaded library missing from imported libraries")?;
 
-    Ok(Some(DynamicLayoutExt {
+    Ok(DynamicLayoutExt {
         ordinal: NonZeroU8::new(u8::try_from(index + 1).context("Too many loaded stub libraries")?)
             .unwrap(),
-    }))
+    })
 }
 
 const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<MachO>();
@@ -2463,11 +2507,13 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 #[derive(Debug, Default)]
 pub(crate) struct CommonGroupStateExt {
     pending_fixups: Vec<PendingFixup>,
+    local_got_entries: Vec<SymbolId>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
+    pub(crate) exports_trie: crate::trie::Trie,
 }
 
 #[derive(Debug)]
@@ -2649,10 +2695,6 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
         let mut flags_to_add = if is_unwind_personality {
             // The input pointer is consumed, not copied to the output. __unwind_info
             // refers indirectly to the personality through a GOT slot instead.
-            ensure!(
-                from_dynamic_lib,
-                "locally defined compact-unwind personalities are not yet supported"
-            );
             ValueFlags::GOT
         } else {
             layout::resolution_flags(relocation.kind)
@@ -2674,6 +2716,11 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+        if flags_to_add.needs_got() && !previous_flags.needs_got() && flags.has_link_time_address()
+        {
+            common.format_specific.local_got_entries.push(symbol_id);
+        }
 
         let is_absolute_pointer = relocation.kind == RelocationKind::Absolute
             && relocation.size == RelocationSize::ByteSize(8);

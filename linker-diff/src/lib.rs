@@ -463,7 +463,7 @@ impl<'data> Binary<'data> {
         name: &[u8],
         hint_address: u64,
     ) -> NameLookupResult<'data, 'file> {
-        let indexes = symbol_map.get(name).map(Vec::as_slice).unwrap_or_default();
+        let indexes = symbol_map.get(name).map_or_default(Vec::as_slice);
 
         if indexes.len() >= 2 {
             for sym_index in indexes {

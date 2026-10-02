@@ -47,6 +47,7 @@ path = [
   "linker-trace/**",
   "linker-utils/**",
   "nix/**",
+  "rust-toolchain.toml",
   "rustfmt.toml",
   "taplo.toml",
   "test-config-ci.toml",

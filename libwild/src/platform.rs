@@ -425,6 +425,12 @@ pub(crate) trait Platform:
         Ok(())
     }
 
+    fn maybe_only_keep_debug<'data, A: Arch<Platform = Self>>(
+        _layout: &mut Layout<'data, Self>,
+    ) -> Result {
+        Ok(())
+    }
+
     /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
     /// that one should be used.
     fn maybe_init_linker_plugin<'data>(
@@ -1300,6 +1306,8 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
 
     /// Returns whether the section has no contents in the file (zero initialised).
     fn is_no_bits(&self) -> bool;
+
+    fn is_null(&self) -> bool;
 }
 
 pub(crate) trait SectionType:
@@ -1604,6 +1612,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_emit_got_plt_syms(&self) -> bool {
         false
+    }
+
+    fn orphan_handling(&self) -> crate::args::OrphanHandling {
+        crate::args::OrphanHandling::Place
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool;

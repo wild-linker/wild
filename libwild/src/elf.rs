@@ -786,6 +786,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         crate::compression::maybe_compress_debug_sections_elf::<C, A>(layout)
     }
 
+    fn maybe_only_keep_debug<'data, A: Arch<Platform = Self>>(
+        layout: &mut layout::Layout<'data, Self>,
+    ) -> Result {
+        crate::only_keep_debug::maybe_only_keep_debug_elf::<C>(layout);
+        Ok(())
+    }
+
     fn maybe_init_linker_plugin<'data>(
         args: &'data Self::Args,
         linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
@@ -1658,11 +1665,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         counts: &mut NonAddressableCounts,
         state: &mut EpilogueLayoutExt,
     ) {
-        counts.verdef_count += state
-            .verdefs
-            .as_ref()
-            .map(|v| v.len() as u16)
-            .unwrap_or_default();
+        counts.verdef_count += state.verdefs.as_ref().map_or_default(|v| v.len() as u16);
     }
 
     fn apply_non_addressable_indexes<'data, 'groups>(
@@ -3933,6 +3936,10 @@ impl platform::SectionHeader for object::elf::SectionHeader64<LittleEndian> {
 
     fn is_no_bits(&self) -> bool {
         self.sh_type(LittleEndian) == sht::NOBITS
+    }
+
+    fn is_null(&self) -> bool {
+        self.sh_type(LittleEndian) == sht::NULL
     }
 }
 

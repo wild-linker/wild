@@ -22,10 +22,10 @@ pub(crate) fn validate_bytes<C: ElfClass>(layout: &ElfLayout<C>, file_bytes: &[u
 /// Checks that what we actually wrote to our output file matches what we intended to write in
 /// `layout`.
 fn validate_object<C: ElfClass>(object: &elf::File<'_, C>, layout: &ElfLayout<C>) -> Result {
-    if !layout.symbol_db.output_kind.has_fixed_load_address() {
+    if !layout.symbol_db.output_kind.has_fixed_load_address() || layout.args().only_keep_debug() {
         // For now, we only validate fixed-address outputs. The only thing we're currently
         // validating is GOT entries, which have dynamic relocations in position-independent
-        // outputs.
+        // outputs or won't be written in --only-keep-debug.
         return Ok(());
     }
     let Some((_, got)) = object.section_by_name(GOT_SECTION_NAME_STR) else {

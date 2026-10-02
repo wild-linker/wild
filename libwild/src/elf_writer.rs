@@ -198,6 +198,7 @@ pub(crate) fn write<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -780,6 +781,9 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         args: &ElfArgs,
         res: &Resolution<elf::Elf<C>>,
     ) -> Result {
+        if args.only_keep_debug() {
+            return Ok(());
+        }
         let Some(got_address) = res.format_specific.got_address else {
             return Ok(());
         };
@@ -1950,7 +1954,7 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             // Dynamic symbols that we define are handled by the epilogue so that they can be
             // written in the correct order. Here, we only need to handle weak symbols that we
             // reference that aren't defined by any shared objects we're linking against.
-            if res.flags.is_dynamic() {
+            if res.flags.is_dynamic() && !layout.args().only_keep_debug() {
                 let symbol = object
                     .object
                     .symbol(object.symbol_id_range.id_to_input(symbol_id))?;
@@ -2030,19 +2034,20 @@ fn write_thunks<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
         let target_address = res.plt_address().unwrap_or(res.raw_value);
 
-        let buf = buffers.get_mut(primary_part_id);
-        let thunk_buf = buf
-            .split_off_mut(..thunk_size)
-            .ok_or_else(|| crate::file_writer::insufficient_allocation("thunk space in .text"))?;
+        if !layout.args().only_keep_debug() {
+            let buf = buffers.get_mut(primary_part_id);
+            let thunk_buf = buf.split_off_mut(..thunk_size).ok_or_else(|| {
+                crate::file_writer::insufficient_allocation("thunk space in .text")
+            })?;
 
-        A::write_thunk(thunk_address, target_address, thunk_buf);
+            A::write_thunk(thunk_address, target_address, thunk_buf);
+        }
 
         if emit_symbols {
             let orig_name = layout
                 .symbol_db
                 .symbol_name(*symbol_id)
-                .map(|n| n.bytes().to_vec())
-                .unwrap_or_default();
+                .map_or_default(|n| n.bytes().to_vec());
             let mut thunk_name = crate::elf::THUNK_SYMBOL_PREFIX.as_bytes().to_vec();
             thunk_name.extend_from_slice(&orig_name);
             let entry = symbol_writer.define_symbol(
@@ -2324,6 +2329,18 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
+    // For --only-keep-debug, alloc non-NOTE sections are NOBITS.
+    if layout.args().only_keep_debug() {
+        let primary_id = layout
+            .output_sections
+            .primary_output_section(part_id.output_section_id::<elf::Elf<C>>());
+        let section_info = layout.output_sections.output_info(primary_id);
+        let attrs = &section_info.section_attributes;
+        if crate::only_keep_debug::should_hollow_section(attrs.flags.is_alloc(), attrs.ty) {
+            return Ok(());
+        }
+    }
+
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
@@ -2464,13 +2481,9 @@ fn write_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
-        elf::RelocationList::Rela(rela) => apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
-            object,
-            out,
-            section_index,
-            rela.iter().map(|rela| Ok(elf::ElfRela::new(*rela))),
-            layout,
-        ),
+        elf::RelocationList::Rela(rela) => {
+            apply_debug_rela_relocations::<C, A>(object, out, section_index, rela, layout)
+        }
         elf::RelocationList::Crel(crel_iter) => {
             apply_debug_relocations::<C, A, elf::ElfCrel<C>, _>(
                 object,
@@ -2736,6 +2749,236 @@ fn apply_relocations<
     Ok(())
 }
 
+const PARALLEL_DEBUG_RELOCATION_MIN: usize = 64 * 1024;
+// Byte and bit-mask relocations modify at most eight bytes. A paired ULEB128 relocation can
+// modify all ten bytes required to encode a u64.
+const MAX_DEBUG_RELOCATION_WRITE_SIZE: u64 = u64::BITS.div_ceil(7) as u64;
+
+#[derive(Debug, PartialEq, Eq)]
+struct DebugRelocationShardRange {
+    relocations: Range<usize>,
+    output: Range<usize>,
+}
+
+struct DebugRelocationShardSummary {
+    relocations: Range<usize>,
+    first_offset: u64,
+    last_offset: u64,
+    max_write_end: u64,
+}
+
+fn debug_relocation_write_size<
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+    R: Relocation<Platform = elf::Elf<C>>,
+>(
+    relocation: &R,
+) -> Result<usize> {
+    let info = A::relocation_from_raw(relocation.raw_type())?;
+    if matches!(
+        info.kind,
+        RelocationKind::PairSubtractionULEB128RiscV
+            | RelocationKind::PairSubtractionULEB128LoongArch
+    ) {
+        return Ok(MAX_DEBUG_RELOCATION_WRITE_SIZE as usize);
+    }
+    Ok(match info.size {
+        RelocationSize::ByteSize(size) => usize::from(size),
+        // Some bit-masking relocations span two instructions. Use the full u64 window here even
+        // though their current write helper reports the size of one instruction.
+        RelocationSize::BitMasking(_) => std::mem::size_of::<u64>(),
+    })
+}
+
+fn debug_relocation_shard_ranges_parallel(
+    relocation_count: usize,
+    output_len: usize,
+    shard_count: usize,
+    offset_at: impl Fn(usize) -> u64 + Sync,
+    write_size_at: impl Fn(usize) -> Result<usize> + Sync,
+) -> Result<Option<Vec<DebugRelocationShardRange>>> {
+    let shard_count = shard_count.min(relocation_count);
+    if shard_count < 2 {
+        return Ok(None);
+    }
+
+    let summaries = (0..shard_count)
+        .into_par_iter()
+        .map(
+            |shard_index| -> Result<Option<DebugRelocationShardSummary>> {
+                let start = relocation_count * shard_index / shard_count;
+                let end = relocation_count * (shard_index + 1) / shard_count;
+                if start == end {
+                    return Ok(None);
+                }
+
+                let first_offset = offset_at(start);
+                let mut previous_offset = first_offset;
+                for index in start..end {
+                    let offset = offset_at(index);
+                    if index > start && previous_offset > offset || offset > output_len as u64 {
+                        return Ok(None);
+                    }
+                    previous_offset = offset;
+                }
+
+                // With sorted offsets, only the short suffix nearest the next shard boundary can
+                // overlap it. Decode relocation sizes there; every relocation is still decoded by
+                // the actual relocation pass, so malformed inputs retain their original
+                // diagnostics.
+                let last_offset = previous_offset;
+                let mut max_write_end = last_offset;
+                for index in (start..end).rev() {
+                    let offset = offset_at(index);
+                    if offset.saturating_add(MAX_DEBUG_RELOCATION_WRITE_SIZE) <= last_offset {
+                        break;
+                    }
+                    let Ok(write_size) = write_size_at(index) else {
+                        return Ok(None);
+                    };
+                    let write_size = write_size as u64;
+                    if write_size > MAX_DEBUG_RELOCATION_WRITE_SIZE {
+                        return Ok(None);
+                    }
+                    let Some(write_end) = offset.checked_add(write_size) else {
+                        return Ok(None);
+                    };
+                    if write_end > output_len as u64 {
+                        return Ok(None);
+                    }
+                    max_write_end = max_write_end.max(write_end);
+                }
+
+                Ok(Some(DebugRelocationShardSummary {
+                    relocations: start..end,
+                    first_offset,
+                    last_offset,
+                    max_write_end,
+                }))
+            },
+        )
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    let Some(summaries) = summaries.into_iter().collect::<Option<Vec<_>>>() else {
+        return Ok(None);
+    };
+
+    for pair in summaries.windows(2) {
+        if pair[0].last_offset > pair[1].first_offset
+            || pair[0].max_write_end > pair[1].first_offset
+        {
+            return Ok(None);
+        }
+    }
+
+    let mut ranges = Vec::with_capacity(summaries.len());
+    for (index, summary) in summaries.iter().enumerate() {
+        let output_start = if index == 0 {
+            0
+        } else {
+            summary.first_offset as usize
+        };
+        let output_end = summaries
+            .get(index + 1)
+            .map_or(output_len, |next| next.first_offset as usize);
+        if output_start > output_end || output_end > output_len {
+            return Ok(None);
+        }
+        ranges.push(DebugRelocationShardRange {
+            relocations: summary.relocations.clone(),
+            output: output_start..output_end,
+        });
+    }
+    Ok(Some(ranges))
+}
+
+fn apply_debug_rela_relocations<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    out: &mut [u8],
+    section_index: object::SectionIndex,
+    relocations: &[elf::Rela<C>],
+    layout: &ElfLayout<'data, C>,
+) -> Result {
+    if relocations.len() < PARALLEL_DEBUG_RELOCATION_MIN {
+        return apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
+            object,
+            out,
+            section_index,
+            relocations.iter().copied().map(elf::ElfRela::new).map(Ok),
+            layout,
+        );
+    }
+
+    let shard_count =
+        rayon::current_num_threads().min(relocations.len().div_ceil(PARALLEL_DEBUG_RELOCATION_MIN));
+    let Some(ranges) = debug_relocation_shard_ranges_parallel(
+        relocations.len(),
+        out.len(),
+        shard_count,
+        |index| elf::ElfRela::<C>::new(relocations[index]).offset(),
+        |index| {
+            debug_relocation_write_size::<C, A, elf::ElfRela<C>>(&elf::ElfRela::new(
+                relocations[index],
+            ))
+        },
+    )?
+    else {
+        return apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
+            object,
+            out,
+            section_index,
+            relocations.iter().copied().map(elf::ElfRela::new).map(Ok),
+            layout,
+        );
+    };
+
+    let mut remaining = out;
+    let mut output_offset = 0;
+    let mut shards = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        debug_assert_eq!(range.output.start, output_offset);
+        let output_len = range.output.end - range.output.start;
+        let remaining_len = remaining.len();
+        let shard_out = remaining.split_off_mut(..output_len).with_context(|| {
+            format!(
+                "Debug relocation shard requires {output_len} output bytes, but only \
+                 {remaining_len} remain"
+            )
+        })?;
+        let previous = range
+            .relocations
+            .start
+            .checked_sub(1)
+            .map(|index| elf::ElfRela::new(relocations[index]));
+        shards.push((range.relocations, range.output.start, shard_out, previous));
+        output_offset = range.output.end;
+    }
+
+    let shard_results = shards
+        .into_par_iter()
+        .map(|(range, output_offset, shard_out, previous)| -> Result {
+            apply_debug_relocations_impl::<C, A, elf::ElfRela<C>, _>(
+                object,
+                shard_out,
+                section_index,
+                relocations[range]
+                    .iter()
+                    .copied()
+                    .map(elf::ElfRela::new)
+                    .map(Ok),
+                layout,
+                output_offset as u64,
+                previous,
+            )?;
+            Ok(())
+        })
+        .collect::<Vec<_>>();
+    shard_results.into_iter().collect::<Result<Vec<_>>>()?;
+    record_debug_relocations(object, section_index, layout, relocations.len());
+    Ok(())
+}
+
 pub(crate) fn apply_debug_relocations<
     'data,
     C: ElfClass,
@@ -2749,6 +2992,34 @@ pub(crate) fn apply_debug_relocations<
     relocations: I,
     layout: &ElfLayout<'data, C>,
 ) -> Result {
+    let relocation_count = apply_debug_relocations_impl::<C, A, R, I>(
+        object,
+        out,
+        section_index,
+        relocations,
+        layout,
+        0,
+        None,
+    )?;
+    record_debug_relocations(object, section_index, layout, relocation_count);
+    Ok(())
+}
+
+fn apply_debug_relocations_impl<
+    'data,
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+    R: Relocation<Platform = elf::Elf<C>>,
+    I: Iterator<Item = object::Result<R>> + Clone,
+>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    out: &mut [u8],
+    section_index: object::SectionIndex,
+    relocations: I,
+    layout: &ElfLayout<'data, C>,
+    output_offset: u64,
+    previous: Option<R>,
+) -> Result<usize> {
     let section_name = object.object.section_name(section_index)?;
 
     // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
@@ -2765,15 +3036,21 @@ pub(crate) fn apply_debug_relocations<
         };
 
     let mut relocation_count = 0;
-    let mut relocation_cache = RelocationCache::default();
+    let mut relocation_cache = RelocationCache {
+        previous,
+        ..Default::default()
+    };
 
     for rel in relocations {
         relocation_count += 1;
         let rel = rel?;
         let offset_in_section = rel.offset();
+        let shard_offset = offset_in_section
+            .checked_sub(output_offset)
+            .context("Debug relocation precedes its output shard")?;
         apply_debug_relocation::<C, A, R>(
             object,
-            offset_in_section,
+            shard_offset,
             &rel,
             layout,
             tombstone_value,
@@ -2788,6 +3065,15 @@ pub(crate) fn apply_debug_relocations<
         })?;
         relocation_cache.previous = Some(rel);
     }
+    Ok(relocation_count)
+}
+
+fn record_debug_relocations<C: ElfClass>(
+    object: &ObjectLayout<elf::Elf<C>>,
+    section_index: object::SectionIndex,
+    layout: &ElfLayout<'_, C>,
+    relocation_count: usize,
+) {
     layout
         .relocation_statistics
         .get(
@@ -2795,8 +3081,116 @@ pub(crate) fn apply_debug_relocations<
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                 .output_section_id::<elf::Elf<C>>(),
         )
-        .fetch_add(relocation_count, Relaxed);
-    Ok(())
+        .fetch_add(relocation_count as u64, Relaxed);
+}
+
+#[cfg(test)]
+mod debug_relocation_shard_tests {
+    use super::DebugRelocationShardRange;
+    use super::debug_relocation_shard_ranges_parallel;
+
+    #[test]
+    fn preflight_splits_sorted_non_overlapping_relocations() {
+        let offsets = [0, 4, 8, 12, 16, 20, 24, 28];
+        let ranges = debug_relocation_shard_ranges_parallel(
+            offsets.len(),
+            32,
+            4,
+            |index| offsets[index],
+            |_| Ok(4),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            ranges,
+            [
+                DebugRelocationShardRange {
+                    relocations: 0..2,
+                    output: 0..8,
+                },
+                DebugRelocationShardRange {
+                    relocations: 2..4,
+                    output: 8..16,
+                },
+                DebugRelocationShardRange {
+                    relocations: 4..6,
+                    output: 16..24,
+                },
+                DebugRelocationShardRange {
+                    relocations: 6..8,
+                    output: 24..32,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_unsorted_or_overlapping_ranges() {
+        for offsets in [[0, 8, 4, 12], [0, 4, 12, 8], [0, 4, 12, 20], [0, 4, 8, 14]] {
+            assert!(
+                debug_relocation_shard_ranges_parallel(
+                    offsets.len(),
+                    16,
+                    2,
+                    |index| offsets[index],
+                    |_| Ok(4),
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+
+        let crossing_boundary = [0, 4, 8, 12];
+        assert!(
+            debug_relocation_shard_ranges_parallel(
+                crossing_boundary.len(),
+                16,
+                2,
+                |index| crossing_boundary[index],
+                |index| Ok(if index == 1 { 8 } else { 4 }),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn preflight_falls_back_when_relocation_size_cannot_be_decoded() {
+        let offsets = [0, 4, 8, 12];
+        let ranges = debug_relocation_shard_ranges_parallel(
+            offsets.len(),
+            16,
+            2,
+            |index| offsets[index],
+            |_| Err(crate::error::Error::with_message("malformed relocation")),
+        )
+        .unwrap();
+
+        assert!(ranges.is_none());
+    }
+
+    #[test]
+    fn preflight_only_decodes_boundary_tail_relocation_sizes() {
+        let offsets = (0..32).map(|index| index * 4).collect::<Vec<_>>();
+        let size_queries = std::sync::atomic::AtomicUsize::new(0);
+
+        let ranges = debug_relocation_shard_ranges_parallel(
+            offsets.len(),
+            128,
+            4,
+            |index| offsets[index],
+            |_| {
+                size_queries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(4)
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(size_queries.load(std::sync::atomic::Ordering::Relaxed), 12);
+    }
 }
 
 fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
@@ -2806,6 +3200,10 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
+    // For --only-keep-debug, .eh_frame has no file content.
+    if layout.args().only_keep_debug() {
+        return Ok(());
+    }
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     match object.relocations(eh_frame_section_index)? {
         elf::RelocationList::Rela(relocations) => {
@@ -4184,13 +4582,24 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
 
     write_section_headers(table_writer, layout)?;
 
-    write_plt_got_entries::<C, A>(prelude, layout, table_writer)?;
+    // Skip PLT/GOT writes in --only-keep-debug since alloc sections are NOBITS.
+    if !layout.args().only_keep_debug() {
+        write_plt_got_entries::<C, A>(prelude, layout, table_writer)?;
+    }
 
     if !layout.args().should_strip_all() {
         write_symbol_table_entries(prelude, &mut table_writer.debug_symbol_writer, layout)?;
     }
 
+    // GOT/PLT section content is NOBITS under --only-keep-debug, but $got/$plt debug symbols
+    // still need to be written to .symtab/.strtab. This must happen after
+    // write_symbol_table_entries so the null symbol at index 0 is written first.
+    if layout.args().only_keep_debug() && layout.symbol_db.args.got_plt_syms {
+        write_internal_got_plt_symbols(&prelude.internal_symbols, table_writer, layout)?;
+    }
+
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -4202,18 +4611,20 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
 
     write_merged_strings(prelude, buffers, layout);
 
-    write_interp(prelude, buffers);
+    if !layout.args().only_keep_debug() {
+        write_interp(prelude, buffers);
+    }
 
     // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
     // symbol. It needs to be set as local.
-    if layout.gnu_version_enabled() {
+    if layout.gnu_version_enabled() && !layout.args().only_keep_debug() {
         table_writer
             .version_writer
             .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
     }
 
     // Define the null dynamic symbol.
-    if layout.symbol_db.output_kind.needs_dynsym() {
+    if layout.symbol_db.output_kind.needs_dynsym() && !layout.args().only_keep_debug() {
         table_writer.dynsym_writer.undefined_symbol(false, &[])?;
     }
 
@@ -4236,8 +4647,22 @@ fn write_merged_strings<C: ElfClass>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &ElfLayout<C>,
 ) {
+    let only_keep_debug = layout.args().only_keep_debug();
     layout.merged_strings.for_each(|section_id, merged| {
         if merged.len() > 0 {
+            let primary_id = layout.output_sections.primary_output_section(section_id);
+            if only_keep_debug
+                && crate::only_keep_debug::should_hollow_section(
+                    layout.output_sections.section_flags(primary_id).is_alloc(),
+                    layout
+                        .output_sections
+                        .output_info(primary_id)
+                        .section_attributes
+                        .ty,
+                )
+            {
+                return;
+            }
             let buffer = buffers
                 .get_mut(section_id.part_id_with_alignment::<elf::Elf<C>>(crate::alignment::MIN));
 
@@ -4581,24 +5006,28 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
 
+    let only_keep_debug = layout.args().only_keep_debug();
     let mut epilogue_offsets = EpilogueOffsets::default();
 
-    if layout.symbol_db.output_kind.needs_dynamic() {
+    // Dynamic linking sections are NOBITS in --only-keep-debug.
+    if layout.symbol_db.output_kind.needs_dynamic() && !only_keep_debug {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
 
     let got_relr_n = layout.got_relr_n;
-    if got_relr_n > 0 {
+    if got_relr_n > 0 && !only_keep_debug {
         let got_relr_base = layout
             .section_part_layouts
             .get(part_id::GOT_RELR)
             .mem_offset;
         table_writer.write_got_relr_bitmap(got_relr_n, got_relr_base)?;
     }
-    write_sysv_hash_table(layout, epilogue, buffers)?;
-    write_gnu_hash_tables(layout, epilogue, buffers)?;
+    if !only_keep_debug {
+        write_sysv_hash_table(layout, epilogue, buffers)?;
+        write_gnu_hash_tables(layout, epilogue, buffers)?;
 
-    write_dynamic_symbol_definitions(table_writer, layout)?;
+        write_dynamic_symbol_definitions(table_writer, layout)?;
+    }
 
     if !layout.format_specific.gnu_property_notes.is_empty() {
         write_gnu_property_notes(layout, buffers)?;
@@ -4607,7 +5036,9 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         write_riscv_attributes(layout, buffers)?;
     }
 
-    if let Some(verdefs) = &epilogue.format_specific.verdefs {
+    if let Some(verdefs) = &epilogue.format_specific.verdefs
+        && !only_keep_debug
+    {
         write_verdef(
             verdefs,
             table_writer,
@@ -4615,7 +5046,7 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             &epilogue_offsets,
         )?;
     }
-    if epilogue.format_specific.needs_eh_frame_terminator {
+    if epilogue.format_specific.needs_eh_frame_terminator && !only_keep_debug {
         table_writer.write_eh_frame_terminator();
     }
 
@@ -6006,7 +6437,13 @@ fn write_section_headers<C: ElfClass>(
         let entry = table_writer.take_section_header()?;
         entry.set_name(name_offset);
 
-        let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
+        let sh_type = if layout.args().only_keep_debug()
+            && crate::only_keep_debug::should_hollow_section(
+                output_sections.section_flags(section_id).is_alloc(),
+                section_type,
+            ) {
+            sht::NOBITS
+        } else if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
         } else {
             section_type
@@ -6313,10 +6750,23 @@ fn write_internal_symbols_plt_got_entries<'data, C: ElfClass, A: Arch<Platform =
                     format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
                 })?;
         }
+    }
+    if layout.symbol_db.args.got_plt_syms {
+        write_internal_got_plt_symbols(internal_symbols, table_writer, layout)?;
+    }
+    Ok(())
+}
 
-        if layout.symbol_db.args.got_plt_syms {
-            write_got_plt_syms(layout, &mut table_writer.debug_symbol_writer, symbol_id)?;
-        }
+/// Writes `$got` and `$plt` synthetic debug symbols to `.symtab`/`.strtab` for internal symbols,
+/// without writing any GOT/PLT section content.
+fn write_internal_got_plt_symbols<C: ElfClass>(
+    internal_symbols: &InternalSymbols<elf::Elf<C>>,
+    table_writer: &mut TableWriter<'_, '_, C>,
+    layout: &ElfLayout<C>,
+) -> Result {
+    for i in 0..internal_symbols.symbol_definitions.len() {
+        let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
+        write_got_plt_syms(layout, &mut table_writer.debug_symbol_writer, symbol_id)?;
     }
     Ok(())
 }
@@ -6328,17 +6778,23 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 ) -> Result {
     verbose_timing_phase!("Write dynamic");
 
-    write_so_name(object, table_writer)?;
+    let only_keep_debug = layout.args().only_keep_debug();
 
-    write_copy_relocations::<C, A>(object, table_writer, layout)?;
+    // Writes to allocatable dynamic sections (.dynstr, .dynsym, .rela.dyn).
+    if !only_keep_debug {
+        write_so_name(object, table_writer)?;
+        write_copy_relocations::<C, A>(object, table_writer, layout)?;
+    }
 
     for ((symbol_id, resolution), symbol) in layout
         .resolutions_in_range(object.symbol_id_range)
         .zip(object.object.symbols.iter())
     {
+        // These write to .symtab/.strtab (non-alloc) and must remain.
         if layout.symbol_db.args.got_plt_syms {
             write_got_plt_syms(layout, &mut table_writer.debug_symbol_writer, symbol_id)?;
         }
+
         if let Some(res) = resolution {
             let name = object.object.symbol_name(symbol)?;
 
@@ -6353,7 +6809,8 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     res.value(),
                     ValueFlags::empty(),
                 )?;
-            } else if !res.flags.needs_canonical_plt() {
+            } else if !res.flags.needs_canonical_plt() && !only_keep_debug {
+                // Writes to allocatable .dynsym/.dynstr and version tables.
                 let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
 
                 let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
@@ -6382,7 +6839,7 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
-    if let Some(verneed_info) = &object.format_specific.verneed_info {
+    if !only_keep_debug && let Some(verneed_info) = &object.format_specific.verneed_info {
         let mut verdefs = verneed_info.defs.clone();
         let e = LittleEndian;
 
@@ -6678,8 +7135,7 @@ fn should_reverse_contents<C: ElfClass>(
 fn link_ids<C: ElfClass>(section_id: OutputSectionId) -> &'static [OutputSectionId] {
     elf::Elf::<C>::built_in_section_details()
         .get(section_id.as_usize())
-        .map(|def| def.link)
-        .unwrap_or_default()
+        .map_or_default(|def| def.link)
 }
 
 fn fill_section_padding<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(

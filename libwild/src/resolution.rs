@@ -4,8 +4,10 @@
 
 use crate::LayoutRules;
 use crate::alignment::Alignment;
+use crate::args::OrphanHandling;
 use crate::bail;
 use crate::debug_assert_bail;
+use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -18,7 +20,6 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
-use crate::layout_rules::SectionRules;
 use crate::linker_script::Expression;
 use crate::macho_stub_library::DefinedStubLibrary;
 use crate::output_section_id::CustomSectionDetails;
@@ -66,6 +67,8 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::hash::BuildHasher as _;
+use std::mem::take;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -473,6 +476,7 @@ fn resolve_sections<'data, P: Platform>(
     let mut per_group_section_writers =
         section_part_ids_writer.take_shards(group_section_counts.into_iter());
 
+    let error_builder = Mutex::new(error::MultiErrorBuilder::new());
     groups
         .par_iter_mut()
         .zip(per_group_section_writers.par_iter_mut())
@@ -494,7 +498,8 @@ fn resolve_sections<'data, P: Platform>(
                                 symbol_db.args,
                                 allocator,
                                 &loaded_metrics,
-                                &layout_rules.section_rules,
+                                layout_rules,
+                                &error_builder,
                             )?;
                             obj.sections = sections;
                             for part_id in part_ids {
@@ -513,6 +518,8 @@ fn resolve_sections<'data, P: Platform>(
                 Ok(())
             },
         )?;
+    let errors: error::MultiErrorBuilder = take(&mut error_builder.lock().unwrap());
+    errors.emit_errors_if_any()?;
 
     for shard in per_group_section_writers {
         section_part_ids_writer.return_shard(shard);
@@ -896,6 +903,30 @@ fn assign_section_ids<'data, P: Platform>(
             }
         }
     }
+}
+
+fn check_orphan_placement<P: Platform>(
+    args: &P::Args,
+    input_file: &impl std::fmt::Display,
+    section: &[u8],
+) -> Result<bool> {
+    match args.orphan_handling() {
+        OrphanHandling::Place => {}
+        OrphanHandling::Discard => return Ok(true),
+        OrphanHandling::Warn => {
+            args.warning(format!(
+                "orphan section '{}' from '{input_file}' being placed in section '{0}'",
+                String::from_utf8_lossy(section),
+            ));
+        }
+        OrphanHandling::Error => {
+            bail!(
+                "unplaced orphan section '{}' from '{input_file}'",
+                String::from_utf8_lossy(section)
+            );
+        }
+    }
+    Ok(false)
 }
 
 fn populate_start_stop_sections<'data, P: Platform>(
@@ -1478,7 +1509,8 @@ fn resolve_sections_for_object<'data, P: Platform>(
     args: &P::Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
-    rules: &SectionRules,
+    layout_rules: &LayoutRules,
+    error_builder: &Mutex<error::MultiErrorBuilder>,
 ) -> Result<(Vec<SectionSlot>, Vec<PartId>)> {
     // Note, we build up the collection with push rather than collect because at the time of
     // writing, object's `SectionTable::enumerate` isn't an exact-size iterator, so using collect
@@ -1498,7 +1530,8 @@ fn resolve_sections_for_object<'data, P: Platform>(
             args,
             allocator,
             loaded_metrics,
-            rules,
+            layout_rules,
+            error_builder,
         )?;
         sections.push(slot);
         section_part_ids.push(part_id);
@@ -1515,7 +1548,8 @@ fn resolve_section<'data, P: Platform>(
     args: &P::Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
-    rules: &SectionRules,
+    layout_rules: &LayoutRules,
+    error_builder: &Mutex<error::MultiErrorBuilder>,
 ) -> Result<(SectionSlot, PartId)> {
     let section_name = obj
         .common
@@ -1550,8 +1584,19 @@ fn resolve_section<'data, P: Platform>(
     let rule_outcome = if args.should_output_partial_object() {
         P::lookup_for_partial_link(section_name, input_section, args)
     } else {
-        rules.lookup::<P>(section_name, file_name, input_section)
+        layout_rules
+            .section_rules
+            .lookup::<P>(section_name, file_name, input_section)
     };
+
+    if args.orphan_handling() != OrphanHandling::Place
+        && layout_rules.is_orphan::<P>(section_name, file_name, input_section)
+        && check_orphan_placement::<P>(args, &obj.common.input, section_name)
+            .map_err(|e| error_builder.lock().unwrap().add_error(e))
+            .is_ok_and(|is_discarded| is_discarded)
+    {
+        return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
+    }
 
     match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {

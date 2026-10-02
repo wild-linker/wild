@@ -31,7 +31,7 @@ RUN apt-get update && \
 
 RUN wget https://sh.rustup.rs -O rustup-installer && \
     chmod +x rustup-installer && \
-    ./rustup-installer -y --default-toolchain 1.97.1
+    ./rustup-installer -y --default-toolchain 1.98.1
 
 ENV PATH="/root/.cargo/bin:$PATH"
 
