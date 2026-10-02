@@ -483,8 +483,11 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
                     if let Some(info) = resolve_symbol(sym_idx)
                         && !info.is_interposable
                     {
+                        let call_output_offset = existing_deltas.map_or(call_offset, |deltas| {
+                            deltas.input_to_output_offset(call_offset)
+                        });
                         let distance = info.output_address as i64
-                            - (section_output_address + call_offset) as i64;
+                            - (section_output_address + call_output_offset) as i64;
                         if distance_fits_jal(distance) {
                             // Delete the jalr instruction (4 bytes at call_offset + 4).
                             raw_deltas.push((call_offset + 4, 4));
