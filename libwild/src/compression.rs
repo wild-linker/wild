@@ -10,8 +10,10 @@ use crate::elf_writer::apply_debug_relocations;
 use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::Layout;
+use crate::layout::OutputRecordLayout;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_part_map::OutputSectionPartMap;
 use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
@@ -528,31 +530,16 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
                     .map(|part_id| layout.section_part_layouts.get(part_id).file_size)
                     .sum();
 
-                if total_part_file_size == 0 {
-                    let section_layout = layout.section_layouts.get_mut(section_id);
-                    section_layout.file_offset = file_offset;
-                    section_layout.file_size = 0;
-
-                    let merge_target = layout
-                        .output_sections
-                        .merge_target(section_id)
-                        .unwrap_or(section_id);
-                    let merged_section_layout = layout.merged_section_layouts.get_mut(merge_target);
-                    if merge_target == section_id {
-                        merged_section_layout.file_offset = file_offset;
-                    }
-                    merged_section_layout.file_size = 0;
-
-                    for part_id in section_id.parts::<P>() {
-                        layout.section_part_layouts.get_mut(part_id).file_offset = file_offset;
-                    }
-                    continue;
-                }
-
                 let section_layout = layout.section_layouts.get_mut(section_id);
-                file_offset = section_layout.alignment.align_up_usize(file_offset);
-
-                section_layout.file_offset = file_offset;
+                if total_part_file_size > 0 {
+                    file_offset = section_layout.alignment.align_up_usize(file_offset);
+                }
+                file_offset = assign_section_file_range::<P>(
+                    section_id,
+                    section_layout,
+                    &mut layout.section_part_layouts,
+                    file_offset,
+                );
 
                 let merge_target = layout
                     .output_sections
@@ -560,16 +547,14 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
                     .unwrap_or(section_id);
                 let merged_section_layout = layout.merged_section_layouts.get_mut(merge_target);
                 if merge_target == section_id {
-                    merged_section_layout.file_offset = file_offset;
+                    merged_section_layout.file_offset = section_layout.file_offset;
                 }
 
-                for part_id in section_id.parts::<P>() {
-                    let part_layout = layout.section_part_layouts.get_mut(part_id);
-                    part_layout.file_offset = file_offset;
-                    file_offset += part_layout.file_size;
+                if total_part_file_size == 0 {
+                    merged_section_layout.file_size = 0;
+                    continue;
                 }
 
-                section_layout.file_size = file_offset - section_layout.file_offset;
                 merged_section_layout.file_size = file_offset - merged_section_layout.file_offset;
 
                 // Update seg_file_end for all open segments.
@@ -602,27 +587,26 @@ fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
             .section_flags(merge_target)
             .is_alloc();
         let compressed = layout.compressed_debug_sections.get(section_id).is_some();
-        let section = layout.section_layouts.get(section_id);
+        let section = layout.section_layouts.get_mut(section_id);
         let old_offset = section.file_offset;
         let old_end = section.file_end();
 
         if !resized {
-            if compressed {
-                if old_offset < cursor {
-                    bail!(
-                        "Compressed section {} overlaps earlier output (0x{old_offset:x} < 0x{cursor:x})",
-                        layout.output_sections.section_debug(section_id),
-                    );
+            if !compressed {
+                if old_end > cursor {
+                    cursor = old_end;
                 }
-                cursor = assign_section_file_range(layout, section_id, old_offset);
-                resized = true;
-            } else if old_end > cursor {
-                cursor = old_end;
+                continue;
             }
-            continue;
-        }
-
-        if is_alloc {
+            if old_offset < cursor {
+                bail!(
+                    "Compressed section {} overlaps earlier output (0x{old_offset:x} < 0x{cursor:x})",
+                    layout.output_sections.section_debug(section_id),
+                );
+            }
+            cursor = old_offset;
+            resized = true;
+        } else if is_alloc {
             if old_offset < cursor {
                 bail!(
                     "Alloc section {} moved due to debug info compression (file offset 0x{old_offset:x}, next file offset 0x{cursor:x})",
@@ -635,7 +619,15 @@ fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
             continue;
         }
 
-        cursor = assign_section_file_range(layout, section_id, cursor);
+        if layout.output_sections.has_data_in_file(merge_target) {
+            cursor = section.alignment.align_up_usize(cursor);
+        }
+        cursor = assign_section_file_range::<P>(
+            section_id,
+            section,
+            &mut layout.section_part_layouts,
+            cursor,
+        );
     }
 
     if resized {
@@ -645,27 +637,20 @@ fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     Ok(())
 }
 
-/// Places `section_id` at `file_offset`. Only sections with file data are aligned, matching initial
-/// layout.
+/// Places a section and its parts at the supplied offset. The caller handles alignment padding.
 fn assign_section_file_range<P: Platform>(
-    layout: &mut Layout<P>,
     section_id: OutputSectionId,
+    section_layout: &mut OutputRecordLayout,
+    part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     mut file_offset: usize,
 ) -> usize {
-    let merge_target = layout.output_sections.primary_output_section(section_id);
-    if layout.output_sections.has_data_in_file(merge_target) {
-        let alignment = layout.section_layouts.get(section_id).alignment;
-        file_offset = alignment.align_up_usize(file_offset);
-    }
-
     let start = file_offset;
     for part_id in section_id.parts::<P>() {
-        let part_layout = layout.section_part_layouts.get_mut(part_id);
+        let part_layout = part_layouts.get_mut(part_id);
         part_layout.file_offset = file_offset;
         file_offset += part_layout.file_size;
     }
 
-    let section_layout = layout.section_layouts.get_mut(section_id);
     section_layout.file_offset = start;
     section_layout.file_size = file_offset - start;
     file_offset
