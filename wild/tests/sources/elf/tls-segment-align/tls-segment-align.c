@@ -15,6 +15,16 @@
 //#Config:static:default
 //#LinkArgs:-static
 
+//#Config:compress-debug:default
+//#CompArgs:-g
+//#LinkArgs:-Wl,--compress-debug-sections=zlib
+//#DiffIgnore:section.debug_*
+
+//#Config:compress-debug-static:static
+//#CompArgs:-g
+//#LinkArgs:-Wl,--compress-debug-sections=zlib
+//#DiffIgnore:section.debug_*
+
 #include "../common/ptr_black_box.h"
 
 __thread unsigned long tls_var_a = 0x1122334455667788UL;

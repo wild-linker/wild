@@ -1773,6 +1773,31 @@ impl<'data, P: Platform> Layout<'data, P> {
         self.symbol_db.args
     }
 
+    /// Rebuilds merged section records and program-header file ranges from the current section file
+    /// offsets. Debug compression updates those offsets after the initial layout pass.
+    pub(crate) fn refresh_layouts_after_debug_compression(&mut self) -> Result {
+        self.merged_section_layouts =
+            merge_secondary_parts(&self.output_sections, &self.section_layouts);
+
+        let header_info = {
+            let header_info = &self.prelude().header_info;
+            HeaderInfo {
+                num_output_sections_with_content: header_info.num_output_sections_with_content,
+                partial_link_section_name_bytes: header_info.partial_link_section_name_bytes,
+                active_segment_ids: header_info.active_segment_ids.clone(),
+            }
+        };
+        self.segment_layouts = compute_segment_layout::<P>(
+            &self.section_layouts,
+            &self.output_sections,
+            &self.output_order,
+            &self.program_segments,
+            &header_info,
+            self.args(),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn symbol_debug<'layout>(
         &'layout self,
         symbol_id: SymbolId,

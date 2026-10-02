@@ -475,53 +475,93 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     timing_phase!("Update file offsets post-compression");
 
-    // Recalculate file offsets since we changed file_sizes
-    let mut segments = layout.segment_layouts.segments.iter().peekable();
-    let mut file_offset = 0;
-    for event in &layout.output_order {
-        match event {
-            OrderEvent::SegmentStart(program_segment_id)
-                if segments.peek().is_some_and(|s| s.id == program_segment_id) =>
-            {
-                let segment_layout = segments.next().unwrap();
-                if segment_layout.sizes.file_offset != file_offset {
+    let section_ids: Vec<OutputSectionId> = (&layout.output_order)
+        .into_iter()
+        .filter_map(|event| match event {
+            OrderEvent::Section(section_id) => Some(section_id),
+            _ => None,
+        })
+        .collect();
+
+    let mut cursor = 0usize;
+    let mut resized = false;
+    for section_id in section_ids {
+        let merge_target = layout.output_sections.primary_output_section(section_id);
+        let is_alloc = layout
+            .output_sections
+            .section_flags(merge_target)
+            .is_alloc();
+        let compressed = layout.compressed_debug_sections.get(section_id).is_some();
+        let section = layout.section_layouts.get(section_id);
+        let old_offset = section.file_offset;
+        let old_end = section.file_end();
+
+        if !resized {
+            if compressed {
+                if old_offset < cursor {
                     bail!(
-                        "Segment moved due to debug info compression 0x{:x} -> 0x{:x}",
-                        segment_layout.sizes.file_offset,
-                        file_offset,
+                        "Compressed section {} overlaps earlier output (0x{old_offset:x} < 0x{cursor:x})",
+                        layout.output_sections.section_debug(section_id),
                     );
                 }
+                cursor = assign_section_file_range(layout, section_id, old_offset);
+                resized = true;
+            } else if old_end > cursor {
+                cursor = old_end;
             }
-            OrderEvent::Section(section_id) => {
-                let section_layout = layout.section_layouts.get_mut(section_id);
-                file_offset = section_layout.alignment.align_up_usize(file_offset);
-
-                section_layout.file_offset = file_offset;
-
-                let merge_target = layout
-                    .output_sections
-                    .merge_target(section_id)
-                    .unwrap_or(section_id);
-                let merged_section_layout = layout.merged_section_layouts.get_mut(merge_target);
-                if merge_target == section_id {
-                    merged_section_layout.file_offset = file_offset;
-                }
-
-                for part_id in section_id.parts::<P>() {
-                    let part_layout = layout.section_part_layouts.get_mut(part_id);
-                    part_layout.file_offset = file_offset;
-                    file_offset += part_layout.file_size;
-                }
-
-                section_layout.file_size = file_offset - section_layout.file_offset;
-
-                merged_section_layout.file_size = file_offset - merged_section_layout.file_offset;
-            }
-            _ => {}
+            continue;
         }
+
+        if is_alloc {
+            if old_offset < cursor {
+                bail!(
+                    "Alloc section {} moved due to debug info compression (file offset 0x{old_offset:x}, next file offset 0x{cursor:x})",
+                    layout.output_sections.section_debug(section_id),
+                );
+            }
+            if old_end > cursor {
+                cursor = old_end;
+            }
+            continue;
+        }
+
+        cursor = assign_section_file_range(layout, section_id, cursor);
+    }
+
+    if resized {
+        layout.refresh_layouts_after_debug_compression()?;
     }
 
     Ok(())
+}
+
+/// Places `section_id` at `file_offset`, aligning sections that have file bytes the same way
+/// initial layout does. NOBITS sections keep the current offset and consume no file space.
+fn assign_section_file_range<P: Platform>(
+    layout: &mut Layout<P>,
+    section_id: OutputSectionId,
+    mut file_offset: usize,
+) -> usize {
+    let merge_target = layout.output_sections.primary_output_section(section_id);
+    let has_file_data = layout.output_sections.has_data_in_file(merge_target);
+    if has_file_data {
+        let alignment = layout.section_layouts.get(section_id).alignment;
+        file_offset = alignment.align_up_usize(file_offset);
+    }
+
+    let start = file_offset;
+    for part_id in section_id.parts::<P>() {
+        let part_layout = layout.section_part_layouts.get_mut(part_id);
+        part_layout.file_offset = file_offset;
+        if has_file_data {
+            file_offset += part_layout.file_size;
+        }
+    }
+
+    let section_layout = layout.section_layouts.get_mut(section_id);
+    section_layout.file_offset = start;
+    section_layout.file_size = file_offset - start;
+    file_offset
 }
 
 #[cfg(test)]
