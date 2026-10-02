@@ -535,16 +535,15 @@ fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     Ok(())
 }
 
-/// Places `section_id` at `file_offset`, aligning sections that have file bytes the same way
-/// initial layout does. NOBITS sections keep the current offset and consume no file space.
+/// Places `section_id` at `file_offset`. Only sections with file data are aligned, matching initial
+/// layout.
 fn assign_section_file_range<P: Platform>(
     layout: &mut Layout<P>,
     section_id: OutputSectionId,
     mut file_offset: usize,
 ) -> usize {
     let merge_target = layout.output_sections.primary_output_section(section_id);
-    let has_file_data = layout.output_sections.has_data_in_file(merge_target);
-    if has_file_data {
+    if layout.output_sections.has_data_in_file(merge_target) {
         let alignment = layout.section_layouts.get(section_id).alignment;
         file_offset = alignment.align_up_usize(file_offset);
     }
@@ -553,9 +552,7 @@ fn assign_section_file_range<P: Platform>(
     for part_id in section_id.parts::<P>() {
         let part_layout = layout.section_part_layouts.get_mut(part_id);
         part_layout.file_offset = file_offset;
-        if has_file_data {
-            file_offset += part_layout.file_size;
-        }
+        file_offset += part_layout.file_size;
     }
 
     let section_layout = layout.section_layouts.get_mut(section_id);
