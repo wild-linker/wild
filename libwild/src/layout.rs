@@ -6257,52 +6257,31 @@ fn compute_layout_sections<'data, P: Platform>(
                         file_offset = alignment.align_up_usize(file_offset);
                     }
 
-                    if section_flags.is_alloc() {
-                        if args.should_output_partial_object() {
-                            let file_size = if output_sections.has_data_in_file(merge_target) {
-                                mem_size as usize
-                            } else {
-                                0
-                            };
+                    let file_size = if section_flags.is_alloc()
+                        && !output_sections.has_data_in_file(merge_target)
+                    {
+                        0
+                    } else {
+                        mem_size as usize
+                    };
 
+                    let (part_mem_offset, part_lma_offset) = if section_flags.is_alloc() {
+                        if args.should_output_partial_object() {
                             let section_id = part_id.output_section_id::<P>();
                             let part_mem_offset =
                                 alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
                             *reloc_alloc_mem_offsets.get_mut(section_id) =
                                 part_mem_offset + mem_size;
 
-                            *part_layout = OutputRecordLayout {
-                                file_size,
-                                mem_size,
-                                alignment,
-                                file_offset,
-                                mem_offset: part_mem_offset,
-                                lma_offset: part_mem_offset,
-                            };
-
-                            file_offset += file_size;
+                            (part_mem_offset, part_mem_offset)
                         } else {
                             mem_offset = alignment.align_up(mem_offset);
                             lma_offset = alignment.align_up(lma_offset);
 
-                            let file_size = if output_sections.has_data_in_file(merge_target) {
-                                mem_size as usize
-                            } else {
-                                0
-                            };
-
-                            *part_layout = OutputRecordLayout {
-                                file_size,
-                                mem_size,
-                                alignment,
-                                file_offset,
-                                mem_offset,
-                                lma_offset,
-                            };
-
-                            file_offset += file_size;
+                            let offsets = (mem_offset, lma_offset);
                             mem_offset += mem_size;
                             lma_offset += mem_size;
+                            offsets
                         }
                     } else {
                         let section_id = part_id.output_section_id::<P>();
@@ -6310,16 +6289,18 @@ fn compute_layout_sections<'data, P: Platform>(
 
                         *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
 
-                        *part_layout = OutputRecordLayout {
-                            file_size: mem_size as usize,
-                            mem_size,
-                            alignment,
-                            file_offset,
-                            mem_offset,
-                            lma_offset: mem_offset,
-                        };
-                        file_offset += mem_size as usize;
-                    }
+                        (mem_offset, mem_offset)
+                    };
+
+                    *part_layout = OutputRecordLayout {
+                        file_size,
+                        mem_size,
+                        alignment,
+                        file_offset,
+                        mem_offset: part_mem_offset,
+                        lma_offset: part_lma_offset,
+                    };
+                    file_offset += file_size;
 
                     *laid_out_mem_offsets.get_mut(part_id) = Some(part_layout.mem_offset);
 
