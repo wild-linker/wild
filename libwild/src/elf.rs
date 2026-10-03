@@ -6496,9 +6496,8 @@ fn process_relocation<
     let mut classified =
         classify_symbol_relocation::<C, A, R>(object, rel, section, local_sym_index, resources)?;
 
-    materialize_relocation_requirements::<C, A, R>(
+    materialize_relocation_requirements::<C, A>(
         common,
-        rel,
         section,
         resources,
         is_debug_section,
@@ -6613,14 +6612,8 @@ fn classify_symbol_relocation<
 
 /// Account for GOT/PLT/dynamic-reloc/TLS sizes implied by this relocation.
 #[inline(always)]
-fn materialize_relocation_requirements<
-    'data,
-    C: ElfClass,
-    A: Arch<Platform = Elf<C>>,
-    R: Relocation<Platform = Elf<C>>,
->(
+fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     common: &mut CommonGroupState<'data, Elf<C>>,
-    rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
     resources: &layout::GraphResources<'data, '_, Elf<C>>,
     is_debug_section: bool,
@@ -6731,8 +6724,9 @@ fn materialize_relocation_requirements<
         if section_is_writable {
             // Odd offsets can't be encoded as RELR address entries (LSB used as
             // bitmap marker), so fall back to RELA for them.
-            if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
-                relr_writer.encode(rel.offset(), |_, encoding| {
+            if resources.symbol_db.args.is_relr_enabled() && classified.rel_offset.is_multiple_of(2)
+            {
+                relr_writer.encode(classified.rel_offset, |_, encoding| {
                     if matches!(encoding, RelrEntryEncoding::New) {
                         common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                     }
