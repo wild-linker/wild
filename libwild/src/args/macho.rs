@@ -197,9 +197,7 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .declare()
         .long("help")
         .help("Show this help message")
-        .execute(|_args, _modifier_stack| {
-            setup_argument_parser().print_help_and_exit("")
-        });
+        .execute(|_args, _modifier_stack| setup_argument_parser().print_help_and_exit(""));
 
     parser
         .declare()
