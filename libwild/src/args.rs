@@ -651,6 +651,14 @@ pub(crate) enum OrphanHandling {
     Discard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DiscardLocals {
+    #[default]
+    Locals,
+    All,
+    None,
+}
+
 /// Describes how a platform spells its options. GNU-style platforms use the default, whereas
 /// link.exe-style platforms accept a `/` prefix, ignore case and attach values with `:`.
 #[derive(Clone, Copy)]
