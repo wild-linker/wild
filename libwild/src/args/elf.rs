@@ -1089,20 +1089,11 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("help")
         .help("Show this help message")
         .execute(|_args, _modifier_stack| {
-            use std::io::Write as _;
-            let parser = setup_argument_parser();
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "{}", parser.generate_help())?;
-
             // The following listing is something autoconf detection relies on.
-            writeln!(stdout, "wild: supported targets: {SUPPORTED_TARGETS}")?;
-            writeln!(
-                stdout,
-                "wild: supported emulations: {}",
+            setup_argument_parser().print_help_and_exit(&format!(
+                "wild: supported targets: {SUPPORTED_TARGETS}\nwild: supported emulations: {}\n",
                 supported_emulations()
-            )?;
-
-            std::process::exit(0);
+            ))
         });
 
     parser
