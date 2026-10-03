@@ -1045,6 +1045,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     Ok(Some(address))
 }
 
+#[inline(always)]
 fn find_string(
     merge_slot: StringMergeSectionSlot,
     input_offset: u64,
