@@ -151,6 +151,8 @@ pub(crate) mod output_section_id {
     use super::SinglePartSectionId;
     use crate::output_section_id::OutputSectionId;
 
+    pub(crate) const COMMON: OutputSectionId =
+        crate::output_section_id::regular_section_base::<super::MachO>();
     pub(crate) const STRTAB: OutputSectionId = SinglePartSectionId::Strtab.output_section_id();
     pub(crate) const GOT: OutputSectionId = SinglePartSectionId::Got.output_section_id();
     pub(crate) const PLT_GOT: OutputSectionId = SinglePartSectionId::PltGot.output_section_id();
@@ -827,8 +829,19 @@ impl platform::SectionFlags for SectionFlags {
 // Documentation link for Nlist64 type: https://leopard-adc.pepas.com/documentation/DeveloperTools/Conceptual/MachORuntime/Reference/reference.html
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<platform::CommonSymbol> {
-        // TODO
-        None
+        if !Nlist::is_common(self) {
+            return None;
+        }
+
+        // Common symbols store their size in n_value and log2 alignment in bits 8..11
+        // of n_desc.
+        let alignment = Alignment {
+            exponent: ((self.n_desc.get(LE).0 >> 8) & 0xf) as u8,
+        };
+        Some(platform::CommonSymbol {
+            size: alignment.align_up(self.n_value.get(LE)),
+            part_id: output_section_id::COMMON.part_id_with_alignment::<MachO>(alignment),
+        })
     }
 
     fn is_undefined(&self) -> bool {
@@ -1161,7 +1174,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 
 impl platform::Platform for MachO {
     const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
-    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 0;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 1;
 
     // The macOS kernel caches code signature state by vnode. Reusing a previously executed output's
     // inode after changing its contents can therefore cause the new executable to SIGKILL, even
@@ -2370,6 +2383,9 @@ impl platform::Platform for MachO {
                 add_sections_in_segment(&mut builder, output_sections, &custom.tbss, segment);
             }
             add_sections_in_segment(&mut builder, output_sections, &custom.bss, segment);
+            if segment == SegmentName::DATA {
+                builder.add_section(output_section_id::COMMON);
+            }
         }
 
         // Arbitrary segment sections are added in first-seen order.
@@ -2570,6 +2586,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         min_alignment: Alignment {
             exponent: CS_SECTION_ALIGNMENT_EXP,
         },
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::COMMON.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(b"__common"),
+            Some(SegmentName::DATA),
+        )),
+        section_flags: S_ZEROFILL.to_flags(),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
@@ -2859,6 +2883,14 @@ fn classify_symbol_relocation<'data, A: platform::Arch<Platform = MachO>>(
     } else {
         layout::resolution_flags(relocation.kind)
     };
+
+    // Mach-O PAGEOFF12 references need the symbol's address too. Unlike ELF low-part
+    // relocations, they can reference the symbol directly rather than a paired label.
+    // Mark the resolution before queuing a load, otherwise concurrent references can
+    // enqueue multiple loads and allocate a common symbol's storage more than once.
+    if relocation.kind == RelocationKind::AbsoluteLowPart {
+        flags_to_add |= ValueFlags::DIRECT;
+    }
 
     if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
         match rel_info.r_type {

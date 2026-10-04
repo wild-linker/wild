@@ -1656,6 +1656,11 @@ fn write_symbols<'data>(
                 })?;
                 let n_desc = sym.n_desc.get(LE);
                 (n_sect, n_type, n_desc)
+            } else if sym.is_common() {
+                let n_sect = macho_section_index(layout, output_section_id::COMMON)?;
+                // The common alignment bits no longer apply to a defined symbol.
+                let n_desc = macho::SymbolDesc(sym.n_desc.get(LE).0 & !0x0f00);
+                sdfgsf(n_sect, sym.n_type.with_type(N_SECT), n_desc)
             } else if sym.is_absolute() {
                 let n_desc = sym.n_desc.get(LE);
                 (0, sym.n_type.with_type(N_ABS), n_desc)
