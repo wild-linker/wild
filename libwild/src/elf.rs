@@ -6714,7 +6714,7 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
         && section_is_writable
-        && symbol_db.output_kind.is_position_independent()
+        && A::absolute_ifunc_needs_irelative(symbol_db.output_kind)
     {
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_position_independent()

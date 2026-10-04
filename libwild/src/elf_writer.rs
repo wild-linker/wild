@@ -4280,7 +4280,7 @@ fn apply_relocation<
     rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
 
     if restore_caller_toc {
-        A::restore_toc_after_plt_call(out, offset_in_section);
+        A::restore_toc_after_plt_call(out, offset_in_section)?;
     }
 
     Ok(next_modifier)
@@ -4538,7 +4538,7 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
         Ok(0)
     } else if resolution.flags.is_ifunc()
         && section_info.is_writable
-        && table_writer.output_kind.is_position_independent()
+        && A::absolute_ifunc_needs_irelative(table_writer.output_kind)
     {
         table_writer
             .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;

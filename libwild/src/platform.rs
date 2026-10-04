@@ -116,7 +116,15 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Patches the instruction after a call that goes through a PLT stub. ppc64 replaces the
     /// compiler's nop with `ld r2, 24(r1)`, undoing the save the stub did before the indirect
     /// branch.
-    fn restore_toc_after_plt_call(_code: &mut [u8], _branch_offset: usize) {}
+    fn restore_toc_after_plt_call(_code: &mut [u8], _branch_offset: usize) -> Result {
+        Ok(())
+    }
+
+    /// Whether an absolute reference to an ifunc in a writable section is an IRELATIVE dynamic
+    /// relocation.
+    fn absolute_ifunc_needs_irelative(output_kind: crate::output_kind::OutputKind) -> bool {
+        output_kind.is_position_independent()
+    }
 
     /// Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(

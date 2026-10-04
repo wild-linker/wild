@@ -80,23 +80,34 @@ impl crate::platform::Arch for ElfPpc64 {
         Ok(())
     }
 
-    fn restore_toc_after_plt_call(code: &mut [u8], branch_offset: usize) {
-        let Some(next) = branch_offset.checked_add(4) else {
-            return;
-        };
-        if next + 4 > code.len() {
-            return;
+    fn restore_toc_after_plt_call(code: &mut [u8], branch_offset: usize) -> Result {
+        if branch_offset
+            .checked_add(4)
+            .is_none_or(|end| end > code.len())
+        {
+            bail!("call lacks nop, can't restore toc");
         }
         let insn = u32::from_le_bytes(code[branch_offset..branch_offset + 4].try_into().unwrap());
-        // LK is the low bit. A tail `b` does not return to the following word.
+        // LK is the low bit. A tail `b` does not return, so it has no restore slot.
         if insn & 1 != 1 {
-            return;
+            return Ok(());
+        }
+        let Some(next) = branch_offset.checked_add(4) else {
+            bail!("call lacks nop, can't restore toc");
+        };
+        if next + 4 > code.len() {
+            bail!("call lacks nop, can't restore toc");
         }
         let following = u32::from_le_bytes(code[next..next + 4].try_into().unwrap());
         if following != 0x6000_0000 {
-            return;
+            bail!("call lacks nop, can't restore toc");
         }
         code[next..next + 4].copy_from_slice(&0xe841_0018u32.to_le_bytes());
+        Ok(())
+    }
+
+    fn absolute_ifunc_needs_irelative(output_kind: crate::output_kind::OutputKind) -> bool {
+        output_kind.needs_dynamic()
     }
 
     /// The thread pointer (`r13`) points 0x7000 bytes past the start of the static TLS block.
