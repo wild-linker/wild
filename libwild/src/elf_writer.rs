@@ -859,7 +859,10 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             *got_entry = elf::Word::<C>::from_u64(value)?;
         }
         if let Some(plt_address) = res.format_specific.plt_address {
-            self.write_plt_entry::<A>(got_address, plt_address.get())?;
+            // `.TOC.` is the start of the GOT. The allocation check calls this without a layout;
+            // a zero displacement still consumes the PLT slot.
+            let toc_base = layout.map_or(got_address, |layout| layout.got_base());
+            self.write_plt_entry::<A>(got_address, plt_address.get(), toc_base)?;
         }
 
         // For ifunc symbols with GOT-relative references, write the PLT stub
@@ -1020,9 +1023,10 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         &mut self,
         got_address: u64,
         plt_address: u64,
+        toc_base: u64,
     ) -> Result {
         let plt_entry = self.take_plt_got_entry()?;
-        A::write_plt_entry(plt_entry, got_address, plt_address)
+        A::write_plt_entry_with_toc(plt_entry, got_address, plt_address, toc_base)
     }
 
     fn take_plt_got_entry(&mut self) -> Result<&'out mut [u8]> {
@@ -3818,13 +3822,9 @@ fn apply_relocation<
     };
     let mask = get_page_mask(rel_info.mask);
     let bias = rel_info.bias.map_or(0, Bias::value);
-    // For ppc64 calls, branch to the callee's local entry point (we share its TOC, so the global
-    // entry's r2 setup is unnecessary). Zero for every other architecture and relocation.
-    let branch_local_entry = if rel_info.size.is_ppc64_branch() {
-        A::local_entry_offset(callee_st_other(layout, local_symbol_id))
-    } else {
-        0
-    };
+    // Set when a ppc64 branch targets a PLT stub. The stub's first instruction saves r2 and the nop
+    // after `bl` has to load it back.
+    let mut restore_caller_toc = false;
     let mut value = match rel_info.kind {
         RelocationKind::Absolute => write_absolute_relocation::<C, A>(
             table_writer,
@@ -3892,8 +3892,20 @@ fn apply_relocation<
                 )?
             };
 
+            let targets_plt_stub = flags.needs_plt()
+                && resolution
+                    .format_specific
+                    .plt_address
+                    .is_some_and(|plt| symbol_plus_addend == plt.get().wrapping_add(addend as u64));
+            let local_entry = if rel_info.size.is_ppc64_branch() && !targets_plt_stub {
+                A::local_entry_offset(callee_st_other(layout, local_symbol_id))
+            } else {
+                0
+            };
+            restore_caller_toc = targets_plt_stub && rel_info.size.is_ppc64_branch();
+
             symbol_plus_addend
-                .wrapping_add(branch_local_entry)
+                .wrapping_add(local_entry)
                 .wrapping_add(bias)
                 .bitand(mask.symbol_plus_addend)
                 .wrapping_sub(place.bitand(mask.place))
@@ -4266,6 +4278,10 @@ fn apply_relocation<
     }
 
     rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
+
+    if restore_caller_toc {
+        A::restore_toc_after_plt_call(out, offset_in_section);
+    }
 
     Ok(next_modifier)
 }
