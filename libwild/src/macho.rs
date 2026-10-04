@@ -872,8 +872,11 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn size(&self) -> u64 {
-        // TODO
-        0
+        if Nlist::is_common(self) {
+            self.value()
+        } else {
+            0
+        }
     }
 
     fn has_name(&self) -> bool {
