@@ -833,10 +833,9 @@ impl platform::Symbol for SymtabEntry {
             return None;
         }
 
-        // Common symbols store their size in n_value and log2 alignment in bits 8..11
-        // of n_desc.
+        // Common symbols store their size in n_value.
         let alignment = Alignment {
-            exponent: ((self.n_desc.get(LE).0 >> 8) & 0xf) as u8,
+            exponent: self.n_desc.get(LE).common_alignment(),
         };
         Some(platform::CommonSymbol {
             size: alignment.align_up(self.n_value.get(LE)),
@@ -2381,11 +2380,9 @@ impl platform::Platform for MachO {
             if segment == SegmentName::DATA {
                 add_sections_in_segment(&mut builder, output_sections, &custom.tdata, segment);
                 add_sections_in_segment(&mut builder, output_sections, &custom.tbss, segment);
-            }
-            add_sections_in_segment(&mut builder, output_sections, &custom.bss, segment);
-            if segment == SegmentName::DATA {
                 builder.add_section(output_section_id::COMMON);
             }
+            add_sections_in_segment(&mut builder, output_sections, &custom.bss, segment);
         }
 
         // Arbitrary segment sections are added in first-seen order.
@@ -2883,14 +2880,6 @@ fn classify_symbol_relocation<'data, A: platform::Arch<Platform = MachO>>(
     } else {
         layout::resolution_flags(relocation.kind)
     };
-
-    // Mach-O PAGEOFF12 references need the symbol's address too. Unlike ELF low-part
-    // relocations, they can reference the symbol directly rather than a paired label.
-    // Mark the resolution before queuing a load, otherwise concurrent references can
-    // enqueue multiple loads and allocate a common symbol's storage more than once.
-    if relocation.kind == RelocationKind::AbsoluteLowPart {
-        flags_to_add |= ValueFlags::DIRECT;
-    }
 
     if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
         match rel_info.r_type {
