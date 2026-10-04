@@ -4539,6 +4539,10 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
     } else if resolution.flags.is_ifunc()
         && A::absolute_ifunc_needs_irelative(table_writer.output_kind, section_info.is_writable)
     {
+        ensure!(
+            rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as u8),
+            "Relocation against an ifunc is narrower than an address"
+        );
         table_writer
             .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
         Ok(0)

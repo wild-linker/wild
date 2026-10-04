@@ -6715,6 +6715,13 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         && rel_kind == RelocationKind::Absolute
         && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
     {
+        if classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8) {
+            bail!(
+                "Relocation {} against ifunc `{}` is narrower than an address",
+                A::rel_type_to_string(r_type),
+                resources.symbol_db.symbol_name_for_display(symbol_id),
+            );
+        }
         if !section_is_writable {
             resources.has_textrel.store(true, atomic::Ordering::Relaxed);
         }
