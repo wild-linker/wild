@@ -31,7 +31,6 @@
 //#ExpectSym:_start
 
 //#Config:only-keep-debug-dynamic:default
-//#SkipArch: ppc64le
 //#Mode:dynamic
 //#Shared:shared.c
 //#LinkArgs:-z now
@@ -59,7 +58,6 @@
 //#ExpectSym:shared_data section=".bss"
 
 //#Config:only-keep-debug-got-plt-syms:only-keep-debug-dynamic
-//#SkipArch:ppc64le
 //#LinkArgs:-z now
 //#WildExtraLinkArgs:--only-keep-debug --got-plt-syms
 //#SoSingleLinker:lld

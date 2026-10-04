@@ -4,7 +4,6 @@
 
 //#Config:default
 //#RequiresGlibc:true
-//#SkipArch:ppc64le
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 //#Mode:dynamic

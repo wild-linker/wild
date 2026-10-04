@@ -13,14 +13,12 @@
 //#DiffMatchAny:true
 
 //#Config:pie:default
-//#SkipArch: ppc64le
 //#CompArgs:-fpie -fmerge-constants
 //#LinkerDriver:g++
 //#LinkArgs:-pie -Wl,-z,now
 //#ReferenceLinkers:bfd,lld
 
 //#Config:no-pie:default
-//#SkipArch: ppc64le
 //#CompArgs:-fno-pie -fmerge-constants
 //#LinkerDriver:g++
 //#LinkArgs:-no-pie -Wl,-z,now
@@ -42,7 +40,6 @@
 //#Arch: x86_64
 
 //#Config:clang-pie:default
-//#SkipArch: ppc64le
 //#CompArgs:-fpie
 //#Compiler:clang
 //#LinkerDriver:clang++
@@ -66,7 +63,6 @@
 //#Arch: x86_64
 
 //#Config:clang-crel:default
-//#SkipArch: ppc64le
 //#Compiler:clang
 //#CompArgs: -Wa,--crel,--allow-experimental-crel
 //#LinkerDriver:clang++

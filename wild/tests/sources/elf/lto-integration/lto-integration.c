@@ -1,5 +1,4 @@
 //#Config:clang
-//#SkipArch: ppc64le
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:clang
 //#ReferenceLinkers:lld

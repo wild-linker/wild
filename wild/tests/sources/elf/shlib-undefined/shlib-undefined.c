@@ -16,14 +16,12 @@
 // Allow linking against shared object with undefined symbols. We don't run this because the runtime
 // linker would error due to the undefined symbol.
 //#Config:allow:default
-//#SkipArch: ppc64le
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--allow-shlib-undefined -z now
 
 // This should also succeed to link because our shared object depends on another shared object that
 // we don't have loaded.
 //#Config:disallow-incomplete:default
-//#SkipArch: ppc64le
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--no-allow-shlib-undefined
 

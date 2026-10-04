@@ -1,8 +1,7 @@
 // One notable scenario that this test tests is having a non-weak undefined symbol (baz) in a shared
 // object and having that symbol be defined by an archive entry that we don't load.
 
-//#Config:default
-//#SkipArch: ppc64le
+//#AbstractConfig:common
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
 //#RunDynSym:foo
@@ -14,8 +13,10 @@
 //#ExpectDynSym:foo
 //#ExpectDynSym:call_bar1
 
-//#Config:symbolic:default
+//#Config:default:common
 //#SkipArch: ppc64le
+
+//#Config:symbolic:common
 //#LinkArgs:-Bsymbolic
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
@@ -23,23 +24,20 @@
 //#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PLT32
 //#ExpectDynamic:DT_FLAGS
 
-//#Config:symbolic-functions:default
-//#SkipArch: ppc64le
+//#Config:symbolic-functions:common
 //#LinkArgs:-Bsymbolic-functions
 
-//#Config:nosymbolic:default
+//#Config:nosymbolic:common
 //#SkipArch: ppc64le
 //#LinkArgs:-Bno-symbolic
 
-//#Config:symbolic-non-weak:default
-//#SkipArch: ppc64le
+//#Config:symbolic-non-weak:common
 //#LinkArgs:-Bsymbolic-non-weak
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.relro_padding
 
-//#Config:symbolic-non-weak-functions:default
-//#SkipArch: ppc64le
+//#Config:symbolic-non-weak-functions:common
 //#LinkArgs:-Bsymbolic-non-weak-functions
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.relro_padding

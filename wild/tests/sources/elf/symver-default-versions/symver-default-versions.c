@@ -1,5 +1,4 @@
 //#RequiresGlibc:true
-//#SkipArch:ppc64le
 // BFD rejects these different default versions with an unresolvable PLT relocation.
 //#ReferenceLinkers:lld
 //#Object:runtime.c
