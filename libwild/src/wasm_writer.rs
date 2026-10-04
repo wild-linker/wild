@@ -21,7 +21,6 @@ use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmGotMemSource;
 use crate::wasm::WasmInputTargetFeature;
 use crate::wasm::WasmLayout;
-use crate::wasm::WasmMetadataSizes;
 use crate::wasm::WasmObjectIndexMap;
 use crate::wasm::WasmRelocation;
 use crate::wasm::WasmSymbol;
@@ -224,7 +223,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     }
 
     {
-        timing_phase!("Write Wasm metadata sections");
+        timing_phase!("Copy Wasm metadata sections");
         write_metadata_sections(&layout.format_specific, &mut section_buffers)?;
     }
     {
@@ -249,7 +248,7 @@ fn write_metadata_sections(
     layout: &WasmLayout<'_>,
     section_buffers: &mut crate::output_section_map::OutputSectionMap<&mut [u8]>,
 ) -> Result<()> {
-    let encoded = encode_metadata_sections(layout)?;
+    let encoded = &layout.encoded_metadata;
     copy_encoded_section(
         encoded.ty.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_TYPE),
@@ -775,8 +774,8 @@ fn convert_export_kind(k: wasmparser::ExternalKind) -> wasm_encoder::ExportKind 
     }
 }
 
-#[derive(Default)]
-struct EncodedMetadata {
+#[derive(Debug, Default)]
+pub(crate) struct EncodedMetadata {
     ty: Option<Vec<u8>>,
     import: Option<Vec<u8>>,
     function: Option<Vec<u8>>,
@@ -790,28 +789,68 @@ struct EncodedMetadata {
     target_features: Option<Vec<u8>>,
 }
 
-fn encoded_len(section: Option<&Vec<u8>>) -> u64 {
-    section.map_or(0, |bytes| bytes.len() as u64)
+impl EncodedMetadata {
+    pub(crate) fn add_sizes_to(
+        &self,
+        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    ) {
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_TYPE, self.ty.as_ref());
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_IMPORT,
+            self.import.as_ref(),
+        );
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_FUNCTION,
+            self.function.as_ref(),
+        );
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_TABLE, self.table.as_ref());
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_MEMORY,
+            self.memory.as_ref(),
+        );
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_GLOBAL,
+            self.global.as_ref(),
+        );
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_EXPORT,
+            self.export.as_ref(),
+        );
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_ELEMENT,
+            self.element.as_ref(),
+        );
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_DATA_COUNT,
+            self.data_count.as_ref(),
+        );
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_NAME, self.name.as_ref());
+        add_encoded_section_size(
+            sizes,
+            crate::wasm::part_id::WASM_TARGET_FEATURES,
+            self.target_features.as_ref(),
+        );
+    }
 }
 
-pub(crate) fn metadata_section_sizes(layout: &WasmLayout<'_>) -> Result<WasmMetadataSizes> {
-    let encoded = encode_metadata_sections(layout)?;
-    Ok(WasmMetadataSizes {
-        ty: encoded_len(encoded.ty.as_ref()),
-        import: encoded_len(encoded.import.as_ref()),
-        function: encoded_len(encoded.function.as_ref()),
-        global: encoded_len(encoded.global.as_ref()),
-        export: encoded_len(encoded.export.as_ref()),
-        memory: encoded_len(encoded.memory.as_ref()),
-        table: encoded_len(encoded.table.as_ref()),
-        element: encoded_len(encoded.element.as_ref()),
-        data_count: encoded_len(encoded.data_count.as_ref()),
-        name: encoded_len(encoded.name.as_ref()),
-        target_features: encoded_len(encoded.target_features.as_ref()),
-    })
+fn add_encoded_section_size(
+    sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    part_id: crate::part_id::PartId,
+    section: Option<&Vec<u8>>,
+) {
+    if let Some(bytes) = section {
+        sizes.increment(part_id, bytes.len() as u64);
+    }
 }
 
-fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<EncodedMetadata> {
+pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<EncodedMetadata> {
     timing_phase!("Encode Wasm metadata sections");
     let mut encoded = EncodedMetadata::default();
 

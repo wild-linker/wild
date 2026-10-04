@@ -22,6 +22,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use crate::wasm_writer::EncodedMetadata;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
@@ -1514,7 +1515,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) per_object_data: Vec<&'data [u8]>,
     pub(crate) code_section_size: u64,
     pub(crate) data_section_size: u64,
-    pub(crate) metadata_sizes: WasmMetadataSizes,
+    pub(crate) encoded_metadata: EncodedMetadata,
     pub(crate) name_inputs: WasmNameInputs<'data>,
     pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
     pub(crate) extra_features: &'data [String],
@@ -1550,48 +1551,6 @@ pub(crate) struct WasmNameInputs<'data> {
 pub(crate) struct WasmInputTargetFeature<'data> {
     pub(crate) file_id: crate::input_data::FileId,
     pub(crate) feature: WasmTargetFeature<'data>,
-}
-
-/// Encoded byte length of each metadata section. Zero means the section is omitted.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct WasmMetadataSizes {
-    pub(crate) ty: u64,
-    pub(crate) import: u64,
-    pub(crate) function: u64,
-    pub(crate) global: u64,
-    pub(crate) export: u64,
-    pub(crate) memory: u64,
-    pub(crate) table: u64,
-    pub(crate) element: u64,
-    pub(crate) data_count: u64,
-    pub(crate) name: u64,
-    pub(crate) target_features: u64,
-}
-
-impl WasmMetadataSizes {
-    fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
-        add_section_size(sizes, part_id::WASM_TYPE, self.ty);
-        add_section_size(sizes, part_id::WASM_IMPORT, self.import);
-        add_section_size(sizes, part_id::WASM_FUNCTION, self.function);
-        add_section_size(sizes, part_id::WASM_TABLE, self.table);
-        add_section_size(sizes, part_id::WASM_MEMORY, self.memory);
-        add_section_size(sizes, part_id::WASM_GLOBAL, self.global);
-        add_section_size(sizes, part_id::WASM_EXPORT, self.export);
-        add_section_size(sizes, part_id::WASM_ELEMENT, self.element);
-        add_section_size(sizes, part_id::WASM_DATA_COUNT, self.data_count);
-        add_section_size(sizes, part_id::WASM_NAME, self.name);
-        add_section_size(sizes, part_id::WASM_TARGET_FEATURES, self.target_features);
-    }
-}
-
-fn add_section_size(
-    sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    part_id: PartId,
-    len: u64,
-) {
-    if len > 0 {
-        sizes.increment(part_id, len);
-    }
 }
 
 pub(crate) fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
@@ -6214,7 +6173,8 @@ where
         layout.code_section_size = compute_code_section_size(&layout.function_bodies);
         layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
     }
-    layout.metadata_sizes = crate::wasm_writer::metadata_section_sizes(&layout)?;
+    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
+    layout.encoded_metadata = encoded_metadata;
     Ok(layout)
 }
 
@@ -7071,7 +7031,7 @@ impl platform::Platform for Wasm {
         properties: &Self::LayoutExt<'data>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<()> {
-        properties.metadata_sizes.add_sizes_to(mem_sizes);
+        properties.encoded_metadata.add_sizes_to(mem_sizes);
         properties.add_code_section_size(mem_sizes);
         properties.add_data_section_size(mem_sizes);
         Ok(())
@@ -7091,7 +7051,7 @@ impl platform::Platform for Wasm {
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
-        common_state.metadata_sizes.add_sizes_to(memory_offsets);
+        common_state.encoded_metadata.add_sizes_to(memory_offsets);
         common_state.add_code_section_size(memory_offsets);
         common_state.add_data_section_size(memory_offsets);
         Ok(())
