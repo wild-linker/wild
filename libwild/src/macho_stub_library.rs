@@ -14,6 +14,8 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use itertools::Itertools;
+use rayon::iter::IntoParallelRefIterator as _;
+use rayon::iter::ParallelIterator as _;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -96,8 +98,16 @@ impl DefinedStubLibrary<'_> {
 }
 
 pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibrary<'data>> {
-    let library_definitions = serde_yaml::Deserializer::from_str(input)
-        .map(TextBasedDefinition::deserialize)
+    // We can benefit from a parallel parsing of some of the commonly used libraries
+    // (e.g. libSystem.B.tbd has 40 sub-libraries). On the other hand, a commonly used one
+    // `libc++.1.tbd` contains just a single library.
+    let documents = input
+        .split("--- !tapi-tbd")
+        .filter(|document| !document.trim().is_empty())
+        .collect_vec();
+    let library_definitions = documents
+        .par_iter()
+        .map(|document| serde_yaml::from_str::<TextBasedDefinition<'data>>(document))
         .collect::<Result<Vec<_>, _>>()?;
 
     let main_library = library_definitions

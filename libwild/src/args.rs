@@ -985,6 +985,14 @@ impl<T: platform::Args> ArgumentParser<T> {
         Ok(())
     }
 
+    fn print_help_and_exit(&self, additional_help: &str) -> Result {
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{}", self.generate_help())?;
+        write!(stdout, "{additional_help}")?;
+        std::process::exit(0);
+    }
+
     #[must_use]
     fn generate_help(&self) -> String {
         const HELP_COL1_WIDTH: usize = 30;

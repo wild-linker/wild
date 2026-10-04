@@ -13,9 +13,14 @@ pub(crate) mod fs {
     pub(crate) use crate::host::unix::fs::release_input_memory;
 
     /// Invalidates OS caches that may have observed partially written output.
+    /// Seems the operation is quite expensive and makes the mmap output mode pretty heavy.
     pub(crate) fn invalidate_mapped_output(output: &mut memmap2::MmapMut, len: usize) {
         unsafe {
-            libc::msync(output.as_mut_ptr().cast(), len, libc::MS_INVALIDATE);
+            libc::msync(
+                output.as_mut_ptr().cast(),
+                len,
+                libc::MS_INVALIDATE | libc::MS_ASYNC,
+            );
         }
     }
 }

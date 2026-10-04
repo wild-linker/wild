@@ -4,6 +4,7 @@ use crate::args::CommonArgs;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::args::VersionMode;
 use crate::bail;
 use crate::ensure;
 use crate::error::Context;
@@ -191,6 +192,21 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 // variants.
 fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     let mut parser = ArgumentParser::<MachOArgs>::new();
+
+    parser
+        .declare()
+        .long("help")
+        .help("Show this help message")
+        .execute(|_args, _modifier_stack| setup_argument_parser().print_help_and_exit(""));
+
+    parser
+        .declare()
+        .long("version")
+        .help("Show version information and exit")
+        .execute(|args, _modifier_stack| {
+            args.common.version_mode = VersionMode::ExitAfterPrint;
+            Ok(())
+        });
 
     parser
         .declare_with_param()
