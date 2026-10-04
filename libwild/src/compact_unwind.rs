@@ -332,6 +332,8 @@ pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Resul
 
     // Plus, the offset can track only 24 bits (16MiB). For being sure, let's track
     // all functions larger than 4MiB and allocate extra pages for them.
+    // TODO: Actually, there might be a situation where a series of medium-sized functions
+    // will not fit into a single page. Investigate later if the situation arises.
     let large_functions = unwind_info_entries
         .iter()
         .filter(|entry| entry.entry.length >= (MAX_FUNCTION_OFFSET / 4) as u32)
