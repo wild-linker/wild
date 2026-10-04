@@ -106,7 +106,10 @@ impl crate::platform::Arch for ElfPpc64 {
         Ok(())
     }
 
-    fn absolute_ifunc_needs_irelative(output_kind: crate::output_kind::OutputKind) -> bool {
+    fn absolute_ifunc_needs_irelative(
+        output_kind: crate::output_kind::OutputKind,
+        _section_is_writable: bool,
+    ) -> bool {
         output_kind.needs_dynamic()
     }
 

@@ -493,6 +493,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         merged_string_start_addresses,
         has_static_tls: gc_outputs.has_static_tls,
         has_variant_pcs: gc_outputs.has_variant_pcs,
+        has_textrel: gc_outputs.has_textrel,
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
@@ -837,6 +838,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
     pub(crate) has_static_tls: bool,
     pub(crate) has_variant_pcs: bool,
+    pub(crate) has_textrel: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
     pub(crate) format_specific: P::LayoutExt<'data>,
@@ -1701,6 +1703,8 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     pub(crate) has_static_tls: AtomicBool,
 
+    pub(crate) has_textrel: AtomicBool,
+
     has_variant_pcs: AtomicBool,
 
     pub(crate) thunk_layout_builder: Option<crate::thunks::ThunkLayoutBuilder>,
@@ -2560,6 +2564,7 @@ struct GcOutputs<'data, P: Platform> {
     group_states: Vec<GroupState<'data, P>>,
     must_keep_sections: OutputSectionMap<bool>,
     has_static_tls: bool,
+    has_textrel: bool,
     has_variant_pcs: bool,
     thunk_layout_builder: Option<ThunkLayoutBuilder>,
 }
@@ -2639,6 +2644,7 @@ fn traverse_reference_graph<'data, A: Arch>(
         per_symbol_flags,
         must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
+        has_textrel: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
         thunk_layout_builder,
         layout_resources_ext,
@@ -2675,6 +2681,7 @@ fn traverse_reference_graph<'data, A: Arch>(
         group_states,
         must_keep_sections,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
+        has_textrel: resources.has_textrel.load(atomic::Ordering::Relaxed),
         has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
         thunk_layout_builder: resources.thunk_layout_builder,
     })

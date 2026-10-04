@@ -4537,8 +4537,7 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
 
         Ok(0)
     } else if resolution.flags.is_ifunc()
-        && section_info.is_writable
-        && A::absolute_ifunc_needs_irelative(table_writer.output_kind)
+        && A::absolute_ifunc_needs_irelative(table_writer.output_kind, section_info.is_writable)
     {
         table_writer
             .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
@@ -4959,6 +4958,7 @@ fn write_epilogue_dynamic_entries<C: ElfClass>(
     let inputs = DynamicEntryInputs {
         args: layout.args(),
         has_static_tls: layout.has_static_tls,
+        has_textrel: layout.has_textrel,
         has_variant_pcs: layout.has_variant_pcs,
         section_layouts: &layout.merged_section_layouts,
         section_part_layouts: &layout.section_part_layouts,
@@ -6262,6 +6262,7 @@ struct DynamicEntryWriter {
 struct DynamicEntryInputs<'layout> {
     args: &'layout ElfArgs,
     has_static_tls: bool,
+    has_textrel: bool,
     has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
@@ -6279,6 +6280,10 @@ impl DynamicEntryInputs<'_> {
 
         if !self.output_kind.is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
+        }
+
+        if self.has_textrel {
+            flags |= object::elf::DF_TEXTREL;
         }
 
         if self.args.needs_origin_handling {

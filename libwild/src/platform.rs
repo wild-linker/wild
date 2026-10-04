@@ -120,10 +120,12 @@ pub(crate) trait Arch: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Whether an absolute reference to an ifunc in a writable section is an IRELATIVE dynamic
-    /// relocation.
-    fn absolute_ifunc_needs_irelative(output_kind: crate::output_kind::OutputKind) -> bool {
-        output_kind.is_position_independent()
+    /// Whether an absolute reference to an ifunc is an IRELATIVE dynamic relocation.
+    fn absolute_ifunc_needs_irelative(
+        output_kind: crate::output_kind::OutputKind,
+        section_is_writable: bool,
+    ) -> bool {
+        section_is_writable && output_kind.is_position_independent()
     }
 
     /// Make architecture-specific parsing of the relocation types.

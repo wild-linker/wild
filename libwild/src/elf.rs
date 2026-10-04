@@ -6713,9 +6713,11 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         }
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
-        && section_is_writable
-        && A::absolute_ifunc_needs_irelative(symbol_db.output_kind)
+        && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
     {
+        if !section_is_writable {
+            resources.has_textrel.store(true, atomic::Ordering::Relaxed);
+        }
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
