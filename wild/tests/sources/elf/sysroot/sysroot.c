@@ -20,13 +20,15 @@
 //#Config:library-after-sysroots:base
 //#LinkArgs:--sysroot=$OUT_DIR/first --sysroot=$OUT_DIR/last -L=/lib
 
-//#Config:save-library-before-sysroots:library-before-sysroots
+//#Config:save-library-before-sysroots:base
 //#ReferenceLinkers:
 //#DriverMode:save-dir-response
+//#LinkArgs:-L=/lib --sysroot=$OUT_DIR/first --sysroot=$OUT_DIR/last
 
-//#Config:save-library-between-sysroots:library-between-sysroots
+//#Config:save-library-between-sysroots:base
 //#ReferenceLinkers:
 //#DriverMode:save-dir-response
+//#LinkArgs:--sysroot=$OUT_DIR/first -L$SYSROOT/lib --sysroot=$OUT_DIR/last
 
 #include "../common/runtime.h"
 
