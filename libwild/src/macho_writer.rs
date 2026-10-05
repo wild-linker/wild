@@ -282,6 +282,8 @@ fn write_prelude<'data>(
         "Excess LOAD_COMMANDS allocation"
     );
 
+    buffers.get_mut(part_id::LOAD_COMMANDS_PADDING).fill(0);
+
     // Fill up one extra character as n_strx == 0 is treated as unnamed.
     buffers.get_mut(part_id::STRTAB).fill(0);
 
