@@ -63,6 +63,8 @@ pub(crate) struct PlatformVersion {
 
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "no_deduplicate",
+    "search_paths_first",
+    "no_warn_duplicate_libraries",
     // Mach-O appears to always demangle symbols.
     "demangle",
     "dynamic",
@@ -72,7 +74,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "dead_strip",
 ];
 
-const IGNORED_FLAGS: &[&str] = &[];
+const IGNORED_FLAGS: &[&str] = &["export_dynamic", "O0", "O1", "O2", "O3"];
 
 impl MachOArgs {
     pub(crate) fn new() -> Result<Self> {
@@ -254,6 +256,11 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         });
     parser
         .declare_with_param()
+        .short("rpath")
+        .help("Include a path to runpath search paths (not yet emitted)")
+        .execute(|args, _modifier_stack, value| args.warn_unsupported(&format!("-rpath {value}")));
+    parser
+        .declare_with_param()
         .long("syslibroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
@@ -404,6 +411,8 @@ mod tests {
         "main.o",
         "-lc++",
         "-dead_strip",
+        "-search_paths_first",
+        "-no_warn_duplicate_libraries",
     ];
 
     fn input1_assertions(args: &MachOArgs) {
