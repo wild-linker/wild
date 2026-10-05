@@ -11,6 +11,7 @@ use crate::arch::SUPPORTED_TARGETS;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
+use crate::args::DiscardLocals;
 use crate::args::FileReplacementMode;
 use crate::args::Modifiers;
 use crate::args::OrphanHandling;
@@ -138,6 +139,7 @@ pub struct ElfArgs {
     pack_dyn_relocs: PackDynRelocs,
     pub(crate) use_android_relr_tags: bool,
     pub(crate) discard_sframe: bool,
+    pub(crate) discard_locals: DiscardLocals,
 
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
@@ -274,24 +276,16 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 
-const IGNORED_FLAGS: &[&str] = &[
-    "fix-cortex-a53-835769",
-    "fix-cortex-a53-843419",
-    "discard-all",
-    "x", // alias for --discard-all
-];
+const IGNORED_FLAGS: &[&str] = &["fix-cortex-a53-835769", "fix-cortex-a53-843419"];
 
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
     "no-copy-dt-needed-entries",
     "no-add-needed",
-    "discard-locals",
     "no-fatal-warnings",
 ];
-const DEFAULT_SHORT_FLAGS: &[&str] = &[
-    "X", // alias for --discard-locals
-];
+const DEFAULT_SHORT_FLAGS: &[&str] = &[];
 
 pub(crate) const LDEMULATION_ENV: &str = "LDEMULATION";
 
@@ -409,6 +403,7 @@ impl Default for ElfArgs {
             pack_dyn_relocs: PackDynRelocs::None,
             use_android_relr_tags: false,
             discard_sframe: false,
+            discard_locals: DiscardLocals::default(),
 
             nmagic: false,
             rosegment: true,
@@ -649,6 +644,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     if !args.experimental_sframe {
         args.discard_sframe = true;
+    }
+
+    if args.discard_locals == DiscardLocals::Default {
+        if args.should_output_partial_object {
+            args.discard_locals = DiscardLocals::None;
+        } else {
+            args.discard_locals = DiscardLocals::Temporaries;
+        }
     }
 
     Ok(())
@@ -2068,6 +2071,35 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    parser
+        .declare()
+        .long("discard-none")
+        .help("Keep all symbols in the symbol table")
+        .execute(|args, _modifier_stack| {
+            args.discard_locals = DiscardLocals::None;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("X")
+        .long("discard-locals")
+        .help("Delete temporary local symbols")
+        .execute(|args, _modifier_stack| {
+            args.discard_locals = DiscardLocals::Temporaries;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("x")
+        .long("discard-all")
+        .help("Delete all local symbols")
+        .execute(|args, _modifier_stack| {
+            args.discard_locals = DiscardLocals::All;
+            Ok(())
+        });
+
     super::declare_common_args(&mut parser);
 
     add_silently_ignored_flags(&mut parser);
@@ -2333,6 +2365,14 @@ impl platform::Args for ElfArgs {
 
     fn should_output_partial_object(&self) -> bool {
         self.should_output_partial_object
+    }
+
+    fn discard_none(&self) -> bool {
+        self.discard_locals == DiscardLocals::None
+    }
+
+    fn discard_all(&self) -> bool {
+        self.discard_locals == DiscardLocals::All
     }
 
     fn should_write_gdb_index(&self) -> bool {

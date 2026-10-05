@@ -1339,7 +1339,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
 
                             if visibility == Visibility::Default
                                 && (output_kind.is_shared_object()
-                                    || (!output_kind.is_static_executable()
+                                    || (output_kind.is_dynamic_executable()
                                         && symbol_db.symbol_strength(undefined.symbol_id, groups)
                                             == SymbolStrength::Weak))
                             {

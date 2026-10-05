@@ -5121,6 +5121,13 @@ impl<'data> SymbolCopyInfo<'data> {
         symbol_state: ValueFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
+        let is_referenced_by_reloc =
+            symbol_db.args.should_output_partial_object() && symbol_state.has_resolution();
+
+        if !is_referenced_by_reloc && symbol_db.args.discard_all() && sym.is_local() {
+            return None;
+        }
+
         if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
             return None;
         }
@@ -5141,7 +5148,9 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (!symbol_db.args.should_output_partial_object() && sym.is_default_strippable(name))
+            || (!is_referenced_by_reloc
+                && !symbol_db.args.discard_none()
+                && sym.is_default_strippable(name))
         {
             return None;
         }

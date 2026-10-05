@@ -1154,6 +1154,25 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             if header.sh_type(LittleEndian) == object::elf::SHT_CREL {
                 bail!("CREL with partial linking isn't yet supported: {state}");
             }
+            if !resources.symbol_db.args.discard_none() {
+                match state.relocations(section_index)? {
+                    RelocationList::Rela(relocations) => {
+                        for raw in relocations {
+                            let rel = ElfRela::<C>::new(*raw);
+                            if let Some(s) = rel.symbol() {
+                                let symbol_id = state.symbol_id_range.input_to_id(s);
+                                resources
+                                    .per_symbol_flags
+                                    .get_atomic(symbol_id)
+                                    .fetch_or(ValueFlags::DIRECT);
+                            }
+                        }
+                    }
+                    RelocationList::Crel(_) => {
+                        bail!("CREL with partial linking isn't yet supported: {state}")
+                    }
+                }
+            }
             return Ok(());
         }
         match state.relocations(section_index)? {
