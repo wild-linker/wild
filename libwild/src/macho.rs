@@ -248,7 +248,8 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
 pub(crate) fn load_dylib_command_size(path: &[u8], headerpad_max_install_names: bool) -> usize {
     let mut path_size = path.len() + 1;
     if headerpad_max_install_names {
-        // MAXPATHLEN includes the terminating NUL, cannot be taken from libc as it's a host-dependant constant.
+        // MAXPATHLEN includes the terminating NUL, cannot be taken from libc as it's a
+        // host-dependant constant.
         path_size = path_size.max(1024);
     }
     (size_of::<DylibCommand>() + path_size).next_multiple_of(MACHO_COMMAND_ALIGNMENT)
