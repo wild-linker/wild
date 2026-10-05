@@ -245,8 +245,13 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
     (code_signature_identifier(args).len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT)
 }
 
-pub(crate) fn load_dylib_command_size(path: &[u8]) -> usize {
-    (size_of::<DylibCommand>() + path.len() + 1).next_multiple_of(MACHO_COMMAND_ALIGNMENT)
+pub(crate) fn load_dylib_command_size(path: &[u8], headerpad_max_install_names: bool) -> usize {
+    let mut path_size = path.len() + 1;
+    if headerpad_max_install_names {
+        // MAXPATHLEN includes the terminating NUL. Never truncate longer paths.
+        path_size = path_size.max(libc::MAXPATHLEN as usize);
+    }
+    (size_of::<DylibCommand>() + path_size).next_multiple_of(MACHO_COMMAND_ALIGNMENT)
 }
 
 // TODO: promote to object crate
@@ -2073,7 +2078,12 @@ impl platform::Platform for MachO {
             .format_specific
             .imported_library_file_ids
             .iter()
-            .map(|&file_id| load_dylib_command_size(install_name(file_id, resources.symbol_db)))
+            .map(|&file_id| {
+                load_dylib_command_size(
+                    install_name(file_id, resources.symbol_db),
+                    args.headerpad_max_install_names,
+                )
+            })
             .collect();
         let load_dylib_command_sizes = prelude.format_specific.load_dylib_command_sizes.clone();
         for command_size in load_dylib_command_sizes {

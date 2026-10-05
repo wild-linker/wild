@@ -27,6 +27,7 @@ pub struct MachOArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
+    pub(crate) headerpad_max_install_names: bool,
     pub(crate) entry: String,
 }
 
@@ -92,6 +93,7 @@ impl Default for MachOArgs {
             lib_search_path: Vec::new(),
             plugin_path: None,
             dead_strip_dylibs: false,
+            headerpad_max_install_names: false,
             entry: "_main".to_owned(),
         }
     }
@@ -335,6 +337,15 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             Ok(())
         });
 
+    parser
+        .declare()
+        .long("headerpad_max_install_names")
+        .help("Reserve extra space so all load command paths can be expanded to MAXPATHLEN via install_name_tool")
+        .execute(|args, _modifier_stack| {
+            args.headerpad_max_install_names = true;
+            Ok(())
+        });
+
     // The option declaration cannot be moved to declare_common_args as other platforms
     // use `prefix("o")`.
     parser
@@ -397,6 +408,7 @@ mod tests {
         "main.o",
         "-lc++",
         "-dead_strip",
+        "-headerpad_max_install_names",
     ];
 
     fn input1_assertions(args: &MachOArgs) {
@@ -429,6 +441,7 @@ mod tests {
                 .any(|p| p.as_ref() == Path::new("/bar/lib"))
         );
         assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
+        assert!(args.headerpad_max_install_names);
     }
 
     #[test]

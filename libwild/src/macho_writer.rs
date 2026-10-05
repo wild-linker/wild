@@ -54,7 +54,6 @@ use crate::macho::UuidCommand;
 use crate::macho::code_signature_identifier;
 use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
-use crate::macho::load_dylib_command_size;
 use crate::macho::output_section_id;
 use crate::macho::output_section_id::LOAD_COMMANDS;
 use crate::macho::part_id;
@@ -1144,7 +1143,7 @@ fn write_dylib_command(command: &mut DylibCommand, path_buffer: &mut [u8], path:
     command.cmd.set(LE, LC_LOAD_DYLIB);
     command
         .cmdsize
-        .set(LE, load_dylib_command_size(path) as u32);
+        .set(LE, (size_of::<DylibCommand>() + path_buffer.len()) as u32);
     command
         .dylib
         .name
