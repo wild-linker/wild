@@ -2350,10 +2350,10 @@ impl platform::Platform for MachO {
         }
 
         // The rest (e.g. symbol table, string table).
-        builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
         builder.add_section(output_section_id::EXPORTS_TRIE);
         builder.add_section(output_section_id::SYMTAB_GLOBAL);
+        builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CODE_SIGNATURE);
 
         builder.build()
