@@ -63,6 +63,8 @@ pub(crate) struct PlatformVersion {
 
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "no_deduplicate",
+    "search_paths_first",
+    "no_warn_duplicate_libraries",
     // Mach-O appears to always demangle symbols.
     "demangle",
     "dynamic",
@@ -72,7 +74,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "dead_strip",
 ];
 
-const IGNORED_FLAGS: &[&str] = &[];
+const IGNORED_FLAGS: &[&str] = &["export_dynamic", "O0", "O1", "O2", "O3"];
 
 impl MachOArgs {
     pub(crate) fn new() -> Result<Self> {
@@ -402,6 +404,8 @@ mod tests {
         "main.o",
         "-lc++",
         "-dead_strip",
+        "-search_paths_first",
+        "-no_warn_duplicate_libraries",
     ];
 
     fn input1_assertions(args: &MachOArgs) {
