@@ -247,7 +247,7 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         );
     parser
         .declare_with_three_params()
-        .long("sectcreate")
+        .short("sectcreate")
         .help("Create a section from a file (not yet supported)")
         .execute(|args, _modifier_stack, _segment, _section, _file| {
             args.warn_unsupported("-sectcreate")
