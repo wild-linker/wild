@@ -17,6 +17,28 @@ version = "0.10.0"
 rust-version = "1.98.1"
 edition = "2024"
 
+# The shipping target matrix, read by `soldr prepare --target all`. This is the
+# single source of truth; ci.toml's [platforms] cross-checks against it (CT-006).
+# Every entry corresponds to a target the CI containers or CI jobs actually
+# build: the glibc/musl pairs come from the ci-ubuntu-cross / ci-arch-cross /
+# ci-opensuse images (see docker/ci/*.Dockerfile `rustup target add` lines), the
+# riscv64gc/loongarch64/powerpc64le triples from the linux-cross-build job's
+# matrix, wasm32-wasip1 from the wasm-test job, and the apple/windows triples
+# from the macho-build and windows-build jobs.
+[workspace.metadata.soldr]
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "loongarch64-unknown-linux-gnu",
+  "powerpc64le-unknown-linux-gnu",
+  "riscv64gc-unknown-linux-gnu",
+  "wasm32-wasip1",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+]
+
 # Note, the versions listed here are minimum supported versions and should only be increased when
 # (a) there's a new major version which we wouldn't get if we didn't increase our required version
 # or (b) we've determined that the minimum version listed here is no longer correct, since we're

@@ -1,0 +1,269 @@
+# ci.toml — this repo's CI contract. Checked and planned by ci-lint (zackees/ci.yml).
+# Nothing here generates YAML: it bounds what the YAML may do and decides what each run selects.
+#
+# SCOPE OF THIS FILE: it was added to bound wild's GitHub Actions cache, which
+# measured 4.58 GiB across 26 entries (46% of the 10 GiB repository limit) on
+# 2026-10-05 with no `ci.toml` at all. It is a cache policy, not a rewrite of
+# wild's CI: the workflows are unchanged by this commit.
+schema  = 3
+profile = "rust-bin-app"
+linter  = "zackees/ci.yml@aaf113ca50565244567c0d19f1e739e9d3120dda"   # ci.yml main, 2026-10-05
+
+# ── Platforms ────────────────────────────────────────────────────────────────
+# Every id is a job that really exists in .github/workflows/ci.yml. The runner
+# labels are the fleet-pinned spellings (`macos-15` / `windows-2025`), not the
+# `-latest` labels the workflow currently uses — RUN-001 only resolves
+# `runs-on: ${{ matrix.<var>.runs_on }}`, and pinning here is the declaration
+# the workflows have not caught up to yet (noted in the PR; see "Known gaps").
+[platforms]
+linux-x64       = { target = "x86_64-unknown-linux-gnu",    runs-on = "ubuntu-24.04",     group = "linux" }
+linux-arm64     = { target = "aarch64-unknown-linux-gnu",   runs-on = "ubuntu-24.04-arm", group = "linux" }
+linux-riscv64   = { target = "riscv64gc-unknown-linux-gnu", runs-on = "ubuntu-24.04",     group = "linux" }
+linux-loong64   = { target = "loongarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04",    group = "linux" }
+linux-ppc64le   = { target = "powerpc64le-unknown-linux-gnu", runs-on = "ubuntu-24.04",   group = "linux" }
+linux-x64-musl  = { target = "x86_64-unknown-linux-musl",   runs-on = "ubuntu-24.04",     group = "linux" }
+linux-arm64-musl = { target = "aarch64-unknown-linux-musl", runs-on = "ubuntu-24.04-arm", group = "linux" }
+linux-wasm32    = { target = "wasm32-wasip1",               runs-on = "ubuntu-24.04",     group = "linux" }
+macos-arm64     = { target = "aarch64-apple-darwin",        runs-on = "macos-15",         group = "macos" }
+windows-x64     = { target = "x86_64-pc-windows-msvc",      runs-on = "windows-2025",     group = "windows" }
+
+# NOTE ON CARDINALITY. These ten ids exist so RUN-001/RUN-002/contract checks
+# have a truthful platform inventory. They deliberately do NOT drive the cache
+# arithmetic below: every cache family wild writes today is keyed by RUNNER OS
+# (setup-soldr's prefixes embed `${runnerOs}-${runnerArch}`, e.g.
+# `setup-soldr-buildcache-v2-linux-x64-...`), not by target triple, so the
+# honest cardinality for those families is `per = "os"` (3 groups), not
+# `per = "platform"` (10 ids). See each family's `per` below.
+
+# NOTE: no `[rust]` table. wild is a linker with no amalgam and no
+# publishable-crate split to freeze, so `public`/`private`/`ship` have no
+# truthful value here, and declaring `[rust]` would oblige this file to also
+# answer for the test-target inventory (RUST-005/RUST-011/RUST-012) — a
+# workspace-wide statement well outside a cache-policy change. The shipping
+# target matrix, which IS load-bearing for cache cardinality and for soldr, is
+# declared once in Cargo.toml as [workspace.metadata.soldr] and cross-checked
+# against [platforms] by CT-006.
+
+# ── Suites ───────────────────────────────────────────────────────────────────
+# `run` strings are the literal commands the workflow already runs; this file
+# does not introduce or relocate any test.
+[suites]
+build   = { run = "cargo build --profile ci --workspace --no-default-features", required = true }
+test    = { run = "cargo test --profile ci --workspace", required = true }
+clippy  = { run = "cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu", required = true }
+fmt     = { run = "cargo fmt --all -- --check", required = true }
+cross   = { run = "cargo build --target riscv64gc-unknown-linux-gnu" }
+wasm    = { run = "soldr cargo test --features wasm -- wasm" }
+macho   = { run = "soldr cargo test --profile ci --workspace --features macho" }
+windows = { run = "soldr cargo build --profile ci --workspace --no-default-features" }
+minimal = { run = "cargo minimal-versions --direct test --profile ci", cache = "none" }
+external = { run = "cargo test --features external_tests external_test_suites" }
+
+# ── Flows ────────────────────────────────────────────────────────────────────
+[flow.pr]
+platforms = ["linux-x64", "linux-arm64"]
+suites    = ["build", "test", "fmt"]
+
+[flow.main]
+extends   = "pr"
+cache     = "write"
+
+[flow.release]
+extends   = "pr"
+platforms = "all"
+suites    = "all"
+publish   = "none"
+
+# ── Tags that are not derived ────────────────────────────────────────────────
+[tags]
+ci-full   = { add = { platforms = "all", suites = ["cross", "wasm", "macho", "windows", "minimal", "external"] } }
+no-test   = { remove = { suites = ["test"] } }
+
+# ── Caches (§6) ──────────────────────────────────────────────────────────────
+# Budget arithmetic is in the PR body. Steady total 2 751 MB; because NO writer
+# flow declares `pre-prune = true` (wild runs no `ci-lint cache preprune` step
+# today, and claiming otherwise would be a false statement about the YAML), the
+# lockfile-change peak applies too: worst = 2 751 + 2 715 + 0 = 5 466 MB
+# = 5.34 GiB, against a 9.5 GB budget.
+[cache]
+budget   = "9.5GB"
+write-on = ["main"]
+never    = ["target-dir", "incremental", "perf-results", "nix-store"]
+pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+
+# Measured live on zackees/wild, 2026-10-05 (paginated `actions/caches`, after a
+# reclaim): 26 entries, 4.58 GiB. Each `max`/`shapes.max` is at or above the
+# observed maximum for that shape, because `ci-lint cache janitor` LRU-evicts an
+# `evict = "lru"` family down to exactly `family_footprint()` = the SUM of
+# `shapes` (or `max x cardinality(per)` with no shapes) — the same number
+# CACHE-004 used. UNDER-stating a ceiling truncates live caches; over-stating
+# only costs headroom, so every ceiling below carries deliberate headroom.
+# `setup-soldr-cargoregistry-v1-*`: 3 entries, 92 MB live, uniform across hosts
+# (31.0 / 30.9 / 30.4). Uniform enough for a single ceiling.
+[cache.family.registry]
+via      = "setup-soldr:cargo-registry"
+max      = "35MB"
+lockfile = true
+per      = "os"
+
+# `soldr-mini-v2-*`: 3 entries, 29 MB live, uniform (10.3 / 10.1 / 8.6). Keyed on
+# the soldr version, NOT the lockfile, so `lockfile` stays false.
+[cache.family.soldr-mini]
+via = "setup-soldr:soldr-mini"
+max = "12MB"
+per = "os"
+
+# `cook-base-v2-*`: 3 entries, 1 653 MB live (666 linux-x64 / 616 macos-arm64 /
+# 371 windows-x64). Sizes differ 1.8x, so one `max` would over-count; `shapes`
+# makes the footprint the honest sum. `lockfile = true`: the key carries
+# setup-soldr's source/lockfile hash (`f9e7e4902`).
+[cache.family.cook]
+via      = "setup-soldr:cook"
+max      = "700MB"
+lockfile = true
+evict    = "lru"
+per      = "os"
+[cache.family.cook.shapes]
+linux-x64   = { max = "700MB" }
+macos-arm64 = { max = "660MB" }
+windows-x64 = { max = "420MB" }
+
+# `setup-soldr-buildcache-v2-*`: 3 entries, 790 MB live (424 macos-arm64 /
+# 253 windows-x64 / 114 linux-x64). A 3.7x spread across hosts — the clearest
+# case for per-shape ceilings in this repository.
+[cache.family.compile]
+via      = "setup-soldr:build-cache"
+max      = "460MB"
+lockfile = true
+evict    = "lru"
+per      = "os"
+[cache.family.compile.shapes]
+linux-x64   = { max = "140MB" }
+macos-arm64 = { max = "460MB" }
+windows-x64 = { max = "290MB" }
+
+# Families deliberately NOT declared:
+#   * `v0-rust-*` — 14 entries, 2 122 MB (45% of the repository's cache).
+#     UNDECLAREABLE. `ci_lint.cache.families.ALLOWED_VIA_VALUES` contains no
+#     shape whose prefix is `v0-rust-`; that prefix is Swatinem/rust-cache's own
+#     default (`prefix-key || "v0-rust"`, src/config.ts:74), and CACHE-025 BANS
+#     that action outright (unwaivable — no `[[exceptions]]`, no allow comment).
+#     So the correct disposition is to DELETE the three `Swatinem/rust-cache@v2`
+#     steps from .github/workflows/ci.yml, not to invent a `via` here. That is a
+#     separate change and is deliberately NOT made by this commit.
+#     Live entries remain reported as CACHE-001 by `ci-lint cache audit`.
+#   * `actions/cache` from `nix-community/cache-nix-action/restore@v7` in
+#     `nix-checks` — a restore-only step that never saves, so there is no
+#     growing family to bound.
+
+# Ancestor promotion (CACHE-024/#335) is OFF and stays off: setup-soldr#566
+# merged but is UNRELEASED, so `auto-key` has no shipped tag and no repository
+# in the fleet has a live `setup-soldr-ancestor-build-v1-*` entry. Declaring
+# `mode = "ancestor"` would be a standing invitation to opt into a pilot this
+# repository cannot run; CACHE-030 would answer `needs_review` to every run.
+[cache.promote]
+mode = "off"
+
+# ── Local runs ───────────────────────────────────────────────────────────────
+# wild has NO local gate: there is no `local-gate.toml` in the repository and no
+# `local-gate` reference in AGENTS.md (checked 2026-10-05). `[local.gate]` is
+# therefore deliberately ABSENT — `ci_lint.local_gate._load_gate_config` only
+# prefers ci.toml's `[local.gate]` when that table exists, so omitting it leaves
+# the "no gate configured" reading intact.
+[local]
+runner = "docker-act"
+lanes  = ["build", "test", "clippy", "fmt"]
+cache  = "machine"
+
+# ── Allowlists ───────────────────────────────────────────────────────────────
+[allow]
+actions = [
+  "actions/checkout",
+  "actions/setup-go",
+  "zackees/setup-soldr",
+  "wild-linker/action",
+  "dtolnay/rust-toolchain",
+  "taiki-e/install-action",
+  "bytecodealliance/actions/wasmtime/setup",
+  "nixbuild/nix-quick-install-action",
+  "nix-community/cache-nix-action",
+  "EmbarkStudios/cargo-deny-action",
+  "crate-ci/typos",
+  "docker/build-push-action",
+  "docker/login-action",
+  "docker/metadata-action",
+]
+tools   = ["cargo", "soldr", "nix", "docker", "python3", "git"]
+secrets = []
+
+# wild's platform facade already exists and is already the right shape:
+# `libwild/src/host/mod.rs` is the single `cfg_select!` that picks one host tree
+# (windows / wasi / unix+linux / macos / illumos) with no `_` fallback arm, and
+# its own module doc states the invariant this table encodes: "This module is
+# the only place in libwild that selects code based on the *host* operating
+# system... It's also unrelated to `crate::platform`, which is the linker-format
+# (ELF, Mach-O, …) trait."
+#
+# Two extra paths are listed because they select on TARGET, not host, and
+# LAYOUT-001's selector list cannot tell the two apart:
+#   * `libwild/src/args/elf.rs` — `default_emulation()` picks the output
+#     emulation from `target_arch`, because wild only supports running on an
+#     architecture it can also target. This is target selection, and it is
+#     correct where it is.
+#   * `linker-diff/src/utils.rs` — its tests gate `target_os = "linux"` and
+#     `cfg!(target_arch = ...)` around objdump-based disassembly.
+platform-selector = "libwild/src/host/mod.rs"
+platform-code     = [
+  "libwild/src/host/**",
+  "libwild/src/args/elf.rs",
+  "libwild/src/tidy_tests.rs",
+  "linker-diff/src/utils.rs",
+  "wild/tests/integration_tests.rs",
+  "wild/tests/external_tests/lld_tests.rs",
+]
+
+# wild has NO `.github/actions/soldr` wrapper: every job calls
+# `zackees/setup-soldr@v0` directly from a workflow file. `only-in` names the
+# location that actually exists rather than the one the fleet prefers, so
+# CACHE-009/RUST-001 stay quiet on the YAML as it is today instead of firing
+# eleven times on a policy gap this PR does not close. Folding the calls into a
+# wrapper composite action is the follow-up (see the PR body).
+#
+# `require` lists only the inputs wild ACTUALLY passes on every call, verified
+# 2026-10-05 across ci.yml and performance-guard.yml. `save-cache = "plan"` is
+# deliberately NOT required: wild runs no `ci-lint precheck` step, so requiring
+# a plan-derived expression would be a false statement about the workflow.
+[allow.setup-soldr]
+only-in = ".github/workflows"
+require = { "cache" = "true", "solo-toolchain-cache" = "false" }
+
+# One entry per workflow file the repository actually ships, with the triggers
+# that file really carries (read off .github/workflows/*.yml, 2026-10-05).
+[allow.workflows]
+"ci.yml"                   = ["pull_request", "push:main", "workflow_dispatch"]
+"cron.yml"                 = ["schedule", "workflow_dispatch"]
+"nix.yml"                  = ["push:main", "workflow_dispatch"]
+"build-images.yml"         = ["pull_request", "workflow_dispatch"]
+"performance-guard.yml"    = ["pull_request"]
+"promote.yml"              = ["release:published"]
+"release.yml"              = ["push:tag", "pull_request", "workflow_dispatch"]
+"update-nix-lockfile.yaml" = ["schedule", "workflow_dispatch"]
+
+# ── Publish ──────────────────────────────────────────────────────────────────
+# wild ships a Rust binary and a Nix package, not a wheel: no `[publish.pypi]`.
+[publish]
+# ── Exceptions: declared, reported on EVERY run, fail once expired ──────────
+# RUST-005 asks for every integration-test target to be declared, so the
+# linked-harness count is bounded. wild already sits at the floor: exactly one
+# `[[test]]` target, `wild/tests/integration_tests.rs` (`harness = false`, one
+# file, no per-case targets). There is nothing left to consolidate. Declaring
+# `[rust]` to enumerate it would drag `public`/`private`/`ship` into a
+# cache-policy PR, and wild publishes every workspace crate to crates.io
+# (RELEASING.md: "Run `cargo publish` for each package"), so it has no
+# public/private split to declare truthfully.
+[[exceptions]]
+rule    = "RUST-005"
+path    = "wild/tests"
+reason  = "one integration-test target already; nothing to consolidate"
+issue   = "https://github.com/zackees/wild/issues/37"
+expires = "2027-01-31"
