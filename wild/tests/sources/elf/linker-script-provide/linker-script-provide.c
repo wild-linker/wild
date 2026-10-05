@@ -15,6 +15,10 @@
 //#ExpectSym:__data_end
 // GNU ld doesn't emit unreferenced `PROVIDE` symbols
 //#NoSym:unreferenced_symbol
+//#NoSym:unreferenced_sym2
+//#NoSym:undefined_sym
+//#ExpectSym:referenced_sym address=0x5000
+//#ExpectSym:referenced_sym2 address=0x5030
 //#DiffIgnore:.dynamic.*
 //#DiffIgnore:section.got
 //#DiffIgnore:section.rela.dyn
@@ -36,6 +40,7 @@ extern char provided_hidden_absolute __attribute__((weak));
 extern char provided_symbol __attribute__((weak));
 extern char provided_expr1 __attribute__((weak));
 extern char provided_expr2 __attribute__((weak));
+extern char referenced_sym2 __attribute__((weak));
 extern char __text_start __attribute__((weak));
 extern char __text_end __attribute__((weak));
 extern char __data_start __attribute__((weak));
@@ -60,3 +65,5 @@ unsigned long get_data_size(void) {
 unsigned long get_size(void) { return &__sections_end - &__sections_start; }
 
 void* get_mid(void) { return &__sections_mid; }
+
+void* get_referenced(void) { return &referenced_sym2; }

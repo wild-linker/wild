@@ -322,6 +322,9 @@ pub mod secnames {
     pub const DATA_REL_RO_SECTION_NAME: &[u8] = DATA_REL_RO_SECTION_NAME_STR.as_bytes();
     pub const RISCV_ATTRIBUTES_SECTION_NAME_STR: &str = ".riscv.attributes";
     pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
+
+    pub const ARM_ATTRIBUTES_SECTION_NAME_STR: &str = ".ARM.attributes";
+    pub const ARM_ATTRIBUTES_SECTION_NAME: &[u8] = ARM_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
     pub const RELRO_PADDING_SECTION_NAME_STR: &str = ".relro_padding";
     pub const RELRO_PADDING_SECTION_NAME: &[u8] = RELRO_PADDING_SECTION_NAME_STR.as_bytes();
     pub const SYMTAB_SHNDX_SECTION_NAME_STR: &str = ".symtab_shndx";

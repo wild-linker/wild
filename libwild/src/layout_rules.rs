@@ -136,6 +136,7 @@ pub(crate) enum SectionRuleOutcome {
     Debug,
     DebugIndex,
     RiscVAttribute,
+    AArch64Attribute,
     SortedSection(SectionOutputInfo),
     InitFunc,
     CompactUnwind,
@@ -238,7 +239,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
                 let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
+                    kind: RedirectKind::Provide,
                     expression: provide.value.clone(),
                     loc: loc_for_global_expr(&provide.value, current_section_id),
                 });
@@ -400,7 +401,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                     ContentsCommand::Provide(provide) => {
                                         let placement = SymbolPlacement::Redirect(Redirect {
-                                            kind: RedirectKind::Script,
+                                            kind: RedirectKind::Provide,
                                             expression: provide.value.clone(),
                                             loc: last_symbol_loc.clone(),
                                         });
@@ -472,7 +473,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                         }
                         SectionCommand::Provide(provide) => {
                             let placement = SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
+                                kind: RedirectKind::Provide,
                                 expression: provide.value.clone(),
                                 loc: loc.clone(),
                             });

@@ -165,6 +165,17 @@ impl crate::platform::Arch for ElfAArch64 {
         layout.tls_start_address_aarch64()
     }
 
+    fn process_aarch64_build_attributes<'data>(
+        object: &<Self::Platform as Platform>::File<'data>,
+        format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
+        aarch64_attributes_section_index: object::SectionIndex,
+    ) -> crate::error::Result {
+        format_specific.aarch64_build_attributes = Some(
+            crate::elf::process_aarch64_build_attributes(object, aarch64_attributes_section_index)?,
+        );
+        Ok(())
+    }
+
     fn get_property_class(property_type: u32) -> Option<PropertyClass> {
         match object::elf::GnuPropertyType(property_type) {
             GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),

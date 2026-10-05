@@ -6,7 +6,6 @@
 //#ExpectSym:main
 
 //#Config:gcc:default
-//#SkipArch: ppc64le
 
 //#Config:gcc-static:default
 //#SkipArch: ppc64le
@@ -45,7 +44,6 @@
 //#SkipArch: riscv64,ppc64le
 
 //#Config:clang:default
-//#SkipArch: ppc64le
 //#Compiler: clang
 
 //#Config:gcc-indirect-external:default

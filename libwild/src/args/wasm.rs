@@ -494,13 +494,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .declare()
         .long("help")
         .help("Show this help message")
-        .execute(|_args, _modifier_stack| {
-            use std::io::Write as _;
-            let parser = setup_argument_parser();
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "{}", parser.generate_help())?;
-            std::process::exit(0);
-        });
+        .execute(|_args, _modifier_stack| setup_argument_parser().print_help_and_exit(""));
 
     parser
         .declare()

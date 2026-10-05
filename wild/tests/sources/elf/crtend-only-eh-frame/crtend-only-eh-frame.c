@@ -9,9 +9,9 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:section.eh_frame.alignment
-//#SkipArch:ppc64le
 
 //#Config:gcc:default
+//#SkipArch: ppc64le
 //#LinkerDriver:gcc
 
 //#Config:clang:default

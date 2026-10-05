@@ -4,6 +4,9 @@ PROVIDE(provided_symbol = provided_absolute);
 PROVIDE(provided_expr1 = provided_symbol + provided_hidden_absolute);
 PROVIDE(provided_expr2 = (0xffffffff80000000 + (((provided_absolute * 0x1000) + (provided_hidden_absolute * 0x100 - 1)) & ~(0x200000 - 1))));
 PROVIDE(unreferenced_sym = 0x4000);
+PROVIDE(unreferenced_sym2 = undefined_sym);
+PROVIDE(referenced_sym = 0x5000);
+PROVIDE(referenced_sym2 = referenced_sym + 0x30);
 
 SECTIONS {
 	PROVIDE(__sections_start = .);

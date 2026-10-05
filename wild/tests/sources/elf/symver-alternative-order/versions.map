@@ -1,1 +1,2 @@
-V1 { global: cpu_model; local: *; };
+V1 { global: cpu_model; };
+V2 {} V1;

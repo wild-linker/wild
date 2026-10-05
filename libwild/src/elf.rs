@@ -255,8 +255,6 @@ pub(crate) trait ElfClass: Copy + Default + Send + Sync + std::fmt::Debug + 'sta
     const VERSION_D_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const VERSION_R_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const GNU_PROPERTY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
-    const GNU_PROPERTY_ENTRY_SIZE: u64 =
-        Self::GNU_PROPERTY_ALIGNMENT.align_up(size_of::<NoteProperty>() as u64);
 }
 
 pub(crate) trait ElfSymbol:
@@ -789,8 +787,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn maybe_only_keep_debug<'data, A: Arch<Platform = Self>>(
         layout: &mut layout::Layout<'data, Self>,
     ) -> Result {
-        crate::only_keep_debug::maybe_only_keep_debug_elf::<C>(layout);
-        Ok(())
+        crate::only_keep_debug::maybe_only_keep_debug_elf::<C>(layout)
     }
 
     fn maybe_init_linker_plugin<'data>(
@@ -1156,6 +1153,25 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             let header = state.object.section(section_index)?;
             if header.sh_type(LittleEndian) == object::elf::SHT_CREL {
                 bail!("CREL with partial linking isn't yet supported: {state}");
+            }
+            if !resources.symbol_db.args.discard_none() {
+                match state.relocations(section_index)? {
+                    RelocationList::Rela(relocations) => {
+                        for raw in relocations {
+                            let rel = ElfRela::<C>::new(*raw);
+                            if let Some(s) = rel.symbol() {
+                                let symbol_id = state.symbol_id_range.input_to_id(s);
+                                resources
+                                    .per_symbol_flags
+                                    .get_atomic(symbol_id)
+                                    .fetch_or(ValueFlags::DIRECT);
+                            }
+                        }
+                    }
+                    RelocationList::Crel(_) => {
+                        bail!("CREL with partial linking isn't yet supported: {state}")
+                    }
+                }
             }
             return Ok(());
         }
@@ -2921,6 +2937,11 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 return SectionRuleOutcome::Discard;
             }
             secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
+            secnames::ARM_ATTRIBUTES_SECTION_NAME
+                if args.architecture() == Architecture::AArch64 =>
+            {
+                return SectionRuleOutcome::AArch64Attribute;
+            }
             secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
             secnames::NOTE_ABI_TAG_SECTION_NAME => {
                 return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
@@ -3479,16 +3500,33 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
             {
                 let gnu_property = gnu_property?;
 
-                // Right now, skip all properties other than those with size equal to 4.
-                // There are existing properties, but unused right now:
-                // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
-                // TODO: support in the future
-                if gnu_property.pr_data().len() != 4 {
+                let ptype = gnu_property.pr_type();
+                let data = gnu_property.pr_data();
+
+                if ptype == object::elf::GNU_PROPERTY_AARCH64_FEATURE_PAUTH {
+                    ensure!(
+                        data.len() == 2 * size_of::<u64>(),
+                        "Invalid AArch64 PAuth GNU property size"
+                    );
+
+                    let platform = u64::from_le_bytes(data[..8].try_into().unwrap());
+                    let version = u64::from_le_bytes(data[8..16].try_into().unwrap());
+
+                    state.gnu_property_notes.push(crate::elf::GnuProperty {
+                        ptype,
+                        data: GnuPropertyData::AArch64PAuth(AArch64PAuth { platform, version }),
+                    });
                     continue;
                 }
+
+                // Other supported GNU properties currently have 4-byte payloads.
+                if data.len() != size_of::<u32>() {
+                    continue;
+                }
+
                 state.gnu_property_notes.push(crate::elf::GnuProperty {
-                    ptype: gnu_property.pr_type(),
-                    data: gnu_property.data_u32(e)?,
+                    ptype,
+                    data: GnuPropertyData::U32(gnu_property.data_u32(e)?),
                 });
             }
         }
@@ -4192,6 +4230,21 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_data: u32,
 }
 
+/// GNU_PROPERTY_AARCH64_FEATURE_PAUTH.
+///
+/// The PAuth ABI defines pr_data as two 64-bit words: the platform
+/// identifier followed by the version number.
+///
+/// https://github.com/ARM-software/abi-aa/blob/main/pauthabielf64/pauthabielf64.rst
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct AArch64PAuthProperty {
+    pub(crate) pr_type: u32,
+    pub(crate) pr_datasz: u32,
+    pub(crate) platform: u64,
+    pub(crate) version: u64,
+}
+
 pub(crate) struct PageMaskValue {
     pub(crate) symbol_plus_addend: u64,
     pub(crate) got_entry: u64,
@@ -4327,10 +4380,51 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct AArch64PAuth {
+    pub(crate) platform: u64,
+    pub(crate) version: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GnuPropertyData {
+    U32(u32),
+    AArch64PAuth(AArch64PAuth),
+}
+
+impl GnuPropertyData {
+    pub(crate) fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::U32(data) => Some(*data),
+            Self::AArch64PAuth(_) => None,
+        }
+    }
+
+    pub(crate) fn as_u32_mut(&mut self) -> Option<&mut u32> {
+        match self {
+            Self::U32(data) => Some(data),
+            Self::AArch64PAuth(_) => None,
+        }
+    }
+
+    pub(crate) fn data_size(&self) -> u64 {
+        match self {
+            Self::U32(_) => size_of::<u32>() as u64,
+            Self::AArch64PAuth(_) => 2 * size_of::<u64>() as u64,
+        }
+    }
+
+    pub(crate) fn entry_size<C: ElfClass>(&self) -> u64 {
+        const PROPERTY_HEADER_SIZE: u64 = 2 * size_of::<u32>() as u64;
+
+        C::GNU_PROPERTY_ALIGNMENT.align_up(PROPERTY_HEADER_SIZE + self.data_size())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GnuProperty {
     pub(crate) ptype: object::elf::GnuPropertyType,
-    pub(crate) data: u32,
+    pub(crate) data: GnuPropertyData,
 }
 
 #[derive(Debug)]
@@ -4369,10 +4463,17 @@ pub(crate) enum RiscVAttribute {
     PrivilegedSpecRevision(u64),
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AArch64BuildAttributes {
+    pub(crate) feature_and_bits: Option<u32>,
+    pub(crate) pauth: Option<AArch64PAuth>,
+}
+
 #[derive(Default)]
 pub(crate) struct ObjectLayoutStateExt<'data, C: ElfClass> {
     gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
+    pub(crate) aarch64_build_attributes: Option<AArch64BuildAttributes>,
 
     has_eh_frame_input: bool,
 
@@ -4407,8 +4508,10 @@ impl LayoutExt {
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
-        let gnu_property_notes =
+        let mut gnu_property_notes =
             merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa, args.force_ibt);
+
+        merge_aarch64_build_attributes(states.clone(), &mut gnu_property_notes)?;
         if args.force_ibt || args.cet_report != crate::args::elf::CetReport::None {
             for obj in objects_iter(groups) {
                 let filename = obj.input.file.filename.to_string_lossy();
@@ -4441,7 +4544,8 @@ fn check_cet_properties(filename: &str, props: &[GnuProperty], args: &ElfArgs) -
     let feature_bits = props
         .iter()
         .find(|p| p.ptype == object::elf::GNU_PROPERTY_X86_FEATURE_1_AND)
-        .map_or(0, |p| p.data);
+        .and_then(|p| p.data.as_u32())
+        .unwrap_or(0);
 
     if args.force_ibt && (feature_bits & GNU_PROPERTY_X86_FEATURE_1_IBT == 0) {
         args.warning(format!(
@@ -4494,12 +4598,15 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
             let Some(property_class) = A::get_property_class(prop.ptype.0) else {
                 continue;
             };
+            let Some(data) = prop.data.as_u32() else {
+                continue;
+            };
             file_map
                 .entry(prop.ptype)
                 .and_modify(|entry: &mut (u32, PropertyClass)| {
-                    entry.0 |= prop.data;
+                    entry.0 |= data;
                 })
-                .or_insert_with(|| (prop.data, property_class));
+                .or_insert_with(|| (data, property_class));
         }
         // Then AND across files to keep only features all files support.
         for (ptype, (data, class)) in file_map {
@@ -4542,7 +4649,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
             } {
                 Some(GnuProperty {
                     ptype: property_type,
-                    data: property_value,
+                    data: GnuPropertyData::U32(property_value),
                 })
             } else {
                 None
@@ -4557,17 +4664,166 @@ fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
             .iter_mut()
             .find(|p| p.ptype == GNU_PROPERTY_X86_FEATURE_1_AND)
         {
-            prop.data |= GNU_PROPERTY_X86_FEATURE_1_IBT;
+            if let Some(data) = prop.data.as_u32_mut() {
+                *data |= GNU_PROPERTY_X86_FEATURE_1_IBT;
+            }
         } else {
             output.push(GnuProperty {
                 ptype: GNU_PROPERTY_X86_FEATURE_1_AND,
-                data: GNU_PROPERTY_X86_FEATURE_1_IBT,
+                data: GnuPropertyData::U32(GNU_PROPERTY_X86_FEATURE_1_IBT),
             });
             output.sort_by_key(|p| p.ptype);
         }
     }
 
     output
+}
+
+fn merge_aarch64_build_attributes<'states, 'data: 'states, C: ElfClass>(
+    states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data, C>> + Clone,
+    output: &mut Vec<GnuProperty>,
+) -> Result {
+    let has_build_attributes = states.clone().any(|state| {
+        state.aarch64_build_attributes.is_some_and(|attributes| {
+            attributes.feature_and_bits.is_some() || attributes.pauth.is_some()
+        })
+    });
+
+    // GNU_PROPERTY_AARCH64_FEATURE_PAUTH has a 16-byte payload and therefore
+    // isn't handled by the generic u32 GNU property merge above. Preserve and
+    // validate it here when relinking GNU-property inputs.
+    if !has_build_attributes {
+        let pauth_per_file = states
+            .map(|state| {
+                let pauth_values = state
+                    .gnu_property_notes
+                    .iter()
+                    .filter(|property| {
+                        property.ptype == object::elf::GNU_PROPERTY_AARCH64_FEATURE_PAUTH
+                    })
+                    .map(|property| {
+                        let GnuPropertyData::AArch64PAuth(pauth) = property.data else {
+                            bail!("invalid AArch64 PAuth GNU property representation");
+                        };
+
+                        Ok(pauth)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let Ok(pauth) = pauth_values.into_iter().unique().at_most_one() else {
+                    bail!("incompatible AArch64 PAuth GNU properties in input file")
+                };
+
+                Ok(pauth)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        if pauth_per_file.iter().any(Option::is_some) {
+            // An input with no PAuth marking contributes the reserved
+            // incompatible value (0, 0).
+            let Ok(pauth) = pauth_per_file
+                .into_iter()
+                .map(|pauth| {
+                    pauth.unwrap_or(AArch64PAuth {
+                        platform: 0,
+                        version: 0,
+                    })
+                })
+                .unique()
+                .exactly_one()
+            else {
+                bail!("incompatible AArch64 PAuth GNU properties")
+            };
+
+            output.push(GnuProperty {
+                ptype: object::elf::GNU_PROPERTY_AARCH64_FEATURE_PAUTH,
+                data: GnuPropertyData::AArch64PAuth(pauth),
+            });
+
+            output.sort_by_key(|property| property.ptype);
+        }
+
+        return Ok(());
+    }
+
+    // Mixing AArch64 GNU properties with build attributes is intentionally
+    // deferred to the follow-up implementation.
+    ensure!(
+        !states.clone().any(|state| {
+            state.gnu_property_notes.iter().any(|property| {
+                property.ptype == object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND
+                    || property.ptype == object::elf::GNU_PROPERTY_AARCH64_FEATURE_PAUTH
+            })
+        }),
+        "mixing AArch64 build attributes with GNU properties is not supported yet"
+    );
+
+    let merged_features = states
+        .clone()
+        .any(|state| {
+            state
+                .aarch64_build_attributes
+                .and_then(|attributes| attributes.feature_and_bits)
+                .is_some()
+        })
+        .then(|| {
+            states.clone().fold(u32::MAX, |features, state| {
+                features
+                    & state
+                        .aarch64_build_attributes
+                        .and_then(|attributes| attributes.feature_and_bits)
+                        .unwrap_or(0)
+            })
+        });
+
+    let Ok(merged_pauth) = states
+        .filter_map(|state| {
+            state
+                .aarch64_build_attributes
+                .and_then(|attributes| attributes.pauth)
+        })
+        .filter(|pauth| pauth.platform != 0 || pauth.version != 0)
+        .unique()
+        .at_most_one()
+    else {
+        bail!("incompatible AArch64 PAuth build attributes")
+    };
+
+    if let Some(features) = merged_features
+        && features != 0
+    {
+        output.push(GnuProperty {
+            ptype: object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND,
+            data: GnuPropertyData::U32(features),
+        });
+    }
+
+    if let Some(pauth) = merged_pauth {
+        // Build-attribute (0, 1) represents the invalid PAuth platform and is
+        // encoded as GNU PAuth core information (0, 0).
+        let pauth = if pauth.platform == 0 {
+            ensure!(
+                pauth.version == 1,
+                "reserved AArch64 PAuth build attribute tuple (0, {})",
+                pauth.version
+            );
+            AArch64PAuth {
+                platform: 0,
+                version: 0,
+            }
+        } else {
+            pauth
+        };
+
+        output.push(GnuProperty {
+            ptype: object::elf::GNU_PROPERTY_AARCH64_FEATURE_PAUTH,
+            data: GnuPropertyData::AArch64PAuth(pauth),
+        });
+    }
+
+    output.sort_by_key(|property| property.ptype);
+
+    Ok(())
 }
 
 fn merge_eflags<'files, 'data: 'files, C: ElfClass, A: Arch<Platform = Elf<C>>>(
@@ -4732,7 +4988,10 @@ pub(crate) fn gnu_property_notes_section_size<C: ElfClass>(
     } else {
         C::NOTE_HEADER_SIZE
             + GNU_NOTE_NAME.len() as u64
-            + gnu_property_notes.len() as u64 * C::GNU_PROPERTY_ENTRY_SIZE
+            + gnu_property_notes
+                .iter()
+                .map(|property| property.data.entry_size::<C>())
+                .sum::<u64>()
     }
 }
 
@@ -4766,6 +5025,126 @@ fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
             + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
             + riscv_attributes.iter().map(attribute_size).sum::<usize>()
     }) as u64
+}
+
+pub(crate) fn process_aarch64_build_attributes(
+    object: &File64,
+    section_index: object::SectionIndex,
+) -> Result<AArch64BuildAttributes> {
+    let section = object.section(section_index)?;
+    let mut content = section.data(LittleEndian, object.data)?;
+
+    ensure!(content.starts_with(b"A"), "Header must start with 'A'");
+    content = &content[1..];
+
+    let mut attributes = AArch64BuildAttributes::default();
+
+    while !content.is_empty() {
+        let subsection_size =
+            read_u32(&mut content).context("Cannot read AArch64 subsection size")? as usize;
+
+        ensure!(
+            subsection_size >= size_of::<u32>(),
+            "Invalid AArch64 attribute subsection size"
+        );
+
+        let payload_size = subsection_size - size_of::<u32>();
+
+        ensure!(
+            content.len() >= payload_size,
+            "AArch64 attribute subsection extends beyond section"
+        );
+
+        let (mut subsection, rest) = content.split_at(payload_size);
+        content = rest;
+
+        let name = read_string(&mut subsection).context("Cannot read AArch64 subsection name")?;
+
+        ensure!(
+            subsection.len() >= 2,
+            "Invalid AArch64 attribute subsection header"
+        );
+
+        let comprehension = subsection[0];
+        let parameter_type = subsection[1];
+        subsection = &subsection[2..];
+
+        ensure!(
+            comprehension <= 1,
+            "Invalid AArch64 build attribute comprehension value {comprehension}"
+        );
+        ensure!(
+            parameter_type <= 1,
+            "Invalid AArch64 build attribute parameter type {parameter_type}"
+        );
+
+        match name.as_str() {
+            "aeabi_feature_and_bits" => {
+                ensure!(
+                    comprehension == 1,
+                    "aeabi_feature_and_bits must be optional"
+                );
+                ensure!(
+                    parameter_type == 0,
+                    "aeabi_feature_and_bits must use ULEB128 values"
+                );
+
+                let mut feature_bits = 0_u32;
+
+                while !subsection.is_empty() {
+                    let tag =
+                        read_uleb128(&mut subsection).context("Cannot read AArch64 feature tag")?;
+                    let value = read_uleb128(&mut subsection)
+                        .context("Cannot read AArch64 feature value")?;
+
+                    ensure!(tag < 128, "Invalid AArch64 feature tag {tag}");
+
+                    if value != 0 && tag < u64::from(u32::BITS) {
+                        feature_bits |= 1_u32 << tag;
+                    }
+                }
+
+                attributes.feature_and_bits = Some(feature_bits);
+            }
+
+            "aeabi_pauthabi" => {
+                ensure!(comprehension == 0, "aeabi_pauthabi must be required");
+                ensure!(
+                    parameter_type == 0,
+                    "aeabi_pauthabi must use ULEB128 values"
+                );
+
+                let mut platform = 0_u64;
+                let mut version = 0_u64;
+
+                while !subsection.is_empty() {
+                    let tag =
+                        read_uleb128(&mut subsection).context("Cannot read AArch64 PAuth tag")?;
+                    let value =
+                        read_uleb128(&mut subsection).context("Cannot read AArch64 PAuth value")?;
+
+                    match tag {
+                        1 => platform = value,
+                        2 => version = value,
+                        _ => {
+                            bail!("Unrecognized tag {tag} in required AArch64 subsection `{name}`");
+                        }
+                    }
+                }
+
+                attributes.pauth = Some(AArch64PAuth { platform, version });
+            }
+
+            _ => {
+                ensure!(
+                    !name.starts_with("aeabi_") || comprehension == 1,
+                    "Unsupported required AArch64 build attribute subsection `{name}`"
+                );
+            }
+        }
+    }
+
+    Ok(attributes)
 }
 
 pub(crate) fn process_riscv_attributes(
@@ -6135,9 +6514,8 @@ fn process_relocation<
     let mut classified =
         classify_symbol_relocation::<C, A, R>(object, rel, section, local_sym_index, resources)?;
 
-    materialize_relocation_requirements::<C, A, R>(
+    materialize_relocation_requirements::<C, A>(
         common,
-        rel,
         section,
         resources,
         is_debug_section,
@@ -6252,14 +6630,8 @@ fn classify_symbol_relocation<
 
 /// Account for GOT/PLT/dynamic-reloc/TLS sizes implied by this relocation.
 #[inline(always)]
-fn materialize_relocation_requirements<
-    'data,
-    C: ElfClass,
-    A: Arch<Platform = Elf<C>>,
-    R: Relocation<Platform = Elf<C>>,
->(
+fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     common: &mut CommonGroupState<'data, Elf<C>>,
-    rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
     resources: &layout::GraphResources<'data, '_, Elf<C>>,
     is_debug_section: bool,
@@ -6359,9 +6731,18 @@ fn materialize_relocation_requirements<
         }
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
-        && section_is_writable
-        && symbol_db.output_kind.is_position_independent()
+        && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
     {
+        if classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8) {
+            bail!(
+                "Relocation {} against ifunc `{}` is narrower than an address",
+                A::rel_type_to_string(r_type),
+                resources.symbol_db.symbol_name_for_display(symbol_id),
+            );
+        }
+        if !section_is_writable {
+            resources.has_textrel.store(true, atomic::Ordering::Relaxed);
+        }
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
@@ -6370,8 +6751,9 @@ fn materialize_relocation_requirements<
         if section_is_writable {
             // Odd offsets can't be encoded as RELR address entries (LSB used as
             // bitmap marker), so fall back to RELA for them.
-            if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
-                relr_writer.encode(rel.offset(), |_, encoding| {
+            if resources.symbol_db.args.is_relr_enabled() && classified.rel_offset.is_multiple_of(2)
+            {
+                relr_writer.encode(classified.rel_offset, |_, encoding| {
                     if matches!(encoding, RelrEntryEncoding::New) {
                         common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                     }

@@ -160,7 +160,6 @@ impl SaveDirState {
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
 
-        let mut original_output_file = None;
         write_env(&mut out, args)?;
 
         // Collect at-file setup code and exec args separately so we can emit setup
@@ -168,11 +167,11 @@ impl SaveDirState {
         let mut setup_buf: Vec<u8> = Vec::new();
         let mut args_buf: Vec<u8> = Vec::new();
         let mut at_file_counter = 0usize;
-        self.write_args(
+        let original_output_file = self.write_args(
             &self.args,
+            args,
             &mut args_buf,
             &mut setup_buf,
-            &mut original_output_file,
             &mut at_file_counter,
             false,
         )?;
@@ -201,13 +200,14 @@ impl SaveDirState {
     fn write_args(
         &self,
         args: &[String],
+        parsed_args: &impl platform::Args,
         out: &mut dyn Write,
         setup_out: &mut dyn Write,
-        original_output_file: &mut Option<String>,
         at_file_counter: &mut usize,
         is_rsp_file: bool,
-    ) -> Result {
+    ) -> Result<Option<String>> {
         let mut args = args.iter();
+        let mut original_output_file = None;
 
         while let Some(arg) = args.next() {
             if let Some(args_path) = arg.strip_prefix("@") {
@@ -217,9 +217,9 @@ impl SaveDirState {
                     // Expand nested response files inline into the current file.
                     self.write_args(
                         &args_from_file,
+                        parsed_args,
                         out,
                         setup_out,
-                        original_output_file,
                         at_file_counter,
                         true,
                     )?;
@@ -234,13 +234,12 @@ impl SaveDirState {
                         let mut at_file = std::fs::File::create(&at_path)
                             .with_context(|| format!("Failed to create `{}`", at_path.display()))?;
                         let mut at_out = BufWriter::new(&mut at_file);
-                        let mut dummy_orig = None;
                         let mut noop_setup: Vec<u8> = Vec::new();
                         self.write_args(
                             &args_from_file,
+                            parsed_args,
                             &mut at_out,
                             &mut noop_setup,
-                            &mut dummy_orig,
                             at_file_counter,
                             true,
                         )?;
@@ -271,12 +270,18 @@ impl SaveDirState {
                     path = args.next().map_or_default(|s| s.as_str());
                 }
                 out.write_all(b"-o $OUT")?;
-                *original_output_file = Some(path.to_owned());
+                original_output_file = Some(path.to_owned());
             } else if let Some(mut dir) = arg.strip_prefix("-L") {
                 if dir.is_empty() {
                     dir = args.next().map_or_default(|s| s.as_str());
                 }
 
+                let dir = parsed_args
+                    .sysroot()
+                    .and_then(|sysroot| {
+                        crate::linker_script::maybe_forced_sysroot(Path::new(dir), sysroot)
+                    })
+                    .unwrap_or_else(|| Box::from(Path::new(dir)));
                 let dir = std::path::absolute(dir)?;
                 out.write_all(b"-L")?;
                 write_copied_file_arg(out, &dir)?;
@@ -313,7 +318,7 @@ impl SaveDirState {
             }
         }
 
-        Ok(())
+        Ok(original_output_file)
     }
 
     fn output_path(&self, path: &Path) -> PathBuf {

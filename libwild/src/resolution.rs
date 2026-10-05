@@ -752,6 +752,9 @@ pub(crate) enum SectionSlot {
 
     // RISC-V attributes section (.riscv.attributes)
     RiscvVAttributes(object::SectionIndex),
+
+    // AArch64 build attributes section (.ARM.attributes)
+    AArch64Attributes(object::SectionIndex),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1336,7 +1339,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
 
                             if visibility == Visibility::Default
                                 && (output_kind.is_shared_object()
-                                    || (!output_kind.is_static_executable()
+                                    || (output_kind.is_dynamic_executable()
                                         && symbol_db.symbol_strength(undefined.symbol_id, groups)
                                             == SymbolStrength::Weak))
                             {
@@ -1696,6 +1699,12 @@ fn resolve_section<'data, P: Platform>(
                 crate::part_id::UNMAPPED,
             ));
         }
+        SectionRuleOutcome::AArch64Attribute => {
+            return Ok((
+                SectionSlot::AArch64Attributes(input_section_index),
+                crate::part_id::UNMAPPED,
+            ));
+        }
     }
 
     if part_id == PartId::CUSTOM_PLACEHOLDER {
@@ -1973,6 +1982,7 @@ impl SectionSlot {
                 | SectionSlot::InitFunc(..)
                 | SectionSlot::CompactUnwind(..)
                 | SectionSlot::NoteGnuProperty(..)
+                | SectionSlot::AArch64Attributes(..)
         )
     }
 

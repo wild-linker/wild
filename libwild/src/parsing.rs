@@ -143,6 +143,7 @@ pub(crate) struct Redirect<'data> {
 pub(crate) enum RedirectKind {
     DefSym,
     Script,
+    Provide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,13 +369,17 @@ impl Redirect<'_> {
             kind = self.kind.message_text(),
         )
     }
+
+    pub(crate) fn is_provide(&self) -> bool {
+        matches!(self.kind, RedirectKind::Provide)
+    }
 }
 
 impl RedirectKind {
     fn message_text(self) -> &'static str {
         match self {
             RedirectKind::DefSym => "--defsym",
-            RedirectKind::Script => "linker script",
+            RedirectKind::Script | RedirectKind::Provide => "linker script",
         }
     }
 }

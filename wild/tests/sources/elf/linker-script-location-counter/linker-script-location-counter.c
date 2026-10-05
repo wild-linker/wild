@@ -16,7 +16,7 @@
 //#LinkerScript:linker-script-single-location-counter.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections
@@ -25,7 +25,7 @@
 //#LinkerScript:linker-script-section-sizeof.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 
 //#Config:underflow
 //#Object:runtime.c
@@ -36,7 +36,7 @@
 //#LinkerScript:linker-script-lc-after-section.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
@@ -45,7 +45,7 @@
 //#LinkArgs:--defsym=offset4=0x300
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
@@ -61,7 +61,7 @@
 //#Object:object-symbol-prefix.c
 //#Object:object-symbol-target.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
@@ -80,7 +80,7 @@
 //#Object:runtime.c
 //#RunEnabled:false
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
@@ -99,7 +99,7 @@
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
-//#SkipArch:riscv64,ppc64le
+//#SkipArch:riscv64
 // The binary created is not valid, so we can't run it.
 //#RunEnabled:false
 

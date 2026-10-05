@@ -157,7 +157,7 @@ jobs:
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2.87.18
+      - uses: taiki-e/install-action@v2.87.22
         with:
           tool: wasm-tools
       - name: Setup Wasmtime
@@ -215,7 +215,7 @@ jobs:
       - run: rm rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
-      - uses: taiki-e/install-action@v2.87.18
+      - uses: taiki-e/install-action@v2.87.22
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
@@ -306,7 +306,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.50.2
+        uses: crate-ci/typos@v1.50.3
 
   calc-matrix:
     name: Find Nix checks

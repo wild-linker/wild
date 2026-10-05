@@ -185,8 +185,6 @@ tests = [
   "static-dso.sh",                  # Different message formats
   "stdout.sh",
   "symver-dup.sh",                  # Different message formats
-  "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
-  "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
   "unresolved-symbols.sh",          # Different message formats
   "version.sh",                     # The message of `--version` is different from mold's one.
   "warn-unresolved-symbols.sh",     # Different message formats
@@ -236,7 +234,6 @@ tests = [
   "defsym-missing-symbol.sh",
   "demangle-cpp.sh",
   "discard-section.sh",
-  "discard.sh",
   "dynamic-linker.sh",
   "glibc-2.22-bug.sh",
   "initfirst.sh",
@@ -249,7 +246,6 @@ tests = [
   "noinhibit-exec.sh",
   "rodata-name.sh",
   "section-attributes.sh",
-  "strip.sh",
   "stt-common.sh",
   "symbol-version-as-needed.sh",
   "symbol-version-multi.sh",

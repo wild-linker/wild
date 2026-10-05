@@ -102,6 +102,32 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Write PLT entry for the architecture.
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
+    /// Writes a PLT entry. `toc_base` is the value of `r2` / `.TOC.` on ppc64. Architectures whose
+    /// stubs are PC-relative ignore it.
+    fn write_plt_entry_with_toc(
+        plt_entry: &mut [u8],
+        got_address: u64,
+        plt_address: u64,
+        _toc_base: u64,
+    ) -> Result {
+        Self::write_plt_entry(plt_entry, got_address, plt_address)
+    }
+
+    /// Patches the instruction after a call that goes through a PLT stub. ppc64 replaces the
+    /// compiler's nop with `ld r2, 24(r1)`, undoing the save the stub did before the indirect
+    /// branch.
+    fn restore_toc_after_plt_call(_code: &mut [u8], _branch_offset: usize) -> Result {
+        Ok(())
+    }
+
+    /// Whether an absolute reference to an ifunc is an IRELATIVE dynamic relocation.
+    fn absolute_ifunc_needs_irelative(
+        output_kind: crate::output_kind::OutputKind,
+        section_is_writable: bool,
+    ) -> bool {
+        section_is_writable && output_kind.is_position_independent()
+    }
+
     /// Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(
         r_type: <Self::Platform as Platform>::RelocationInfo,
@@ -237,6 +263,14 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
+    }
+
+    fn process_aarch64_build_attributes<'data>(
+        _object: &<Self::Platform as Platform>::File<'data>,
+        _format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
+        _aarch64_attributes_section_index: object::SectionIndex,
+    ) -> Result {
+        bail!(".ARM.attributes section is supported only for aarch64 target");
     }
 
     /// Returns the thunk configuration for this architecture, or `None` if this architecture
@@ -1721,6 +1755,14 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     }
 
     fn should_output_partial_object(&self) -> bool {
+        false
+    }
+
+    fn discard_none(&self) -> bool {
+        false
+    }
+
+    fn discard_all(&self) -> bool {
         false
     }
 

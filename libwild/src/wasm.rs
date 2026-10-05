@@ -22,6 +22,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use crate::wasm_writer::EncodedMetadata;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
@@ -34,8 +35,6 @@ use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::ops::Range;
-use wasm_encoder::NameMap;
-use wasm_encoder::NameSection;
 use wasmparser::BinaryReader;
 use wasmparser::CodeSectionReader;
 use wasmparser::ConstExpr;
@@ -187,9 +186,9 @@ pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
 pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 
 /// Feature is used by this object (`+` in the target_features section).
-const TARGET_FEATURE_PREFIX_USED: u8 = b'+';
+pub(crate) const TARGET_FEATURE_PREFIX_USED: u8 = b'+';
 /// Feature must not appear in the output (`-` in the target_features section).
-const TARGET_FEATURE_PREFIX_DISALLOWED: u8 = b'-';
+pub(crate) const TARGET_FEATURE_PREFIX_DISALLOWED: u8 = b'-';
 
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
@@ -210,7 +209,7 @@ const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 const DEFAULT_TABLE_BASE_INIT_EXPR: &[u8] = &[0x41, 0x01];
 
 /// Sentinel for a GC'd Wasm index slot.
-const WASM_DEAD_INDEX: u32 = u32::MAX;
+pub(crate) const WASM_DEAD_INDEX: u32 = u32::MAX;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -489,88 +488,6 @@ impl WasmRelocation {
             _ => 0,
         }
     }
-}
-
-/// Write `value` as an unsigned LEB128 into `buf`, returning the number of bytes written.
-pub(crate) fn write_uleb128(buf: &mut [u8], value: u64) -> usize {
-    let mut writable = &mut *buf;
-    leb128::write::unsigned(&mut writable, value).unwrap()
-}
-
-/// Write `value` as a signed LEB128 into `buf`, returning the number of bytes written.
-pub(crate) fn write_sleb128(buf: &mut [u8], value: i64) -> usize {
-    let mut writable = &mut *buf;
-    leb128::write::signed(&mut writable, value).unwrap()
-}
-
-/// Write `value` as a 5-byte fixed-width unsigned LEB128. Used for wasm reloc slots that reserve
-/// exactly 5 bytes regardless of the encoded value.
-pub(crate) fn write_uleb128_5(buf: &mut [u8; 5], value: u32) {
-    buf[0] = (value as u8 & 0x7f) | 0x80;
-    buf[1] = ((value >> 7) as u8 & 0x7f) | 0x80;
-    buf[2] = ((value >> 14) as u8 & 0x7f) | 0x80;
-    buf[3] = ((value >> 21) as u8 & 0x7f) | 0x80;
-    buf[4] = (value >> 28) as u8 & 0x0f;
-}
-
-/// Write `value` as a 5-byte fixed-width signed LEB128. The high three bits of the final byte are
-/// sign-extended so the encoded form is canonical for any `i32`.
-pub(crate) fn write_sleb128_5(buf: &mut [u8; 5], value: i32) {
-    let v = value as u32;
-    buf[0] = (v as u8 & 0x7f) | 0x80;
-    buf[1] = ((v >> 7) as u8 & 0x7f) | 0x80;
-    buf[2] = ((v >> 14) as u8 & 0x7f) | 0x80;
-    buf[3] = ((v >> 21) as u8 & 0x7f) | 0x80;
-    let last = (v >> 28) as u8 & 0x0f;
-    let sign_ext = if value < 0 { 0x70 } else { 0x00 };
-    buf[4] = last | sign_ext;
-}
-
-pub(crate) fn apply_relocation(
-    bytes: &mut [u8],
-    reloc: &WasmRelocation,
-    value: u32,
-) -> crate::error::Result<()> {
-    let offset = reloc.offset as usize;
-    let size = reloc.slot_size();
-    let end = offset
-        .checked_add(size)
-        .context("Wasm relocation offset overflow")?;
-    let slot = bytes
-        .get_mut(offset..end)
-        .context("Wasm relocation slot out of range")?;
-    match reloc.ty {
-        RelocationType::FunctionIndexLeb
-        | RelocationType::MemoryAddrLeb
-        | RelocationType::TypeIndexLeb
-        | RelocationType::GlobalIndexLeb
-        | RelocationType::EventIndexLeb
-        | RelocationType::TableNumberLeb => {
-            let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
-            write_uleb128_5(buf, value);
-        }
-        RelocationType::TableIndexSleb
-        | RelocationType::TableIndexRelSleb
-        | RelocationType::MemoryAddrSleb
-        | RelocationType::MemoryAddrRelSleb
-        | RelocationType::MemoryAddrTlsSleb => {
-            let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
-            write_sleb128_5(buf, value as i32);
-        }
-        RelocationType::TableIndexI32
-        | RelocationType::MemoryAddrI32
-        | RelocationType::FunctionOffsetI32
-        | RelocationType::SectionOffsetI32
-        | RelocationType::GlobalIndexI32
-        | RelocationType::FunctionIndexI32 => {
-            slot.copy_from_slice(&value.to_le_bytes());
-        }
-        other => bail!(
-            "unsupported Wasm relocation type {}",
-            relocation_type_to_string(other)
-        ),
-    }
-    Ok(())
 }
 
 /// A single imported function. `module` / `name` borrow into the source bytes.
@@ -1595,76 +1512,48 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) object_code_relocations: Vec<Vec<WasmRelocation>>,
     pub(crate) object_data_relocations: Vec<Vec<WasmRelocation>>,
     pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
-    pub(crate) encoded_sections: WasmEncodedSections,
+    pub(crate) per_object_data: Vec<&'data [u8]>,
     pub(crate) code_section_size: u64,
     pub(crate) data_section_size: u64,
+    pub(crate) encoded_metadata: EncodedMetadata,
+    pub(crate) name_inputs: WasmNameInputs<'data>,
+    pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
+    pub(crate) extra_features: &'data [String],
     /// A live function contains `memory.init` or `data.drop`.
-    code_references_data_segment: bool,
+    pub(crate) code_references_data_segment: bool,
     /// Linker-synthesized `{export}.command_export` wrappers and their name-section names.
-    command_export_wrapper_names: Vec<(u32, String)>,
+    pub(crate) command_export_wrapper_names: Vec<(u32, String)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WasmGotMemSource<'data> {
+    Symbol(Option<&'data str>),
+    LinkerDefined(WasmLinkerSymbol),
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct WasmEncodedSections {
-    pub(crate) ty: Option<Vec<u8>>,
-    pub(crate) import: Option<Vec<u8>>,
-    pub(crate) function: Option<Vec<u8>>,
-    pub(crate) global: Option<Vec<u8>>,
-    pub(crate) export: Option<Vec<u8>>,
-    pub(crate) memory: Option<Vec<u8>>,
-    pub(crate) table: Option<Vec<u8>>,
-    pub(crate) element: Option<Vec<u8>>,
-    pub(crate) data_count: Option<Vec<u8>>,
-    // Custom `name` section.
-    pub(crate) name: Option<Vec<u8>>,
-    // Custom `target_features` section.
-    pub(crate) target_features: Option<Vec<u8>>,
+pub(crate) struct WasmNameInputs<'data> {
+    pub(crate) demangle: bool,
+    pub(crate) memory_base_global: Option<u32>,
+    pub(crate) table_base_global: Option<u32>,
+    pub(crate) stack_pointer_global: Option<u32>,
+    pub(crate) tls_base_global: Option<u32>,
+    pub(crate) call_ctors_func: Option<u32>,
+    pub(crate) data_address_globals: Vec<(WasmLinkerSymbol, u32)>,
+    pub(crate) got_mem_global_base: Option<u32>,
+    pub(crate) got_func_global_base: Option<u32>,
+    pub(crate) got_mem: Vec<WasmGotMemSource<'data>>,
+    pub(crate) got_func_names: Vec<Option<&'data str>>,
 }
 
-impl WasmEncodedSections {
-    fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
-        add_encoded_section_size(sizes, part_id::WASM_TYPE, self.ty.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_IMPORT, self.import.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_FUNCTION, self.function.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_TABLE, self.table.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_MEMORY, self.memory.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_GLOBAL, self.global.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_EXPORT, self.export.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_ELEMENT, self.element.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_DATA_COUNT, self.data_count.as_ref());
-        add_encoded_section_size(sizes, part_id::WASM_NAME, self.name.as_ref());
-        add_encoded_section_size(
-            sizes,
-            part_id::WASM_TARGET_FEATURES,
-            self.target_features.as_ref(),
-        );
-    }
+/// One `target_features` entry together with the input file that declared it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmInputTargetFeature<'data> {
+    pub(crate) file_id: crate::input_data::FileId,
+    pub(crate) feature: WasmTargetFeature<'data>,
 }
 
-/// Per-object name entries.
-#[derive(Default)]
-struct ObjectNameEntries<'a> {
-    functions: Vec<(u32, &'a str)>,
-    globals: Vec<(u32, &'a str)>,
-}
-
-fn add_encoded_section_size(
-    sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    part_id: PartId,
-    section: Option<&Vec<u8>>,
-) {
-    if let Some(bytes) = section {
-        sizes.increment(part_id, bytes.len() as u64);
-    }
-}
-
-fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    section.append_to(&mut bytes);
-    bytes
-}
-
-fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
+pub(crate) fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
     if demangle {
         symbolic_demangle::demangle(name)
     } else {
@@ -1672,210 +1561,23 @@ fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
     }
 }
 
-fn build_name_section<'data>(
-    layout: &WasmLayout<'data>,
-    layout_inputs: &[WasmObjectLayoutInput<'data>],
-    indices: &LinkerDefinedIndices,
-    got_mem: &GotMem,
-    got_func: &GotFunc,
-    demangle: bool,
-) -> Option<wasm_encoder::NameSection> {
-    let (n_func_imports, n_global_imports) = count_output_imports(layout);
-    let n_funcs = n_func_imports + layout.function_type_indices.len();
-    let n_globals = n_global_imports + layout.globals.len();
-    let mut function_names: Vec<Option<&str>> = vec![None; n_funcs];
-    let mut global_names: Vec<Option<&str>> = vec![None; n_globals];
-    let mut got_mem_names: Vec<String> = Vec::new();
-    let mut got_func_names: Vec<String> = Vec::new();
-
-    // Host / remaining imports.
-    let mut next_func_import = 0u32;
-    let mut next_global_import = 0u32;
-    for import in &layout.imports {
-        match import.entity {
-            crate::wasm_writer::OutputImportEntity::Function { .. } => {
-                set_name_first_wins(&mut function_names, next_func_import, import.name);
-                next_func_import += 1;
-            }
-            crate::wasm_writer::OutputImportEntity::Global(_) => {
-                set_name_first_wins(&mut global_names, next_global_import, import.name);
-                next_global_import += 1;
-            }
-            crate::wasm_writer::OutputImportEntity::Memory(_) => {}
-        }
-    }
-
-    // Linker-synthesised functions / globals.
-    if let Some(idx) = indices.memory_base_global {
-        set_name_first_wins(&mut global_names, idx, "__memory_base");
-    }
-    if let Some(idx) = indices.table_base_global {
-        set_name_first_wins(&mut global_names, idx, "__table_base");
-    }
-    if let Some(idx) = indices.stack_pointer_global {
-        set_name_first_wins(&mut global_names, idx, "__stack_pointer");
-    }
-    if let Some(idx) = indices.tls_base_global {
-        set_name_first_wins(&mut global_names, idx, "__tls_base");
-    }
-    for &(known, idx) in &indices.data_address_globals {
-        set_name_first_wins(&mut global_names, idx, <&str>::from(known));
-    }
-    if let Some(got_base) = indices.got_mem_global_base {
-        got_mem_names.reserve(got_mem.entries.len());
-        for (i, entry) in got_mem.entries.iter().enumerate() {
-            let name = match entry.def {
-                GotMemDef::Object {
-                    object_index,
-                    symbol_offset,
-                } => layout_inputs
-                    .get(object_index)
-                    .and_then(|input| {
-                        input
-                            .symbols
-                            .get(symbol_offset)
-                            .and_then(|sym| wasm_symbol_name_str(input.data, sym))
-                    })
-                    .map_or_else(
-                        || format!("GOT.data.internal.{i}"),
-                        |sym| format!("GOT.data.internal.{}", demangle_symbol_name(sym, demangle)),
-                    ),
-                GotMemDef::LinkerDefined(known) => {
-                    let sym = std::str::from_utf8(known.name()).unwrap_or("?");
-                    format!("GOT.data.internal.{sym}")
-                }
-            };
-            got_mem_names.push(name);
-        }
-        for (i, name) in got_mem_names.iter().enumerate() {
-            set_name_first_wins(&mut global_names, got_base + i as u32, name.as_str());
-        }
-    }
-    if let Some(got_base) = indices.got_func_global_base {
-        got_func_names.reserve(got_func.entries.len());
-        for (i, entry) in got_func.entries.iter().enumerate() {
-            got_func_names.push(got_func_debug_name(layout_inputs, entry, i, demangle));
-        }
-        for (i, name) in got_func_names.iter().enumerate() {
-            set_name_first_wins(&mut global_names, got_base + i as u32, name.as_str());
-        }
-    }
-    if let Some(idx) = indices.call_ctors_func {
-        set_name_first_wins(&mut function_names, idx, "__wasm_call_ctors");
-    }
-
-    let per_object_names: Vec<ObjectNameEntries<'_>> = layout_inputs
-        .par_iter()
-        .zip(layout.object_index_maps.par_iter())
-        .map(|(input, index_map)| {
-            verbose_timing_phase!("Collect Wasm object name entries");
-            let mut entries = ObjectNameEntries::default();
-            for sym in input.symbols {
-                let Some(name) = wasm_symbol_name_str(input.data, sym) else {
-                    continue;
-                };
-                match sym.kind {
-                    WasmSymbolKind::Func
-                        if let Some(&out_idx) =
-                            index_map.function_indices.get(sym.index as usize)
-                            && out_idx != WASM_DEAD_INDEX =>
-                    {
-                        entries.functions.push((out_idx, name));
-                    }
-                    WasmSymbolKind::Global
-                        if let Some(&out_idx) =
-                            index_map.global_indices.get(sym.index as usize)
-                            && out_idx != WASM_DEAD_INDEX =>
-                    {
-                        entries.globals.push((out_idx, name));
-                    }
-                    _ => {}
-                }
-            }
-            entries
-        })
-        .collect();
-    for entries in per_object_names {
-        for (out_idx, name) in entries.functions {
-            set_name_first_wins(&mut function_names, out_idx, name);
-        }
-        for (out_idx, name) in entries.globals {
-            set_name_first_wins(&mut global_names, out_idx, name);
-        }
-    }
-
-    // Named after object symbols so first-wins keeps `{export}.command_export` rather than the
-    // export name that is retargeted onto the wrapper.
-    for (idx, name) in &layout.command_export_wrapper_names {
-        set_name_first_wins(&mut function_names, *idx, name.as_str());
-    }
-
-    for export in &layout.exports {
-        match export.kind {
-            wasmparser::ExternalKind::Func => {
-                set_name_first_wins(&mut function_names, export.index, export.name);
-            }
-            wasmparser::ExternalKind::Global => {
-                set_name_first_wins(&mut global_names, export.index, export.name);
-            }
-            _ => {}
-        }
-    }
-
-    let function_map = name_map_from_dense(&function_names, demangle);
-    let global_map = name_map_from_dense(&global_names, demangle);
-    if function_map.is_none() && global_map.is_none() {
-        return None;
-    }
-
-    let mut section = NameSection::new();
-    if let Some(map) = function_map {
-        section.functions(&map);
-    }
-    if let Some(map) = global_map {
-        section.globals(&map);
-    }
-    Some(section)
-}
-
-fn count_output_imports(layout: &WasmLayout<'_>) -> (usize, usize) {
+pub(crate) fn count_output_imports(layout: &WasmLayout<'_>) -> (usize, usize) {
     let mut functions = 0usize;
     let mut globals = 0usize;
     for import in &layout.imports {
         match import.entity {
-            crate::wasm_writer::OutputImportEntity::Function { .. } => functions += 1,
-            crate::wasm_writer::OutputImportEntity::Global(_) => globals += 1,
-            crate::wasm_writer::OutputImportEntity::Memory(_) => {}
+            OutputImportEntity::Function { .. } => functions += 1,
+            OutputImportEntity::Global(_) => globals += 1,
+            OutputImportEntity::Memory(_) => {}
         }
     }
     (functions, globals)
 }
 
-fn set_name_first_wins<'a>(names: &mut Vec<Option<&'a str>>, index: u32, name: &'a str) {
-    let i = index as usize;
-    if i >= names.len() {
-        names.resize(i + 1, None);
-    }
-    if names[i].is_none() {
-        names[i] = Some(name);
-    }
-}
-
-fn name_map_from_dense(names: &[Option<&str>], demangle: bool) -> Option<NameMap> {
-    if names.iter().all(Option::is_none) {
-        return None;
-    }
-    let mut map = NameMap::new();
-    for (idx, name) in names.iter().enumerate() {
-        if let Some(name) = name {
-            let name = demangle_symbol_name(name, demangle);
-            map.append(idx as u32, &name);
-        }
-    }
-    Some(map)
-}
-
-fn wasm_symbol_name_str<'data>(data: &'data [u8], sym: &WasmSymbol) -> Option<&'data str> {
+pub(crate) fn wasm_symbol_name_str<'data>(
+    data: &'data [u8],
+    sym: &WasmSymbol,
+) -> Option<&'data str> {
     if !sym.has_name() {
         return None;
     }
@@ -1939,46 +1641,6 @@ fn validate_shared_memory_features(
     Ok(())
 }
 
-/// Merge `target_features` from linked objects and encode the output custom section.
-fn build_target_features_section<'data>(
-    layout_inputs: &[WasmObjectLayoutInput<'data>],
-    extra_features: &'data [String],
-) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
-    let (mut used, disallowed) = collect_target_feature_sets(layout_inputs)?;
-
-    for name in &used {
-        if let Some(&file_id) = disallowed.get(name) {
-            bail!(
-                "target feature `{name}` is used by linked objects but disallowed by input file \
-                 {file_id}"
-            );
-        }
-    }
-
-    used.extend(extra_features.iter().map(|s| s.as_str()));
-
-    if used.is_empty() {
-        return Ok(None);
-    }
-
-    let mut names: Vec<&'data str> = used.into_iter().collect();
-    names.sort_unstable();
-
-    let mut payload = Vec::new();
-    leb128::write::unsigned(&mut payload, names.len() as u64).unwrap();
-    for name in names {
-        payload.push(TARGET_FEATURE_PREFIX_USED);
-        let name_bytes = name.as_bytes();
-        leb128::write::unsigned(&mut payload, name_bytes.len() as u64).unwrap();
-        payload.extend_from_slice(name_bytes);
-    }
-
-    Ok(Some(wasm_encoder::CustomSection {
-        name: Cow::Borrowed(TARGET_FEATURES_SECTION_NAME),
-        data: Cow::Owned(payload),
-    }))
-}
-
 fn parse_target_features_payload<'data>(
     data: &'data [u8],
 ) -> Result<Vec<WasmTargetFeature<'data>>> {
@@ -2005,121 +1667,6 @@ fn parse_target_features_payload<'data>(
 }
 
 impl<'data> WasmLayout<'data> {
-    fn encode_metadata_sections(
-        &mut self,
-        layout_inputs: &[WasmObjectLayoutInput<'data>],
-        indices: &LinkerDefinedIndices,
-        got_mem: &GotMem,
-        got_func: &GotFunc,
-        symbol_db: &SymbolDb<'data, Wasm>,
-    ) -> Result {
-        timing_phase!("Encode Wasm metadata sections");
-        let demangle = symbol_db.args.common().demangle;
-
-        {
-            timing_phase!("Encode Wasm type section");
-            let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
-            if !type_section.is_empty() {
-                self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm import section");
-            let import_section = crate::wasm_writer::build_import_section(&self.imports)?;
-            if !import_section.is_empty() {
-                self.encoded_sections.import = Some(encode_wasm_section(&import_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm function section");
-            let function_section =
-                crate::wasm_writer::build_function_section(&self.function_type_indices);
-            if !function_section.is_empty() {
-                self.encoded_sections.function = Some(encode_wasm_section(&function_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm global section");
-            let global_section = crate::wasm_writer::build_global_section(&self.globals)?;
-            if !global_section.is_empty() {
-                self.encoded_sections.global = Some(encode_wasm_section(&global_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm export section");
-            let export_section = crate::wasm_writer::build_export_section(&self.exports);
-            if !export_section.is_empty() {
-                self.encoded_sections.export = Some(encode_wasm_section(&export_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm memory section");
-            let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
-            if !memory_section.is_empty() {
-                self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
-            }
-        }
-
-        if !self.tables.is_empty() {
-            timing_phase!("Encode Wasm table section");
-            let table_section = crate::wasm_writer::build_table_section(&self.tables)?;
-            self.encoded_sections.table = Some(encode_wasm_section(&table_section));
-        }
-
-        if !self.element_functions.is_empty() {
-            timing_phase!("Encode Wasm element section");
-            let element_section =
-                crate::wasm_writer::build_element_section(&self.element_functions);
-            self.encoded_sections.element = Some(encode_wasm_section(&element_section));
-        }
-
-        {
-            timing_phase!("Encode Wasm name section");
-            if let Some(name_section) =
-                build_name_section(self, layout_inputs, indices, got_mem, got_func, demangle)
-            {
-                self.encoded_sections.name = Some(encode_wasm_section(&name_section));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm target_features section");
-            if let Some(target_features) =
-                build_target_features_section(layout_inputs, &symbol_db.args.extra_features)?
-            {
-                self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
-            }
-        }
-
-        {
-            timing_phase!("Encode Wasm data count section");
-            // Validators reject `memory.init` / `data.drop` without this section. A remaining
-            // passive segment emits it too.
-            if self.code_references_data_segment
-                || output_data_has_passive(&self.object_data_layouts)
-            {
-                let count = output_data_segment_count(&self.object_data_layouts);
-                self.encoded_sections.data_count =
-                    Some(encode_wasm_section(&wasm_encoder::DataCountSection {
-                        count,
-                    }));
-            }
-        }
-
-        {
-            timing_phase!("Compute Wasm code/data section sizes");
-            self.code_section_size = compute_code_section_size(&self.function_bodies);
-            self.data_section_size = compute_data_section_size(&self.object_data_layouts);
-        }
-
-        Ok(())
-    }
-
     fn add_code_section_size(
         &self,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
@@ -2401,14 +1948,18 @@ fn layout_object_data<'data>(
     Ok(segments)
 }
 
-fn output_data_segment_count(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u32 {
+pub(crate) fn output_data_segment_count(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> u32 {
     object_data_layouts
         .iter()
         .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
         .sum()
 }
 
-fn output_data_has_passive(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> bool {
+pub(crate) fn output_data_has_passive(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> bool {
     object_data_layouts
         .iter()
         .flatten()
@@ -2536,7 +2087,8 @@ fn apply_data_index_fixups(
     if !resize {
         let bytes = body.bytes.to_mut();
         for imm in imms {
-            let written = write_uleb128(&mut bytes[imm.offset..], u64::from(imm.index));
+            let written =
+                crate::wasm_writer::write_uleb128(&mut bytes[imm.offset..], u64::from(imm.index));
             ensure!(
                 written == imm.len,
                 "Wasm data index LEB width changed unexpectedly"
@@ -2555,7 +2107,7 @@ fn apply_data_index_fixups(
         );
         new_bytes.extend_from_slice(&old[cursor..imm.offset]);
         let mut buf = [0u8; 5];
-        let written = write_uleb128(&mut buf, u64::from(imm.index));
+        let written = crate::wasm_writer::write_uleb128(&mut buf, u64::from(imm.index));
         new_bytes.extend_from_slice(&buf[..written]);
         cursor = imm.offset + imm.len;
     }
@@ -4970,24 +4522,6 @@ fn fill_function_symbol_redirects(
     }
 }
 
-fn got_func_debug_name(
-    layout_inputs: &[WasmObjectLayoutInput<'_>],
-    entry: &GotFuncEntry,
-    index: usize,
-    demangle: bool,
-) -> String {
-    let sym_name = layout_inputs.get(entry.object_index).and_then(|input| {
-        input
-            .symbols
-            .get(entry.symbol_offset)
-            .and_then(|sym| wasm_symbol_name_str(input.data, sym))
-    });
-    match sym_name {
-        Some(name) => format!("GOT.func.internal.{}", demangle_symbol_name(name, demangle)),
-        None => format!("GOT.func.internal.{index}"),
-    }
-}
-
 fn absorb_got_imports<E>(
     got: &GotSlots<E>,
     module: &str,
@@ -6199,6 +5733,59 @@ fn ensure_force_exports<'data>(
     Ok(())
 }
 
+fn wasm_name_inputs<'data>(
+    indices: &LinkerDefinedIndices,
+    got_mem: &GotMem,
+    got_func: &GotFunc,
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    demangle: bool,
+) -> WasmNameInputs<'data> {
+    let got_mem_sources = got_mem
+        .entries
+        .iter()
+        .map(|entry| match entry.def {
+            GotMemDef::Object {
+                object_index,
+                symbol_offset,
+            } => {
+                let name = layout_inputs.get(object_index).and_then(|input| {
+                    input
+                        .symbols
+                        .get(symbol_offset)
+                        .and_then(|sym| wasm_symbol_name_str(input.data, sym))
+                });
+                WasmGotMemSource::Symbol(name)
+            }
+            GotMemDef::LinkerDefined(known) => WasmGotMemSource::LinkerDefined(known),
+        })
+        .collect();
+    let got_func_names = got_func
+        .entries
+        .iter()
+        .map(|entry| {
+            layout_inputs.get(entry.object_index).and_then(|input| {
+                input
+                    .symbols
+                    .get(entry.symbol_offset)
+                    .and_then(|sym| wasm_symbol_name_str(input.data, sym))
+            })
+        })
+        .collect();
+    WasmNameInputs {
+        demangle,
+        memory_base_global: indices.memory_base_global,
+        table_base_global: indices.table_base_global,
+        stack_pointer_global: indices.stack_pointer_global,
+        tls_base_global: indices.tls_base_global,
+        call_ctors_func: indices.call_ctors_func,
+        data_address_globals: indices.data_address_globals.clone(),
+        got_mem_global_base: indices.got_mem_global_base,
+        got_func_global_base: indices.got_func_global_base,
+        got_mem: got_mem_sources,
+        got_func_names,
+    }
+}
+
 fn build_output_module_layout<'data, 'files>(
     groups: &'files mut [layout::GroupState<'data, Wasm>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
@@ -6326,6 +5913,7 @@ where
         let n_objects = object_index_maps.len();
         layout.object_index_maps = object_index_maps;
         layout.per_object_symbols.reserve(n_objects);
+        layout.per_object_data.reserve(n_objects);
         layout.object_data_layouts.reserve(n_objects);
         layout.object_code_relocations.reserve(n_objects);
         layout.object_data_relocations.reserve(n_objects);
@@ -6390,6 +5978,7 @@ where
         {
             for input in &layout_inputs {
                 layout.per_object_symbols.push(input.symbols);
+                layout.per_object_data.push(input.data);
             }
         }
         {
@@ -6558,7 +6147,34 @@ where
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
     }
-    layout.encode_metadata_sections(&layout_inputs, &indices, got_mem, got_func, symbol_db)?;
+    layout.name_inputs = wasm_name_inputs(
+        &indices,
+        got_mem,
+        got_func,
+        &layout_inputs,
+        symbol_db.args.common().demangle,
+    );
+    layout.target_feature_inputs = layout_inputs
+        .iter()
+        .flat_map(|input| {
+            input
+                .target_features
+                .iter()
+                .copied()
+                .map(|feature| WasmInputTargetFeature {
+                    file_id: input.file_id,
+                    feature,
+                })
+        })
+        .collect();
+    layout.extra_features = &symbol_db.args.extra_features;
+    {
+        timing_phase!("Compute Wasm code/data section sizes");
+        layout.code_section_size = compute_code_section_size(&layout.function_bodies);
+        layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
+    }
+    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
+    layout.encoded_metadata = encoded_metadata;
     Ok(layout)
 }
 
@@ -6687,27 +6303,6 @@ fn data_relocations_are_supported(relocs: &[WasmRelocation]) -> bool {
         .all(|reloc| is_supported_data_relocation(reloc.ty))
 }
 
-pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
-    let value = i64::from(base)
-        .checked_add(addend)
-        .context("Wasm relocation value overflow")?;
-    u32::try_from(value).context("Wasm relocation value out of range")
-}
-
-/// Apply addend policy. Relative table/memory bases already include the addend.
-pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
-    if matches!(
-        reloc.ty,
-        RelocationType::MemoryAddrRelSleb
-            | RelocationType::TableIndexRelSleb
-            | RelocationType::MemoryAddrTlsSleb
-    ) {
-        Ok(base)
-    } else {
-        reloc_value_with_addend(base, reloc.addend)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum WasmDataAddress {
     /// Segment was GC'd, or the symbol has no placement. Memory relocations write 0.
@@ -6808,7 +6403,7 @@ pub(crate) enum WasmLinkerSymbol {
 }
 
 impl WasmLinkerSymbol {
-    fn name(self) -> &'static [u8] {
+    pub(crate) fn name(self) -> &'static [u8] {
         <&'static str>::from(self).as_bytes()
     }
 
@@ -7436,7 +7031,7 @@ impl platform::Platform for Wasm {
         properties: &Self::LayoutExt<'data>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<()> {
-        properties.encoded_sections.add_sizes_to(mem_sizes);
+        properties.encoded_metadata.add_sizes_to(mem_sizes);
         properties.add_code_section_size(mem_sizes);
         properties.add_data_section_size(mem_sizes);
         Ok(())
@@ -7456,7 +7051,7 @@ impl platform::Platform for Wasm {
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
-        common_state.encoded_sections.add_sizes_to(memory_offsets);
+        common_state.encoded_metadata.add_sizes_to(memory_offsets);
         common_state.add_code_section_size(memory_offsets);
         common_state.add_data_section_size(memory_offsets);
         Ok(())
@@ -8313,6 +7908,20 @@ mod tests {
         }
     }
 
+    fn target_feature_records<'a>(
+        file: u32,
+        features: &'a [WasmTargetFeature<'a>],
+    ) -> Vec<WasmInputTargetFeature<'a>> {
+        features
+            .iter()
+            .copied()
+            .map(|feature| WasmInputTargetFeature {
+                file_id: crate::input_data::FileId::new(0, file),
+                feature,
+            })
+            .collect()
+    }
+
     fn emitted_feature_names(section: &wasm_encoder::CustomSection<'_>) -> Vec<String> {
         let parsed = parse_target_features_payload(section.data.as_ref()).unwrap();
         assert!(
@@ -8345,11 +7954,9 @@ mod tests {
             prefix: TARGET_FEATURE_PREFIX_USED,
             name: "sign-ext",
         }];
-        let inputs = [
-            layout_input_with_features(1, &features_a),
-            layout_input_with_features(2, &features_b),
-        ];
-        let section = build_target_features_section(&inputs, &[])
+        let mut records = target_feature_records(1, &features_a);
+        records.extend(target_feature_records(2, &features_b));
+        let section = crate::wasm_writer::build_target_features_section(&records, &[])
             .unwrap()
             .expect("expected target_features section");
         assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
@@ -8365,11 +7972,9 @@ mod tests {
             prefix: TARGET_FEATURE_PREFIX_DISALLOWED,
             name: "atomics",
         }];
-        let inputs = [
-            layout_input_with_features(1, &used),
-            layout_input_with_features(2, &disallowed),
-        ];
-        let err = build_target_features_section(&inputs, &[]).unwrap_err();
+        let mut records = target_feature_records(1, &used);
+        records.extend(target_feature_records(2, &disallowed));
+        let err = crate::wasm_writer::build_target_features_section(&records, &[]).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("atomics") && msg.contains("disallowed"),

@@ -61,6 +61,12 @@ pub const EXPERIMENTAL_PLATFORMS: &str = "WILD_EXPERIMENTAL_PLATFORMS";
 /// inconsistency.
 pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 
+/// Maximum number of threads we'll run with unless an explicit --threads is specified. Benchmarks
+/// run on an AMD EPYC 8534P with Ubuntu 26.04 (Linux 7.0) show no gain from about 32 threads and
+/// worsening performance beyond about 40 threads. This seems to be largely due to a per-inode
+/// spinlock. By the time we reach 128 threads, we're spending about 56% of time in that spinlock.
+const DEFAULT_THREAD_CAP: NonZeroUsize = NonZeroUsize::new(32).unwrap();
+
 #[derive(derive_more::Debug)]
 pub struct CommonArgs {
     pub(crate) unrecognized_options: Vec<String>,
@@ -385,14 +391,18 @@ impl CommonArgs {
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
             if let Some(client) = &self.jobserver_client {
-                while let Ok(Some(acquired)) = client.try_acquire() {
+                while let Ok(Some(acquired)) = client.try_acquire()
+                    && tokens.len() < DEFAULT_THREAD_CAP.get()
+                {
                     tokens.push(acquired);
                 }
                 tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
                 // Our parent "holds" one jobserver token, add it.
                 NonZeroUsize::new(tokens.len() + 1).unwrap()
             } else {
-                std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+                std::thread::available_parallelism()
+                    .unwrap_or(NonZeroUsize::new(1).unwrap())
+                    .min(DEFAULT_THREAD_CAP)
             }
         });
 
@@ -649,6 +659,15 @@ pub(crate) enum OrphanHandling {
     Warn,
     Error,
     Discard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DiscardLocals {
+    #[default]
+    Default,
+    Temporaries,
+    All,
+    None,
 }
 
 /// Describes how a platform spells its options. GNU-style platforms use the default, whereas
@@ -983,6 +1002,14 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
 
         Ok(())
+    }
+
+    fn print_help_and_exit(&self, additional_help: &str) -> Result {
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{}", self.generate_help())?;
+        write!(stdout, "{additional_help}")?;
+        std::process::exit(0);
     }
 
     #[must_use]

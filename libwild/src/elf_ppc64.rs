@@ -1,5 +1,6 @@
 use crate::bail;
 use crate::elf::Elf64;
+use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform::Platform;
@@ -50,7 +51,66 @@ impl crate::platform::Arch for ElfPpc64 {
         _got_address: u64,
         _plt_address: u64,
     ) -> crate::error::Result {
-        bail!("PLT generation for ppc64 is not yet implemented");
+        bail!("ppc64 PLT stubs address the GOT from the TOC. The TOC base is required");
+    }
+
+    fn write_plt_entry_with_toc(
+        plt_entry: &mut [u8],
+        got_address: u64,
+        _plt_address: u64,
+        toc_base: u64,
+    ) -> crate::error::Result {
+        let offset = (got_address as i64).wrapping_sub(toc_base as i64);
+        ensure!(
+            (-0x8000..0x8000).contains(&offset) && (offset & 3) == 0,
+            "ppc64 PLT stub GOT displacement {offset:#x} from TOC {toc_base:#x} does not fit in a signed 16-bit DS immediate"
+        );
+        let disp = (offset as u32) & 0xfffc;
+        let insns = [
+            0xf841_0018u32,     // std r2, 24(r1)
+            0xe982_0000 | disp, // ld r12, disp(r2)
+            0x7d89_03a6,        // mtctr r12
+            0x4e80_0420,        // bctr
+        ];
+        let (slots, _) = plt_entry.as_chunks_mut::<4>();
+        ensure!(slots.len() >= insns.len(), "ppc64 PLT entry is 16 bytes");
+        for (dest, insn) in slots.iter_mut().zip(insns) {
+            *dest = insn.to_le_bytes();
+        }
+        Ok(())
+    }
+
+    fn restore_toc_after_plt_call(code: &mut [u8], branch_offset: usize) -> Result {
+        if branch_offset
+            .checked_add(4)
+            .is_none_or(|end| end > code.len())
+        {
+            bail!("call lacks nop, can't restore toc");
+        }
+        let insn = u32::from_le_bytes(code[branch_offset..branch_offset + 4].try_into().unwrap());
+        // LK is the low bit. A tail `b` does not return, so it has no restore slot.
+        if insn & 1 != 1 {
+            return Ok(());
+        }
+        let Some(next) = branch_offset.checked_add(4) else {
+            bail!("call lacks nop, can't restore toc");
+        };
+        if next + 4 > code.len() {
+            bail!("call lacks nop, can't restore toc");
+        }
+        let following = u32::from_le_bytes(code[next..next + 4].try_into().unwrap());
+        if following != 0x6000_0000 {
+            bail!("call lacks nop, can't restore toc");
+        }
+        code[next..next + 4].copy_from_slice(&0xe841_0018u32.to_le_bytes());
+        Ok(())
+    }
+
+    fn absolute_ifunc_needs_irelative(
+        output_kind: crate::output_kind::OutputKind,
+        _section_is_writable: bool,
+    ) -> bool {
+        output_kind.needs_dynamic()
     }
 
     /// The thread pointer (`r13`) points 0x7000 bytes past the start of the static TLS block.

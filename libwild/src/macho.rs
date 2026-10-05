@@ -2703,6 +2703,11 @@ fn add_sections_in_segment<'data>(
 #[derive(Debug)]
 struct ClassifiedSymbolRelocation {
     symbol_id: SymbolId,
+    flags: ValueFlags,
+    flags_to_add: ValueFlags,
+    rel_offset: u64,
+    rel_kind: RelocationKind,
+    rel_size: RelocationSize,
 }
 
 #[inline(always)]
@@ -2721,113 +2726,166 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     // r_extern == true if the reference points to a symbol
     if rel_info.r_extern {
         let local_sym_index = SymbolIndex(rel_info.r_symbolnum as usize);
-        let symbol_db = resources.symbol_db;
-        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
-        let symbol_id = symbol_db.definition(local_symbol_id);
-        let mut flags = resources.local_flags_for_symbol(symbol_id);
-        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+        let classified = classify_symbol_relocation::<A>(
+            object,
+            &rel_info,
+            local_sym_index,
+            is_unwind_personality,
+            resources,
+        )?;
 
-        let relocation = if let Some(relaxation) = A::new_relaxation(
-            rel_info,
-            &[],
-            u64::from(rel_info.r_address),
-            flags,
-            symbol_db.output_kind,
-            SectionFlags::default(),
-            None,
-            1,
-            0,
-            0,
-            None,
-        ) {
-            relaxation.rel_info()
-        } else {
-            A::relocation_from_raw(rel_info)?
-        };
+        let atomic_flags = &resources.per_symbol_flags.get_atomic(classified.symbol_id);
+        let prev_flags = atomic_flags.fetch_or(classified.flags_to_add);
 
-        let from_dynamic_lib =
-            is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)));
-        let mut flags_to_add = if is_unwind_personality {
-            // The input pointer is consumed, not copied to the output. __unwind_info
-            // refers indirectly to the personality through a GOT slot instead.
-            ValueFlags::GOT
-        } else {
-            layout::resolution_flags(relocation.kind)
-        };
-
-        if from_dynamic_lib {
-            match rel_info.r_type {
-                object::macho::ARM64_RELOC_BRANCH26 => {
-                    // TODO: classify symbols more reliably, likely by checking whether their
-                    // section is __text.
-                    flags_to_add |=
-                        ValueFlags::GOT | ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
-                }
-                object::macho::ARM64_RELOC_TLVP_LOAD_PAGE21
-                | object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12 => flags_to_add |= ValueFlags::GOT,
-                _ => (),
-            }
-        }
-
-        let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
-        let previous_flags = atomic_flags.fetch_or(flags_to_add);
-
-        if flags_to_add.needs_got() && !previous_flags.needs_got() && flags.has_link_time_address()
-        {
-            common.format_specific.local_got_entries.push(symbol_id);
-        }
-
-        let is_absolute_pointer = relocation.kind == RelocationKind::Absolute
-            && relocation.size == RelocationSize::ByteSize(8);
-        let from_tlv_descriptor =
-            object.object.section(section_index)?.flags.get(LE).typ() == S_THREAD_LOCAL_VARIABLES;
-        let is_rebase = flags.has_link_time_address() && !from_tlv_descriptor;
-        let is_consumed = matches!(
-            object.sections[section_index.0],
-            SectionSlot::InitFunc(_) | SectionSlot::CompactUnwind(_)
-        );
-        let is_subtractor_pair =
-            prev_rel.is_some_and(|rel| rel.info(LE).r_type == ARM64_RELOC_SUBTRACTOR);
-
-        if is_absolute_pointer && !is_consumed && !is_subtractor_pair {
-            let kind = if is_rebase {
-                Some(PendingFixupKind::Rebase)
-            } else if from_dynamic_lib {
-                Some(PendingFixupKind::Bind { symbol_id })
-            } else {
-                None
-            };
-            if let Some(kind) = kind {
-                common.format_specific.pending_fixups.push(PendingFixup {
-                    file_id: object.file_id,
-                    section_index,
-                    output_section_id: object
-                        .section_part_id(section_index, &resources.symbol_db.section_part_ids)
-                        .output_section_id::<MachO>(),
-                    offset_in_section: u64::from(rel_info.r_address),
-                    kind,
-                });
-            }
-        }
+        materialize_relocation_requirements(
+            object,
+            common,
+            &classified,
+            prev_rel,
+            prev_flags,
+            section_index,
+            resources,
+        )?;
 
         layout::check_for_undefined::<A>(
             object,
             object.object.section(section_index)?,
             rel_info.r_address.into(),
             local_sym_index,
-            flags,
-            symbol_id,
+            classified.flags,
+            classified.symbol_id,
             resources,
         )?;
 
-        if !previous_flags.has_resolution() {
-            queue.send_symbol_request::<A>(symbol_id, resources, scope);
+        if !prev_flags.has_resolution() {
+            queue.send_symbol_request::<A>(classified.symbol_id, resources, scope);
         }
 
-        Ok(Some(ClassifiedSymbolRelocation { symbol_id }))
+        Ok(Some(classified))
     } else {
         Ok(None)
     }
+}
+
+#[inline(always)]
+fn classify_symbol_relocation<'data, A: platform::Arch<Platform = MachO>>(
+    object: &layout::ObjectLayoutState<'data, MachO>,
+    rel_info: &RelocationInfo,
+    local_sym_index: SymbolIndex,
+    is_unwind_personality: bool,
+    resources: &layout::GraphResources<'data, '_, MachO>,
+) -> Result<ClassifiedSymbolRelocation> {
+    let symbol_db = resources.symbol_db;
+    let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+    let symbol_id = symbol_db.definition(local_symbol_id);
+    let mut flags = resources.local_flags_for_symbol(symbol_id);
+    flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+
+    let relocation = if let Some(relaxation) = A::new_relaxation(
+        *rel_info,
+        &[],
+        u64::from(rel_info.r_address),
+        flags,
+        symbol_db.output_kind,
+        SectionFlags::default(),
+        None,
+        1,
+        0,
+        0,
+        None,
+    ) {
+        relaxation.rel_info()
+    } else {
+        A::relocation_from_raw(*rel_info)?
+    };
+
+    let mut flags_to_add = if is_unwind_personality {
+        // The input pointer is consumed, not copied to the output. __unwind_info
+        // refers indirectly to the personality through a GOT slot instead.
+        ValueFlags::GOT
+    } else {
+        layout::resolution_flags(relocation.kind)
+    };
+
+    if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
+        match rel_info.r_type {
+            object::macho::ARM64_RELOC_BRANCH26 => {
+                // TODO: classify symbols more reliably, likely by checking whether their
+                // section is __text.
+                flags_to_add |= ValueFlags::GOT | ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
+            }
+            object::macho::ARM64_RELOC_TLVP_LOAD_PAGE21
+            | object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12 => flags_to_add |= ValueFlags::GOT,
+            _ => (),
+        }
+    }
+
+    Ok(ClassifiedSymbolRelocation {
+        symbol_id,
+        flags,
+        flags_to_add,
+        rel_offset: u64::from(rel_info.r_address),
+        rel_kind: relocation.kind,
+        rel_size: relocation.size,
+    })
+}
+
+#[inline(always)]
+fn materialize_relocation_requirements<'data>(
+    object: &layout::ObjectLayoutState<'data, MachO>,
+    common: &mut CommonGroupState<'data, MachO>,
+    classified: &ClassifiedSymbolRelocation,
+    prev_rel: Option<&Relocation>,
+    prev_flags: ValueFlags,
+    section_index: object::SectionIndex,
+    resources: &layout::GraphResources<'data, '_, MachO>,
+) -> Result {
+    let symbol_db = resources.symbol_db;
+    let symbol_id = classified.symbol_id;
+    let flags = classified.flags;
+    let flags_to_add = classified.flags_to_add;
+
+    if flags_to_add.needs_got() && !prev_flags.needs_got() && flags.has_link_time_address() {
+        common.format_specific.local_got_entries.push(symbol_id);
+    }
+
+    let is_absolute_pointer = classified.rel_kind == RelocationKind::Absolute
+        && classified.rel_size == RelocationSize::ByteSize(8);
+    let is_consumed = matches!(
+        object.sections[section_index.0],
+        SectionSlot::InitFunc(_) | SectionSlot::CompactUnwind(_)
+    );
+    let is_subtractor_pair =
+        prev_rel.is_some_and(|rel| rel.info(LE).r_type == ARM64_RELOC_SUBTRACTOR);
+
+    if is_absolute_pointer && !is_consumed && !is_subtractor_pair {
+        let from_tlv_descriptor =
+            object.object.section(section_index)?.flags.get(LE).typ() == S_THREAD_LOCAL_VARIABLES;
+        let is_rebase = flags.has_link_time_address() && !from_tlv_descriptor;
+        let from_dynamic_lib =
+            is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)));
+
+        let kind = if is_rebase {
+            Some(PendingFixupKind::Rebase)
+        } else if from_dynamic_lib {
+            Some(PendingFixupKind::Bind { symbol_id })
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            common.format_specific.pending_fixups.push(PendingFixup {
+                file_id: object.file_id,
+                section_index,
+                output_section_id: object
+                    .section_part_id(section_index, &resources.symbol_db.section_part_ids)
+                    .output_section_id::<MachO>(),
+                offset_in_section: classified.rel_offset,
+                kind,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn is_dynamic_library(file: &SequencedInput<MachO>) -> bool {

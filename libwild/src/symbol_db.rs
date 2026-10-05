@@ -1245,6 +1245,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
             resolved,
+            false,
         );
 
         process_alternatives(
@@ -1253,6 +1254,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
             resolved,
+            true,
         );
     });
 
@@ -1289,6 +1291,7 @@ fn process_alternatives<'data, P: Platform>(
     symbol_db: &AtomicSymbolDb<'data, '_, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resolved: &[ResolvedGroup<'data, P>],
+    versioned: bool,
 ) {
     for (first, alternatives) in std::mem::take(alternative_definitions) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
@@ -1301,7 +1304,18 @@ fn process_alternatives<'data, P: Platform>(
                 vis.max(symbol_db.input_symbol_visibility(*id))
             });
 
-        match select_symbol(symbol_db, per_symbol_flags, first, &alternatives, resolved) {
+        let candidates = std::iter::once(first)
+            .chain(alternatives.iter().copied())
+            .map(|id| {
+                if versioned {
+                    let definition = symbol_db.definitions[id.as_usize()].load();
+                    if !per_symbol_flags.flags_for_symbol(definition).is_dynamic() {
+                        return definition;
+                    }
+                }
+                id
+            });
+        match select_symbol(symbol_db, per_symbol_flags, first, candidates, resolved) {
             Ok(selected) => {
                 symbol_db.update_definition(first, selected);
 
@@ -1383,12 +1397,12 @@ fn select_symbol<'data, P: Platform>(
     symbol_db: &AtomicSymbolDb<'data, '_, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     first_id: SymbolId,
-    alternatives: &[SymbolId],
+    candidates: impl Iterator<Item = SymbolId> + Clone,
     resolved: &[ResolvedGroup<'data, P>],
 ) -> Result<SymbolId> {
     let mut selector = SymbolPrioritySelector::new();
 
-    for id in std::iter::once(first_id).chain(alternatives.iter().copied()) {
+    for id in candidates.clone() {
         let flags = per_symbol_flags.flags_for_symbol(id);
 
         // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols, so in this
@@ -1403,6 +1417,10 @@ fn select_symbol<'data, P: Platform>(
         if matches!(strength, SymbolStrength::Strong)
             && let Some(existing) = selector.first_strong
         {
+            if existing == id {
+                continue;
+            }
+
             // We don't implement full COMDAT logic, however if we encounter duplicate
             // strong definitions, then we don't emit errors if all the strong definitions
             // are defined in COMDAT group sections.
@@ -1429,7 +1447,7 @@ fn select_symbol<'data, P: Platform>(
     // If we've made it this far, then the symbol is only defined in shared objects. Pick the first
     // definition. Note, we don't check for duplicate strong definitions here because it's OK for
     // multiple shared objects to define the same symbol strongly.
-    for alt in std::iter::once(first_id).chain(alternatives.iter().copied()) {
+    for alt in candidates {
         let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
             return Ok(alt);
@@ -2101,6 +2119,10 @@ impl SymbolId {
 }
 
 impl AtomicSymbolId {
+    fn load(&self) -> SymbolId {
+        SymbolId(self.0.load(Ordering::Relaxed))
+    }
+
     fn store(&self, selected: SymbolId) {
         self.0.store(selected.0, Ordering::Relaxed);
     }

@@ -8,6 +8,7 @@ use crate::symbol_db::SymbolId;
 use crate::verbose_timing_phase;
 use anyhow::Context;
 use hashbrown::HashMap;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -121,6 +122,162 @@ fn encode_personality_fn_index(encoding: u32, personality_idx: usize) -> u32 {
     encoding | (((personality_idx + 1) as u32) << 28)
 }
 
+// For vast majority of the programs, we should be able to fit all opcodes (encodings)
+// in the global palette, so that's why the local palette is rather small.
+const PALETTE_MAXIMUM_INDEX: usize = u8::MAX as usize + 1;
+const LOCAL_PALETTE_SIZE: usize = 32;
+const GLOBAL_PALETTE_SIZE: usize = PALETTE_MAXIMUM_INDEX - LOCAL_PALETTE_SIZE;
+const MAX_FUNCTION_OFFSET: u64 = 1 << 24;
+
+#[derive(Default)]
+struct EncodingPalette {
+    global: IndexMap<u32, usize>,
+    local: HashMap<u32, usize>,
+}
+
+impl EncodingPalette {
+    fn record_encodings(&mut self, encodings: &[u32]) {
+        let mut encoding_histogram = HashMap::new();
+        for &encoding in encodings {
+            *encoding_histogram.entry(encoding).or_insert(0usize) += 1;
+        }
+        let encoding_frequency = encoding_histogram
+            .into_iter()
+            .map(|(encoding, count)| (count, encoding))
+            .sorted()
+            .rev()
+            .collect_vec();
+        let (global_encodings, local_encodings) =
+            encoding_frequency.split_at(encoding_frequency.len().min(GLOBAL_PALETTE_SIZE));
+        self.global = global_encodings
+            .iter()
+            .map(|&(count, encoding)| (encoding, count))
+            .collect();
+        self.local = local_encodings
+            .iter()
+            .map(|&(count, encoding)| (encoding, count))
+            .collect();
+    }
+
+    // The number of unique encodings indexable from the global palette.
+    fn global_unique_encodings(&self) -> usize {
+        self.global.len()
+    }
+
+    // The total number of encoding values indexed by global palette.
+    fn total_global_encodings(&self) -> usize {
+        self.global.values().sum()
+    }
+
+    // The total number of encoding values indexed by a local per-page palette.
+    fn total_local_encodings(&self) -> usize {
+        self.local.values().sum()
+    }
+}
+
+#[derive(Default)]
+struct CompressPageInProgress {
+    local_palette: IndexMap<u32, ()>,
+    // A pair of function start and the encoding index.
+    functions: Vec<u32>,
+    start: u64,
+    lsda_count: usize,
+}
+
+struct FinishedCompressedPage {
+    encoded: Vec<u8>,
+    start: u64,
+    lsda_count: usize,
+}
+
+enum PageBuilder {
+    InProgress(CompressPageInProgress),
+    Finished(FinishedCompressedPage),
+}
+
+impl PageBuilder {
+    fn new(start: u64) -> Self {
+        Self::InProgress(CompressPageInProgress {
+            start,
+            ..Default::default()
+        })
+    }
+
+    /// Closes the page if the entry does not fit. In that case the caller must
+    /// retry the entry on a fresh page; it is not included in the finished page.
+    fn encode(
+        self,
+        address: u64,
+        encoding: u32,
+        has_lsda: bool,
+        palette: &EncodingPalette,
+    ) -> Self {
+        let Self::InProgress(mut page) = self else {
+            unreachable!("InProgress expected");
+        };
+        let offset = address - page.start;
+        let global_count = palette.global_unique_encodings();
+        let global_index = palette.global.get_index_of(&encoding);
+        let local_index = page.local_palette.get_index_of(&encoding);
+        let needs_local = global_index.is_none() && local_index.is_none();
+        let local_count = page.local_palette.len() + if needs_local { 1 } else { 0 };
+        if offset >= MAX_FUNCTION_OFFSET
+            // Local palette is full.
+            || global_count + local_count > PALETTE_MAXIMUM_INDEX
+            // The page is full at this point.
+            || page.functions.len() + 1 + local_count > COMPRESSED_PAGE_ENTRIES_COUNT
+        {
+            return Self::Finished(page.finish());
+        }
+
+        let index = global_index.unwrap_or_else(|| {
+            let index = local_index.unwrap_or_else(|| {
+                let index = page.local_palette.len();
+                page.local_palette.insert(encoding, ());
+                index
+            });
+            global_count + index
+        });
+        debug_assert!(u8::try_from(index).is_ok());
+        page.functions.push(((index as u32) << 24) | offset as u32);
+        if has_lsda {
+            page.lsda_count += 1;
+        }
+        Self::InProgress(page)
+    }
+
+    fn finish(self) -> FinishedCompressedPage {
+        match self {
+            Self::InProgress(page) => page.finish(),
+            Self::Finished(page) => page,
+        }
+    }
+}
+
+impl CompressPageInProgress {
+    fn finish(self) -> FinishedCompressedPage {
+        let functions_size = self.functions.len() * size_of::<u32>();
+        let header = CompressedPage {
+            kind: UNWIND_SECOND_LEVEL_COMPRESSED,
+            functions_offset: size_of::<CompressedPage>() as u16,
+            functions_len: self.functions.len() as u16,
+            local_opcodes_offset: (size_of::<CompressedPage>() + functions_size) as u16,
+            local_opcodes_len: self.local_palette.len() as u16,
+        };
+        let mut out = Vec::with_capacity(COMPRESSED_PAGE_SIZE);
+        out.extend(header.as_bytes());
+        out.extend(self.functions.as_bytes());
+        for encoding in self.local_palette.keys() {
+            out.extend(encoding.as_bytes());
+        }
+        FinishedCompressedPage {
+            encoded: out,
+            start: self.start,
+            lsda_count: self.lsda_count,
+        }
+    }
+}
+
 pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Result<u64> {
     verbose_timing_phase!("Estimate compact unwind section size");
 
@@ -148,31 +305,47 @@ pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Resul
                 encoding
             }
         })
-        .unique()
-        .count();
+        .collect_vec();
+    let mut palette = EncodingPalette::default();
+    palette.record_encodings(&encoding_values);
 
-    // TODO: right now we only encoding index as part of the root page, based on initial
-    // measurements we should be able to link large applications like Clang:
-    // https://github.com/wild-linker/wild/issues/2066
-    ensure!(
-        u8::try_from(encoding_values).is_ok(),
-        "too many encodings in compact unwind: {encoding_values}"
-    );
+    // The worst case scenario would be use having a sequence of encodings that all need a local
+    // palette and so we'll reach the page capacity because of the full palette. The estimation
+    // is very gross, but as already mentioned, it's covering very unlikely situation.
+    let locally_required_pages = palette.total_local_encodings().div_ceil(LOCAL_PALETTE_SIZE);
+    let global_palette_count = palette.global_unique_encodings();
+    let global_encodings = palette.total_global_encodings();
+    let globally_required_pages = global_encodings.div_ceil(COMPRESSED_PAGE_ENTRIES_COUNT);
 
     let lsdas = unwind_info_entries
         .iter()
         .filter_map(|entry| entry.lsda_relocation)
         .count();
 
-    let compressed_pages = unwind_info_entries
-        .len()
-        .div_ceil(COMPRESSED_PAGE_ENTRIES_COUNT);
-    let compressed_pages_total_size = compressed_pages * size_of::<CompressedPage>()
-        + unwind_info_entries.len() * size_of::<u32>();
+    // How much space will we need for encodings in a global palette.
+    let mut compressed_pages_total_size =
+        globally_required_pages * size_of::<CompressedPage>() + global_encodings * size_of::<u32>();
+    // The upper limit assumes each entry will basically take 2 x u32 (one for palette, second for
+    // index in the palette) and we'll have at most locally_required_pages such pages.
+    compressed_pages_total_size += locally_required_pages
+        * (LOCAL_PALETTE_SIZE * 2 * size_of::<u32>() + size_of::<CompressedPage>());
+
+    // Plus, the offset can track only 24 bits (16MiB). For being sure, let's track
+    // all functions larger than 4MiB and allocate extra pages for them.
+    // TODO: Actually, there might be a situation where a series of medium-sized functions
+    // will not fit into a single page. Investigate later if the situation arises.
+    let large_functions = unwind_info_entries
+        .iter()
+        .filter(|entry| entry.entry.length >= (MAX_FUNCTION_OFFSET / 4) as u32)
+        .count();
+    compressed_pages_total_size += large_functions * size_of::<CompressedPage>();
+
     // PageEntry:CompressedPage mapping is 1:1 (modulo we need one more for the termination page)
-    let page_entries_total_size = (compressed_pages + 1) * size_of::<PageEntry>();
+    let page_entries_total_size =
+        (locally_required_pages + globally_required_pages + large_functions + 1)
+            * size_of::<PageEntry>();
     let root_total_size = size_of::<CompactUnwindInfoHeader>()
-        + encoding_values * size_of::<u32>()
+        + global_palette_count * size_of::<u32>()
         + personalities_to_idx.len() * size_of::<u32>()
         + lsdas * size_of::<LsdaEntry>();
 
@@ -240,22 +413,46 @@ pub(crate) fn build(
                 encoding
             }
         })
-        .unique()
         .collect_vec();
-    let encoding_to_index: HashMap<u32, usize> = encoding_values
-        .iter()
-        .enumerate()
-        .map(|(i, encoding)| (*encoding, i))
-        .collect();
+    let mut palette = EncodingPalette::default();
+    palette.record_encodings(&encoding_values);
+    let global_encodings = palette.global.keys().copied().collect_vec();
 
-    let compressed_pages = unwind_info_entries
-        .len()
-        .div_ceil(COMPRESSED_PAGE_ENTRIES_COUNT);
+    // Build variable-sized pages, retrying an entry on a fresh page when it
+    // exceeds the address range, palette capacity, or byte capacity.
+    let mut second_level_entries = Vec::new();
+    let mut page = PageBuilder::new(unwind_info_entries[0].start_address);
+    for (entry, encoding) in unwind_info_entries.iter().zip(encoding_values) {
+        page = match page.encode(
+            entry.start_address,
+            encoding,
+            entry.lsda_address.is_some(),
+            &palette,
+        ) {
+            PageBuilder::Finished(finished) => {
+                second_level_entries.push(finished);
+                let next = PageBuilder::new(entry.start_address).encode(
+                    entry.start_address,
+                    encoding,
+                    entry.lsda_address.is_some(),
+                    &palette,
+                );
+                ensure!(
+                    matches!(next, PageBuilder::InProgress(_)),
+                    "compact unwind entry cannot fit into an empty compressed page"
+                );
+                next
+            }
+            in_progress @ PageBuilder::InProgress(_) => in_progress,
+        };
+    }
+    second_level_entries.push(page.finish());
+    let compressed_pages = second_level_entries.len();
 
     let mut out = Vec::with_capacity(section_size);
 
     let header_size = size_of::<CompactUnwindInfoHeader>();
-    let encoding_size = encoding_values.as_bytes().len();
+    let encoding_size = global_encodings.as_bytes().len();
     let personalities = personalities
         .iter()
         .map(|(_, address)| -> Result<u32> {
@@ -270,64 +467,33 @@ pub(crate) fn build(
     let header = CompactUnwindInfoHeader {
         version: 1,
         global_opcodes_offset: size_of::<CompactUnwindInfoHeader>() as u32,
-        global_opcodes_len: u32::from(
-            u8::try_from(encoding_values.len())
-                .with_context(|| "too many encodings in compact unwind: {encoding_values}")?,
-        ),
+        global_opcodes_len: global_encodings.len() as u32,
         pages_offset: (header_size + encoding_size + personalities_size) as u32,
         pages_len: (compressed_pages + 1) as u32,
         personalities_offset: (header_size + encoding_size) as u32,
         personalities_len: personalities.len() as u32,
     };
     out.extend(header.as_bytes());
-    out.extend(encoding_values.as_bytes());
+    out.extend(global_encodings.as_bytes());
     out.extend(personalities.as_bytes());
     let header_size = out.len();
-
-    // We build the second-level pages first.
-    let second_level_entries = unwind_info_entries
-        .chunks(COMPRESSED_PAGE_ENTRIES_COUNT)
-        .map(|chunk| {
-            let start = chunk.first().unwrap().start_address;
-            let encoding_array = chunk
-                .iter()
-                .map(|entry| {
-                    let mut encoding = entry.entry.encoding;
-                    if let Some(personality) = entry.personality_symbol_id {
-                        let personality_idx = personalities_to_idx.get(&personality).unwrap();
-                        encoding = encode_personality_fn_index(encoding, *personality_idx);
-                    }
-                    (
-                        entry.start_address - start,
-                        // We already checked we don't have more than u32::MAX encoding values.
-                        u8::try_from(*encoding_to_index.get(&encoding).unwrap()).unwrap(),
-                    )
-                })
-                .collect_vec();
-            let lsda_count = chunk
-                .iter()
-                .filter(|entry| entry.lsda_address.is_some())
-                .count() as u32;
-            (start, lsda_count, encoding_array)
-        })
-        .collect_vec();
 
     // Now having built second-level entries, we can build and encode the first-level entries.
     let lsda_data_offset = header_size + (compressed_pages + 1) * size_of::<PageEntry>();
     let second_level_first_offset = lsda_data_offset + lsdas.len() * size_of::<LsdaEntry>();
 
     let mut lsda_offset = 0;
-    for (i, (start, lsda_count, _)) in second_level_entries.iter().enumerate() {
+    let mut page_offset = second_level_first_offset;
+    for page in &second_level_entries {
         let record = PageEntry {
-            first_address: u32::try_from(*start - text_segment_start)
+            first_address: u32::try_from(page.start - text_segment_start)
                 .context("first address does not fit into u32")?,
             lsda_index_offset: (lsda_data_offset + lsda_offset * size_of::<LsdaEntry>()) as u32,
-            // Right now, we assume fully pickled compressed pages.
-            page_offset: u32::try_from(second_level_first_offset + i * COMPRESSED_PAGE_SIZE)
-                .context("page offset does not fit into u32")?,
+            page_offset: u32::try_from(page_offset).context("page offset does not fit into u32")?,
         };
         out.extend(record.as_bytes());
-        lsda_offset += *lsda_count as usize;
+        lsda_offset += page.lsda_count;
+        page_offset += page.encoded.len();
     }
 
     // Emit termination page
@@ -345,23 +511,8 @@ pub(crate) fn build(
     out.extend(lsdas.as_bytes());
 
     // Finally, we encode the second-level entries.
-    for (_, _, encoding_array) in second_level_entries {
-        let record = CompressedPage {
-            kind: UNWIND_SECOND_LEVEL_COMPRESSED,
-            functions_offset: size_of::<CompressedPage>() as u16,
-            functions_len: encoding_array.len() as u16,
-            local_opcodes_offset: 0,
-            local_opcodes_len: 0,
-        };
-        out.extend(record.as_bytes());
-        for (offset, encoding_index) in encoding_array {
-            ensure!(
-                offset >> 24 == 0,
-                "compressed page function offset does not fit into 24 bits: {offset}"
-            );
-            out.extend(&offset.as_bytes()[..3]);
-            out.extend(encoding_index.as_bytes());
-        }
+    for page in second_level_entries {
+        out.extend(page.encoded);
     }
 
     Ok(out)

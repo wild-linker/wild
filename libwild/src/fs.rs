@@ -608,7 +608,11 @@ struct OutputFileDefaults {
 impl OutputFileDefaults {
     fn for_file(file: &std::fs::File) -> Self {
         let mut defaults = Self {
-            write_mode: FileWriteMode::Mmap,
+            write_mode: if crate::host::os::IS_MACOS {
+                FileWriteMode::BufferThenWrite
+            } else {
+                FileWriteMode::Mmap
+            },
             fallocate: false,
             madvise_huge_pages: true,
         };

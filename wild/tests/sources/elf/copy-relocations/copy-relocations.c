@@ -1,4 +1,3 @@
-//#SkipArch: ppc64le
 //#Object:runtime.c
 //#ReferenceLinkers:bfd,lld
 //#Mode:dynamic
