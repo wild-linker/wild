@@ -57,6 +57,10 @@
 //! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym. For
 //! Mach-O, checks the exports trie.
 //!
+//! ExpectLoadCommandSize:{command} {size},{size},... (Mach-O) Checks that matching load commands
+//! have exactly the specified sizes in load-command order. Command must be an LC_* name.
+//! May be repeated for different command types.
+//!
 //! ExpectEntry:symbol-name|address Checks that the executable entry point refers to the specified
 //! symbol or numeric address. Symbols are supported for ELF and Mach-O. Numeric addresses are
 //! supported for ELF.
@@ -2014,6 +2018,7 @@ struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
+    expected_load_command_sizes: Vec<(String, Vec<u32>)>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
     no_dynsym: HashSet<String>,
@@ -2613,6 +2618,22 @@ fn process_directive(
             .expected_dynsym_entries
             .push(ExpectedSymtabEntry::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
+        "ExpectLoadCommandSize" => {
+            let (command, sizes) = arg.trim().split_once(' ').context(
+                "ExpectLoadCommandSize requires a command name and comma-separated sizes",
+            )?;
+            ensure!(
+                command.starts_with("LC_"),
+                "ExpectLoadCommandSize requires an LC_* command name"
+            );
+            config.assertions.expected_load_command_sizes.push((
+                command.to_owned(),
+                sizes
+                    .split(',')
+                    .map(|size| size.trim().parse())
+                    .collect::<Result<Vec<u32>, _>>()?,
+            ));
+        }
         "ExpectComment" => config.assertions.expected_comments.push(arg.to_owned()),
         "NoSym" => {
             config.assertions.no_sym.insert(arg.to_owned());
@@ -5244,6 +5265,7 @@ impl Assertions {
             expected_symtab_entries: self.expected_symtab_entries.clone(),
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
             expected_entry: self.expected_entry.clone(),
+            expected_load_command_sizes: self.expected_load_command_sizes.clone(),
             no_sym: self.no_sym.clone(),
             no_dynsym: self.no_dynsym.clone(),
             does_not_contain: self.does_not_contain.clone(),
@@ -5280,6 +5302,7 @@ impl Assertions {
         }
 
         self.verify_macho_entry(obj)?;
+        self.verify_macho_load_command_sizes(obj)?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
@@ -5384,6 +5407,30 @@ impl Assertions {
             self.expected_entry.as_deref().unwrap()
         );
 
+        Ok(())
+    }
+
+    fn verify_macho_load_command_sizes(&self, obj: &object::File) -> Result {
+        if self.expected_load_command_sizes.is_empty() {
+            return Ok(());
+        }
+        let object::File::MachO64(file) = obj else {
+            bail!("ExpectLoadCommandSize is only supported for 64-bit Mach-O");
+        };
+
+        for (expected_command, expected_sizes) in &self.expected_load_command_sizes {
+            let mut commands = file.macho_load_commands()?;
+            let mut actual_sizes = Vec::new();
+            while let Some(command) = commands.next()? {
+                if command.cmd().name() == Some(expected_command.as_str()) {
+                    actual_sizes.push(command.cmdsize());
+                }
+            }
+            ensure!(
+                actual_sizes == *expected_sizes,
+                "Expected {expected_command} command sizes {expected_sizes:?}, got {actual_sizes:?}"
+            );
+        }
         Ok(())
     }
 
