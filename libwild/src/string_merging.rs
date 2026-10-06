@@ -32,6 +32,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
+use crate::input_section_id::InputSectionIndex;
 use crate::input_section_id::SectionIdRange;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -106,7 +107,7 @@ impl StringMergeSectionSlot {
 /// slots, we want to keep it as small as possible.
 #[derive(Debug)]
 pub(crate) struct StringMergeSectionExtra<'data> {
-    pub(crate) index: object::SectionIndex,
+    pub(crate) index: InputSectionIndex,
     pub(crate) section_data: &'data [u8],
     pub(crate) is_strings: bool,
 }
@@ -310,12 +311,13 @@ fn group_merge_string_sections_by_output<'data, P: Platform>(
                 continue;
             };
             for extra in &obj.string_merge_extras {
-                let SectionSlot::MergeStrings(sec) = &mut obj.sections[extra.index.0] else {
+                let SectionSlot::MergeStrings(sec) = &mut obj.sections[extra.index.as_usize()]
+                else {
                     bail!("Internal error: expected SectionSlot::MergeStrings");
                 };
 
-                let part_id =
-                    section_part_ids[obj.section_id_range.start().as_usize() + extra.index.0];
+                let part_id = section_part_ids
+                    [obj.section_id_range.start().as_usize() + extra.index.as_usize()];
                 let section_id = part_id.output_section_id::<P>();
                 let starting_offset = starting_offsets.get_mut(section_id);
                 sec.start_input_offset = *starting_offset;

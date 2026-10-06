@@ -1,3 +1,26 @@
+/// An index into the section table of a single input file. Like object::SectionIndex, but stored
+/// more efficiently as a u32.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct InputSectionIndex(u32);
+
+impl InputSectionIndex {
+    pub(crate) fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<object::SectionIndex> for InputSectionIndex {
+    fn from(index: object::SectionIndex) -> Self {
+        Self(u32::try_from(index.0).expect("Input section index overflowed 32 bits"))
+    }
+}
+
+impl From<InputSectionIndex> for object::SectionIndex {
+    fn from(index: InputSectionIndex) -> Self {
+        Self(index.as_usize())
+    }
+}
+
 /// An ID for an input section. All sections from all input files are allocated a unique section ID.
 /// This allows information about sections to be stored in a single large `Vec` indexed by
 /// `InputSectionId`, rather than in per-object `Vec`s.
