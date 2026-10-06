@@ -1,4 +1,4 @@
-FROM rust:1.98.1-alpine
+FROM rust:1.99.0-alpine
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
