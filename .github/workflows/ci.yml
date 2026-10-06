@@ -232,7 +232,7 @@ jobs:
       - run: rm rust-toolchain.toml
       # This is where we check that we're not using features from a more recent rust version. When
       # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.0
         id: rust-toolchain
         with:
           components: clippy

@@ -2,7 +2,7 @@
 # different clippy warnings.
 
 [toolchain]
-channel = "1.98.0"
+channel = "1.99.0"
 profile = "minimal"
 components = ["clippy"]
 targets = ["wasm32-wasip1"]
