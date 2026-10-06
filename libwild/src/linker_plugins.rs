@@ -1161,12 +1161,7 @@ extern "C" fn add_input_library(lib_name: *const c_char) -> Status {
 
 #[link(name = "c")]
 unsafe extern "C" {
-    fn vsnprintf(
-        str: *mut std::ffi::c_char,
-        n: usize,
-        format: *const std::ffi::c_char,
-        ...
-    ) -> std::ffi::c_int;
+    fn vsnprintf(str: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
 }
 
 /// This function is called when the plugin wants to emit a message.
@@ -1177,14 +1172,8 @@ unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> 
         };
 
         let mut buf = [0u8; 4096];
-        let written_chars = unsafe {
-            vsnprintf(
-                buf.as_mut_ptr() as *mut libc::c_char,
-                buf.len(),
-                format,
-                args,
-            ) as usize
-        };
+        let written_chars =
+            unsafe { vsnprintf(buf.as_mut_ptr() as *mut c_char, buf.len(), format, args) as usize };
 
         let (text, status) = if let Ok(str) = std::str::from_utf8(&buf[..written_chars]) {
             (str, Status::Ok)
