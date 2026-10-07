@@ -71,6 +71,8 @@
 //! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
 //! absent from the .dynamic section.
 //!
+//! ExpectLoadDylib:{install-name} Checks for exactly one Mach-O LC_LOAD_DYLIB with this name.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
@@ -2018,6 +2020,7 @@ struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
+    expected_load_dylibs: Vec<String>,
     expected_load_command_sizes: Vec<(String, Vec<u32>)>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
@@ -2617,6 +2620,7 @@ fn process_directive(
             .assertions
             .expected_dynsym_entries
             .push(ExpectedSymtabEntry::parse(arg)?),
+        "ExpectLoadDylib" => config.assertions.expected_load_dylibs.push(arg.to_owned()),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectLoadCommandSize" => {
             let (command, sizes) = arg.trim().split_once(' ').context(
@@ -5266,6 +5270,7 @@ impl Assertions {
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
             expected_entry: self.expected_entry.clone(),
             expected_load_command_sizes: self.expected_load_command_sizes.clone(),
+            expected_load_dylibs: self.expected_load_dylibs.clone(),
             no_sym: self.no_sym.clone(),
             no_dynsym: self.no_dynsym.clone(),
             does_not_contain: self.does_not_contain.clone(),
@@ -5303,6 +5308,7 @@ impl Assertions {
 
         self.verify_macho_entry(obj)?;
         self.verify_macho_load_command_sizes(obj)?;
+        self.verify_macho_load_dylibs(obj)?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
@@ -5406,6 +5412,41 @@ impl Assertions {
             "Expected entry point `{}` at {expected_address:#x}, but ELF e_entry was {actual_address:#x}",
             self.expected_entry.as_deref().unwrap()
         );
+
+        Ok(())
+    }
+
+    fn verify_macho_load_dylibs(&self, obj: &object::File) -> Result {
+        if self.expected_load_dylibs.is_empty() {
+            return Ok(());
+        }
+
+        let object::File::MachO64(file) = obj else {
+            bail!("ExpectLoadDylib is only supported for 64-bit Mach-O");
+        };
+
+        let e = file.endianness();
+        let mut commands = file.macho_load_commands()?;
+        let mut names = Vec::new();
+
+        while let Some(command) = commands.next()? {
+            if command.cmd() == object::macho::LC_LOAD_DYLIB {
+                let dylib = command.dylib()?.context("Missing dylib command")?;
+                names.push(command.string(e, dylib.dylib.name)?);
+            }
+        }
+
+        for expected in &self.expected_load_dylibs {
+            let count = names
+                .iter()
+                .filter(|name| **name == expected.as_bytes())
+                .count();
+
+            ensure!(
+                count == 1,
+                "Expected exactly one LC_LOAD_DYLIB for `{expected}`, found {count}"
+            );
+        }
 
         Ok(())
     }

@@ -426,7 +426,12 @@ pub(crate) struct File<'data> {
 #[derive(Debug)]
 enum ObjectKind<'data> {
     Regular(RegularObject<'data>),
-    Dylib,
+    Dylib(Dylib<'data>),
+}
+
+#[derive(Debug)]
+struct Dylib<'data> {
+    install_name: &'data [u8],
 }
 
 #[derive(derive_more::Debug)]
@@ -444,11 +449,21 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         let mut symbols = None;
         let mut sections = None;
+        let mut dylib = None;
 
         while let Some(command) = commands.next()? {
             if let Some(symtab_command) = command.symtab()? {
                 ensure!(symbols.is_none(), "At most one symtab command expected");
                 symbols = Some(symtab_command.symbols::<macho::MachHeader64<_>, _>(LE, input)?);
+            } else if is_dynamic && command.cmd() == macho::LC_ID_DYLIB {
+                ensure!(dylib.is_none(), "Duplicate LC_ID_DYLIB command");
+                let id = command.data::<macho::DylibCommand<Endianness>>()?;
+
+                dylib = Some(Dylib {
+                    install_name: command
+                        .string(LE, id.dylib.name)
+                        .context("Invalid LC_ID_DYLIB install name")?,
+                });
             } else if !is_dynamic
                 && let Some((segment_command, segment_data)) = command.segment_64()?
             {
@@ -459,7 +474,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
 
         let kind = if is_dynamic {
-            ObjectKind::Dylib
+            ObjectKind::Dylib(dylib.context("Missing LC_ID_DYLIB command")?)
         } else {
             ObjectKind::Regular(RegularObject {
                 sections: sections.ok_or("Missing segment command")?,
@@ -480,7 +495,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn is_dynamic(&self) -> bool {
-        matches!(self.kind, ObjectKind::Dylib)
+        matches!(self.kind, ObjectKind::Dylib(_))
     }
 
     fn num_symbols(&self) -> usize {
@@ -664,7 +679,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn dynamic_tag_values(&self) -> Option<DynamicTagValues<'data>> {
         match self.kind {
             ObjectKind::Regular(_) => None,
-            ObjectKind::Dylib => Some(DynamicTagValues::default()),
+            ObjectKind::Dylib(_) => Some(DynamicTagValues::default()),
         }
     }
 
@@ -2473,12 +2488,15 @@ pub(crate) fn install_name<'data>(
     symbol_db: &crate::symbol_db::SymbolDb<'data, MachO>,
 ) -> &'data [u8] {
     match symbol_db.file(file_id) {
-        SequencedInput::StubLibrary(stub) => stub.defined_symbols.install_name.as_bytes(),
-        SequencedInput::Object(obj) => obj.parsed.input.lib_name(),
-        _ => {
-            panic!("Internal error: Expected StubLibrary or Dynamic");
-        }
+        SequencedInput::StubLibrary(stub) => return stub.defined_symbols.install_name.as_bytes(),
+        SequencedInput::Object(obj) => match &obj.parsed.object.kind {
+            ObjectKind::Dylib(dylib) => return dylib.install_name,
+            ObjectKind::Regular(_) => {}
+        },
+        _ => {}
     }
+
+    panic!("Internal error: Expected StubLibrary or Dylib");
 }
 
 fn create_dynamic_layout_ext<'data>(
@@ -2941,7 +2959,7 @@ impl<'data> ObjectKind<'data> {
     fn sections(&self) -> &'data [SectionHeader] {
         match self {
             ObjectKind::Regular(regular_object) => regular_object.sections,
-            ObjectKind::Dylib => &[],
+            ObjectKind::Dylib(_) => &[],
         }
     }
 }
