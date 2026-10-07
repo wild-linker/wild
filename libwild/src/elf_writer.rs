@@ -5094,12 +5094,13 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             unreachable!();
         };
 
-        if let SectionSlot::Sorted(sec) = &object.sections[sorted_section.section_index.0] {
+        if let SectionSlot::Sorted(sec) = &object.sections[sorted_section.section_index.as_usize()]
+        {
             write_object_section::<C, A>(
                 object,
                 layout,
                 sec.section,
-                sorted_section.section_index,
+                sorted_section.section_index.into(),
                 buffers,
                 table_writer,
                 trace,

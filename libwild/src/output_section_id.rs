@@ -18,6 +18,7 @@ use crate::Result;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::grouping::SequencedLinkerScript;
+use crate::input_section_id::InputSectionIndex;
 use crate::layout_rules::LocationCounter;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
@@ -81,13 +82,13 @@ pub(crate) const FILE_HEADER: OutputSectionId =
 #[derive(Debug)]
 pub(crate) struct CustomSectionDetails<'data, P: Platform> {
     pub(crate) identity: SectionIdentity<'data, P>,
-    pub(crate) index: object::SectionIndex,
+    pub(crate) index: InputSectionIndex,
     pub(crate) alignment: Alignment,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InitFiniSectionDetail {
-    pub(crate) index: u32,
+    pub(crate) index: InputSectionIndex,
     pub(crate) primary: OutputSectionId,
     pub(crate) priority: u16,
     pub(crate) alignment: Alignment,

@@ -18,6 +18,7 @@ use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_section_id::InputSectionIndex;
 use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::linker_script::Expression;
@@ -794,7 +795,7 @@ pub(crate) struct ResolvedCommon<'data, P: Platform> {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct ScriptSortedSectionDetail {
-    pub(crate) index: object::SectionIndex,
+    pub(crate) index: InputSectionIndex,
 }
 
 #[derive(Debug)]
@@ -893,7 +894,7 @@ fn assign_section_ids<'data, P: Platform>(
                 let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
 
                 for custom in &s.custom_sections {
-                    obj_part_ids[custom.index.0] =
+                    obj_part_ids[custom.index.as_usize()] =
                         output_sections.get_or_create_custom_section_part(args, custom);
                 }
 
@@ -967,7 +968,7 @@ fn populate_start_stop_sections<'data, P: Platform>(
             let obj_part_ids = &section_part_ids[s.section_id_range.as_usize()];
 
             for custom_section in &s.custom_sections {
-                let section_index = custom_section.index;
+                let section_index = object::SectionIndex::from(custom_section.index);
 
                 let SectionSlot::Unloaded(unloaded) = s.sections[section_index.0] else {
                     continue;
@@ -1020,13 +1021,13 @@ fn assign_section_ids_partial<'data, P: Platform>(
                     continue;
                 };
                 for custom in &object.custom_sections {
-                    if !is_partial_link_singleton_candidate(object, custom.index) {
+                    if !is_partial_link_singleton_candidate(object, custom.index.into()) {
                         continue;
                     }
                     let hash = hasher.hash_one(custom.identity);
                     buckets[hash as usize % num_buckets].push((
                         PreHashed::new(custom.identity, hash),
-                        object.section_id_range.input_to_id(custom.index),
+                        object.section_id_range.input_to_id(custom.index.into()),
                         singletons_id.part_id_with_alignment::<P>(custom.alignment),
                     ));
                 }
@@ -1069,7 +1070,7 @@ fn assign_section_ids_partial<'data, P: Platform>(
             if let ResolvedFile::Object(object) = file {
                 let obj_part_ids = &mut section_part_ids[object.section_id_range.as_usize()];
                 for custom in &object.custom_sections {
-                    let part_id = &mut obj_part_ids[custom.index.0];
+                    let part_id = &mut obj_part_ids[custom.index.as_usize()];
                     if *part_id != singletons_id.part_id_with_alignment::<P>(custom.alignment) {
                         *part_id = output_sections.get_or_create_custom_section_part(args, custom);
                     }
@@ -1457,7 +1458,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
     output_sections: &mut OutputSections<'data, P>,
 ) {
     for d in details {
-        let Some(slot) = sections.get(d.index as usize) else {
+        let Some(slot) = sections.get(d.index.as_usize()) else {
             continue;
         };
 
@@ -1468,7 +1469,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
 
         let sid =
             output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
-        section_part_ids[d.index as usize] = sid.part_id_with_alignment::<P>(d.alignment);
+        section_part_ids[d.index.as_usize()] = sid.part_id_with_alignment::<P>(d.alignment);
     }
 }
 
@@ -1626,7 +1627,7 @@ fn resolve_section<'data, P: Platform>(
             };
             if let Some(priority) = P::init_section_priority(section_name) {
                 obj.init_fini_sections.push(InitFiniSectionDetail {
-                    index: input_section_index.0 as u32,
+                    index: input_section_index.into(),
                     primary: output_info.section_id,
                     priority,
                     alignment,
@@ -1711,7 +1712,7 @@ fn resolve_section<'data, P: Platform>(
         let custom_section = CustomSectionDetails {
             identity: P::section_identity(SectionName(section_name), input_section),
             alignment,
-            index: input_section_index,
+            index: input_section_index.into(),
         };
 
         obj.custom_sections.push(custom_section);
@@ -1728,7 +1729,7 @@ fn resolve_section<'data, P: Platform>(
         }
 
         obj.string_merge_extras.push(StringMergeSectionExtra {
-            index: input_section_index,
+            index: input_section_index.into(),
             section_data,
             is_strings: input_section.is_strings(),
         });

@@ -26,6 +26,7 @@ use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_section_id::InputSectionIndex;
 use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionKind;
 use crate::linker_script::Expression;
@@ -4690,7 +4691,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         self.sections[section_index.0] = if unloaded.needs_sorting {
             self.script_sorted_sections.push(ScriptSortedSectionDetail {
-                index: section_index,
+                index: section_index.into(),
             });
             SectionSlot::Sorted(SortedSection {
                 // Filled in later.
@@ -6980,15 +6981,15 @@ impl<'data, P: Platform> Drop for Layout<'data, P> {
 /// A GC unit for use on platform where GC is done by section. Effectively an object::SectionIndex,
 /// but stored as a u32 for compactness.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SectionGcUnit(u32);
+pub(crate) struct SectionGcUnit(InputSectionIndex);
 
 impl SectionGcUnit {
     pub(crate) fn new(section_index: object::SectionIndex) -> Self {
-        Self(section_index.0 as u32)
+        Self(section_index.into())
     }
 
     pub(crate) fn section_index(self) -> object::SectionIndex {
-        object::SectionIndex(self.0 as usize)
+        self.0.into()
     }
 }
 
@@ -6996,7 +6997,7 @@ impl SectionGcUnit {
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct InputSortedSection {
     pub(crate) file_id: FileId,
-    pub(crate) section_index: object::SectionIndex,
+    pub(crate) section_index: InputSectionIndex,
     pub(crate) part_id: PartId,
     pub(crate) size: u64,
     pub(crate) alignment: Alignment,
@@ -7028,12 +7029,14 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
                 for sorted_section in &obj.script_sorted_sections {
-                    if let SectionSlot::Sorted(sec) = &obj.sections[sorted_section.index.0] {
-                        let part_id = obj.section_part_id(sorted_section.index, section_part_ids);
+                    if let SectionSlot::Sorted(sec) = &obj.sections[sorted_section.index.as_usize()]
+                    {
+                        let part_id =
+                            obj.section_part_id(sorted_section.index.into(), section_part_ids);
                         let capacity = sec.section.capacity(part_id, output_sections);
                         sections_out.push((
                             obj.object
-                                .section_name(sorted_section.index)
+                                .section_name(sorted_section.index.into())
                                 .unwrap_or_default(),
                             InputSortedSection {
                                 file_id: obj.file_id,
@@ -7073,7 +7076,7 @@ fn assign_addresses_to_sorted_sections<P: Platform>(
             unreachable!();
         };
 
-        let SectionSlot::Sorted(slot) = &mut obj.sections[sec.section_index.0] else {
+        let SectionSlot::Sorted(slot) = &mut obj.sections[sec.section_index.as_usize()] else {
             unreachable!();
         };
 
