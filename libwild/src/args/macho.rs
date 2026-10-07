@@ -32,6 +32,7 @@ pub struct MachOArgs {
     pub(crate) dylib: bool,
     pub(crate) install_name: Option<String>,
     pub(crate) rpaths: Vec<String>,
+    pub(crate) export_list_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +111,7 @@ impl Default for MachOArgs {
             dylib: false,
             install_name: None,
             rpaths: Vec::new(),
+            export_list_path: None,
         }
     }
 }
@@ -156,6 +158,10 @@ impl platform::Args for MachOArgs {
 
     fn sysroot(&self) -> Option<&Path> {
         self.sysroot.as_deref()
+    }
+
+    fn export_list_path(&self) -> Option<&Path> {
+        self.export_list_path.as_deref()
     }
 
     fn should_gc_sections(&self) -> bool {
@@ -228,6 +234,20 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .help("Set the dynamic library install name")
         .execute(|args, _, value| {
             args.install_name = Some(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("exported_symbols_list")
+        .help("Restrict exported symbols to patterns listed in a file")
+        .execute(|args, _, value| {
+            // TODO: Merge the export symbol lists.
+            if args.export_list_path.is_some() {
+                bail!("Multiple export symbol lists not yet supported");
+            }
+            args.common_mut().save_dir.handle_file(value);
+            args.export_list_path = Some(PathBuf::from(value));
             Ok(())
         });
 

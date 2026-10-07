@@ -1263,6 +1263,13 @@ fn load_prelude<'scope, 'data, P: Platform>(
         }
     }
 
+    // Exact entries in a Mach-O exported-symbols list act as undefined roots. This causes an
+    // archive member defining the symbol to be loaded. Unlike --undefined, these names don't need
+    // synthetic prelude symbols because we diagnose missing definitions after resolution.
+    for name in resources.symbol_db.required_export_symbols() {
+        load_symbol_named(resources, &mut SymbolId::undefined(), name, scope);
+    }
+
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.

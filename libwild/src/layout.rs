@@ -4513,7 +4513,7 @@ pub(crate) fn export_symbols_mode<P: Platform>(
     }
 
     if symbol_db.output_kind.needs_dynsym() && symbol_db.export_list.is_some() {
-        return Some(ExportSymbolsMode::Selected);
+        return Some(ExportSymbolsMode::MatchingExportList);
     }
 
     None
@@ -4521,7 +4521,9 @@ pub(crate) fn export_symbols_mode<P: Platform>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExportSymbolsMode {
-    Selected,
+    MatchingExportList,
+
+    /// All eligible definitions, subject to any restrictive export list.
     All,
 }
 
@@ -5162,7 +5164,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         // in regular object. When that happens, if we resolve the symbol to the definition from the
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
-        // hidden.
+        // hidden or excluded by a restrictive export list.
         if !can_export_symbol(sym, symbol_id, resources, ExportSymbolsMode::All) {
             return Ok(());
         }
@@ -5327,10 +5329,11 @@ pub(crate) fn can_export_global_def<P: Platform>(
         return false;
     }
 
-    if mode == ExportSymbolsMode::Selected
+    // Restrictive lists apply to every export request, including those using `All`.
+    if (mode == ExportSymbolsMode::MatchingExportList || symbol_db.has_restrictive_export_list())
         && let Some(export_list) = &symbol_db.export_list
         && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
-        && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+        && !export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
     {
         return false;
     }

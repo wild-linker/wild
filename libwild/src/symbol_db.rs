@@ -344,7 +344,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         let export_list = auxiliary
             .export_list_data
-            .map(ExportList::parse)
+            .map(P::parse_export_list)
             .transpose()?;
 
         let num_buckets = num_symbol_hash_buckets(args);
@@ -608,6 +608,16 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                 self.override_name(UnversionedSymbolName::prehashed(real_name), orig_id);
             }
         }
+    }
+
+    pub(crate) fn has_restrictive_export_list(&self) -> bool {
+        self.export_list.is_some() && P::EXPORT_LIST_RESTRICTS_DEFAULT_EXPORTS
+    }
+
+    pub(crate) fn required_export_symbols(&self) -> impl Iterator<Item = &[u8]> {
+        self.export_list
+            .iter()
+            .flat_map(|export_list| export_list.required_symbols())
     }
 
     /// Restores name-table entries for wrapped symbols to their original (pre-wrap) definitions.

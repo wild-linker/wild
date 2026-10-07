@@ -6,12 +6,14 @@ use crate::arch::Architecture;
 use crate::bail;
 use crate::env;
 use crate::error::Warning;
+use crate::export_list::ExportList;
 use crate::fs::FileReplacementMode;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileLoader;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
+use crate::input_data::ScriptData;
 use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
@@ -380,6 +382,9 @@ pub(crate) trait Platform:
     const DEFAULT_FILE_REPLACEMENT_MODE: FileReplacementMode =
         FileReplacementMode::UpdateInPlaceWithFallback;
 
+    /// Whether an export list replaces the platform's default set of exported symbols.
+    const EXPORT_LIST_RESTRICTS_DEFAULT_EXPORTS: bool = false;
+
     // TODO: Some of these are very specific to a single platform. Investigate if the code that
     // references them could be moved, allowing the constant to be deleted.
 
@@ -486,6 +491,14 @@ pub(crate) trait Platform:
 
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VerneedTable<'data>: VerneedTable<'data>;
+
+    fn parse_export_list(data: ScriptData<'_>) -> Result<ExportList<'_>> {
+        ExportList::parse_gnu(data)
+    }
+
+    fn validate_export_list(_symbol_db: &SymbolDb<Self>) -> Result {
+        Ok(())
+    }
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,

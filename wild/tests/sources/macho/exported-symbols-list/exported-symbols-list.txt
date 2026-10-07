@@ -1,0 +1,12 @@
+  _wild_test_export_exact
+_wild_test_export_glob_**
+***_wild_test_export_prefix
+_wild_test_export_mid***end
+_wild_test_export_class_[**]**
+# Wildcards must not load otherwise unreferenced archive members.
+_wild_test_export_archive_***
+# Unmatched wildcards must not require a definition.
+_wild_test_no_matching_symbol_***
+_wild_test_export_question_?
+_wild_test_export_range_[a-c] # trailing comments and whitespace are ignored
+# comment

@@ -51,6 +51,7 @@ use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
 use crate::resolution::SectionSlot;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
@@ -1266,6 +1267,82 @@ impl platform::Platform for MachO {
     type SectionIdentityExt = Option<SegmentName>;
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
+    const EXPORT_LIST_RESTRICTS_DEFAULT_EXPORTS: bool = true;
+
+    fn parse_export_list(
+        data: crate::input_data::ScriptData<'_>,
+    ) -> Result<crate::export_list::ExportList<'_>> {
+        crate::export_list::ExportList::parse_macho(data)
+    }
+
+    fn validate_export_list(symbol_db: &crate::symbol_db::SymbolDb<Self>) -> Result {
+        let Some(export_list) = &symbol_db.export_list else {
+            return Ok(());
+        };
+
+        let missing = export_list
+            .required_symbols()
+            .filter(|name| {
+                symbol_db
+                    .get_unversioned(&UnversionedSymbolName::prehashed(name))
+                    .is_none()
+            })
+            .map(|name| format!("`{}`", String::from_utf8_lossy(name)))
+            .join(", ");
+
+        if !missing.is_empty() {
+            bail!("exported symbol(s) not defined: {missing}");
+        }
+
+        // Exact entries can request new imports. Wildcards only request re-exports for symbols
+        // already imported by an input object, not every matching symbol in a dependency.
+        let explicit_symbols = export_list
+            .required_symbols()
+            .filter_map(|name| symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name)));
+
+        let imported_symbols = symbol_db
+            .groups
+            .iter()
+            .filter_map(|group| match group {
+                crate::grouping::Group::Objects(objects) => Some(*objects),
+                _ => None,
+            })
+            .flatten()
+            .filter(|object| !object.is_dynamic())
+            .flat_map(|object| object.symbol_id_range.as_usize())
+            .map(SymbolId::from_usize)
+            .filter(|&symbol_id| symbol_db.is_undefined(symbol_id));
+
+        let unsupported_reexport = explicit_symbols
+            .chain(imported_symbols)
+            .filter_map(|symbol_id| {
+                let definition = symbol_db.definition(symbol_id);
+                if definition.is_undefined()
+                    || !symbol_db
+                        .file(symbol_db.file_id_for_symbol(definition))
+                        .is_dynamic()
+                {
+                    return None;
+                }
+
+                let name = symbol_db.symbol_name(definition).ok()?;
+                export_list
+                    .contains(&UnversionedSymbolName::prehashed(name.bytes()))
+                    .then_some(name.bytes())
+            })
+            .min();
+
+        if let Some(name) = unsupported_reexport {
+            // TODO: Implement re-exports
+            bail!(
+                "re-exporting symbols from dynamic libraries via -exported_symbols_list is not \
+                 yet supported (matched `{}`)",
+                String::from_utf8_lossy(name)
+            );
+        }
+
+        Ok(())
+    }
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,

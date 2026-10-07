@@ -383,6 +383,8 @@ impl<F: FileSystem> Linker<F> {
             )?;
         }
 
+        P::validate_export_list(&symbol_db)?;
+
         // If it's a rust version script, apply the global symbol visibility now.
         // We previously downgraded all symbols to local visibility.
         if let VersionScript::Rust(rust_vscript) = &symbol_db.version_script {

@@ -1735,6 +1735,8 @@ fn write_symbols<'data>(
     layout: &MachOLayout<'data>,
     symbol_writer: &mut MachOSymbolTableWriter,
 ) -> Result {
+    let has_export_allowlist = layout.symbol_db.has_restrictive_export_list();
+
     for ((sym_index, sym), flags) in object
         .object
         .enumerate_symbols()
@@ -1788,7 +1790,9 @@ fn write_symbols<'data>(
                 bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };
 
-        if !sym.is_local() && sym.is_hidden() {
+        if !sym.is_local()
+            && (sym.is_hidden() || (has_export_allowlist && !flags.get().needs_export_dynamic()))
+        {
             // Private externs get downgraded to locals with N_PEXT set to record that they
             // originated as external symbols.
             symbol_type.remove(macho::N_EXT);
