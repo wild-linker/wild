@@ -158,6 +158,12 @@
 //! currently skipped if the shared library is cross compiled. For Wasm, wasmtime is invoked with
 //! `--invoke` on the named export.
 //!
+//! WasmRunner:{filename} Runs a Wasm driver module instead of the linked binary. `filename` can be
+//! in the test sources or the common directory. The linked binary is preloaded as module `test`, so
+//! the driver can import its exports and call them with arguments in sequence. Link the tested
+//! module with `--no-entry` and export the functions the driver needs. If RunDynSym is set, it
+//! selects an export of the driver.
+//!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
@@ -997,17 +1003,27 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
     Ok(())
 }
 
-fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str, invoke: Option<&str>) -> Result {
+fn run_wasm_with_wasmtime(
+    wasm_file: &Path,
+    linker_name: &str,
+    invoke: Option<&str>,
+    runner: Option<&Path>,
+) -> Result {
     let mut command = Command::new("wasmtime");
     command.arg("run");
     command.args(["-W", "threads,shared-memory"]);
     if let Some(func) = invoke {
         command.arg("--invoke").arg(func);
     }
-    let output = command
-        .arg(wasm_file)
-        .output()
-        .context("Failed to run wasmtime")?;
+    if let Some(runner) = runner {
+        command
+            .arg("--preload")
+            .arg(format!("test={}", path_to_str(wasm_file)?))
+            .arg(runner);
+    } else {
+        command.arg(wasm_file);
+    }
+    let output = command.output().context("Failed to run wasmtime")?;
     ensure!(
         output.status.success(),
         "wasmtime execution of {} output failed (exit={:?}):\nstdout: {}\nstderr: {}",
@@ -1486,6 +1502,7 @@ struct Config {
     diff_match_any: bool,
     should_run: bool,
     run_dyn_sym: Option<String>,
+    wasm_runner: Option<PathBuf>,
     should_error: bool,
     expect_stderr: Vec<ErrorMatcher>,
     expect_stdout: Vec<ErrorMatcher>,
@@ -2297,6 +2314,7 @@ impl Config {
             should_run: platform.can_execute_on_host(),
             diff_match_any: false,
             run_dyn_sym: None,
+            wasm_runner: None,
             should_error: false,
             expect_stderr: Default::default(),
             expect_stdout: Default::default(),
@@ -2842,6 +2860,19 @@ fn process_directive(
             } else {
                 Some(arg.to_string())
             }
+        }
+        "WasmRunner" => {
+            ensure!(
+                config.platform == PlatformKind::Wasm,
+                "WasmRunner is only supported for Wasm tests"
+            );
+            config.wasm_runner = if arg.is_empty() {
+                None
+            } else {
+                let path = config.source_path(arg);
+                config.tracked_files.push(path.clone());
+                Some(path)
+            };
         }
         "ReferenceLinkers" => {
             let refs: Vec<String> = arg
@@ -3417,6 +3448,7 @@ impl LinkOutput {
                 &self.binary,
                 self.linker_used.name(),
                 self.command.config.run_dyn_sym.as_deref(),
+                self.command.config.wasm_runner.as_deref(),
             );
         }
 
@@ -8921,4 +8953,9 @@ impl FatArch for object::read::macho::FatArch64 {
 
 fn default_llvm_tools_dir() -> PathBuf {
     PathBuf::from("/usr/bin")
+}
+
+fn path_to_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .with_context(|| format!("Path must be UTF-8: `{}`", path.display()))
 }
