@@ -1679,7 +1679,7 @@ fn write_symbols<'data>(
         };
 
         let mut value = 0;
-        let (section, symbol_type, desc) =
+        let (section, mut symbol_type, desc) =
             if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                 let section_id = match &object.sections[section_index.0] {
                     SectionSlot::Loaded(_) => object
@@ -1712,6 +1712,13 @@ fn write_symbols<'data>(
             } else {
                 bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };
+
+        if !sym.is_local() && sym.is_hidden() {
+            // Private externs get downgraded to locals with N_PEXT set to record that they
+            // originated as external symbols.
+            symbol_type.remove(macho::N_EXT);
+            symbol_type.insert(macho::N_PEXT);
+        }
 
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
             value = res.value_for_symbol_table();
