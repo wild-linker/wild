@@ -8,7 +8,13 @@
 //#Config:shared-memory:default
 //#LinkArgs: --shared-memory --max-memory=131072
 //#ReferenceLinkers:
-//#ExpectErrorWild: shared-memory TLS is not supported yet
+//#RunEnabled:false
+//#ExpectSym: __tls_base address=0
+//#ExpectSym: __tls_size
+//#ExpectSym: __tls_align
+//#ExpectSym: __wasm_init_tls
+//#ExpectSection: DataCount
+//#ExpectSharedMemory: true
 
 _Thread_local int tls1 = 1;
 extern _Thread_local int tls2;

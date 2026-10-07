@@ -1,5 +1,8 @@
 //#DiffEnabled:false
 //#DoesNotContain: env
+//#NoSym: __tls_size
+//#NoSym: __tls_align
+//#NoSym: __wasm_init_tls
 
     .globaltype __tls_base, i32
 
