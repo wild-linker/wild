@@ -272,8 +272,9 @@
 //! ## Driver Modes
 //!
 //! save-dir-response: Writes all arguments to a response file, passes that response file to the
-//! linker driver to produce a save-dir, then runs the save-dir's run-with script to perform
-//! linking. This is intended to exercise save-dir's handling of response files.
+//! linker driver using Wild to produce a save-dir, then replays it with the linker under test.
+//! Reference linkers require a compiler driver. Original archives and framework bundles are
+//! temporarily hidden during replay to check that the saved inputs are self-contained.
 //!
 //! ## Inputs
 //!
@@ -4705,6 +4706,18 @@ impl LinkCommand {
         config: &Config,
         cross_arch: Option<Architecture>,
     ) -> Result<LinkCommand> {
+        let replay_linker = linker;
+        // Compiler drivers translate their options into portable linker arguments. Always use
+        // Wild to capture those arguments, including when testing replay with a reference linker.
+        let linker = if config.driver_mode == Some(DriverMode::SaveDirResponse) {
+            ensure!(
+                linker.is_wild() || matches!(config.linker_driver, LinkerDriver::Compiler(_)),
+                "save-dir-response with a reference linker requires a compiler driver"
+            );
+            &Linker::Wild
+        } else {
+            linker
+        };
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
         let mut opt_save_dir = None;
@@ -4900,7 +4913,7 @@ impl LinkCommand {
                 .iter()
                 .filter_map(|input| input.command.clone())
                 .collect(),
-            linker: linker.clone(),
+            linker: replay_linker.clone(),
             config: config.clone(),
             invocation_mode,
             opt_save_dir,
@@ -5116,10 +5129,10 @@ impl LinkCommand {
             }
         }
 
-        // Temporarily hide original archives in config.build_dir() to guarantee replay
+        // Temporarily hide original archives and frameworks in config.build_dir() so replay
         // is fully self-contained within save-dir and doesn't rely on the original paths.
-        let mut hidden_archives = Vec::new();
-        find_archive_files(&config.build_dir(), &save_dir, &mut hidden_archives);
+        let mut hidden_inputs = Vec::new();
+        find_replay_inputs(&config.build_dir(), &save_dir, &mut hidden_inputs);
         struct RestoreOnDrop(Vec<(PathBuf, PathBuf)>);
         impl Drop for RestoreOnDrop {
             fn drop(&mut self) {
@@ -5128,17 +5141,33 @@ impl LinkCommand {
                 }
             }
         }
+
         let mut _restore_guard = RestoreOnDrop(Vec::new());
-        for archive in hidden_archives {
-            let hidden = archive.with_extension("hidden");
-            std::fs::rename(&archive, &hidden)
-                .with_context(|| format!("Failed to hide archive `{}`", archive.display()))?;
-            _restore_guard.0.push((archive, hidden));
+
+        for input in hidden_inputs {
+            let hidden = input.with_extension("hidden");
+            std::fs::rename(&input, &hidden)
+                .with_context(|| format!("Failed to hide input `{}`", input.display()))?;
+            _restore_guard.0.push((input, hidden));
         }
 
         let mut run_save_dir_cmd = Command::new("bash");
         run_save_dir_cmd.arg(&run_with);
-        run_save_dir_cmd.arg(wild_path());
+        let cross_arch = (config.arch != get_host_architecture()).then_some(config.arch);
+        run_save_dir_cmd.arg(self.linker.path(cross_arch));
+        if let Linker::ThirdParty(linker) = &self.linker {
+            run_save_dir_cmd.args(&linker.direct_args);
+        }
+
+        run_save_dir_cmd.env("OUT", &self.output_path);
+        if self.linker.is_wild() {
+            run_save_dir_cmd.env(libwild::args::VALIDATE_ENV, "1");
+            run_save_dir_cmd.env(libwild::args::WILD_UNSUPPORTED_ENV, "ignore");
+            if config.should_diff || config.assertions.requires_metrics() {
+                run_save_dir_cmd.env(libwild::args::WRITE_LAYOUT_ENV, "1");
+                run_save_dir_cmd.env(libwild::args::WRITE_TRACE_ENV, "1");
+            }
+        }
 
         // The fact that our save-dirs use D is an implementation detail, but it's convenient to
         // stress-test our handling of that variable by setting it to an invalid value here.
@@ -5161,15 +5190,6 @@ impl LinkCommand {
             );
         }
 
-        let bin_output = save_dir.join("bin");
-        std::fs::rename(&bin_output, &self.output_path).with_context(|| {
-            format!(
-                "Failed to rename save-dir output from `{}` to `{}`",
-                bin_output.display(),
-                self.output_path.display()
-            )
-        })?;
-
         Ok(LinkerMessages {
             stdout: stdout.to_owned(),
             stderr: stderr.to_owned(),
@@ -5177,7 +5197,7 @@ impl LinkCommand {
     }
 }
 
-fn find_archive_files(dir: &Path, save_dir: &Path, out: &mut Vec<PathBuf>) {
+fn find_replay_inputs(dir: &Path, save_dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -5186,8 +5206,12 @@ fn find_archive_files(dir: &Path, save_dir: &Path, out: &mut Vec<PathBuf>) {
         if path.starts_with(save_dir) {
             continue;
         }
-        if path.is_dir() {
-            find_archive_files(&path, save_dir, out);
+        if path.extension().is_some_and(|e| e == "framework") && !save_dir.starts_with(&path) {
+            // Intermediate outputs may themselves live inside a framework bundle. Don't hide
+            // an ancestor of the save directory currently being replayed.
+            out.push(path);
+        } else if path.is_dir() {
+            find_replay_inputs(&path, save_dir, out);
         } else if path.extension().is_some_and(|e| e == "a") {
             out.push(path);
         }
@@ -5224,8 +5248,7 @@ impl LinkCommand {
 
     /// Returns whether we can skip invoking the linker.
     fn can_skip(&self) -> bool {
-        // We never skip linking when the linker is wild.
-        if self.linker.is_wild() {
+        if self.linker.is_wild() || self.config.driver_mode == Some(DriverMode::SaveDirResponse) {
             return false;
         }
 

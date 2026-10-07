@@ -625,6 +625,8 @@ pub(crate) enum InputSpec {
     Lib(Box<str>),
     /// Name of the library, including prefix and suffix.
     Search(Box<str>),
+    /// Name of a Mach-O framework, without the `.framework` suffix.
+    Framework(Box<str>),
 }
 
 #[derive(Debug, Eq, PartialEq)]

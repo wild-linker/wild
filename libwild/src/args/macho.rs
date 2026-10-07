@@ -25,6 +25,7 @@ pub struct MachOArgs {
     pub(crate) platform_version: Option<PlatformVersion>,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
+    pub(crate) framework_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
     pub(crate) headerpad_max_install_names: bool,
@@ -103,6 +104,7 @@ impl Default for MachOArgs {
             platform_version: None,
             sysroot: None,
             lib_search_path: Vec::new(),
+            framework_search_path: Vec::new(),
             plugin_path: None,
             dead_strip_dylibs: false,
             headerpad_max_install_names: false,
@@ -144,6 +146,10 @@ impl platform::Args for MachOArgs {
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
         &self.lib_search_path
+    }
+
+    fn framework_search_path(&self) -> &[Box<Path>] {
+        &self.framework_search_path
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
@@ -202,6 +208,26 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
+
+    if let Some(sysroot) = args.sysroot.as_deref() {
+        for path in &mut args.framework_search_path {
+            if let Ok(relative) = path.strip_prefix("/") {
+                let rooted = sysroot.join(relative);
+                if rooted.is_dir() {
+                    *path = rooted.into_boxed_path();
+                }
+            }
+        }
+    }
+
+    let standard_framework_paths = ["Library/Frameworks", "System/Library/Frameworks"];
+    args.framework_search_path
+        .extend(standard_framework_paths.map(|path| {
+            args.sysroot.as_deref().map_or_else(
+                || PathBuf::from("/").join(path).into_boxed_path(),
+                |sysroot| sysroot.join(path).into_boxed_path(),
+            )
+        }));
 
     args.common.report_unrecognized()?;
 
@@ -328,6 +354,27 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .execute(|args, _modifier_stack, value| match value {
             "-enable-linkonceodr-outlining" => Ok(()),
             _ => args.warn_unsupported(&format!("-mllvm {value}")),
+        });
+    parser
+        .declare_with_param()
+        .prefix("F")
+        .help("Add directory to framework search path")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_file(value);
+            args.framework_search_path.push(Box::from(Path::new(value)));
+            Ok(())
+        });
+    parser
+        .declare_with_param()
+        .long("framework")
+        .help("Link with framework")
+        .execute(|args, modifier_stack, value| {
+            args.common_mut().inputs.push(Input {
+                spec: InputSpec::Framework(Box::from(value)),
+                search_first: None,
+                modifiers: *modifier_stack.last().unwrap(),
+            });
+            Ok(())
         });
     parser
         .declare_with_param()
@@ -459,6 +506,11 @@ mod tests {
         "-L/foo/lib",
         "-L",
         "/bar/lib",
+        "-F/foo/frameworks",
+        "-F",
+        "/bar/frameworks",
+        "-framework",
+        "CoreFoundation",
         "main.o",
         "-lc++",
         "-dead_strip",
@@ -480,16 +532,32 @@ mod tests {
         assert_eq!(args.sysroot, Some(Box::from(Path::new("/foo/bar"))));
         assert!(args.common.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("main.o"),
-            InputSpec::Lib(_) | InputSpec::Search(_) => false,
+            InputSpec::Lib(_) | InputSpec::Search(_) | InputSpec::Framework(_) => false,
         }));
         assert!(args.common.inputs.iter().any(|i| match &i.spec {
             InputSpec::Lib(f) => f.as_ref() == "c++",
-            InputSpec::File(_) | InputSpec::Search(_) => false,
+            InputSpec::File(_) | InputSpec::Search(_) | InputSpec::Framework(_) => false,
+        }));
+        assert!(args.common.inputs.iter().any(|i| match &i.spec {
+            InputSpec::Framework(f) => f.as_ref() == "CoreFoundation",
+            InputSpec::File(_) | InputSpec::Lib(_) | InputSpec::Search(_) => false,
         }));
         assert!(
             args.lib_search_path
                 .iter()
                 .any(|p| p.as_ref() == Path::new("/foo/lib"))
+        );
+        assert_eq!(
+            args.framework_search_path
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>(),
+            [
+                Path::new("/foo/frameworks"),
+                Path::new("/bar/frameworks"),
+                Path::new("/foo/bar/Library/Frameworks"),
+                Path::new("/foo/bar/System/Library/Frameworks"),
+            ]
         );
         assert!(
             args.lib_search_path

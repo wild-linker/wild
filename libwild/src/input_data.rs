@@ -308,7 +308,11 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
         let mut initial_work = Vec::with_capacity(inputs.len());
         for input in inputs {
-            let path = input.path(args.lib_search_path(), self.file_system.as_ref())?;
+            let path = input.path(
+                args.lib_search_path(),
+                args.framework_search_path(),
+                self.file_system.as_ref(),
+            )?;
             inputs_by_path
                 .entry(path.absolute.clone())
                 .and_modify(|info| info.as_needed &= input.modifiers.as_needed)
@@ -767,7 +771,11 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
         scope: &Scope<'scope>,
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
-        let paths = input.path(self.args.lib_search_path(), self.file_system.as_ref())?;
+        let paths = input.path(
+            self.args.lib_search_path(),
+            self.args.framework_search_path(),
+            self.file_system.as_ref(),
+        )?;
 
         let mut inputs_by_path = self.inputs_by_path.lock().unwrap();
 
@@ -913,6 +921,7 @@ impl Input {
     fn path(
         &self,
         lib_search_path: &[Box<Path>],
+        framework_search_path: &[Box<Path>],
         file_system: &impl FileSystem,
     ) -> Result<InputPath> {
         match &self.spec {
@@ -979,6 +988,22 @@ impl Input {
                     });
                 }
                 bail!("Couldn't find library `{filename}` on library search path");
+            }
+            InputSpec::Framework(framework_name) => {
+                let framework = format!("{framework_name}.framework/{framework_name}");
+                let filenames = [
+                    PathBuf::from(format!("{framework}.tbd")),
+                    PathBuf::from(framework),
+                ];
+                if let Some((path, filename_index)) =
+                    search_for_files(file_system, framework_search_path, None, &filenames)
+                {
+                    return Ok(InputPath {
+                        absolute: file_system.absolute_path(&path)?,
+                        original: filenames[filename_index].clone(),
+                    });
+                }
+                bail!("Couldn't find framework `{framework_name}` on framework search path");
             }
         }
     }
@@ -1237,7 +1262,7 @@ mod tests {
                 modifiers: Default::default(),
             };
 
-            let resolved = input.path(&lib_search_path, &file_system).unwrap();
+            let resolved = input.path(&lib_search_path, &[], &file_system).unwrap();
             assert_eq!(resolved.absolute, file_system.path, "{input:?}");
             assert_eq!(resolved.original, Path::new(filename));
 
@@ -1249,14 +1274,14 @@ mod tests {
 
             assert_eq!(
                 direct
-                    .path(&lib_search_path, &file_system)
+                    .path(&lib_search_path, &[], &file_system)
                     .unwrap()
                     .absolute,
                 resolved.absolute
             );
 
             let os_path = direct
-                .path(&lib_search_path, &crate::fs::OsFileSystem)
+                .path(&lib_search_path, &[], &crate::fs::OsFileSystem)
                 .unwrap();
 
             assert_eq!(
@@ -1272,11 +1297,32 @@ mod tests {
 
             assert_eq!(
                 absolute
-                    .path(&lib_search_path, &crate::fs::OsFileSystem)
+                    .path(&lib_search_path, &[], &crate::fs::OsFileSystem)
                     .unwrap()
                     .absolute,
                 os_path.absolute
             );
+        }
+    }
+
+    #[test]
+    fn resolves_framework_inputs() {
+        let framework_search_path = [Path::new("Frameworks").into()];
+        for filename in ["Foo.framework/Foo.tbd", "Foo.framework/Foo"] {
+            let file_system = MemoryFileSystem {
+                path: Path::new("Frameworks").join(filename),
+            };
+            let input = Input {
+                spec: InputSpec::Framework("Foo".into()),
+                search_first: None,
+                modifiers: Default::default(),
+            };
+
+            let resolved = input
+                .path(&[], &framework_search_path, &file_system)
+                .unwrap();
+            assert_eq!(resolved.absolute, file_system.path);
+            assert_eq!(resolved.original, Path::new(filename));
         }
     }
 }

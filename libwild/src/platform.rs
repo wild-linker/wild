@@ -1683,6 +1683,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn lib_search_path(&self) -> &[Box<Path>];
 
+    fn framework_search_path(&self) -> &[Box<Path>] {
+        &[]
+    }
+
     fn output(&self) -> &Arc<Path> {
         &self.common().output
     }

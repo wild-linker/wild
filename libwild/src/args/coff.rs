@@ -387,7 +387,9 @@ mod tests {
             .iter()
             .map(|input| match &input.spec {
                 InputSpec::File(path) => path.as_ref(),
-                InputSpec::Lib(_) | InputSpec::Search(_) => panic!("unexpected input spec"),
+                InputSpec::Lib(_) | InputSpec::Search(_) | InputSpec::Framework(_) => {
+                    panic!("unexpected input spec")
+                }
             })
             .collect()
     }

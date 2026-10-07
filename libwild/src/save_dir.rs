@@ -144,6 +144,10 @@ impl SaveDirState {
             self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
         }
 
+        for path in parsed_args.framework_search_path() {
+            self.copy_file(&std::path::absolute(path)?, parsed_args)?;
+        }
+
         let run_with_file = self.dir.join("run-with");
         self.write_args_file(&run_with_file, parsed_args)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
@@ -174,6 +178,15 @@ impl SaveDirState {
             &mut at_file_counter,
             false,
         )?;
+
+        for path in args.framework_search_path() {
+            let path = std::path::absolute(path)?;
+            if self.output_path(&path).is_dir() {
+                write_script_arg_separator(&mut args_buf)?;
+                args_buf.write_all(b"-F")?;
+                write_copied_file_arg(&mut args_buf, &path)?;
+            }
+        }
 
         out.write_all(&setup_buf)?;
         out.write_all(b"exec \"${L[@]}\"")?;
@@ -207,6 +220,9 @@ impl SaveDirState {
     ) -> Result<Option<String>> {
         let mut args = args.iter();
         let mut original_output_file = None;
+
+        // TODO: This code is shared between different linker flavors, but includes flavor-specific
+        // flags. We should address this.
 
         while let Some(arg) = args.next() {
             // Response files were already read when the arguments were parsed, so an `@` argument
@@ -262,6 +278,15 @@ impl SaveDirState {
 
                     write_script_arg_separator(out)?;
                     write!(out, "@$RSP_{rsp_index}")?;
+                }
+                continue;
+            }
+
+            if !parsed_args.framework_search_path().is_empty()
+                && let Some(dir) = arg.strip_prefix("-F")
+            {
+                if dir.is_empty() {
+                    args.next();
                 }
                 continue;
             }
@@ -695,6 +720,55 @@ fn shell_escape_string(value: &'_ str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "macho")]
+    #[test]
+    fn save_implicit_framework_search_path() -> Result {
+        use crate::args::macho::MachOArgs;
+        use crate::platform::Args as _;
+        use std::process::Command;
+
+        if !crate::host::os::IS_MACOS {
+            return Ok(());
+        }
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        let search = source.join("Library/Frameworks");
+        let framework_name = Path::new("Foo.framework/Foo");
+        let framework = search.join(framework_name);
+        std::fs::create_dir_all(framework.parent().unwrap())?;
+        std::fs::write(&framework, b"framework contents")?;
+        let saved = temp.path().join("saved");
+        std::fs::create_dir(&saved)?;
+
+        // Substitute a temporary default directory without recording -F or -syslibroot.
+        // A real SDK would already be relocated through the saved -syslibroot argument.
+        let parsed = MachOArgs {
+            framework_search_path: vec![search.into_boxed_path()],
+            ..Default::default()
+        };
+        let state = SaveDirState::new(saved.clone(), vec!["-framework".into(), "Foo".into()]);
+        state.finish([&framework].into_iter(), &parsed)?;
+        std::fs::remove_dir_all(source)?;
+
+        let output = Command::new("bash")
+            .arg(saved.join("run-with"))
+            .args(["printf", "%s\\n"])
+            .output()?;
+        assert!(output.status.success());
+        let replay_args = String::from_utf8(output.stdout)?;
+        let mut replay = MachOArgs::default();
+        replay.parse(replay_args.lines())?;
+        let found = replay
+            .framework_search_path
+            .iter()
+            .map(|path| path.join(framework_name))
+            .find(|path| path.is_file())
+            .context("Saved arguments do not locate the copied framework")?;
+        assert!(found.starts_with(saved));
+        assert_eq!(std::fs::read(found)?, b"framework contents");
+        Ok(())
+    }
 
     fn test_make_relative_path(target: &Path, directory: &Path) {
         let relative = make_relative_path(target, directory).unwrap();
