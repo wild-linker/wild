@@ -4628,6 +4628,8 @@ impl LinkCommand {
 
                     match linker_driver {
                         Compiler::Clang(_) => {
+                            // Crash diagnostics can rerun Wild and clear its save directory.
+                            command.arg("-fno-crash-diagnostics");
                             command.arg(format!(
                                 "--ld-path={}",
                                 linker_path

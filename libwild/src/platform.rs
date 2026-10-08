@@ -337,6 +337,9 @@ pub(crate) trait Platform:
     const NUM_SINGLE_PART_SECTIONS: u32;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize;
 
+    /// Whether weak definitions take precedence over common symbols (unlike ELF).
+    const WEAK_SYMBOLS_OVERRIDE_COMMON: bool = false;
+
     /// How existing regular output files are replaced when the user doesn't specify a mode.
     const DEFAULT_FILE_REPLACEMENT_MODE: FileReplacementMode =
         FileReplacementMode::UpdateInPlaceWithFallback;

@@ -1199,7 +1199,7 @@ impl<'data> SymbolBucket<'data> {
 
     /// Returns the selected non-dynamic alternative to the supplied symbol, if any.
     /// Among non-dynamic alternatives, selects the best one based on symbol binding:
-    /// strong > common (largest) > weak/gnu_unique.
+    /// strong > common (largest) > weak/gnu_unique for ELF; Mach-O prefers weak over common.
     fn get_non_dynamic<P: Platform>(
         &self,
         symbol_id: SymbolId,
@@ -1215,7 +1215,7 @@ impl<'data> SymbolBucket<'data> {
             }
             selector.consider(alt, file.symbol_strength(alt));
         }
-        selector.best()
+        selector.best::<P>()
     }
 }
 
@@ -1440,7 +1440,7 @@ fn select_symbol<'data, P: Platform>(
         selector.consider(id, strength);
     }
 
-    if let Some(best) = selector.best() {
+    if let Some(best) = selector.best::<P>() {
         return Ok(best);
     }
 
@@ -1492,7 +1492,7 @@ impl SymbolStrength {
 }
 
 /// Accumulates symbol candidates and selects the best one based on binding priority:
-/// strong > common (largest) > weak/gnu_unique.
+/// strong > common (largest) > weak/gnu_unique. Mach-O prefers weak over common.
 pub(crate) struct SymbolPrioritySelector {
     pub(crate) first_strong: Option<SymbolId>,
     max_common: Option<(u64, SymbolId)>,
@@ -1530,10 +1530,16 @@ impl SymbolPrioritySelector {
     }
 
     /// Returns the best symbol based on priority: strong > common (largest) > weak.
-    pub(crate) fn best(self) -> Option<SymbolId> {
-        self.first_strong
-            .or(self.max_common.map(|(_, id)| id))
-            .or(self.first_weak)
+    pub(crate) fn best<P: Platform>(self) -> Option<SymbolId> {
+        if P::WEAK_SYMBOLS_OVERRIDE_COMMON {
+            self.first_strong
+                .or(self.first_weak)
+                .or(self.max_common.map(|(_, id)| id))
+        } else {
+            self.first_strong
+                .or(self.max_common.map(|(_, id)| id))
+                .or(self.first_weak)
+        }
     }
 }
 
