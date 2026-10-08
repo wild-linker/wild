@@ -2078,8 +2078,10 @@ impl platform::Platform for MachO {
             prelude.format_specific.load_command_count += 1;
         };
 
-        // Separately emitted __PAGEZERO.
-        allocate_load_cmd(size_of::<SegmentCommand>());
+        // Executables have a separately emitted __PAGEZERO.
+        if resources.symbol_db.output_kind.is_executable() {
+            allocate_load_cmd(size_of::<SegmentCommand>());
+        }
 
         for &segment_id in &header_info.active_segment_ids {
             let segment = program_segments.segment_def(segment_id);
@@ -2092,11 +2094,13 @@ impl platform::Platform for MachO {
 
         if resources.symbol_db.output_kind.is_executable() {
             allocate_load_cmd(size_of::<EntryPointCommand>());
+            allocate_load_cmd(
+                (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+                    .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
+            );
+        } else {
+            allocate_load_cmd(load_dylib_command_size(args.dylib_install_name()));
         }
-        allocate_load_cmd(
-            (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
-                .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
-        );
 
         prelude.format_specific.imported_library_file_ids =
             resources.format_specific.imported_libraries.clone();
@@ -2128,8 +2132,10 @@ impl platform::Platform for MachO {
 
         if args.headerpad_max_install_names {
             let extra_string_space = (prelude.format_specific.imported_library_file_ids.len()
-                + args.rpaths.len())
+                + args.rpaths.len()
+                + usize::from(resources.symbol_db.output_kind.is_shared_object()))
                 * MAXPATHLEN;
+
             sizes.increment(part_id::LOAD_COMMANDS_PADDING, extra_string_space as u64);
         }
     }

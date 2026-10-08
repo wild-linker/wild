@@ -113,7 +113,6 @@ use object::macho::LC_SYMTAB;
 use object::macho::LC_UUID;
 use object::macho::LoadCommand;
 use object::macho::MH_CIGAM_64;
-use object::macho::MH_EXECUTE;
 use object::macho::N_ABS;
 use object::macho::N_SECT;
 use object::macho::PLATFORM_MACOS;
@@ -251,11 +250,21 @@ fn write_prelude<'data>(
         write_build_version_command(layout, build_version_command, build_tool_version)?;
     }
 
-    let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
-        .next_multiple_of(MACHO_COMMAND_ALIGNMENT);
-    let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
-    let dylinker_command = take_mut(&mut command_buffer)?;
-    write_dylinker_command(dylinker_command, command_buffer);
+    if layout.symbol_db.output_kind.is_executable() {
+        let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+            .next_multiple_of(MACHO_COMMAND_ALIGNMENT);
+        let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
+        let dylinker_command = take_mut(&mut command_buffer)?;
+        write_dylinker_command(dylinker_command, command_buffer);
+    } else {
+        let path = layout.args().dylib_install_name();
+        let command_size = crate::macho::load_dylib_command_size(path);
+        let mut command_buffer = load_command_buffer
+            .split_off_mut(..command_size)
+            .context("Insufficient LOAD_COMMANDS allocation")?;
+        let command = take_mut(&mut command_buffer)?;
+        write_dylib_command(command, command_buffer, path, macho::LC_ID_DYLIB);
+    }
 
     for (&file_id, &command_size) in prelude
         .format_specific
@@ -267,7 +276,7 @@ fn write_prelude<'data>(
         let dylib_command = take_mut(&mut command_buffer)?;
         let path = crate::macho::install_name(file_id, &layout.symbol_db);
 
-        write_dylib_command(dylib_command, command_buffer, path);
+        write_dylib_command(dylib_command, command_buffer, path, LC_LOAD_DYLIB);
     }
 
     for rpath in &layout.args().rpaths {
@@ -630,10 +639,16 @@ fn populate_file_header(
 ) {
     let load_commands_info = layout.section_layouts.get(LOAD_COMMANDS);
 
+    let file_type = if layout.symbol_db.output_kind.is_executable() {
+        macho::MH_EXECUTE
+    } else {
+        macho::MH_DYLIB
+    };
+
     header.magic.set(BigEndian, MH_CIGAM_64);
     header.cputype.set(LE, CPU_TYPE_ARM64);
     header.cpusubtype.set(LE, CPU_SUBTYPE_ARM64_ALL.into());
-    header.filetype.set(LE, MH_EXECUTE);
+    header.filetype.set(LE, file_type);
     header
         .ncmds
         .set(LE, prelude.format_specific.load_command_count as u32);
@@ -641,7 +656,10 @@ fn populate_file_header(
         .sizeofcmds
         .set(LE, load_commands_info.file_size as u32);
 
-    let mut flags = macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL;
+    let mut flags = macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL;
+    if layout.symbol_db.output_kind.is_executable() {
+        flags |= macho::MH_PIE;
+    }
     let has_tlv_descriptors = layout.output_sections.ids_with_info().any(|(id, info)| {
         layout.output_sections.will_emit_section(id)
             && info.section_attributes.ty() == S_THREAD_LOCAL_VARIABLES
@@ -671,18 +689,22 @@ fn split_segment_command_buffer(
 
 fn write_segment_commands(layout: &MachOLayout, load_commands: &mut &mut [u8]) -> Result {
     let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
-    let pagezero_segment = take_mut(load_commands)?;
-    write_segment(
-        SegmentName::PAGEZERO,
-        macho::VmProt(0),
-        pagezero_segment,
-        0,
-        0,
-        0,
-        MACHO_START_MEM_ADDRESS,
-        0,
-        SegmentFlags::default(),
-    );
+
+    if layout.symbol_db.output_kind.is_executable() {
+        let pagezero_segment = take_mut(load_commands)?;
+
+        write_segment(
+            SegmentName::PAGEZERO,
+            macho::VmProt(0),
+            pagezero_segment,
+            0,
+            0,
+            0,
+            MACHO_START_MEM_ADDRESS,
+            0,
+            SegmentFlags::default(),
+        );
+    }
 
     for segment_layout in &layout.segment_layouts.segments {
         let segment_id = segment_layout.id;
@@ -1165,8 +1187,13 @@ fn write_rpath_command(command: &mut RpathCommand, path_buffer: &mut [u8], path:
     path_buffer[path.len()..].zero();
 }
 
-fn write_dylib_command(command: &mut DylibCommand, path_buffer: &mut [u8], path: &[u8]) {
-    command.cmd.set(LE, LC_LOAD_DYLIB);
+fn write_dylib_command(
+    command: &mut DylibCommand,
+    path_buffer: &mut [u8],
+    path: &[u8],
+    kind: macho::LoadCommandType,
+) {
+    command.cmd.set(LE, kind);
     command
         .cmdsize
         .set(LE, (size_of::<DylibCommand>() + path_buffer.len()) as u32);
@@ -1175,17 +1202,29 @@ fn write_dylib_command(command: &mut DylibCommand, path_buffer: &mut [u8], path:
         .name
         .offset
         .set(LE, size_of::<DylibCommand>() as u32);
-    // TODO
-    command.dylib.timestamp.set(LE, 2);
-    // TODO
-    command
-        .dylib
-        .current_version
-        .set(LE, macho::Version(1356 << 16));
+
+    let timestamp;
+    let current_version;
+    let compatibility_version;
+    if kind == macho::LC_ID_DYLIB {
+        // Apparently the requirement for timestamp is just that we use a different value for
+        // LC_ID_DYLIB and LC_LOAD_DYLIB. We match the values used by Apple's linker.
+        timestamp = 1;
+        current_version = macho::Version(0);
+        compatibility_version = macho::Version(0);
+    } else {
+        timestamp = 2;
+        // TODO: Read versions from the imported library.
+        current_version = macho::Version(1356 << 16);
+        compatibility_version = macho::Version(1 << 16);
+    }
+
+    command.dylib.timestamp.set(LE, timestamp);
+    command.dylib.current_version.set(LE, current_version);
     command
         .dylib
         .compatibility_version
-        .set(LE, macho::Version(1 << 16));
+        .set(LE, compatibility_version);
 
     path_buffer[0..path.len()].copy_from_slice(path);
     path_buffer[path.len()..].zero();
@@ -1267,8 +1306,11 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     let symbols = &layout.format_specific.imported_symbols;
     let active_segments = &layout.segment_layouts.segments;
 
-    // The __PAGEZERO segment needs to be added manually.
-    let segment_count = active_segments.len() + 1;
+    // Executables have a separately emitted __PAGEZERO segment.
+    let pagezero_count = usize::from(layout.symbol_db.output_kind.is_executable());
+    let segment_count = active_segments.len() + pagezero_count;
+    let image_base = get_text_segment_layout(layout)?.sizes.mem_offset;
+
     ensure!(
         segment_count <= MAX_SEGMENT_COUNT,
         "unexpected number of active segments"
@@ -1334,8 +1376,8 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         let starts_in_segment_len = size_of::<ChainedStartsInSegment>()
             + page_count * CHAINED_FIXUP_PAGE_START_SIZE as usize;
 
-        // Accounts for both seg_count and __PAGEZERO.
-        starts_in_image[i + 2].set(LE, u32::try_from(starts_in_segment_offset)?);
+        // Account for seg_count and the optional __PAGEZERO.
+        starts_in_image[i + 1 + pagezero_count].set(LE, u32::try_from(starts_in_segment_offset)?);
         let starts_in_segment = take_mut::<ChainedStartsInSegment>(&mut rest)?;
 
         starts_in_segment
@@ -1349,7 +1391,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
             .set(LE, DYLD_CHAINED_PTR_64_OFFSET);
         starts_in_segment
             .segment_offset
-            .set(LE, segment.sizes.mem_offset - MACHO_START_MEM_ADDRESS);
+            .set(LE, segment.sizes.mem_offset - image_base);
         starts_in_segment.max_valid_pointer.set(LE, 0);
         starts_in_segment.page_count.set(LE, page_count_u16);
 
@@ -1500,8 +1542,11 @@ fn write_code_signature_metadata(
         team_offset: 0,
         exec_seg_base: text_segment.sizes.file_offset as u64,
         exec_seg_limit: text_segment.sizes.file_size as u64,
-        // TODO: change once shared libraries are supported
-        exec_seg_flags: CS_EXECSEG_MAIN_BINARY,
+        exec_seg_flags: if layout.symbol_db.output_kind.is_executable() {
+            CS_EXECSEG_MAIN_BINARY
+        } else {
+            macho::CsExecSegFlags(0)
+        },
     };
 
     let mut rest: &mut [u8] = code_signature;

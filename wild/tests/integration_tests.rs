@@ -73,6 +73,8 @@
 //!
 //! ExpectLoadDylib:{install-name} Checks for exactly one Mach-O LC_LOAD_DYLIB with this name.
 //!
+//! ExpectIdDylib:{install-name} Checks the Mach-O dylib identity and install name.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
@@ -155,6 +157,12 @@
 //! function must return an integer to indicate status (status != 42 is an error). Such run is
 //! currently skipped if the shared library is cross compiled. For Wasm, wasmtime is invoked with
 //! `--invoke` on the named export.
+//!
+//! WasmRunner:{filename} Runs a Wasm driver module instead of the linked binary. `filename` can be
+//! in the test sources or the common directory. The linked binary is preloaded as module `test`, so
+//! the driver can import its exports and call them with arguments in sequence. Link the tested
+//! module with `--no-entry` and export the functions the driver needs. If RunDynSym is set, it
+//! selects an export of the driver.
 //!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
@@ -995,17 +1003,27 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
     Ok(())
 }
 
-fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str, invoke: Option<&str>) -> Result {
+fn run_wasm_with_wasmtime(
+    wasm_file: &Path,
+    linker_name: &str,
+    invoke: Option<&str>,
+    runner: Option<&Path>,
+) -> Result {
     let mut command = Command::new("wasmtime");
     command.arg("run");
     command.args(["-W", "threads,shared-memory"]);
     if let Some(func) = invoke {
         command.arg("--invoke").arg(func);
     }
-    let output = command
-        .arg(wasm_file)
-        .output()
-        .context("Failed to run wasmtime")?;
+    if let Some(runner) = runner {
+        command
+            .arg("--preload")
+            .arg(format!("test={}", path_to_str(wasm_file)?))
+            .arg(runner);
+    } else {
+        command.arg(wasm_file);
+    }
+    let output = command.output().context("Failed to run wasmtime")?;
     ensure!(
         output.status.success(),
         "wasmtime execution of {} output failed (exit={:?}):\nstdout: {}\nstderr: {}",
@@ -1484,6 +1502,7 @@ struct Config {
     diff_match_any: bool,
     should_run: bool,
     run_dyn_sym: Option<String>,
+    wasm_runner: Option<PathBuf>,
     should_error: bool,
     expect_stderr: Vec<ErrorMatcher>,
     expect_stdout: Vec<ErrorMatcher>,
@@ -2021,6 +2040,7 @@ struct Assertions {
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
     expected_load_dylibs: Vec<String>,
+    expected_id_dylib: Option<String>,
     expected_load_command_sizes: Vec<(String, Vec<u32>)>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
@@ -2294,6 +2314,7 @@ impl Config {
             should_run: platform.can_execute_on_host(),
             diff_match_any: false,
             run_dyn_sym: None,
+            wasm_runner: None,
             should_error: false,
             expect_stderr: Default::default(),
             expect_stdout: Default::default(),
@@ -2621,6 +2642,7 @@ fn process_directive(
             .expected_dynsym_entries
             .push(ExpectedSymtabEntry::parse(arg)?),
         "ExpectLoadDylib" => config.assertions.expected_load_dylibs.push(arg.to_owned()),
+        "ExpectIdDylib" => config.assertions.expected_id_dylib = Some(arg.to_owned()),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectLoadCommandSize" => {
             let (command, sizes) = arg.trim().split_once(' ').context(
@@ -2838,6 +2860,19 @@ fn process_directive(
             } else {
                 Some(arg.to_string())
             }
+        }
+        "WasmRunner" => {
+            ensure!(
+                config.platform == PlatformKind::Wasm,
+                "WasmRunner is only supported for Wasm tests"
+            );
+            config.wasm_runner = if arg.is_empty() {
+                None
+            } else {
+                let path = config.source_path(arg);
+                config.tracked_files.push(path.clone());
+                Some(path)
+            };
         }
         "ReferenceLinkers" => {
             let refs: Vec<String> = arg
@@ -3413,6 +3448,7 @@ impl LinkOutput {
                 &self.binary,
                 self.linker_used.name(),
                 self.command.config.run_dyn_sym.as_deref(),
+                self.command.config.wasm_runner.as_deref(),
             );
         }
 
@@ -5271,6 +5307,7 @@ impl Assertions {
             expected_entry: self.expected_entry.clone(),
             expected_load_command_sizes: self.expected_load_command_sizes.clone(),
             expected_load_dylibs: self.expected_load_dylibs.clone(),
+            expected_id_dylib: self.expected_id_dylib.clone(),
             no_sym: self.no_sym.clone(),
             no_dynsym: self.no_dynsym.clone(),
             does_not_contain: self.does_not_contain.clone(),
@@ -5309,6 +5346,7 @@ impl Assertions {
         self.verify_macho_entry(obj)?;
         self.verify_macho_load_command_sizes(obj)?;
         self.verify_macho_load_dylibs(obj)?;
+        verify_macho_dylib(obj, bytes, self.expected_id_dylib.as_deref())?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
@@ -6600,6 +6638,104 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     Ok(exports)
 }
 
+fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&str>) -> Result {
+    use object::macho;
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    let e = file.endianness();
+    let header = file.macho_header();
+
+    if header.filetype.get(e) != macho::MH_DYLIB {
+        ensure!(
+            expected_name.is_none(),
+            "ExpectIdDylib requires MH_DYLIB output"
+        );
+        return Ok(());
+    }
+
+    ensure!(
+        !header.flags.get(e).contains(macho::MH_PIE),
+        "Dylib has MH_PIE set"
+    );
+
+    let mut commands = file.macho_load_commands()?;
+    let mut identity = None;
+    let mut signature = None;
+
+    while let Some(command) = commands.next()? {
+        ensure!(
+            !matches!(command.cmd(), macho::LC_MAIN | macho::LC_LOAD_DYLINKER),
+            "Dylib contains an executable-only load command"
+        );
+
+        match command.variant()? {
+            LoadCommandVariant::IdDylib(dylib) => {
+                ensure!(
+                    identity
+                        .replace(command.string(e, dylib.dylib.name)?)
+                        .is_none(),
+                    "Duplicate LC_ID_DYLIB"
+                );
+            }
+            LoadCommandVariant::Segment64(segment, _) => {
+                ensure!(segment.name() != b"__PAGEZERO", "Dylib contains __PAGEZERO");
+                if segment.name() == b"__TEXT" {
+                    ensure!(
+                        segment.vmaddr.get(e) == 0,
+                        "Dylib __TEXT must start at zero"
+                    );
+                }
+            }
+            LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_CODE_SIGNATURE => {
+                signature = Some(data);
+            }
+            _ => {}
+        }
+    }
+
+    let name = identity.context("Missing LC_ID_DYLIB")?;
+
+    ensure!(!name.is_empty(), "Empty dylib install name");
+
+    if let Some(expected) = expected_name {
+        ensure!(
+            name == expected.as_bytes(),
+            "Unexpected dylib install name: {}",
+            String::from_utf8_lossy(name)
+        );
+    }
+
+    let signature = signature
+        .context("Missing dylib code signature")?
+        .code_signature(e, bytes)?;
+
+    let mut blobs = signature.blobs();
+    let mut checked = false;
+
+    while let Some(blob) = blobs.next()? {
+        if let Some(directory) = blob.code_directory()? {
+            let exec = directory
+                .exec_seg()
+                .context("Missing code signature executable segment fields")?;
+
+            ensure!(
+                !exec
+                    .exec_seg_flags
+                    .get(object::BigEndian)
+                    .contains(macho::CS_EXECSEG_MAIN_BINARY),
+                "Dylib signature marks a main executable"
+            );
+
+            checked = true;
+        }
+    }
+
+    ensure!(checked, "Missing code directory");
+    Ok(())
+}
+
 fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
     let object::File::MachO64(file) = obj else {
         return Ok(());
@@ -6868,6 +7004,10 @@ fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Re
         .get(starts_offset..)
         .context("Invalid chained fixups starts_offset")?;
     let seg_count = usize::try_from(u32::from_le_bytes(starts_in_image[..4].try_into()?))?;
+    ensure!(
+        seg_count == segments.len(),
+        "Chained fixups segment count does not match load commands"
+    );
     let seg_info_offsets = &starts_in_image[4..];
 
     for (i, offset_bytes) in seg_info_offsets
@@ -8813,4 +8953,9 @@ impl FatArch for object::read::macho::FatArch64 {
 
 fn default_llvm_tools_dir() -> PathBuf {
     PathBuf::from("/usr/bin")
+}
+
+fn path_to_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .with_context(|| format!("Path must be UTF-8: `{}`", path.display()))
 }

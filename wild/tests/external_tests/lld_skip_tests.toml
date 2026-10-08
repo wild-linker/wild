@@ -98,7 +98,6 @@ tests = [
   "aarch64-build-attributes-be.s",
   "aarch64-build-attributes-err.s",
   "aarch64-build-attributes-malformed.s",
-  "aarch64-build-attributes-mixed.s",
   "aarch64-build-attributes-private-subsection.s",
   "aarch64-cmse.s",
   "aarch64-cortex-a53-843419-abs-mapsyms.s",
