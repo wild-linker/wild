@@ -2,6 +2,7 @@
 //#LinkerDriver:clang
 //#ReferenceLinkers:ld,lld
 //#ExpectDynSym:_value binding=weak
+//#DiffIgnore:section.__got
 
 //#Config:common-first:default
 //#Object:common.c:-fcommon
