@@ -16,12 +16,13 @@
 //#NoSym: _start
 
 //#Config:export-ctors
-//#LinkArgs: --export=__wasm_call_ctors --export=foo
-//#RunEnabled: false
+//#LinkArgs: --no-entry --export=__wasm_call_ctors --export=foo --export=add
+//#WasmRunner: driver.wat
 //#DoesNotContain: .command_export
 //#ExpectSym: __wasm_call_ctors
 //#ExpectSym: foo
-//#ExpectSym: _start
+//#ExpectSym: add
+//#NoSym: _start
 
 static int x;
 

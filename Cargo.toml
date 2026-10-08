@@ -283,6 +283,12 @@ unreadable_literal = "allow"
 # because the reader doesn't have to recognize that the fallthrough is an implicit else branch.
 redundant_else = "allow"
 
+# If you have some variables that you need to set on every branch, clippy will helpfully tell you
+# that rather than setting the variables explicitly by name, you should pack them into a tuple then
+# destructure that tuple outside the if-else or match. Clippy's advice does make the code shorter,
+# but also less readable. We choose readability.
+needless_late_init = "allow"
+
 trivially_copy_pass_by_ref = "warn"
 uninlined_format_args = "warn"
 unnecessary_wraps = "warn"

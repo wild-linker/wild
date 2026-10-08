@@ -29,6 +29,8 @@ pub struct MachOArgs {
     pub(crate) dead_strip_dylibs: bool,
     pub(crate) headerpad_max_install_names: bool,
     pub(crate) entry: String,
+    pub(crate) dylib: bool,
+    pub(crate) install_name: Option<String>,
     pub(crate) rpaths: Vec<String>,
 }
 
@@ -79,6 +81,13 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 const IGNORED_FLAGS: &[&str] = &["export_dynamic", "O0", "O1", "O2", "O3"];
 
 impl MachOArgs {
+    pub(crate) fn dylib_install_name(&self) -> &[u8] {
+        self.install_name.as_ref().map_or_else(
+            || self.common.output.as_os_str().as_encoded_bytes(),
+            |name| name.as_bytes(),
+        )
+    }
+
     pub(crate) fn new() -> Result<Self> {
         Ok(Self {
             common: CommonArgs::from_env()?,
@@ -98,6 +107,8 @@ impl Default for MachOArgs {
             dead_strip_dylibs: false,
             headerpad_max_install_names: false,
             entry: "_main".to_owned(),
+            dylib: false,
+            install_name: None,
             rpaths: Vec::new(),
         }
     }
@@ -124,7 +135,11 @@ impl platform::Args for MachOArgs {
         &'a self,
         _linker_script_entry: Option<&'a [u8]>,
     ) -> platform::EntryPoint<'a> {
-        platform::EntryPoint::Symbol(self.entry.as_bytes())
+        if self.dylib {
+            platform::EntryPoint::None
+        } else {
+            platform::EntryPoint::Symbol(self.entry.as_bytes())
+        }
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -153,7 +168,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
-        todo!()
+        true
     }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
@@ -166,8 +181,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_output_executable(&self) -> bool {
-        // TODO
-        true
+        !self.dylib
     }
 
     fn is_ignored_flag(&self, flag: &str) -> bool {
@@ -198,6 +212,24 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 // variants.
 fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     let mut parser = ArgumentParser::<MachOArgs>::new();
+
+    parser
+        .declare()
+        .long("dylib")
+        .help("Emit a dynamic library")
+        .execute(|args, _| {
+            args.dylib = true;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("install_name")
+        .help("Set the dynamic library install name")
+        .execute(|args, _, value| {
+            args.install_name = Some(value.to_owned());
+            Ok(())
+        });
 
     parser
         .declare()
