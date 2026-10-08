@@ -1175,6 +1175,8 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 }
 
 impl platform::Platform for MachO {
+    const WEAK_SYMBOLS_OVERRIDE_COMMON: bool = true;
+
     const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 1;
 
