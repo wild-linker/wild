@@ -291,6 +291,10 @@ fn write_metadata_sections(
         section_buffers.get_mut(output_section_id::WASM_DATA_COUNT),
     )?;
     copy_encoded_section(
+        encoded.start.as_ref(),
+        section_buffers.get_mut(output_section_id::WASM_START),
+    )?;
+    copy_encoded_section(
         encoded.name.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_NAME),
     )?;
@@ -792,6 +796,7 @@ pub(crate) struct EncodedMetadata {
     table: Option<Vec<u8>>,
     element: Option<Vec<u8>>,
     data_count: Option<Vec<u8>>,
+    start: Option<Vec<u8>>,
     name: Option<Vec<u8>>,
     target_features: Option<Vec<u8>>,
 }
@@ -838,6 +843,7 @@ impl EncodedMetadata {
             crate::wasm::part_id::WASM_DATA_COUNT,
             self.data_count.as_ref(),
         );
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_START, self.start.as_ref());
         add_encoded_section_size(sizes, crate::wasm::part_id::WASM_NAME, self.name.as_ref());
         add_encoded_section_size(
             sizes,
@@ -951,6 +957,12 @@ pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<Encode
         }
     }
 
+    if let Some(function_index) = layout.start_function {
+        encoded.start = Some(encode_wasm_section(&wasm_encoder::StartSection {
+            function_index,
+        }));
+    }
+
     Ok(encoded)
 }
 
@@ -1056,6 +1068,9 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<NameSection> {
     }
     if let Some(idx) = names.init_tls_func {
         set_name_first_wins(&mut function_names, idx, "__wasm_init_tls");
+    }
+    if let Some(idx) = names.init_memory_func {
+        set_name_first_wins(&mut function_names, idx, "__wasm_init_memory");
     }
 
     let per_object_names: Vec<ObjectNameEntries<'_>> = layout
