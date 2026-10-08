@@ -106,8 +106,6 @@ pub(crate) mod part_id {
     pub(crate) const WASM_MEMORY: PartId = SinglePartSectionId::WasmMemory.part_id();
     pub(crate) const WASM_GLOBAL: PartId = SinglePartSectionId::WasmGlobal.part_id();
     pub(crate) const WASM_EXPORT: PartId = SinglePartSectionId::WasmExport.part_id();
-    // TODO(wasm): Implement start-section emission.
-    #[expect(dead_code)]
     pub(crate) const WASM_START: PartId = SinglePartSectionId::WasmStart.part_id();
     pub(crate) const WASM_ELEMENT: PartId = SinglePartSectionId::WasmElement.part_id();
     pub(crate) const WASM_DATA_COUNT: PartId = SinglePartSectionId::WasmDataCount.part_id();
@@ -545,6 +543,8 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
     pub(crate) passive: bool,
     /// Shared-memory TLS initialization image.
     pub(crate) tls_template: bool,
+    /// Ordinary data kept passive so another shared-memory instance does not reapply it.
+    pub(crate) shared_init: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1510,6 +1510,10 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) shared_memory_tls: bool,
     pub(crate) tls_size: u32,
     pub(crate) tls_align: u32,
+    /// Address of the shared-memory initialization flag.
+    pub(crate) init_memory_flag: Option<u32>,
+    /// Start-function index. Set only for `__wasm_init_memory`.
+    pub(crate) start_function: Option<u32>,
     pub(crate) data_end: u32,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
@@ -1547,6 +1551,7 @@ pub(crate) struct WasmNameInputs<'data> {
     pub(crate) tls_align_global: Option<u32>,
     pub(crate) call_ctors_func: Option<u32>,
     pub(crate) init_tls_func: Option<u32>,
+    pub(crate) init_memory_func: Option<u32>,
     pub(crate) data_address_globals: Vec<(WasmLinkerSymbol, u32)>,
     pub(crate) got_mem_global_base: Option<u32>,
     pub(crate) got_func_global_base: Option<u32>,
@@ -1869,6 +1874,20 @@ fn input_has_tls_segments(input: &WasmObjectLayoutInput<'_>) -> bool {
         .any(|i| data_segment_is_tls(input, data_segment_original_index(input, i)))
 }
 
+// Active non-TLS bytes that must not be reapplied on every shared-memory instantiation.
+fn input_has_shared_init_segment(input: &WasmObjectLayoutInput<'_>) -> bool {
+    input
+        .data_segments
+        .iter()
+        .enumerate()
+        .any(|(filtered_idx, segment)| {
+            let original = data_segment_original_index(input, filtered_idx);
+            !data_segment_is_tls(input, original)
+                && !segment.data.is_empty()
+                && matches!(segment.kind, DataKind::Active { .. })
+        })
+}
+
 fn max_tls_alignment(inputs: &[WasmObjectLayoutInput<'_>]) -> Alignment {
     inputs
         .iter()
@@ -1904,6 +1923,7 @@ fn layout_object_data<'data>(
     index_map: &WasmObjectIndexMap,
     memory_cursor: &mut u32,
     want_tls: bool,
+    shared_passive_init: bool,
     mut tls_cursor: Option<&mut u32>,
 ) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
     let segment_reloc_ranges =
@@ -1914,7 +1934,7 @@ fn layout_object_data<'data>(
         if data_segment_is_tls(input, original_index) != want_tls {
             continue;
         }
-        let (output_memory_index, output_memory_offset, passive, tls_template) =
+        let (output_memory_index, output_memory_offset, passive, tls_template, shared_init) =
             if let Some(tls_cursor) = tls_cursor.as_deref_mut() {
                 let output_memory_offset = if segment.data.is_empty() {
                     *tls_cursor
@@ -1931,10 +1951,10 @@ fn layout_object_data<'data>(
                         .context("Wasm TLS size overflow")?;
                     output_memory_offset
                 };
-                (0, output_memory_offset, true, true)
+                (0, output_memory_offset, true, true, false)
             } else {
                 match segment.kind {
-                    DataKind::Passive => (0, 0, true, false),
+                    DataKind::Passive => (0, 0, true, false, false),
                     DataKind::Active { memory_index, .. } => {
                         let output_memory_index =
                             remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
@@ -1949,7 +1969,14 @@ fn layout_object_data<'data>(
                                     .context("Wasm data segment too large")?,
                             )
                             .context("Wasm output memory offset overflow")?;
-                        (output_memory_index, output_memory_offset, false, false)
+                        let shared_init = shared_passive_init && !segment.data.is_empty();
+                        (
+                            output_memory_index,
+                            output_memory_offset,
+                            shared_init,
+                            false,
+                            shared_init,
+                        )
                     }
                 }
             };
@@ -1973,6 +2000,7 @@ fn layout_object_data<'data>(
             encoded_output_size,
             passive,
             tls_template,
+            shared_init,
         });
     }
     Ok(segments)
@@ -3851,6 +3879,7 @@ struct LinkerDefinedIndices {
     stack_pointer_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
     init_tls_func: Option<u32>,
+    init_memory_func: Option<u32>,
     shared_memory_tls: bool,
     weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
@@ -3999,6 +4028,8 @@ fn setup_got_mem_and_indices<'data>(
                     needs_table_base: scan.needs_table_base,
                     shared_memory: symbol_db.args.shared_memory,
                     has_tls: layout_inputs.iter().any(input_has_tls_segments),
+                    needs_init_memory: symbol_db.args.shared_memory
+                        && layout_inputs.iter().any(input_has_shared_init_segment),
                 },
             )?;
 
@@ -4783,6 +4814,7 @@ struct LinkerDefinedIndexRequest {
     needs_table_base: bool,
     shared_memory: bool,
     has_tls: bool,
+    needs_init_memory: bool,
 }
 
 impl LinkerDefinedIndices {
@@ -4926,6 +4958,11 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
+        let init_memory_func = request.needs_init_memory.then(|| {
+            let idx = next_func;
+            next_func += 1;
+            idx
+        });
         for stub in &mut weak_undef_stubs {
             stub.function_index = next_func;
             next_func = next_func
@@ -4944,6 +4981,7 @@ impl LinkerDefinedIndices {
             stack_pointer_defined_slot,
             call_ctors_func,
             init_tls_func,
+            init_memory_func,
             shared_memory_tls,
             weak_undef_stubs,
             num_defined_globals,
@@ -5045,6 +5083,9 @@ fn merge_live_output_types(
     }
     if indices.init_tls_func.is_some() {
         merger.add(&FuncType::new([wasmparser::ValType::I32], []))?;
+    }
+    if indices.init_memory_func.is_some() {
+        merger.add(&FuncType::new([], []))?;
     }
     for stub in &indices.weak_undef_stubs {
         merger.add(&stub.ty)?;
@@ -5443,6 +5484,17 @@ fn emit_reserved_linker_definitions(
                 &copies,
             )?));
         }
+        if let Some(init_memory_func) = indices.init_memory_func {
+            let flag = layout
+                .init_memory_flag
+                .context("shared-memory data init is missing its flag")?;
+            type_indices.push(merged_type_index(&layout.output_types, &void_void)?);
+            let copies = shared_init_copies(&layout.object_data_layouts)?;
+            bodies.push(owned_linker_function_body(encode_init_memory_body(
+                flag, &copies,
+            )?));
+            layout.start_function = Some(init_memory_func);
+        }
 
         for stub in &indices.weak_undef_stubs {
             type_indices.push(merged_type_index(&layout.output_types, &stub.ty)?);
@@ -5634,6 +5686,84 @@ fn encode_init_tls_body(
     }
     bytes.push(0x0b);
     Ok(bytes)
+}
+
+fn shared_init_copies(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> Result<Vec<(u32, u32, u32)>> {
+    let mut copies = Vec::new();
+    let mut index = 0u32;
+    for segments in object_data_layouts {
+        for segment in segments {
+            if segment.shared_init && !segment.data.is_empty() {
+                let len =
+                    u32::try_from(segment.data.len()).context("Wasm data segment too large")?;
+                copies.push((index, segment.output_memory_offset, len));
+            }
+            index = index
+                .checked_add(1)
+                .context("Wasm data segment count overflow")?;
+        }
+    }
+    Ok(copies)
+}
+
+fn encode_init_memory_body(flag: u32, copies: &[(u32, u32, u32)]) -> Result<Vec<u8>> {
+    let flag = i32::try_from(flag).context("Wasm init-memory flag out of range")?;
+    let memarg = wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let mut func = wasm_encoder::Function::new([]);
+    let mut ins = func.instructions();
+    // (block $drop
+    //   (block $wait
+    //     (block $init
+    //       (br_table $init $wait $drop (i32.atomic.rmw.cmpxchg flag 0 1)))))
+    // 0 falls through and copies. 1 waits. Any other value joins the drop.
+    ins.block(wasm_encoder::BlockType::Empty);
+    ins.block(wasm_encoder::BlockType::Empty);
+    ins.block(wasm_encoder::BlockType::Empty);
+    ins.i32_const(flag);
+    ins.i32_const(0);
+    ins.i32_const(1);
+    ins.i32_atomic_rmw_cmpxchg(memarg);
+    ins.br_table([0, 1], 2);
+    ins.end();
+
+    for &(segment_index, dest, len) in copies {
+        let dest = i32::try_from(dest).context("Wasm data address out of range")?;
+        let len = i32::try_from(len).context("Wasm data segment too large")?;
+        ins.i32_const(dest);
+        ins.i32_const(0);
+        ins.i32_const(len);
+        ins.memory_init(0, segment_index);
+    }
+
+    ins.i32_const(flag);
+    ins.i32_const(2);
+    ins.i32_atomic_store(memarg);
+    ins.i32_const(flag);
+    ins.i32_const(-1);
+    ins.memory_atomic_notify(memarg);
+    ins.drop();
+    // Skip the wait and join $drop. From here, 0 is $wait and 1 is $drop.
+    ins.br(1);
+    ins.end();
+
+    ins.i32_const(flag);
+    ins.i32_const(1);
+    ins.i64_const(-1);
+    ins.memory_atomic_wait32(memarg);
+    ins.drop();
+    ins.end();
+
+    for &(segment_index, _, _) in copies {
+        ins.data_drop(segment_index);
+    }
+    ins.end();
+    Ok(func.into_raw_body())
 }
 
 fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>], shared: bool) -> MemoryType {
@@ -5937,6 +6067,7 @@ fn wasm_name_inputs<'data>(
         tls_align_global: indices.tls_align_global,
         call_ctors_func: indices.call_ctors_func,
         init_tls_func: indices.init_tls_func,
+        init_memory_func: indices.init_memory_func,
         data_address_globals: indices.data_address_globals.clone(),
         got_mem_global_base: indices.got_mem_global_base,
         got_func_global_base: indices.got_func_global_base,
@@ -6149,6 +6280,7 @@ where
                     &layout.object_index_maps[obj_idx],
                     &mut memory_cursor,
                     false,
+                    shared_memory,
                     None,
                 )?;
             }
@@ -6164,6 +6296,7 @@ where
                             &layout.object_index_maps[obj_idx],
                             &mut memory_cursor,
                             true,
+                            false,
                             Some(&mut tls_cursor),
                         )?;
                         layout.object_data_layouts[obj_idx].extend(tls_segments);
@@ -6180,6 +6313,7 @@ where
                             &layout.object_index_maps[obj_idx],
                             &mut memory_cursor,
                             true,
+                            false,
                             None,
                         )?;
                         layout.object_data_layouts[obj_idx].extend(tls_segments);
@@ -6223,6 +6357,14 @@ where
 
     {
         timing_phase!("Wasm linker-defined symbols and data addresses");
+        if indices.init_memory_func.is_some() {
+            memory_cursor = u32::try_from(u64::from(memory_cursor).next_multiple_of(4))
+                .context("Wasm init-memory flag alignment overflow")?;
+            layout.init_memory_flag = Some(memory_cursor);
+            memory_cursor = memory_cursor
+                .checked_add(4)
+                .context("Wasm init-memory flag overflow")?;
+        }
         emit_reserved_linker_definitions(&mut layout, &indices, call_ctors_body)?;
 
         // wasm-ld always defines a linear memory for executables.
@@ -6570,6 +6712,8 @@ fn data_segment_places(object_data_layout: &[WasmDataSegmentLayout<'_>]) -> Vec<
         }
         by_original[slot] = if segment.tls_template {
             SegmentPlace::Tls(segment.output_memory_offset)
+        } else if segment.shared_init {
+            SegmentPlace::Active(segment.output_memory_offset)
         } else if segment.passive {
             SegmentPlace::Passive
         } else {

@@ -4,6 +4,9 @@
 //#ExpectSharedMemory: true
 //#Contains: atomics
 //#Contains: bulk-memory
+//#Contains: __wasm_init_memory
+//#ExpectSection: Start
+//#ExpectSection: DataCount
 
 //#Config:no-max
 //#LinkArgs: --shared-memory
