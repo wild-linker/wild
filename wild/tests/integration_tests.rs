@@ -3119,7 +3119,8 @@ impl ProgramInputs {
             let _ = std::fs::remove_file(linker.output_path(self.name(), config));
         }
 
-        let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
+        let link_output =
+            linker.link_with_output_reuse(self.name(), &inputs, config, cross_arch)?;
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
@@ -4474,6 +4475,44 @@ fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 impl Linker {
+    /// As for `link`, but on Mac, the old output file might be kept, but only if the linker first
+    /// produced an identical file. Reusing the old file allows a cache hit on whatever virus
+    /// scanning macOS is doing.
+    fn link_with_output_reuse(
+        &self,
+        basename: &str,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkOutput> {
+        let output_path = self.output_path(basename, config);
+        let preserve_output = cfg!(target_os = "macos")
+            && self.is_wild()
+            && config.platform == PlatformKind::MachO
+            && std::fs::symlink_metadata(&output_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+
+        if !preserve_output {
+            return self.link(basename, inputs, config, cross_arch);
+        }
+
+        let saved_dir = tempfile::tempdir_in(output_path.parent().unwrap())?;
+        let saved_path = saved_dir.path().join("previous-output");
+        std::fs::rename(&output_path, &saved_path)?;
+
+        let link_output = self.link(basename, inputs, config, cross_arch)?;
+
+        let old_content = std::fs::read(&saved_path)?;
+        if std::fs::read(&output_path).is_ok_and(|new_content| new_content == old_content)
+            && std::fs::metadata(&output_path)?.permissions()
+                == std::fs::metadata(&saved_path)?.permissions()
+        {
+            std::fs::rename(&saved_path, &output_path)?;
+        }
+
+        Ok(link_output)
+    }
+
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
     fn link(
