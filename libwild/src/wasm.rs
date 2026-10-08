@@ -5195,7 +5195,7 @@ fn wrap_command_exports(layout: &mut WasmLayout<'_>, call_ctors: u32) -> Result<
         ) {
             continue;
         }
-        if export.name == "__wasm_call_ctors" {
+        if export.name == "__wasm_call_ctors" || export.name == "__wasm_init_tls" {
             continue;
         }
         if export.index < n_func_imports {
