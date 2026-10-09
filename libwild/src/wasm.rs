@@ -6117,12 +6117,6 @@ where
     };
 
     if symbol_db.args.shared_memory {
-        // TODO(wasm): Support --import-memory with --shared-memory
-        // (see https://github.com/wild-linker/wild/issues/2540).
-        ensure!(
-            symbol_db.args.import_memory.is_none(),
-            "--import-memory with --shared-memory is not yet supported"
-        );
         validate_shared_memory_features(&layout_inputs, symbol_db)?;
     }
 

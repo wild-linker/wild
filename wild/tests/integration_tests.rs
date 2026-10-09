@@ -164,6 +164,10 @@
 //! module with `--no-entry` and export the functions the driver needs. If RunDynSym is set, it
 //! selects an export of the driver.
 //!
+//! WasmPreload:{name}={filename} Instantiates `filename` under `name` before the linked binary, so
+//! the binary can import its exports. Use this to supply a shared memory and check that a store in
+//! one module is visible in the other. May be repeated. `filename` is resolved like WasmRunner.
+//!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
@@ -1008,12 +1012,18 @@ fn run_wasm_with_wasmtime(
     linker_name: &str,
     invoke: Option<&str>,
     runner: Option<&Path>,
+    preloads: &[(String, PathBuf)],
 ) -> Result {
     let mut command = Command::new("wasmtime");
     command.arg("run");
     command.args(["-W", "threads,shared-memory"]);
     if let Some(func) = invoke {
         command.arg("--invoke").arg(func);
+    }
+    for (name, path) in preloads {
+        command
+            .arg("--preload")
+            .arg(format!("{name}={}", path_to_str(path)?));
     }
     if let Some(runner) = runner {
         command
@@ -1503,6 +1513,7 @@ struct Config {
     should_run: bool,
     run_dyn_sym: Option<String>,
     wasm_runner: Option<PathBuf>,
+    wasm_preloads: Vec<(String, PathBuf)>,
     should_error: bool,
     expect_stderr: Vec<ErrorMatcher>,
     expect_stdout: Vec<ErrorMatcher>,
@@ -2315,6 +2326,7 @@ impl Config {
             diff_match_any: false,
             run_dyn_sym: None,
             wasm_runner: None,
+            wasm_preloads: Vec::new(),
             should_error: false,
             expect_stderr: Default::default(),
             expect_stdout: Default::default(),
@@ -2873,6 +2885,22 @@ fn process_directive(
                 config.tracked_files.push(path.clone());
                 Some(path)
             };
+        }
+        "WasmPreload" => {
+            ensure!(
+                config.platform == PlatformKind::Wasm,
+                "WasmPreload is only supported for Wasm tests"
+            );
+            let (name, filename) = arg
+                .split_once('=')
+                .with_context(|| format!("WasmPreload requires name=filename, got `{arg}`"))?;
+            ensure!(
+                !name.is_empty() && !filename.is_empty(),
+                "WasmPreload requires a non-empty module name and filename, got `{arg}`"
+            );
+            let path = config.source_path(filename);
+            config.tracked_files.push(path.clone());
+            config.wasm_preloads.push((name.to_owned(), path));
         }
         "ReferenceLinkers" => {
             let refs: Vec<String> = arg
@@ -3450,6 +3478,7 @@ impl LinkOutput {
                 self.linker_used.name(),
                 self.command.config.run_dyn_sym.as_deref(),
                 self.command.config.wasm_runner.as_deref(),
+                &self.command.config.wasm_preloads,
             );
         }
 
