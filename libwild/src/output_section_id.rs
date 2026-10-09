@@ -98,6 +98,7 @@ pub(crate) struct InitFiniSectionDetail {
 pub(crate) struct OutputSections<'data, P: Platform> {
     /// The base address for our output binary.
     pub(crate) base_address: Expression<'data>,
+    pub(crate) has_custom_base_address: bool,
     pub(crate) section_infos: OutputSectionMap<SectionOutputInfo<'data, P>>,
 
     // TODO: Consider moving this to Layout. We can't populate this until we know which output
@@ -122,6 +123,7 @@ pub(crate) struct OutputOrder<'data> {
     events: Vec<OrderEvent<'data>>,
     num_location_counters: usize,
     has_custom_phdrs: bool,
+    custom_phdrs_include_headers: bool,
 }
 
 pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
@@ -145,6 +147,7 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     output_kind: OutputKind,
     has_custom_phdrs: bool,
+    custom_phdrs_include_headers: bool,
     location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
     last_location_counter: Option<LocationCounterIndex>,
 }
@@ -169,17 +172,21 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             secondary,
             output_kind,
             has_custom_phdrs,
+            custom_phdrs_include_headers: false,
             location_counters,
             last_location_counter: location_counters.last().map(|_| 0),
         }
     }
 
-    fn emit_location_counters(
+    pub(crate) fn emit_location_counters(
         &mut self,
         lc_start: LocationCounterIndex,
         lc_end: LocationCounterIndex,
     ) {
-        for idx in lc_start..lc_end {
+        let actual_start = self
+            .last_location_counter
+            .map_or(lc_start, |l| l.max(lc_start));
+        for idx in actual_start..lc_end {
             let lc = &self.location_counters[idx];
             match lc {
                 LocationCounter::Absolute(expr, loc) => {
@@ -230,13 +237,13 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 .push(OrderEvent::SetSectionAddress(location.clone()));
         }
 
-        for segment_id in start {
-            self.events.push(OrderEvent::SegmentStart(segment_id));
-        }
-
         if let Some(ref loc_info) = section_info.location_info {
             let (lc_start, lc_stop) = loc_info.location_counters;
             self.emit_location_counters(lc_start, lc_stop);
+        }
+
+        for segment_id in start {
+            self.events.push(OrderEvent::SegmentStart(segment_id));
         }
 
         self.events.push(OrderEvent::Section(section_id));
@@ -410,6 +417,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
     }
 
+    pub(crate) fn set_custom_phdrs_include_headers(&mut self, has_custom_headers: bool) {
+        self.custom_phdrs_include_headers = has_custom_headers;
+    }
+
     pub(crate) fn build(mut self) -> (OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>) {
         if let Some(lc) = self.last_location_counter {
             self.emit_location_counters(lc, self.location_counters.len());
@@ -432,6 +443,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 events: self.events,
                 num_location_counters: self.location_counters.len(),
                 has_custom_phdrs: self.has_custom_phdrs,
+                custom_phdrs_include_headers: self.custom_phdrs_include_headers,
             },
             self.program_segments,
         )
@@ -863,6 +875,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         Self {
             section_infos: OutputSectionMap::from_values(section_infos),
             base_address,
+            has_custom_base_address: false,
             custom_by_identity: HashMap::new(),
             output_section_indexes: Default::default(),
             init_fini_by_priority: HashMap::new(),
@@ -1110,6 +1123,11 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     pub(crate) fn set_base_address(&mut self, base_address: Expression<'data>) {
         self.base_address = base_address;
+        self.has_custom_base_address = true;
+    }
+
+    pub(crate) fn has_custom_base_address(&self) -> bool {
+        self.has_custom_base_address
     }
 
     #[cfg(test)]
@@ -1173,6 +1191,10 @@ impl<'data> OutputOrder<'data> {
 
     pub(crate) fn has_custom_phdrs(&self) -> bool {
         self.has_custom_phdrs
+    }
+
+    pub(crate) fn custom_phdrs_include_headers(&self) -> bool {
+        self.custom_phdrs_include_headers
     }
 
     pub(crate) fn display<'a, P: Platform>(
