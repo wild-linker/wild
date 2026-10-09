@@ -3559,11 +3559,7 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
 
         let note_data = normalized_data.as_deref().unwrap_or(section_data);
 
-        let note_alignment = if section_alignment <= 4 {
-            4
-        } else {
-            section_alignment.min(C::ADDRESS_SIZE)
-        };
+        let note_alignment = section_alignment.clamp(4, C::ADDRESS_SIZE);
 
         let note_alignment =
             <<C::FileHeader as object::read::elf::FileHeader>::Word as ElfWord>::from_u64(
