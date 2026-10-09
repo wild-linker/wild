@@ -3709,9 +3709,7 @@ fn build_linker_input(
         | InputType::FatArchive64 => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             std::fs::create_dir_all(archive_path.parent().unwrap())?;
-            if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
-                make_archive(&archive_path, &objects, thin, &config)?;
-            }
+            make_archive(&archive_path, &objects, thin, &config)?;
             if let Some(fat_kind) = dep.input_type.fat_kind() {
                 let fat_archive_path = config
                     .build_dir()
@@ -4558,18 +4556,24 @@ fn make_archive(
     thin: bool,
     config: &Config,
 ) -> Result {
-    let _ = std::fs::remove_file(archive_path);
     // At least on NixOS, trying to use plain "ar" to create an archive containing GCC objects
     // fails, presumably because it's trying to index the symbols.
-    let ar_cmd = if config.requires_linker_plugin
+    let ar_cmd = if config.platform == PlatformKind::Wasm {
+        // The host ar may accept Wasm objects without indexing their symbols (e.g. on macOS).
+        find_bin(&["llvm-ar"]).context(
+            "Wasm archive tests require llvm-ar. Install LLVM and add its bin directory to PATH",
+        )?
+    } else if config.requires_linker_plugin
         && matches!(
             config.linker_driver,
             LinkerDriver::Compiler(Compiler::Gcc(_))
-        ) {
-        "gcc-ar"
+        )
+    {
+        PathBuf::from("gcc-ar")
     } else {
-        "ar"
+        PathBuf::from("ar")
     };
+
     let mut cmd = Command::new(ar_cmd);
     cmd.arg("cr");
 
@@ -4588,10 +4592,28 @@ fn make_archive(
     } else {
         cmd.arg(archive_path).args(objects.iter().map(|o| &o.path));
     }
-    let status = cmd.status()?;
-    if !status.success() {
-        bail!("Failed to create archive");
+
+    if command_line_unchanged(&cmd, archive_path)
+        && is_newer(archive_path, objects.iter().map(|o| &o.path))
+    {
+        return Ok(());
     }
+
+    let _ = std::fs::remove_file(archive_path);
+    let output = cmd
+        .output()
+        .with_context(|| format!("Failed to run archive command: {}", command_as_str(&cmd)))?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to create archive: {}\nOutput:\n{}{}",
+            command_as_str(&cmd),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    write_cmd_file(&cmd, archive_path)?;
     Ok(())
 }
 
