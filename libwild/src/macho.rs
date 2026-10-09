@@ -2222,15 +2222,21 @@ impl platform::Platform for MachO {
             .zip(per_symbol_flags.range(state.symbol_id_range))
         {
             let symbol_id = state.symbol_id_range.input_to_id(sym_index);
+            let symbol_state = flags.get();
             if let Some(info) = SymbolCopyInfo::new(
                 state.object,
                 sym_index,
                 sym,
                 symbol_id,
                 symbol_db,
-                flags.get(),
+                symbol_state,
                 &state.sections,
             ) {
+                // Every symbol copied to the regular symbol table needs a resolution so that we
+                // can emit its actual output address, even when it isn't exported or referenced.
+                if !symbol_state.has_resolution() {
+                    flags.fetch_or(ValueFlags::DIRECT);
+                }
                 num_globals += 1;
                 strings_size += info.name.len() + 1;
             }
