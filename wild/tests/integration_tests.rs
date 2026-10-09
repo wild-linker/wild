@@ -4788,9 +4788,11 @@ impl LinkCommand {
                                 .join(format!("{}.wat", config.test_name));
                             if primary_wat.exists() {
                                 command.arg("--no-entry");
+                                // wat2wasm relocatable objects can disagree on target features.
+                                command.arg("--no-check-features");
                                 if !linker.is_wild() {
-                                    // TODO(wasm): Support these options
-                                    command.arg("--export-all").arg("--no-check-features");
+                                    // TODO(wasm)
+                                    command.arg("--export-all");
                                 }
                             }
                         }
