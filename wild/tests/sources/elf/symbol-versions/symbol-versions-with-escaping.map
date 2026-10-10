@@ -9,3 +9,28 @@ VER_1.0 {
 VER_2.0 {
         bar_v2*;
 } VER_1.0;
+
+VER_3.0 {
+        *foo\bar*;
+};
+VER_4.0 {
+        pre[a\*b]post;
+};
+VER_5.0 {
+        cls[\]a] ;
+};
+VER_6.0 {
+        br[\]] ;
+};
+VER_7.0 {
+        c[^o]*;
+};
+VER_8.0 {
+        bang[\!a];
+};
+VER_9.0 {
+        dash[a\-z];
+};
+VER_10.0 {
+        only[\!];
+};
