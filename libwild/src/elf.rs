@@ -7164,6 +7164,10 @@ const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[
         SectionRuleOutcome::RiscVAttribute,
     ),
     SectionRule::exact(
+        secnames::ARM_ATTRIBUTES_SECTION_NAME_STR.as_bytes(),
+        SectionRuleOutcome::AArch64Attribute,
+    ),
+    SectionRule::exact(
         secnames::SYMTAB_SHNDX_SECTION_NAME,
         SectionRuleOutcome::Discard,
     ),
