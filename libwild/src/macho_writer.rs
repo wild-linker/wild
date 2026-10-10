@@ -328,6 +328,14 @@ fn write_epilogue(
     );
     out[..exports_trie.len()].copy_from_slice(exports_trie);
     out[exports_trie.len()..].fill(0);
+    tracing::debug!(
+        target: "metrics",
+        section = "EXPORTS_TRIE",
+        allocated_bytes = out.len(),
+        used_bytes = exports_trie.len(),
+        zero_filled_bytes = out.len() - exports_trie.len(),
+        "section allocation"
+    );
 
     let out = buffers.get_mut(part_id::COMPACT_UNWIND);
     let serialized_compact_unwind = build_compact_unwind(layout, out.len())?;
@@ -337,6 +345,14 @@ fn write_epilogue(
     );
     out[..serialized_compact_unwind.len()].copy_from_slice(&serialized_compact_unwind);
     out[serialized_compact_unwind.len()..].fill(0);
+    tracing::debug!(
+        target: "metrics",
+        section = "COMPACT_UNWIND",
+        allocated_bytes = out.len(),
+        used_bytes = serialized_compact_unwind.len(),
+        zero_filled_bytes = out.len() - serialized_compact_unwind.len(),
+        "section allocation"
+    );
 
     Ok(())
 }
@@ -1304,6 +1320,7 @@ fn write_code_signature_command(layout: &MachOLayout, command: &mut CodeSignatur
 }
 
 fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8]) -> Result {
+    let allocated_bytes = chained_fixup_table.len();
     let symbols = &layout.format_specific.imported_symbols;
     let active_segments = &layout.segment_layouts.segments;
 
@@ -1462,6 +1479,15 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
 
     // Pad a couple of bytes (related to the MAX_SEGMENT_COUNT).
     string_pool[str_offset..].fill(0);
+    let zero_filled_bytes = string_pool.len() - str_offset;
+    tracing::debug!(
+        target: "metrics",
+        section = "CHAINED_FIXUP_TABLE",
+        allocated_bytes,
+        used_bytes = allocated_bytes - zero_filled_bytes,
+        zero_filled_bytes,
+        "section allocation"
+    );
 
     Ok(())
 }
