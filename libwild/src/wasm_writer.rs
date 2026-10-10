@@ -9,6 +9,7 @@ use crate::layout::Layout;
 use crate::platform::Arch;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use crate::wasm::DebugSectionInput;
 use crate::wasm::TARGET_FEATURE_PREFIX_DISALLOWED;
 use crate::wasm::TARGET_FEATURE_PREFIX_USED;
 use crate::wasm::TARGET_FEATURES_SECTION_NAME;
@@ -301,6 +302,10 @@ fn write_metadata_sections(
     copy_encoded_section(
         encoded.target_features.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_TARGET_FEATURES),
+    )?;
+    copy_encoded_section(
+        encoded.debug.as_ref(),
+        section_buffers.get_mut(output_section_id::WASM_DEBUG),
     )?;
     Ok(())
 }
@@ -799,6 +804,7 @@ pub(crate) struct EncodedMetadata {
     start: Option<Vec<u8>>,
     name: Option<Vec<u8>>,
     target_features: Option<Vec<u8>>,
+    debug: Option<Vec<u8>>,
 }
 
 impl EncodedMetadata {
@@ -850,6 +856,7 @@ impl EncodedMetadata {
             crate::wasm::part_id::WASM_TARGET_FEATURES,
             self.target_features.as_ref(),
         );
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_DEBUG, self.debug.as_ref());
     }
 }
 
@@ -965,7 +972,43 @@ pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<Encode
         }));
     }
 
+    encoded.debug = build_debug_section(&layout.debug_sections)?;
+
     Ok(encoded)
+}
+
+/// Concatenate the `.debug*` custom sections from all input objects into a single byte sequence
+/// containing one Wasm custom section per distinct debug section name.
+///
+/// Note: relocations are not yet applied; that will be handled separately.
+fn build_debug_section(sections: &[DebugSectionInput<'_>]) -> Result<Option<Vec<u8>>> {
+    use wasm_encoder::Section as _;
+
+    let mut by_name: indexmap::IndexMap<&[u8], Vec<u8>> = indexmap::IndexMap::new();
+    for section in sections {
+        if section.data.is_empty() {
+            continue;
+        }
+        by_name
+            .entry(section.name)
+            .or_default()
+            .extend_from_slice(section.data);
+    }
+
+    if by_name.is_empty() {
+        return Ok(None);
+    }
+
+    let mut out = Vec::new();
+    for (name, data) in &by_name {
+        let name = std::str::from_utf8(name).context("debug section name is not valid UTF-8")?;
+        let section = wasm_encoder::CustomSection {
+            name: name.into(),
+            data: data.as_slice().into(),
+        };
+        section.append_to(&mut out);
+    }
+    Ok(Some(out))
 }
 
 fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {

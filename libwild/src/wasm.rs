@@ -90,6 +90,7 @@ enum SinglePartSectionId {
     WasmData,
     WasmName,
     WasmTargetFeatures,
+    WasmDebug,
 
     // Must be last.
     Count,
@@ -114,6 +115,7 @@ pub(crate) mod part_id {
     pub(crate) const WASM_NAME: PartId = SinglePartSectionId::WasmName.part_id();
     pub(crate) const WASM_TARGET_FEATURES: PartId =
         SinglePartSectionId::WasmTargetFeatures.part_id();
+    pub(crate) const WASM_DEBUG: PartId = SinglePartSectionId::WasmDebug.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -144,6 +146,8 @@ pub(crate) mod output_section_id {
     pub(crate) const WASM_NAME: OutputSectionId = SinglePartSectionId::WasmName.output_section_id();
     pub(crate) const WASM_TARGET_FEATURES: OutputSectionId =
         SinglePartSectionId::WasmTargetFeatures.output_section_id();
+    pub(crate) const WASM_DEBUG: OutputSectionId =
+        SinglePartSectionId::WasmDebug.output_section_id();
 }
 
 /// Magic bytes at the start of every Wasm module.
@@ -563,7 +567,47 @@ fn is_debug_section_name(name: &[u8]) -> bool {
     name.starts_with(b".debug")
 }
 
+/// A `.debug*` custom section read from an input object.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DebugSectionInput<'data> {
+    /// The section name, e.g. `.debug_info`.
+    pub(crate) name: &'data [u8],
+    /// Index of this section within the input object's section list.
+    #[allow(dead_code)]
+    pub(crate) section_index: u32,
+    /// Index of the owning object within the object layout inputs.
+    #[allow(dead_code)]
+    pub(crate) object_index: usize,
+    /// The raw DWARF payload, excluding the custom section's name.
+    pub(crate) data: &'data [u8],
+}
+
 impl<'data> File<'data> {
+    /// Scans every section; only custom sections whose name starts with `.debug` are returned
+    fn debug_sections(&self) -> impl Iterator<Item = DebugSectionInput<'data>> + '_ {
+        self.sections
+            .iter()
+            .enumerate()
+            .filter_map(|(index, header)| {
+                let name_range = header.name_range.as_ref()?;
+                let name = self
+                    .data
+                    .get(name_range.start as usize..name_range.end as usize)?;
+                if !is_debug_section_name(name) {
+                    return None;
+                }
+                let data = self
+                    .data
+                    .get(name_range.end as usize..header.payload_range.end as usize)?;
+                Some(DebugSectionInput {
+                    name,
+                    section_index: index as u32,
+                    object_index: 0,
+                    data,
+                })
+            })
+    }
+
     fn section_is_debug(&self, index: u32) -> bool {
         let Some(header) = self.sections.get(index as usize) else {
             return false;
@@ -1396,6 +1440,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[osid::WASM_TARGET_FEATURES.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"target_features"), ())),
     };
+    defs[osid::WASM_DEBUG.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"WASM_DEBUG"), ())),
+    };
 
     defs
 };
@@ -1429,6 +1476,7 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix(b"reloc.", SectionRuleOutcome::Discard),
     SectionRule::exact(b"name", SectionRuleOutcome::Discard),
     SectionRule::exact(b"target_features", SectionRuleOutcome::Discard),
+    SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -1525,6 +1573,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) encoded_metadata: EncodedMetadata,
     pub(crate) name_inputs: WasmNameInputs<'data>,
     pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
+    pub(crate) debug_sections: Vec<DebugSectionInput<'data>>,
     pub(crate) extra_features: &'data [String],
     pub(crate) check_features: bool,
     /// A live function contains `memory.init` or `data.drop`.
@@ -2812,6 +2861,7 @@ struct WasmObjectLayoutInput<'data> {
     file_id: crate::input_data::FileId,
     defined_function_live_ordinal: Vec<u32>,
     defined_global_live_ordinal: Vec<u32>,
+    debug_sections: Vec<DebugSectionInput<'data>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2902,7 +2952,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
             )
         };
 
-        // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
+        // TODO(wasm): Relocations targeting `.debug*` are not applied yet. The sections are
+        // emitted (see `build_debug_section`), but until their relocations are resolved, the
+        // emitted debug info points at stale offsets.
         let has_unsupported_non_code_relocs = file.reloc_sections.iter().any(|s| {
             let target = Some(s.target_section_index);
             if target == code_section_index || target == data_section_index {
@@ -3080,6 +3132,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             file_id,
             defined_function_live_ordinal,
             defined_global_live_ordinal,
+            debug_sections: file.debug_sections().collect(),
         })
     }
 
@@ -6516,6 +6569,20 @@ where
         })
         .collect();
     layout.extra_features = &symbol_db.args.extra_features;
+    layout.debug_sections = layout_inputs
+        .iter()
+        .enumerate()
+        .flat_map(|(object_index, input)| {
+            input
+                .debug_sections
+                .iter()
+                .copied()
+                .map(move |mut section| {
+                    section.object_index = object_index;
+                    section
+                })
+        })
+        .collect();
     {
         timing_phase!("Compute Wasm code/data section sizes");
         layout.code_section_size = compute_code_section_size(&layout.function_bodies);
@@ -7614,6 +7681,7 @@ impl platform::Platform for Wasm {
         builder.add_section(osid::WASM_DATA_COUNT);
         builder.add_section(osid::WASM_CODE);
         builder.add_section(osid::WASM_DATA);
+        builder.add_section(osid::WASM_DEBUG);
         builder.add_section(osid::WASM_NAME);
         builder.add_section(osid::WASM_TARGET_FEATURES);
 
@@ -8314,6 +8382,7 @@ mod tests {
             file_id: crate::input_data::FileId::new(0, file),
             defined_function_live_ordinal: Vec::new(),
             defined_global_live_ordinal: Vec::new(),
+            debug_sections: Vec::new(),
         }
     }
 
@@ -8340,6 +8409,33 @@ mod tests {
             "output must only contain used (+) prefixes"
         );
         parsed.iter().map(|f| f.name.to_owned()).collect()
+    }
+
+    #[test]
+    fn debug_sections_are_collected_in_order() {
+        let mut module = wasm_encoder::Module::new();
+        module.section(&wasm_encoder::CustomSection {
+            name: "producers".into(),
+            data: b"ignore me".as_slice().into(),
+        });
+        module.section(&wasm_encoder::CustomSection {
+            name: ".debug_str".into(),
+            data: b"hello".as_slice().into(),
+        });
+        module.section(&wasm_encoder::CustomSection {
+            name: ".debug_info".into(),
+            data: b"world!".as_slice().into(),
+        });
+
+        let bytes = module.finish();
+        let file = parse_wasm_module(&bytes).unwrap();
+        let sections: Vec<_> = file.debug_sections().collect();
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].name, b".debug_str");
+        assert_eq!(sections[0].data, b"hello");
+        assert_eq!(sections[1].name, b".debug_info");
+        assert_eq!(sections[1].data, b"world!");
     }
 
     #[test]
