@@ -4731,6 +4731,9 @@ impl LinkCommand {
                         // Provide a workaround for ld.lld: error: unknown argument
                         // '--fix-cortex-a53-835769' Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
+                        // Disable the compiler driver's default erratum fix so only tests
+                        // that explicitly request it pass --fix-cortex-a53-843419.
+                        command.arg("-mno-fix-cortex-a53-843419");
                     }
 
                     command.args(&linker_args.args);

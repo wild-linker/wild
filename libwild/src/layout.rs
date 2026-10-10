@@ -11,6 +11,7 @@ use crate::compression::CompressedSection;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
+use crate::erratum843419::ErratumOffset;
 use crate::error;
 use crate::error::Context;
 use crate::error::Error;
@@ -505,6 +506,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         gdb_index_data,
         script_sorted_sections,
         partial_link,
+        erratum_patches: AtomicU64::new(0),
+        erratum_padding: AtomicU64::new(0),
     };
 
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
@@ -853,6 +856,9 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) script_sorted_sections: Vec<InputSortedSection>,
 
     pub(crate) partial_link: PartialLinkSingletons,
+
+    pub(crate) erratum_patches: AtomicU64,
+    pub(crate) erratum_padding: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -1176,6 +1182,9 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
 
     /// Whether this object is responsible for writing the thunks in its ThunkBlock.
     pub(crate) owns_thunk_block: bool,
+
+    /// AArch64 erratum identified for input sections.
+    pub(crate) erratum_offsets: HashMap<usize, SmallVec<[ErratumOffset; 2]>>,
 }
 
 #[derive(Debug)]
@@ -1599,6 +1608,9 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// Total bytes of primary-function-part sections that survived GC. Used to help determine
     /// distances for range-extension thunks.
     pub(crate) post_gc_primary_bytes: u64,
+
+    // Sections with erratum sequences are rare, so use a sparse map.
+    pub(crate) erratum_offsets: HashMap<usize, SmallVec<[ErratumOffset; 2]>>,
 }
 
 #[derive(Debug, Default)]
@@ -1633,6 +1645,8 @@ pub(crate) struct Section {
     /// Size in the output. This starts as the input section size, then may be reduced by
     /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
+    /// Reserved space for section padding (used by AArch64 erratum).
+    pub(crate) maximal_padding: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3358,7 +3372,10 @@ impl Section {
         _part_id: PartId,
     ) -> Result<Section> {
         let size = object_state.object.section_size(header)?;
-        let section = Section { size };
+        let section = Section {
+            size,
+            maximal_padding: 0,
+        };
         Ok(section)
     }
 
@@ -3369,10 +3386,13 @@ impl Section {
         part_id: PartId,
         output_sections: &OutputSections<P>,
     ) -> u64 {
+        let maximal_padding = u64::from(self.maximal_padding);
         if part_id.should_pack::<P>() {
-            self.size
+            self.size + maximal_padding
         } else {
-            part_id.alignment(output_sections).align_up(self.size)
+            part_id
+                .alignment(output_sections)
+                .align_up(self.size + maximal_padding)
         }
     }
 }
@@ -4419,6 +4439,7 @@ fn new_object_layout_state<P: Platform>(
         thunk_block_id: ThunkBlockId::default(),
         owns_thunk_block: false,
         post_gc_primary_bytes: 0,
+        erratum_offsets: HashMap::new(),
     })
 }
 
@@ -4675,7 +4696,16 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             ));
         }
 
-        let section = Section::create(header, self, part_id)?;
+        let mut section = Section::create(header, self, part_id)?;
+
+        if header.is_executable() {
+            P::analyze_text_section::<A>(
+                self,
+                section_index,
+                resources.symbol_db.args,
+                &mut section,
+            )?;
+        }
 
         <A::Platform as Platform>::load_object_section_relocations::<A>(
             self,
@@ -4712,7 +4742,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             && resources.thunk_layout_builder.is_some()
             && part_id == config.primary_function_part_id
         {
-            self.post_gc_primary_bytes += section.size;
+            self.post_gc_primary_bytes += section.size + u64::from(section.maximal_padding);
         }
 
         let section_id = part_id.output_section_id::<P>();
@@ -4817,7 +4847,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     let address = memory_offsets.get(part_id);
-
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
                     *memory_offsets.get_mut(part_id) +=
@@ -4903,6 +4932,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             section_relax_deltas: self.section_relax_deltas,
             thunk_block_id: self.thunk_block_id,
             owns_thunk_block: self.owns_thunk_block,
+            erratum_offsets: self.erratum_offsets,
         })
     }
 

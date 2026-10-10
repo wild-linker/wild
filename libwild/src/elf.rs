@@ -11,6 +11,8 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf_writer;
 use crate::ensure;
+use crate::erratum843419::ErratumSectionInfo;
+use crate::erratum843419::erratum_section_info;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::expression_eval;
@@ -1138,6 +1140,48 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             unit.section_index(),
             scope,
         )
+    }
+
+    fn analyze_unloaded_text_section<'data>(
+        object: &mut crate::resolution::ResolvedObject<'data, Self>,
+        section_index: object::SectionIndex,
+        args: &Self::Args,
+    ) -> Result<u64> {
+        if args.fix_cortex_a53_843419
+            && !args.should_output_partial_object
+            && args.architecture() == Architecture::AArch64
+        {
+            let header = object.common.object.section(section_index)?;
+            let bytes = object.common.object.section_data_cow(header)?;
+            let alignment = object.common.object.section_alignment(header)?;
+            if let Some(info) = erratum_section_info(&bytes, alignment)? {
+                let padding = info.maximal_padding as u64;
+                object
+                    .format_specific
+                    .erratum_sections
+                    .insert(section_index.0, info);
+                return Ok(padding);
+            }
+        }
+        Ok(0)
+    }
+
+    fn analyze_text_section<'data, A: Arch<Platform = Self>>(
+        state: &mut layout::ObjectLayoutState<'data, Self>,
+        section_index: object::SectionIndex,
+        _args: &Self::Args,
+        section: &mut layout::Section,
+    ) -> Result {
+        if let Some(info) = state
+            .format_specific
+            .erratum_sections
+            .remove(&section_index.0)
+        {
+            tracing::trace!(info.maximal_padding, section = %state.object.section_display_name(section_index));
+            section.maximal_padding = u32::try_from(info.maximal_padding).unwrap();
+            state.erratum_offsets.insert(section_index.0, info.offsets);
+        }
+        Ok(())
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
@@ -3034,6 +3078,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     ) -> Self::ObjectLayoutStateExt<'data> {
         ObjectLayoutStateExt {
             debug_index_sections: input.debug_index_sections,
+            erratum_sections: input.erratum_sections,
             ..Default::default()
         }
     }
@@ -4562,6 +4607,8 @@ pub(crate) struct ObjectLayoutStateExt<'data, C: ElfClass> {
     exception_frames: ExceptionFrames<'data, C>,
 
     pub(crate) debug_index_sections: Vec<InputDebugIndexSection<'data>>,
+
+    erratum_sections: HashMap<usize, ErratumSectionInfo>,
 }
 
 #[derive(Debug)]
@@ -7096,6 +7143,7 @@ impl<C: ElfClass> Resolution<Elf<C>> {
 #[derive(Debug, Default)]
 pub(crate) struct ResolvedObjectExt<'data> {
     debug_index_sections: Vec<InputDebugIndexSection<'data>>,
+    erratum_sections: HashMap<usize, ErratumSectionInfo>,
 }
 
 /// Rules that map input sections to built-in output sections when no linker script is in use.
