@@ -130,6 +130,7 @@ use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use sha2::Digest;
 use sha2::Sha256;
+use std::mem::offset_of;
 use std::ops::BitAnd;
 use tracing::debug_span;
 use zerocopy::FromZeros;
@@ -179,8 +180,8 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     write_chained_fixups(layout, &mut sized_output.out)?;
 
     write_code_signature_metadata(layout, sized_output)?;
-    write_uuid(layout, sized_output)?;
-    write_code_signature_hashes(layout, sized_output)?;
+    let uuid_offset = clear_uuid(layout, sized_output)?;
+    write_code_signature_hashes(layout, sized_output, uuid_offset)?;
 
     Ok(())
 }
@@ -1465,13 +1466,12 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     Ok(())
 }
 
-fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput<impl OutputFileData>) -> Result {
-    verbose_timing_phase!("Write UUID");
-
-    let hash = blake3::Hasher::new()
-        .update_rayon(&sized_output.out)
-        .finalize();
-
+/// Clear the UUID before signing and record its file offset so we can patch it later.
+fn clear_uuid(
+    layout: &MachOLayout,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
+) -> Result<usize> {
+    let mut command_offset = layout.section_layouts.get(LOAD_COMMANDS).file_offset;
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let load_commands = section_buffers.get_mut(output_section_id::LOAD_COMMANDS);
 
@@ -1488,17 +1488,47 @@ fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput<impl OutputFi
 
         if cmd_type == LC_UUID {
             let uuid_cmd = take_mut::<UuidCommand>(&mut cmd)?;
-            let uuid_size = uuid_cmd.uuid.len();
-
-            uuid_cmd.uuid.copy_from_slice(&hash.as_bytes()[..uuid_size]);
-            // Match lld's UUID Version 3 from RFC 9562.
-            uuid_cmd.uuid[6] = (uuid_cmd.uuid[6] & 0x0f) | 0x30;
-            uuid_cmd.uuid[8] = (uuid_cmd.uuid[8] & 0x3f) | 0x80;
-            return Ok(());
+            uuid_cmd.uuid.fill(0);
+            return Ok(command_offset + offset_of!(UuidCommand, uuid));
         }
+        command_offset += cmd_size;
     }
 
     bail!("Missing LC_UUID");
+}
+
+fn write_uuid(
+    signed_data: &mut [u8],
+    code_signature: &mut [u8],
+    hashes_offset: usize,
+    uuid_offset: usize,
+) -> Result {
+    verbose_timing_phase!("Write UUID");
+
+    // Derive the UUID from the entire code signature with a zero UUID, avoiding another full-file
+    // hash.
+    let hash = blake3::hash(code_signature);
+    let hashes = &mut code_signature[hashes_offset..];
+    let uuid_size = size_of::<u128>();
+    let uuid_end = uuid_offset + uuid_size;
+    let uuid = signed_data
+        .get_mut(uuid_offset..uuid_end)
+        .context("Invalid UUID allocation")?;
+    uuid.copy_from_slice(&hash.as_bytes()[..uuid_size]);
+    // Match lld's UUID Version 3 from RFC 9562.
+    uuid[6] = (uuid[6] & 0x0f) | 0x30;
+    uuid[8] = (uuid[8] & 0x3f) | 0x80;
+
+    // Only the one or two pages containing the UUID need to be signed again.
+    for page in uuid_offset / CS_BLOCK_SIZE..=(uuid_end - 1) / CS_BLOCK_SIZE {
+        let start = page * CS_BLOCK_SIZE;
+        let end = start + CS_BLOCK_SIZE;
+        let hash = Sha256::digest(&signed_data[start..end]);
+        let hash_start = page * usize::from(CS_HASH_SIZE);
+        hashes[hash_start..hash_start + usize::from(CS_HASH_SIZE)].copy_from_slice(&hash);
+    }
+
+    Ok(())
 }
 
 fn write_code_signature_metadata(
@@ -1565,6 +1595,7 @@ fn write_code_signature_metadata(
 fn write_code_signature_hashes(
     layout: &MachOLayout,
     sized_output: &mut SizedOutput<impl OutputFileData>,
+    uuid_offset: usize,
 ) -> Result {
     verbose_timing_phase!("Write code signature hashes");
 
@@ -1577,15 +1608,20 @@ fn write_code_signature_hashes(
         .collect();
     let calculated_hashes = calculated_hashes.into_iter().flatten().collect_vec();
 
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
-    let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
+    let (signed_data, code_signature) = sized_output
+        .out
+        .split_at_mut(code_signature_section.file_offset);
     let hashes_offset =
         (CS_HEADERS_SIZE + code_signature_padded_identifier_size(layout.args())) as usize;
+    let code_signature = code_signature
+        .get_mut(..code_signature_section.file_size)
+        .context("Invalid CODE_SIGNATURE allocation")?;
     let hashes = code_signature
         .get_mut(hashes_offset..)
         .context("Invalid CODE_SIGNATURE allocation")?;
 
     hashes.copy_from_slice(&calculated_hashes);
+    write_uuid(signed_data, code_signature, hashes_offset, uuid_offset)?;
 
     // Match lld's workaround for the macOS kernel caching signature-verification
     // data before the final code signature has been written:
@@ -1679,7 +1715,7 @@ fn write_symbols<'data>(
         };
 
         let mut value = 0;
-        let (section, symbol_type, desc) =
+        let (section, mut symbol_type, desc) =
             if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                 let section_id = match &object.sections[section_index.0] {
                     SectionSlot::Loaded(_) => object
@@ -1712,6 +1748,13 @@ fn write_symbols<'data>(
             } else {
                 bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };
+
+        if !sym.is_local() && sym.is_hidden() {
+            // Private externs get downgraded to locals with N_PEXT set to record that they
+            // originated as external symbols.
+            symbol_type.remove(macho::N_EXT);
+            symbol_type.insert(macho::N_PEXT);
+        }
 
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
             value = res.value_for_symbol_table();

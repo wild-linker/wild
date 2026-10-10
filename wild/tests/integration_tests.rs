@@ -164,6 +164,10 @@
 //! module with `--no-entry` and export the functions the driver needs. If RunDynSym is set, it
 //! selects an export of the driver.
 //!
+//! WasmPreload:{name}={filename} Instantiates `filename` under `name` before the linked binary, so
+//! the binary can import its exports. Use this to supply a shared memory and check that a store in
+//! one module is visible in the other. May be repeated. `filename` is resolved like WasmRunner.
+//!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
@@ -411,6 +415,8 @@ use object::read::macho::Segment;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1008,12 +1014,18 @@ fn run_wasm_with_wasmtime(
     linker_name: &str,
     invoke: Option<&str>,
     runner: Option<&Path>,
+    preloads: &[(String, PathBuf)],
 ) -> Result {
     let mut command = Command::new("wasmtime");
     command.arg("run");
     command.args(["-W", "threads,shared-memory"]);
     if let Some(func) = invoke {
         command.arg("--invoke").arg(func);
+    }
+    for (name, path) in preloads {
+        command
+            .arg("--preload")
+            .arg(format!("{name}={}", path_to_str(path)?));
     }
     if let Some(runner) = runner {
         command
@@ -1503,6 +1515,7 @@ struct Config {
     should_run: bool,
     run_dyn_sym: Option<String>,
     wasm_runner: Option<PathBuf>,
+    wasm_preloads: Vec<(String, PathBuf)>,
     should_error: bool,
     expect_stderr: Vec<ErrorMatcher>,
     expect_stdout: Vec<ErrorMatcher>,
@@ -2315,6 +2328,7 @@ impl Config {
             diff_match_any: false,
             run_dyn_sym: None,
             wasm_runner: None,
+            wasm_preloads: Vec::new(),
             should_error: false,
             expect_stderr: Default::default(),
             expect_stdout: Default::default(),
@@ -2874,6 +2888,22 @@ fn process_directive(
                 Some(path)
             };
         }
+        "WasmPreload" => {
+            ensure!(
+                config.platform == PlatformKind::Wasm,
+                "WasmPreload is only supported for Wasm tests"
+            );
+            let (name, filename) = arg
+                .split_once('=')
+                .with_context(|| format!("WasmPreload requires name=filename, got `{arg}`"))?;
+            ensure!(
+                !name.is_empty() && !filename.is_empty(),
+                "WasmPreload requires a non-empty module name and filename, got `{arg}`"
+            );
+            let path = config.source_path(filename);
+            config.tracked_files.push(path.clone());
+            config.wasm_preloads.push((name.to_owned(), path));
+        }
         "ReferenceLinkers" => {
             let refs: Vec<String> = arg
                 .split(',')
@@ -3119,7 +3149,8 @@ impl ProgramInputs {
             let _ = std::fs::remove_file(linker.output_path(self.name(), config));
         }
 
-        let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
+        let link_output =
+            linker.link_with_output_reuse(self.name(), &inputs, config, cross_arch)?;
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
@@ -3449,6 +3480,7 @@ impl LinkOutput {
                 self.linker_used.name(),
                 self.command.config.run_dyn_sym.as_deref(),
                 self.command.config.wasm_runner.as_deref(),
+                &self.command.config.wasm_preloads,
             );
         }
 
@@ -4474,6 +4506,44 @@ fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 impl Linker {
+    /// As for `link`, but on Mac, the old output file might be kept, but only if the linker first
+    /// produced an identical file. Reusing the old file allows a cache hit on whatever virus
+    /// scanning macOS is doing.
+    fn link_with_output_reuse(
+        &self,
+        basename: &str,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkOutput> {
+        let output_path = self.output_path(basename, config);
+        let preserve_output = cfg!(target_os = "macos")
+            && self.is_wild()
+            && config.platform == PlatformKind::MachO
+            && std::fs::symlink_metadata(&output_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+
+        if !preserve_output {
+            return self.link(basename, inputs, config, cross_arch);
+        }
+
+        let saved_dir = tempfile::tempdir_in(output_path.parent().unwrap())?;
+        let saved_path = saved_dir.path().join("previous-output");
+        std::fs::rename(&output_path, &saved_path)?;
+
+        let link_output = self.link(basename, inputs, config, cross_arch)?;
+
+        let old_content = std::fs::read(&saved_path)?;
+        if std::fs::read(&output_path).is_ok_and(|new_content| new_content == old_content)
+            && std::fs::metadata(&output_path)?.permissions()
+                == std::fs::metadata(&saved_path)?.permissions()
+        {
+            std::fs::rename(&saved_path, &output_path)?;
+        }
+
+        Ok(link_output)
+    }
+
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
     fn link(
@@ -4628,8 +4698,6 @@ impl LinkCommand {
 
                     match linker_driver {
                         Compiler::Clang(_) => {
-                            // Crash diagnostics can rerun Wild and clear its save directory.
-                            command.arg("-fno-crash-diagnostics");
                             command.arg(format!(
                                 "--ld-path={}",
                                 linker_path
@@ -4720,9 +4788,11 @@ impl LinkCommand {
                                 .join(format!("{}.wat", config.test_name));
                             if primary_wat.exists() {
                                 command.arg("--no-entry");
+                                // wat2wasm relocatable objects can disagree on target features.
+                                command.arg("--no-check-features");
                                 if !linker.is_wild() {
-                                    // TODO(wasm): Support these options
-                                    command.arg("--export-all").arg("--no-check-features");
+                                    // TODO(wasm)
+                                    command.arg("--export-all");
                                 }
                             }
                         }
@@ -7087,26 +7157,43 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .div_ceil(CS_BLOCK_SIZE)
         .checked_mul(CS_HASH_SIZE)
         .context("Invalid code signature hashes size")?;
-    let hashes_start = bytes
+    let code_signature_end = code_signature_offset
+        .checked_add(usize::try_from(code_signature.datasize.get(e))?)
+        .context("Invalid code signature size")?;
+    let code_signature_data = bytes
+        .get(code_signature_offset..code_signature_end)
+        .context("Invalid code signature range")?;
+    let hashes_start = code_signature_data
         .len()
         .checked_sub(hashes_size)
         .context("Invalid code signature hashes range")?;
-    let zero_hashes = vec![0; hashes_size];
-
+    let signed_data = bytes
+        .get(..code_signature_offset)
+        .context("Invalid code signature offset")?;
+    let final_hashes = signed_data
+        .chunks(CS_BLOCK_SIZE)
+        .flat_map(Sha256::digest)
+        .collect_vec();
     ensure!(
-        uuid_end <= hashes_start,
-        "UUID range {uuid_start:#x}..{uuid_end:#x} overlaps code signature hashes \
-        starting at {hashes_start:#x}"
+        code_signature_data[hashes_start..] == final_hashes,
+        "Code signature hashes do not match final signed data"
     );
 
-    let expected_hash = blake3::Hasher::new()
-        .update(&bytes[..uuid_start])
-        .update(&[0; 16])
-        .update_rayon(&bytes[uuid_end..hashes_start])
-        .update(&zero_hashes)
-        .finalize();
+    // Our UUID hash includes the entire signature, with page hashes for a zeroed LC_UUID.
+    let mut zero_uuid_data = signed_data.to_vec();
+    zero_uuid_data
+        .get_mut(uuid_start..uuid_end)
+        .context("UUID range overlaps code signature")?
+        .fill(0);
+    let zero_uuid_hashes = zero_uuid_data
+        .chunks(CS_BLOCK_SIZE)
+        .flat_map(Sha256::digest)
+        .collect_vec();
+    let mut zero_uuid_signature = code_signature_data.to_vec();
+    zero_uuid_signature[hashes_start..].copy_from_slice(&zero_uuid_hashes);
+    let expected_hash = blake3::hash(&zero_uuid_signature);
 
-    let mut expected_uuid = [0; 16];
+    let mut expected_uuid = [0; _];
     expected_uuid.copy_from_slice(&expected_hash.as_bytes()[..uuid_size]);
     expected_uuid[6] = (expected_uuid[6] & 0x0f) | 0x30;
     expected_uuid[8] = (expected_uuid[8] & 0x3f) | 0x80;

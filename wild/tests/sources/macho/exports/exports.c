@@ -5,6 +5,7 @@
 //#ExpectDynSym:_weak_function binding=weak
 //#NoDynSym:_hidden_function
 //#NoDynSym:_local_function
+//#ExpectSym:_hidden_function binding=local
 
 int exported_data = 20;
 

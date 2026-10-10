@@ -1,6 +1,11 @@
 //#LinkArgs: --shared-memory --max-memory=131072 --no-entry
 //#ExpectError: 'bulk-memory' feature must be used in order to use shared memory
 
+//#Config:no-check
+//#LinkArgs: --shared-memory --max-memory=131072 --no-entry --no-check-features
+//#RunEnabled:false
+//#ExpectSharedMemory:true
+
   .globl _start
 _start:
   .functype _start () -> ()

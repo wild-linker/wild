@@ -246,7 +246,9 @@ pub fn report_error(errors: &Error) {
 
 pub fn report_error_and_exit(error: &Error) -> ! {
     report_error(error);
-    std::process::exit(-1);
+    // Exit with 1 so Clang's -fcrash-diagnostics doesn't treat a linker error as a crash
+    // and rerun the linker to generate a crash reproducer.
+    std::process::exit(1);
 }
 
 #[derive(Default)]

@@ -47,6 +47,7 @@ rand.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde-keyvalue = { workspace = true }
+sha2.workspace = true
 strum.workspace = true
 tempfile.workspace = true
 toml.workspace = true

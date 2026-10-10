@@ -262,7 +262,7 @@ impl crate::platform::Arch for MachOAArch64 {
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,
-        output_kind: crate::output_kind::OutputKind,
+        _output_kind: crate::output_kind::OutputKind,
         section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
         relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
         _sym_addr: u64,
@@ -274,9 +274,7 @@ impl crate::platform::Arch for MachOAArch64 {
 
         match relocation_kind.r_type {
             object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12
-                if output_kind.is_executable()
-                    && flags.has_link_time_address()
-                    && !interposable =>
+                if flags.has_link_time_address() && !interposable =>
             {
                 let relocation = MachOAArch64::relocation_from_raw(relocation_kind)
                     .expect("TLVP_LOAD_PAGEOFF12 must have relocation information");

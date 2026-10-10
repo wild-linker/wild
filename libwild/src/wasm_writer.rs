@@ -755,7 +755,7 @@ fn convert_val_type(t: wasmparser::ValType) -> Result<wasm_encoder::ValType> {
         wasmparser::ValType::I64 => wasm_encoder::ValType::I64,
         wasmparser::ValType::F32 => wasm_encoder::ValType::F32,
         wasmparser::ValType::F64 => wasm_encoder::ValType::F64,
-        wasmparser::ValType::V128 => bail!("V128 value type is not supported yet"),
+        wasmparser::ValType::V128 => wasm_encoder::ValType::V128,
         wasmparser::ValType::Ref(_) => bail!("reference value types are not supported yet"),
     })
 }
@@ -943,9 +943,11 @@ pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<Encode
 
     {
         timing_phase!("Encode Wasm target_features section");
-        if let Some(target_features) =
-            build_target_features_section(&layout.target_feature_inputs, layout.extra_features)?
-        {
+        if let Some(target_features) = build_target_features_section(
+            &layout.target_feature_inputs,
+            layout.extra_features,
+            layout.check_features,
+        )? {
             encoded.target_features = Some(encode_wasm_section(&target_features));
         }
     }
@@ -1220,6 +1222,7 @@ fn name_map_from_dense(names: &[Option<&str>], demangle: bool) -> Option<NameMap
 pub(crate) fn build_target_features_section<'a>(
     features: &[WasmInputTargetFeature<'a>],
     extra_features: &'a [String],
+    check_features: bool,
 ) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
     let mut used: HashSet<&'a str> = HashSet::new();
     let mut disallowed: HashMap<&'a str, crate::input_data::FileId> = HashMap::new();
@@ -1243,12 +1246,14 @@ pub(crate) fn build_target_features_section<'a>(
         }
     }
 
-    for name in &used {
-        if let Some(&file_id) = disallowed.get(name) {
-            bail!(
-                "target feature `{name}` is used by linked objects but disallowed by input file \
-                 {file_id}"
-            );
+    if check_features {
+        for name in &used {
+            if let Some(&file_id) = disallowed.get(name) {
+                bail!(
+                    "target feature `{name}` is used by linked objects but disallowed by input file \
+                     {file_id}"
+                );
+            }
         }
     }
 

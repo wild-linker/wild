@@ -44,6 +44,7 @@ pub struct WasmArgs {
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
     pub(crate) extra_features: Vec<String>,
+    pub(crate) check_features: bool,
     pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
@@ -92,6 +93,7 @@ impl Default for WasmArgs {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
             extra_features: Vec::new(),
+            check_features: true,
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
@@ -308,6 +310,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
                 .filter(|feature| !feature.is_empty())
                 .map(str::to_owned)
                 .collect();
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("check-features")
+        .help("Check feature compatibility of linked objects (default)")
+        .execute(|args, _modifier_stack| {
+            args.check_features = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-check-features")
+        .help("Ignore feature compatibility of linked objects")
+        .execute(|args, _modifier_stack| {
+            args.check_features = false;
             Ok(())
         });
 

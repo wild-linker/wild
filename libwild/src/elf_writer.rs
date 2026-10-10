@@ -4374,13 +4374,22 @@ fn apply_debug_relocation<
     out: &mut [u8],
     relocation_cache: &RelocationCache<R>,
 ) -> Result<()> {
-    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
-    let sym = object_layout.object.symbol(symbol_index)?;
-    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
-
     let addend = rel.addend();
     let r_type = rel.raw_type();
     let rel_info = A::relocation_from_raw(r_type)?;
+
+    match rel_info.kind {
+        RelocationKind::None => return Ok(()),
+        RelocationKind::Absolute if rel.symbol().is_none() => {
+            rel_info.write_to_buffer(addend as u64, &mut out[offset_in_section as usize..])?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
     let resolution = layout
         .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
