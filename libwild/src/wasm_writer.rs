@@ -302,6 +302,10 @@ fn write_metadata_sections(
         encoded.target_features.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_TARGET_FEATURES),
     )?;
+    copy_encoded_section(
+        encoded.debug.as_ref(),
+        section_buffers.get_mut(output_section_id::WASM_DEBUG),
+    )?;
     Ok(())
 }
 
@@ -799,6 +803,7 @@ pub(crate) struct EncodedMetadata {
     start: Option<Vec<u8>>,
     name: Option<Vec<u8>>,
     target_features: Option<Vec<u8>>,
+    pub(crate) debug: Option<Vec<u8>>,
 }
 
 impl EncodedMetadata {
@@ -850,6 +855,7 @@ impl EncodedMetadata {
             crate::wasm::part_id::WASM_TARGET_FEATURES,
             self.target_features.as_ref(),
         );
+        add_encoded_section_size(sizes, crate::wasm::part_id::WASM_DEBUG, self.debug.as_ref());
     }
 }
 
