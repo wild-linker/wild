@@ -1177,8 +1177,9 @@ unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> 
         };
 
         let mut buf = [0u8; 4096];
-        let written_chars =
-            unsafe { vsnprintf(buf.as_mut_ptr() as *mut c_char, buf.len(), format, args) as usize };
+        let written_chars = unsafe {
+            vsnprintf(buf.as_mut_ptr().cast::<c_char>(), buf.len(), format, args) as usize
+        };
 
         let (text, status) = if let Ok(str) = std::str::from_utf8(&buf[..written_chars]) {
             (str, Status::Ok)
