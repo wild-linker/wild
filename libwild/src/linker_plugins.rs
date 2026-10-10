@@ -1161,7 +1161,12 @@ extern "C" fn add_input_library(lib_name: *const c_char) -> Status {
 
 #[link(name = "c")]
 unsafe extern "C" {
-    fn vsnprintf(str: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
+    fn vsnprintf(
+        str: *mut c_char,
+        n: usize,
+        format: *const c_char,
+        ap: core::ffi::VaList<'_>,
+    ) -> c_int;
 }
 
 /// This function is called when the plugin wants to emit a message.
