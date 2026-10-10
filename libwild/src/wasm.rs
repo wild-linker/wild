@@ -575,6 +575,9 @@ pub(crate) struct DebugSectionInput<'data> {
     /// Index of this section within the input object's section list.
     #[allow(dead_code)]
     pub(crate) section_index: u32,
+    /// Index of the owning object within the object layout inputs.
+    #[allow(dead_code)]
+    pub(crate) object_index: usize,
     /// The raw DWARF payload, excluding the custom section's name.
     pub(crate) data: &'data [u8],
 }
@@ -599,6 +602,7 @@ impl<'data> File<'data> {
                 Some(DebugSectionInput {
                     name,
                     section_index: index as u32,
+                    object_index: 0,
                     data,
                 })
             })
@@ -1569,6 +1573,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) encoded_metadata: EncodedMetadata,
     pub(crate) name_inputs: WasmNameInputs<'data>,
     pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
+    pub(crate) debug_sections: Vec<DebugSectionInput<'data>>,
     pub(crate) extra_features: &'data [String],
     /// A live function contains `memory.init` or `data.drop`.
     pub(crate) code_references_data_segment: bool,
@@ -6565,59 +6570,28 @@ where
         })
         .collect();
     layout.extra_features = &symbol_db.args.extra_features;
+    layout.debug_sections = layout_inputs
+        .iter()
+        .enumerate()
+        .flat_map(|(object_index, input)| {
+            input
+                .debug_sections
+                .iter()
+                .copied()
+                .map(move |mut section| {
+                    section.object_index = object_index;
+                    section
+                })
+        })
+        .collect();
     {
         timing_phase!("Compute Wasm code/data section sizes");
         layout.code_section_size = compute_code_section_size(&layout.function_bodies);
         layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
     }
-    let mut encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
-    encoded_metadata.debug =
-        build_debug_section(&layout_inputs, symbol_db.args.should_strip_debug())?;
+    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
     layout.encoded_metadata = encoded_metadata;
     Ok(layout)
-}
-
-/// Concatenate the `.debug*` custom sections from all input objects into a single byte sequence
-/// containing one Wasm custom section per distinct debug section name.
-//r
-/// Note: relocations are not yet applied; that will be handled separately.
-fn build_debug_section(
-    layout_inputs: &[WasmObjectLayoutInput<'_>],
-    strip_debug: bool,
-) -> Result<Option<Vec<u8>>> {
-    use wasm_encoder::Section as _;
-
-    if strip_debug {
-        return Ok(None);
-    }
-
-    let mut by_name: indexmap::IndexMap<&[u8], Vec<u8>> = indexmap::IndexMap::new();
-    for input in layout_inputs {
-        for debug in &input.debug_sections {
-            if debug.data.is_empty() {
-                continue;
-            }
-            by_name
-                .entry(debug.name)
-                .or_default()
-                .extend_from_slice(debug.data);
-        }
-    }
-
-    if by_name.is_empty() {
-        return Ok(None);
-    }
-
-    let mut out = Vec::new();
-    for (name, data) in &by_name {
-        let name = std::str::from_utf8(name).context("debug section name is not valid UTF-8")?;
-        let section = wasm_encoder::CustomSection {
-            name: name.into(),
-            data: data.as_slice().into(),
-        };
-        section.append_to(&mut out);
-    }
-    Ok(Some(out))
 }
 
 /// Assign indirect-call table slots and synthesize `table` / `element` sections.
