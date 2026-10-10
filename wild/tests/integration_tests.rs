@@ -6259,7 +6259,19 @@ impl Assertions {
                 _ => section.flags() != object::SectionFlags::None,
             };
 
-            if !is_alloc && header.p_type(endian) != object::elf::PT_RISCV_ATTRIBUTES {
+            if header.p_type(endian) == object::elf::PT_RISCV_ATTRIBUTES {
+                let in_file = !is_alloc
+                    && sh_offset >= p_offset
+                    && sh_offset.saturating_add(sh_filesz) <= p_offset.saturating_add(p_filesz)
+                    && p_filesz > 0
+                    && sh_filesz > 0;
+                if in_file {
+                    sections.insert(name);
+                }
+                continue;
+            }
+
+            if !is_alloc {
                 continue;
             }
 

@@ -24,6 +24,7 @@
 
 //#Config:riscv:nophdrs-base
 //#Arch:riscv64
+//#ReferenceLinkers:bfd,lld
 //#ExpectProgramHeader:RISCV_ATTRIBUTES flags=R,sections=[.riscv.attributes]
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=1
 

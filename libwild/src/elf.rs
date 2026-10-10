@@ -2628,10 +2628,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut num_phdrs = 0;
         let mut has_filehdr = false;
         let mut load_without_hdrs = false;
+        let mut has_headers = false;
 
         for script in linker_scripts {
             num_phdrs += script.parsed.program_headers.len();
             for phdr in &script.parsed.program_headers {
+                has_headers = has_headers || phdr.has_filehdr || phdr.has_phdrs;
                 let ptype = expression_eval::evaluate_const(&phdr.ptype)? as u32;
                 if ptype == pt::LOAD.0 {
                     if phdr.has_filehdr || phdr.has_phdrs {
@@ -2770,6 +2772,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         };
 
+        builder.set_custom_phdrs_include_headers(has_headers);
+
         for (pos, section_id) in ordered_sections.iter().enumerate() {
             let section_id = *section_id;
 
@@ -2811,11 +2815,20 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 while let Some((_, seg_id)) = it.next_if(|&(cat, _)| cat == 3) {
                     builder.push_event(OrderEvent::SegmentEnd(seg_id));
                 }
-
+                let sec_info = output_sections.output_info(section_id);
+                if let Some(ref loc_info) = sec_info.location_info {
+                    let (_, lc_stop) = loc_info.location_counters;
+                    builder.emit_location_counters(0, lc_stop);
+                }
                 for (_, seg_id) in it {
                     builder.push_event(OrderEvent::SegmentStart(seg_id));
                 }
             } else {
+                let sec_info = output_sections.output_info(section_id);
+                if let Some(ref loc_info) = sec_info.location_info {
+                    let (_, lc_stop) = loc_info.location_counters;
+                    builder.emit_location_counters(0, lc_stop);
+                }
                 for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
                     let entry = segment_entries[seg_idx];
                     if *segment == Some(pos) && !entry.has_filehdr && !entry.has_phdrs {

@@ -6078,7 +6078,7 @@ fn compute_layout_sections<'data, P: Platform>(
     // object symbols referenced from location-counter expressions.
     let mut laid_out_mem_offsets = output_sections.new_part_map::<Option<u64>>();
     let mut file_offset = 0;
-    let mut mem_offset = expression_eval(
+    let base_address = expression_eval(
         &output_sections.base_address,
         &SymbolLoc::None,
         memory_regions,
@@ -6086,6 +6086,24 @@ fn compute_layout_sections<'data, P: Platform>(
         &[],
         &laid_out_mem_offsets,
     )?;
+    let alignment = args.loadable_segment_alignment().value();
+    if output_sections.has_custom_base_address() && base_address < sizeof_headers {
+        bail!(
+            "base address ({base_address:#x}) is less than the size of headers ({sizeof_headers:#x})"
+        );
+    }
+    let mut mem_offset = base_address;
+    if output_order.custom_phdrs_include_headers() || output_sections.has_custom_base_address() {
+        let offset_in_page = mem_offset % alignment;
+        if offset_in_page >= sizeof_headers {
+            mem_offset -= offset_in_page;
+        } else {
+            let pages_needed = (sizeof_headers - offset_in_page).div_ceil(alignment) * alignment;
+            if let Some(adjusted) = mem_offset.checked_sub(offset_in_page + pages_needed) {
+                mem_offset = adjusted;
+            }
+        }
+    }
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
@@ -6096,7 +6114,7 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut resolved_lc = vec![Default::default(); output_order.num_location_counters()];
     if !resolved_lc.is_empty() {
         resolved_lc[0] = ResolvedLocationCounter {
-            value: mem_offset,
+            value: base_address,
             section_offset: None,
         };
     }
