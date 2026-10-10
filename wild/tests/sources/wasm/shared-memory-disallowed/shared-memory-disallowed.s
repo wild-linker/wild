@@ -1,6 +1,11 @@
 //#LinkArgs: --shared-memory --max-memory=131072 --no-entry
 //#ExpectError: --shared-memory is disallowed
 
+//#Config:no-check
+//#LinkArgs: --shared-memory --max-memory=131072 --no-entry --no-check-features
+//#RunEnabled:false
+//#ExpectSharedMemory:true
+
   .globl _start
 _start:
   .functype _start () -> ()

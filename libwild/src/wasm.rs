@@ -1526,6 +1526,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) name_inputs: WasmNameInputs<'data>,
     pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
     pub(crate) extra_features: &'data [String],
+    pub(crate) check_features: bool,
     /// A live function contains `memory.init` or `data.drop`.
     pub(crate) code_references_data_segment: bool,
     /// Linker-synthesized `{export}.command_export` wrappers and their name-section names.
@@ -1634,6 +1635,9 @@ fn validate_shared_memory_features(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Result {
+    if !symbol_db.args.check_features {
+        return Ok(());
+    }
     let (mut used, disallowed) = collect_target_feature_sets(layout_inputs)?;
     if let Some(&file_id) = disallowed.get("shared-mem") {
         bail!(
@@ -6184,6 +6188,7 @@ where
         },
         shared_memory_tls: indices.shared_memory_tls,
         tls_align: u32::from(indices.shared_memory_tls),
+        check_features: symbol_db.args.check_features,
         ..WasmLayout::default()
     };
     let data_start = if stack_first {
@@ -8360,7 +8365,7 @@ mod tests {
         }];
         let mut records = target_feature_records(1, &features_a);
         records.extend(target_feature_records(2, &features_b));
-        let section = crate::wasm_writer::build_target_features_section(&records, &[])
+        let section = crate::wasm_writer::build_target_features_section(&records, &[], true)
             .unwrap()
             .expect("expected target_features section");
         assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
@@ -8378,7 +8383,8 @@ mod tests {
         }];
         let mut records = target_feature_records(1, &used);
         records.extend(target_feature_records(2, &disallowed));
-        let err = crate::wasm_writer::build_target_features_section(&records, &[]).unwrap_err();
+        let err =
+            crate::wasm_writer::build_target_features_section(&records, &[], true).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("atomics") && msg.contains("disallowed"),
