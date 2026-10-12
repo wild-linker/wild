@@ -5785,8 +5785,12 @@ fn write_canonical_plt_dynamic_symbol_definition<'data, C: ElfClass>(
         .context("Canonical PLT symbol has no resolution")?;
 
     let entry = dynamic_symbol_writer.undefined_symbol(false, sym_def.name)?;
-    entry.set_value(resolution.plt_address()?)?;
-    entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
+    if sym.is_undefined(LittleEndian) {
+        entry.set_binding_and_type(sym.st_bind(), sym.st_type());
+    } else {
+        entry.set_value(resolution.plt_address()?)?;
+        entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
+    }
 
     Ok(())
 }

@@ -11,7 +11,6 @@
 //#DiffIgnore:section.eh_frame.alignment
 
 //#Config:gcc:default
-//#SkipArch: ppc64le
 //#LinkerDriver:gcc
 
 //#Config:clang:default

@@ -2000,12 +2000,15 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             let name = symbol_db.symbol_name(symbol_id)?;
             let name = Self::RawSymbolName::parse(name.bytes()).name();
 
+            let owned_by_dynamic_object = symbol_db
+                .file(symbol_db.file_id_for_symbol(symbol_id))
+                .is_dynamic();
             if flags.needs_copy_relocation() {
                 // The dynamic symbol is a definition, so is handled by the epilogue. We only
                 // need to deal with the symtab entry here.
                 common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
                 common.allocate(part_id::STRTAB, name.len() as u64 + 1);
-            } else if !flags.needs_canonical_plt() {
+            } else if !flags.needs_canonical_plt() || !owned_by_dynamic_object {
                 common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                 common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
             }
@@ -6802,10 +6805,13 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
             );
         }
 
-        if section_is_writable && !is_narrow_absolute {
+        let needs_plt_for_call = classified.rel_size.is_ppc64_branch()
+            && !flags.has_link_time_address()
+            && !flags.is_ifunc();
+
+        if !needs_plt_for_call && section_is_writable && !is_narrow_absolute {
             common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-        } else if flags.is_function() {
-            // Create a PLT entry for the function and refer to that instead.
+        } else if flags.is_function() || needs_plt_for_call {
             flags_to_add.remove(ValueFlags::DIRECT);
             *flags_to_add |= ValueFlags::PLT | ValueFlags::GOT | ValueFlags::CANONICAL_PLT;
         } else if !flags.is_absolute() {
