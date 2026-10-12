@@ -125,7 +125,7 @@ use object::macho::Tool;
 use object::slice_from_bytes_mut;
 use object::write::macho::CodeDirectory;
 use object::write::macho::CodeSignatureEncoder;
-use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use sha2::Digest;
@@ -146,7 +146,6 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
-    let exports_trie = build_exports_trie(layout)?;
     let (mut section_buffers, mut padding) =
         split_output_into_sections(layout, &mut sized_output.out);
     padding.fill_zero();
@@ -154,7 +153,15 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
     groups_and_buffers
-        .into_par_iter()
+        .into_iter()
+        .sorted_by_key(|(group, _)| match group.files[0] {
+            FileLayout::Prelude(_) | FileLayout::Epilogue(_) => 0,
+            _ => 1,
+        })
+        // Using bridge ensures the parallel processing takes collection elements in order
+        // (prelude emits expensive Trie and epilogue is responsible for compact unwind info
+        // emission).
+        .par_bridge()
         .try_for_each(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
@@ -168,7 +175,6 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
                     layout,
                     &sized_output.trace,
                     &mut symbol_writer,
-                    &exports_trie,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -192,14 +198,13 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
     _trace: &TraceOutput,
     symbol_writer: &mut MachOSymbolTableWriter,
-    exports_trie: &[u8],
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
             write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
-        FileLayout::Prelude(s) => write_prelude(s, buffers, layout, exports_trie)?,
-        FileLayout::Epilogue(s) => write_epilogue(s, buffers, layout, exports_trie)?,
+        FileLayout::Prelude(s) => write_prelude(s, buffers, layout)?,
+        FileLayout::Epilogue(s) => write_epilogue(s, buffers, layout)?,
         _ => {
             // TODO
         }
@@ -222,9 +227,25 @@ fn write_prelude<'data>(
     prelude: &PreludeLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
-    exports_trie: &[u8],
 ) -> Result {
     verbose_timing_phase!("Write prelude");
+    let exports_trie = build_exports_trie(layout)?;
+    let out = buffers.get_mut(part_id::EXPORTS_TRIE);
+    ensure!(
+        exports_trie.len() <= out.len(),
+        "Mach-O exports trie exceeded its reserved size"
+    );
+    out[..exports_trie.len()].copy_from_slice(&exports_trie);
+    out[exports_trie.len()..].fill(0);
+    tracing::debug!(
+        target: "metrics",
+        section = "EXPORTS_TRIE",
+        allocated_bytes = out.len(),
+        used_bytes = exports_trie.len(),
+        zero_filled_bytes = out.len() - exports_trie.len(),
+        "section allocation"
+    );
+
     debug_assert_eq!(
         prelude.format_specific.imported_library_file_ids.len(),
         prelude.format_specific.load_dylib_command_sizes.len()
@@ -292,7 +313,7 @@ fn write_prelude<'data>(
     write_dyld_chained_fixups_command(layout, take_mut(&mut load_command_buffer)?);
 
     if layout.symbol_db.output_kind.needs_dynsym() {
-        write_exports_trie_command(layout, exports_trie, take_mut(&mut load_command_buffer)?)?;
+        write_exports_trie_command(layout, &exports_trie, take_mut(&mut load_command_buffer)?)?;
     }
 
     write_symtab_command(layout, take_mut(&mut load_command_buffer)?);
@@ -316,18 +337,10 @@ fn write_epilogue(
     _epilogue: &EpilogueLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'_>,
-    exports_trie: &[u8],
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
     write_chained_fixup_table(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
     write_init_offsets(layout, buffers.get_mut(part_id::INIT_OFFSETS))?;
-    let out = buffers.get_mut(part_id::EXPORTS_TRIE);
-    ensure!(
-        exports_trie.len() <= out.len(),
-        "Mach-O exports trie exceeded its reserved size"
-    );
-    out[..exports_trie.len()].copy_from_slice(exports_trie);
-    out[exports_trie.len()..].fill(0);
 
     let out = buffers.get_mut(part_id::COMPACT_UNWIND);
     let serialized_compact_unwind = build_compact_unwind(layout, out.len())?;
@@ -337,6 +350,14 @@ fn write_epilogue(
     );
     out[..serialized_compact_unwind.len()].copy_from_slice(&serialized_compact_unwind);
     out[serialized_compact_unwind.len()..].fill(0);
+    tracing::debug!(
+        target: "metrics",
+        section = "COMPACT_UNWIND",
+        allocated_bytes = out.len(),
+        used_bytes = serialized_compact_unwind.len(),
+        zero_filled_bytes = out.len() - serialized_compact_unwind.len(),
+        "section allocation"
+    );
 
     Ok(())
 }
@@ -418,15 +439,8 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let Some(FileLayout::Epilogue(epilogue)) = layout
-        .group_layouts
-        .last()
-        .and_then(|group| group.files.last())
-    else {
-        bail!("Epilogue layout not found at expected offset");
-    };
-
-    Ok(epilogue.format_specific.exports_trie.encode(&symbols))
+    let prelude = layout.prelude();
+    Ok(prelude.format_specific.exports_trie.encode(&symbols))
 }
 
 fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
@@ -1304,6 +1318,7 @@ fn write_code_signature_command(layout: &MachOLayout, command: &mut CodeSignatur
 }
 
 fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8]) -> Result {
+    let allocated_bytes = chained_fixup_table.len();
     let symbols = &layout.format_specific.imported_symbols;
     let active_segments = &layout.segment_layouts.segments;
 
@@ -1462,6 +1477,15 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
 
     // Pad a couple of bytes (related to the MAX_SEGMENT_COUNT).
     string_pool[str_offset..].fill(0);
+    let zero_filled_bytes = string_pool.len() - str_offset;
+    tracing::debug!(
+        target: "metrics",
+        section = "CHAINED_FIXUP_TABLE",
+        allocated_bytes,
+        used_bytes = allocated_bytes - zero_filled_bytes,
+        zero_filled_bytes,
+        "section allocation"
+    );
 
     Ok(())
 }

@@ -60,6 +60,8 @@ pub struct WasmArgs {
     pub(crate) shared_memory: bool,
     // `(module, name)` to import the linear memory from, if `--import-memory` was given.
     pub(crate) import_memory: Option<(String, String)>,
+    // Export all defined, non-hidden symbols (`--export-dynamic`).
+    pub(crate) export_dynamic: bool,
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
     pub(crate) allow_multiple_definition: bool,
@@ -104,6 +106,7 @@ impl Default for WasmArgs {
             shared_memory: false,
             import_memory: None,
             export_memory: None,
+            export_dynamic: false,
             gc_sections: true,
             allow_undefined: false,
             allow_multiple_definition: false,
@@ -157,7 +160,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {
-        todo!()
+        self.export_dynamic
     }
 
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
@@ -255,6 +258,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare()
+        .long("whole-archive")
+        .help("Force load of all members in a static library")
+        .execute(|_args, modifier_stack| {
+            modifier_stack.last_mut().unwrap().whole_archive = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-whole-archive")
+        .help("Do not force load of all members in a static library (default)")
+        .execute(|_args, modifier_stack| {
+            modifier_stack.last_mut().unwrap().whole_archive = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("gc-sections")
         .help("Enable removal of unused sections (default)")
         .execute(|args, _modifier_stack| {
@@ -297,6 +318,25 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Export the module's memory (default name \"memory\")")
         .execute(|args, _modifier_stack, value| {
             args.export_memory = Some(value.unwrap_or(DEFAULT_MEMORY_EXPORT_NAME).to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("export-dynamic")
+        .short("E")
+        .help("Put symbols in the dynamic symbol table")
+        .execute(|args, _modifier_stack| {
+            args.export_dynamic = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-export-dynamic")
+        .help("Do not put symbols in the dynamic symbol table (default)")
+        .execute(|args, _modifier_stack| {
+            args.export_dynamic = false;
             Ok(())
         });
 

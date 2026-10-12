@@ -107,7 +107,7 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         .collect_vec();
     let library_definitions = documents
         .par_iter()
-        .map(|document| serde_yaml::from_str::<TextBasedDefinition<'data>>(document))
+        .map(|document| yaml_serde::from_str::<TextBasedDefinition<'data>>(document))
         .collect::<Result<Vec<_>, _>>()?;
 
     let main_library = library_definitions

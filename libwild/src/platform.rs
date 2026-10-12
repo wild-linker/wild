@@ -561,6 +561,14 @@ pub(crate) trait Platform:
         resources: &layout::GraphResources<'data, 'scope, Self>,
     );
 
+    fn finalise_sizes_prelude<'data>(
+        _prelude: &mut layout::PreludeLayoutState<'data, Self>,
+        _mem_sizes: &mut OutputSectionPartMap<u64>,
+        _dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
+    ) -> Result {
+        Ok(())
+    }
+
     fn finalise_sizes_dynamic<'data>(
         object: &mut layout::DynamicLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,

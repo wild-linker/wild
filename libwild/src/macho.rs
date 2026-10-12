@@ -91,6 +91,7 @@ use std::mem::offset_of;
 use std::num::NonZeroU8;
 use std::num::NonZeroU64;
 use std::slice::Iter;
+use std::sync::Arc;
 use zerocopy::FromBytes;
 
 // Useful format documents:
@@ -374,6 +375,7 @@ pub(crate) struct PreludeLayoutExt {
     pub(crate) imported_library_file_ids: Vec<FileId>,
     pub(crate) load_dylib_command_sizes: Vec<usize>,
     pub(crate) load_command_count: usize,
+    pub(crate) exports_trie: Arc<crate::trie::Trie>,
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
@@ -1318,6 +1320,37 @@ impl platform::Platform for MachO {
     ) {
     }
 
+    fn finalise_sizes_prelude<'data>(
+        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+    ) -> Result {
+        // Currently we determine the output file size before we assign symbol addresses. This lets
+        // us do file creation in parallel with address assignment, however it means that we can't
+        // take addresses into account when determining section sizes. The export trie, due to using
+        // uleb128 encoding for addresses, needs addresses in order to determine an exact size. We
+        // work around this for now by assuming all addresses will be u64::MAX. This gives us an
+        // upper bound on how large the trie will be, but wastes some space in the file. TODO:
+        // Figure out a good way to fix this.
+        let exports = dynamic_symbol_definitions
+            .iter()
+            .map(|symbol| crate::trie::Symbol {
+                name: symbol.name,
+                address: u64::MAX,
+                flags: object::macho::ExportSymbolFlags(0),
+            })
+            .collect_vec();
+
+        let trie = crate::trie::Trie::new(&exports);
+        mem_sizes.increment(
+            part_id::EXPORTS_TRIE,
+            trie.compute_byte_size(&exports) as u64,
+        );
+
+        prelude.format_specific.exports_trie = std::sync::Arc::new(trie);
+        Ok(())
+    }
+
     fn finalise_sizes_dynamic<'data>(
         _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
@@ -1936,7 +1969,7 @@ impl platform::Platform for MachO {
     fn finalise_sizes_epilogue<'data>(
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
         format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<()> {
@@ -1957,27 +1990,6 @@ impl platform::Platform for MachO {
             alignment::USIZE.align_up(fixup_table_size),
         );
 
-        // Currently we determine the output file size before we assign symbol addresses. This lets
-        // us do file creation in parallel with address assignment, however it means that we can't
-        // take addresses into account when determining section sizes. The export trie, due to using
-        // uleb128 encoding for addresses, needs addresses in order to determine an exact size. We
-        // work around this for now by assuming all addresses will be u64::MAX. This gives us an
-        // upper bound on how large the trie will be, but wastes some space in the file. TODO:
-        // Figure out a good way to fix this.
-        let exports = dynamic_symbol_definitions
-            .iter()
-            .map(|symbol| crate::trie::Symbol {
-                name: symbol.name,
-                address: u64::MAX,
-                flags: object::macho::ExportSymbolFlags(0),
-            })
-            .collect_vec();
-
-        state.exports_trie = crate::trie::Trie::new(&exports);
-        mem_sizes.increment(
-            part_id::EXPORTS_TRIE,
-            state.exports_trie.compute_byte_size(&exports) as u64,
-        );
         mem_sizes.increment(
             part_id::INIT_OFFSETS,
             format_specific.init_functions.len() as u64 * INIT_OFFSET_ENTRY_SIZE,
@@ -2663,7 +2675,6 @@ pub(crate) struct CommonGroupStateExt {
 #[derive(Debug, Default)]
 pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
-    pub(crate) exports_trie: crate::trie::Trie,
 }
 
 #[derive(Debug)]

@@ -40,7 +40,6 @@ object = { workspace = true, features = ["write_std"] }
 perfetto-recorder.workspace = true
 rayon.workspace = true
 serde.workspace = true
-serde_yaml.workspace = true
 sha2.workspace = true
 sharded-offset-map.workspace = true
 sharded-vec-writer.workspace = true
@@ -55,6 +54,7 @@ uuid.workspace = true
 wasm-encoder.workspace = true
 wasmparser.workspace = true
 winnow.workspace = true
+yaml_serde.workspace = true
 zerocopy.workspace = true
 zlib-rs.workspace = true
 zstd = { workspace = true, optional = true }

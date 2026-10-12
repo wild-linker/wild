@@ -3033,6 +3033,11 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
             }
             FileLayoutState::Prelude(s) => {
                 PreludeLayoutState::finalise_sizes(common, resources.merged_strings);
+                P::finalise_sizes_prelude(
+                    s,
+                    &mut common.mem_sizes,
+                    resources.dynamic_symbol_definitions,
+                )?;
                 s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::SyntheticSymbols(s) => {
