@@ -14,7 +14,6 @@
 //#ExpectDynSym:call_bar1
 
 //#Config:default:common
-//#SkipArch: ppc64le
 
 //#Config:symbolic:common
 //#LinkArgs:-Bsymbolic
@@ -28,7 +27,6 @@
 //#LinkArgs:-Bsymbolic-functions
 
 //#Config:nosymbolic:common
-//#SkipArch: ppc64le
 //#LinkArgs:-Bno-symbolic
 
 //#Config:symbolic-non-weak:common

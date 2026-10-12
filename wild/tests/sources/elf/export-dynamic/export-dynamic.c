@@ -44,7 +44,6 @@
 //#ReferenceLinkers:bfd,lld
 
 //#Config:dynamic-symbols-list
-//#SkipArch: ppc64le
 //#LinkArgs:-z now -shared --dynamic-list ./export-dynamic.def
 //#ExpectDynSym:foo
 //#ExpectDynSym:baz

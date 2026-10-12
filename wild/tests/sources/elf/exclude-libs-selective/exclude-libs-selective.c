@@ -1,5 +1,4 @@
 //#Config:default
-//#SkipArch: ppc64le
 //#LinkArgs:-z now -Bshareable --exclude-libs exclude-libs-selective-excluded.a
 //#Mode:dynamic
 //#RunEnabled:false
@@ -13,7 +12,6 @@
 // --whole-archive should not cause us to treat an archive like it's not an archive for the purposes
 // of --exclude-libs.
 //#Config:whole-archive:default
-//#SkipArch: ppc64le
 //#LinkArgs:--whole-archive
 
 extern int excluded_fn(void);

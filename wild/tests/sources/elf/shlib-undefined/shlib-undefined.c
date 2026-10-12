@@ -34,7 +34,6 @@
 //#ExpectError:def2
 
 //#Config:shared:default
-//#SkipArch: ppc64le
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:-z now -shared
 //#RunEnabled:false

@@ -3881,7 +3881,7 @@ fn apply_relocation<
             )?
             .bitand(mask.symbol_plus_addend),
         RelocationKind::Relative => {
-            let symbol_plus_addend = if let Some(target) = undefined_weak_target {
+            let mut symbol_plus_addend = if let Some(target) = undefined_weak_target {
                 target.wrapping_add(addend as u64)
             } else {
                 resolution.value_with_addend(
@@ -3893,6 +3893,35 @@ fn apply_relocation<
                     &layout.merged_string_start_addresses,
                 )?
             };
+
+            // A function defined in this object resolves to its global entry point. An
+            // interposable branch lands on the PLT stub instead, so the stub can load the
+            // JMP_SLOT into r12. A hidden reference stays on the local entry point. GCC omits
+            // the nop after `bl` when the call is expected to stay in this module. Those sites
+            // keep the local entry. A tail `b` does not return, so it can still use the stub.
+            if rel_info.size.is_ppc64_branch()
+                && flags.needs_plt()
+                && flags.is_interposable()
+                && flags.has_link_time_address()
+                && let Some(plt) = resolution.format_specific.plt_address
+            {
+                let branch_offset = offset_in_section as usize;
+                let call_can_use_plt_stub =
+                    out.get(branch_offset..branch_offset + 4)
+                        .is_some_and(|branch| {
+                            let insn = u32::from_le_bytes(branch.try_into().unwrap());
+                            // LK is the low bit. A tail branch has no TOC-restore slot.
+                            insn & 1 != 1
+                                || out.get(branch_offset + 4..branch_offset + 8).is_some_and(
+                                    |next| {
+                                        u32::from_le_bytes(next.try_into().unwrap()) == 0x6000_0000
+                                    },
+                                )
+                        });
+                if call_can_use_plt_stub {
+                    symbol_plus_addend = plt.get().wrapping_add(addend as u64);
+                }
+            }
 
             let targets_plt_stub = flags.needs_plt()
                 && resolution

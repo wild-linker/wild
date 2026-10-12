@@ -63,7 +63,6 @@
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now
 //#RunEnabled:false
-//#SkipArch:ppc64le
 //#ExpectDynSym:foo
 //#ExpectDynSym:bar
 //#ExpectDynSym:protected_export
@@ -76,7 +75,6 @@
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now,--version-script=./lto-export-dynamic.map
 //#RunEnabled:false
-//#SkipArch:ppc64le
 //#ExpectDynSym:foo
 //#NoDynSym:bar
 //#NoDynSym:hidden_export
@@ -87,7 +85,6 @@
 //#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
 //#LinkArgs:-flto -nostdlib -shared -Wl,-z,now,--exclude-libs=lto-export-dynamic-def.a
 //#RunEnabled:false
-//#SkipArch:ppc64le
 //#ExpectDynSym:runtime_init
 //#ExpectDynSym:exit_syscall
 //#NoDynSym:foo
