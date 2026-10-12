@@ -255,6 +255,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare()
+        .long("whole-archive")
+        .help("Force load of all members in a static library")
+        .execute(|_args, modifier_stack| {
+            modifier_stack.last_mut().unwrap().whole_archive = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-whole-archive")
+        .help("Do not force load of all members in a static library (default)")
+        .execute(|_args, modifier_stack| {
+            modifier_stack.last_mut().unwrap().whole_archive = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("gc-sections")
         .help("Enable removal of unused sections (default)")
         .execute(|args, _modifier_stack| {
