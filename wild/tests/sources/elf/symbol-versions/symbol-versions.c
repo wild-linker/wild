@@ -32,7 +32,26 @@
 
 //#Config:with-escaping:verdef
 //#SkipArch: ppc64le
+//#Object:escaped-glob.c
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
+//#ExpectSym:xfoobarx section=".text"
+//#ExpectSym:pre*post section=".text"
+//#ExpectSym:preapost section=".text"
+//#ExpectSym:prebpost section=".text"
+//#ExpectSym:prexpost section=".text"
+//#ExpectSym:clsa section=".text"
+//#ExpectSym:cls] section=".text"
+//#ExpectSym:clsb section=".text"
+//#ExpectSym:br] section=".text"
+//#ExpectSym:cxxx section=".text"
+//#ExpectSym:bang! section=".text"
+//#ExpectSym:banga section=".text"
+//#ExpectSym:bangb section=".text"
+//#ExpectSym:dash- section=".text"
+//#ExpectSym:dasha section=".text"
+//#ExpectSym:dashm section=".text"
+//#ExpectSym:dashz section=".text"
+//#ExpectSym:only! section=".text"
 
 #include "../common/runtime.h"
 
