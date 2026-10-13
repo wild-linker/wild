@@ -42,12 +42,12 @@
 //#ExpectProgramHeader:LOAD flags=RWX,sections=[.text,.data,*],vaddr=0x10
 
 //#Config:no-base-address:default
-//#ReferenceLinkers:bfd,lld
+//#ReferenceLinkers:bfd
 //#LinkerScript:no-base-address.ld
-//#DiffMatchAny:true
 //#ExpectSym:_start address=0x600000
 //#ExpectSym:other address=0x700000
 //#ExpectSym:rodata address=0x500000
+//#DiffIgnore:segment.LOAD.RX.alignment
 
 #include "../common/runtime.h"
 
