@@ -240,11 +240,11 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 .push(OrderEvent::SetSectionAddress(location.clone()));
         }
 
-        if !self.has_custom_phdrs {
-            if let Some(ref loc_info) = section_info.location_info {
-                let (lc_start, lc_stop) = loc_info.location_counters;
-                self.emit_location_counters(lc_start, lc_stop);
-            }
+        if !self.has_custom_phdrs
+            && let Some(ref loc_info) = section_info.location_info
+        {
+            let (lc_start, lc_stop) = loc_info.location_counters;
+            self.emit_location_counters(lc_start, lc_stop);
         }
 
         for segment_id in start {
