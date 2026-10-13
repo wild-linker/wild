@@ -178,15 +178,18 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
     }
 
+    pub(crate) fn emit_location_counters_up_to(&mut self, lc_end: LocationCounterIndex) {
+        if let Some(lc_start) = self.last_location_counter {
+            self.emit_location_counters(lc_start, lc_end);
+        }
+    }
+
     pub(crate) fn emit_location_counters(
         &mut self,
         lc_start: LocationCounterIndex,
         lc_end: LocationCounterIndex,
     ) {
-        let actual_start = self
-            .last_location_counter
-            .map_or(lc_start, |l| l.max(lc_start));
-        for idx in actual_start..lc_end {
+        for idx in lc_start..lc_end {
             let lc = &self.location_counters[idx];
             match lc {
                 LocationCounter::Absolute(expr, loc) => {
@@ -237,9 +240,11 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 .push(OrderEvent::SetSectionAddress(location.clone()));
         }
 
-        if let Some(ref loc_info) = section_info.location_info {
-            let (lc_start, lc_stop) = loc_info.location_counters;
-            self.emit_location_counters(lc_start, lc_stop);
+        if !self.has_custom_phdrs {
+            if let Some(ref loc_info) = section_info.location_info {
+                let (lc_start, lc_stop) = loc_info.location_counters;
+                self.emit_location_counters(lc_start, lc_stop);
+            }
         }
 
         for segment_id in start {

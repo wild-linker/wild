@@ -2863,7 +2863,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 let sec_info = output_sections.output_info(section_id);
                 if let Some(ref loc_info) = sec_info.location_info {
                     let (_, lc_stop) = loc_info.location_counters;
-                    builder.emit_location_counters(0, lc_stop);
+                    builder.emit_location_counters_up_to(lc_stop);
                 }
                 for (_, seg_id) in it {
                     builder.push_event(OrderEvent::SegmentStart(seg_id));
@@ -2872,7 +2872,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 let sec_info = output_sections.output_info(section_id);
                 if let Some(ref loc_info) = sec_info.location_info {
                     let (_, lc_stop) = loc_info.location_counters;
-                    builder.emit_location_counters(0, lc_stop);
+                    builder.emit_location_counters_up_to(lc_stop);
                 }
                 for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
                     let entry = segment_entries[seg_idx];

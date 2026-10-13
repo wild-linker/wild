@@ -34,6 +34,21 @@
 //#ReferenceLinkers:
 //#ExpectErrorWild:(?i-u)base address \(0x10\) is less than the size of headers
 
+//#Config:phdrs_base_too_small_nohdrs:default
+//#LinkerScript:phdrs-base-too-small-nohdrs.ld
+//#ReferenceLinkers:bfd,lld
+//#RunEnabled:false
+//#ExpectSym:_start address=0x10
+//#ExpectProgramHeader:LOAD flags=RWX,sections=[.text,.data,*],vaddr=0x10
+
+//#Config:no-base-address:default
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:no-base-address.ld
+//#DiffMatchAny:true
+//#ExpectSym:_start address=0x600000
+//#ExpectSym:other address=0x700000
+//#ExpectSym:rodata address=0x500000
+
 #include "../common/runtime.h"
 
 int value = 42;
@@ -46,3 +61,7 @@ void _start(void) {
 __attribute__((section(".text.first"), aligned(1))) const char symbol1 = 1;
 
 __attribute__((section(".text.second"), aligned(1))) const char symbol2 = 2;
+
+__attribute__((section(".rodata.first"), aligned(1))) const char rodata = 1;
+
+__attribute__((section(".other"), aligned(1), used)) void other() { return; };

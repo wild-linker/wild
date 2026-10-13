@@ -6122,7 +6122,10 @@ fn compute_layout_sections<'data, P: Platform>(
         &laid_out_mem_offsets,
     )?;
     let alignment = args.loadable_segment_alignment().value();
-    if output_sections.has_custom_base_address() && base_address < sizeof_headers {
+    if (output_order.custom_phdrs_include_headers() || !output_order.has_custom_phdrs())
+        && output_sections.has_custom_base_address()
+        && base_address < sizeof_headers
+    {
         bail!(
             "base address ({base_address:#x}) is less than the size of headers ({sizeof_headers:#x})"
         );
