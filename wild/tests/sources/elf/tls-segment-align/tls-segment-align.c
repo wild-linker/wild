@@ -1,7 +1,6 @@
 //#AbstractConfig:default
 //#LinkerDriver:gcc
 //#Object:ptr_black_box.c
-//#SkipArch:ppc64le
 //#DiffIgnore:section.tdata.alignment
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.rela.plt.link
@@ -14,6 +13,8 @@
 
 //#Config:static:default
 //#LinkArgs:-static
+// Static libgcc references R_PPC64_TOC16_DS, which is not decoded yet.
+//#SkipArch:ppc64le
 
 //#Config:compress-debug:default
 //#CompArgs:-g

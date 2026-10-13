@@ -3,7 +3,6 @@
 //#Object:runtime.c
 //#Object:ptr_black_box.c
 //#ReferenceLinkers:bfd,lld
-//#SkipArch:ppc64le
 //#ExpectSym:undefined_tls_address
 //#DiffIgnore:rel.R_AARCH64_TLSLE_ADD_TPREL_HI12.R_AARCH64_TLSLE_ADD_TPREL_HI12
 

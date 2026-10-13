@@ -1,6 +1,5 @@
 //#Config:default
 //#Object:ptr_black_box.c
-//#SkipArch:ppc64le
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-znow -pie
 //#ReferenceLinkers:lld

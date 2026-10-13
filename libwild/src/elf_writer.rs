@@ -3748,7 +3748,7 @@ fn apply_relocation<
                 .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
             return Ok(RelocationModifier::Normal);
         }
-        RelocationKind::Absolute
+        RelocationKind::Absolute | RelocationKind::TpOff
             if layout.symbol_db.output_kind.is_shared_object()
                 && A::is_disallowed_in_shared_object(r_type) =>
         {
@@ -4167,16 +4167,14 @@ fn apply_relocation<
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
-        RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
-            .value()
-            .wrapping_add(addend as u64)
-            .wrapping_add(bias)
-            .sub(layout.tls_start_address()),
         RelocationKind::DtpOff => resolution
             .value()
             .wrapping_add(addend as u64)
             .wrapping_add(bias)
-            .wrapping_sub(layout.tls_end_address()),
+            .wrapping_sub(A::dtp_offset_base(
+                layout,
+                output_kind == OutputKind::SharedObject,
+            )),
         RelocationKind::GotTpOff => resolution
             .got_address()?
             .wrapping_add(addend as u64)
@@ -4480,8 +4478,14 @@ fn apply_debug_relocation<
             }
             RelocationKind::DtpOff => resolution
                 .value()
-                .wrapping_sub(layout.tls_end_address())
-                .wrapping_add(addend as u64),
+                .wrapping_add(addend as u64)
+                .wrapping_add(rel_info.bias.map_or(0, Bias::value))
+                .wrapping_sub(A::dtp_offset_base(layout, false)),
+            RelocationKind::TpOff => resolution
+                .value()
+                .wrapping_add(addend as u64)
+                .wrapping_add(rel_info.bias.map_or(0, Bias::value))
+                .wrapping_sub(A::tp_offset_start(layout)),
             kind @ (RelocationKind::PairSubtractionULEB128RiscV
             | RelocationKind::PairSubtractionULEB128LoongArch) => {
                 let expected_r_type = match kind {
@@ -4796,9 +4800,7 @@ fn write_plt_got_entries<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 },
             )?;
 
-            // For executables, DTPOFF values are negative values relative to the thread pointer,
-            // which is at the end of the TLS segment.
-            raw_value = A::tp_offset_start(layout) - layout.tls_start_address();
+            raw_value = A::executable_tlsld_offset(layout);
         } else {
             *table_writer.take_next_got_entry()? = elf::Word::<C>::from_u64(0)?;
             table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;

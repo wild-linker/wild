@@ -1,5 +1,4 @@
 //#LinkerDriver:gcc
-//#SkipArch:ppc64le
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 
