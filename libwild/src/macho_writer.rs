@@ -448,6 +448,7 @@ fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result
         .format_specific
         .unwind_info_entries
         .iter()
+        .flatten()
         .map(|entry| -> Result<ResolvedUnwindInfo> {
             let FileLayout::Object(object_layout) = &layout.file_layout(entry.file_id) else {
                 bail!("unwind info must come from an object file")
