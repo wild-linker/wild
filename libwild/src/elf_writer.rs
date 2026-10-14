@@ -4479,12 +4479,10 @@ fn apply_debug_relocation<
             RelocationKind::DtpOff => resolution
                 .value()
                 .wrapping_add(addend as u64)
-                .wrapping_add(rel_info.bias.map_or(0, Bias::value))
                 .wrapping_sub(A::dtp_offset_base(layout, false)),
             RelocationKind::TpOff => resolution
                 .value()
                 .wrapping_add(addend as u64)
-                .wrapping_add(rel_info.bias.map_or(0, Bias::value))
                 .wrapping_sub(A::tp_offset_start(layout)),
             kind @ (RelocationKind::PairSubtractionULEB128RiscV
             | RelocationKind::PairSubtractionULEB128LoongArch) => {
