@@ -45,7 +45,7 @@ mod scaling;
 mod system;
 mod table;
 
-const RESULT_HEADER: &[u8] = b"wild-bench-results-v5\n";
+const RESULT_HEADER: &[u8] = b"wild-bench-results-v6\n";
 
 type Result<T = (), E = anyhow::Error> = std::result::Result<T, E>;
 

@@ -40,6 +40,8 @@ pub(crate) struct BenchConfig {
     pub(crate) skip_linkers: Vec<LinkerKind>,
     pub(crate) filesystem: Option<String>,
     pub(crate) threads: Option<ThreadCounts>,
+    #[serde(default, rename = "latest-only")]
+    pub(crate) latest_only: Option<bool>,
     #[serde(default, rename = "delete-output")]
     pub(crate) delete_output: Option<bool>,
     #[serde(default)]
@@ -110,6 +112,7 @@ impl BenchConfig {
                 .or_else(|| parent.filesystem.clone()),
             delete_output: self.delete_output.or(parent.delete_output),
             threads: self.threads.clone().or_else(|| parent.threads.clone()),
+            latest_only: self.latest_only.or(parent.latest_only),
             flags,
             linker_flags,
             variants: IndexMap::new(),
@@ -207,7 +210,7 @@ binary = "mold"
         let expanded = config.expanded()?;
         assert_eq!(
             expanded.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["z.z", "z.a", "a"]
+            ["z", "z.z", "z.a", "a"]
         );
         let bytes = postcard::to_stdvec(&config)?;
         let restored: Config = postcard::from_bytes(&bytes)?;

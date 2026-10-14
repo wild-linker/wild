@@ -51,7 +51,7 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
 
     for bench in &benchmarks {
         if bench.config.has_explicit_threads() {
-            for bin in bins.iter().filter(|bin| bench.supports_bin(bin)) {
+            for bin in benchmark_bins(&bins, bench) {
                 anyhow::ensure!(
                     bin.identifier.kind != LinkerKind::Bfd,
                     "Thread sweeps are not supported for GNU ld"
@@ -251,17 +251,31 @@ fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result {
     Ok(())
 }
 
-fn benchmark_cases<'a>(bins: &'a [Bin], bench: &Benchmark) -> Vec<(&'a Bin, Option<u32>)> {
+fn benchmark_cases<'a>(bins: &'a [Bin], bench: &'a Benchmark) -> Vec<(&'a Bin, Option<u32>)> {
     bench
         .config
         .thread_counts()
         .into_iter()
-        .flat_map(|threads| {
-            bins.iter()
-                .filter(|bin| bench.supports_bin(bin))
-                .map(move |bin| (bin, threads))
-        })
+        .flat_map(|threads| benchmark_bins(bins, bench).map(move |bin| (bin, threads)))
         .collect()
+}
+
+fn benchmark_bins<'a>(bins: &'a [Bin], bench: &'a Benchmark) -> impl Iterator<Item = &'a Bin> {
+    bins.iter().filter(move |bin| {
+        bench.supports_bin(bin)
+            && (!bench.config.latest_only.unwrap_or(false)
+                || !bins.iter().any(|other| {
+                    other.identifier.kind == bin.identifier.kind
+                        && bench.supports_bin(other)
+                        && version_key(other) > version_key(bin)
+                }))
+    })
+}
+
+fn version_key(bin: &Bin) -> (bool, &[u32]) {
+    let version = &bin.identifier.effective_version;
+    // Legacy hash-only Wild builds have no numeric version to compare against releases.
+    (version.is_empty(), version)
 }
 
 fn configured_flags<'a>(bin: &'a Bin, bench: &'a Benchmark) -> impl Iterator<Item = &'a String> {
@@ -427,4 +441,63 @@ fn is_thread_flag(flag: &str) -> bool {
         || flag.starts_with("-threads=")
         || flag.starts_with("--thread-count=")
         || flag.starts_with("-j")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_versions_per_linker() -> Result {
+        let bins: Vec<_> = [
+            "LLD 19.0.0",
+            "mold 2.9.0",
+            "LLD 20.0.0",
+            "mold 2.10.0",
+            "LLD 20.0.0",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, version)| Bin {
+            label: None,
+            flags: Vec::new(),
+            index: index as u32,
+            path: "ld".into(),
+            identifier: crate::LinkerIdentifier::parse(version, std::path::Path::new("ld"))
+                .unwrap(),
+        })
+        .collect();
+        let config: Config = toml::from_str(
+            r#"
+name = "latest"
+[defaults]
+latest-only = true
+[bench.example]
+[bench.example.variants.all]
+latest-only = false
+"#,
+        )?;
+        for (name, (_, settings)) in config.expanded()? {
+            let bench = Benchmark {
+                name: name.clone(),
+                path: "input".into(),
+                config: settings,
+                output: "output".into(),
+                min_wild_version: None,
+            };
+            let indices: Vec<_> = benchmark_cases(&bins, &bench)
+                .iter()
+                .map(|(bin, _)| bin.index)
+                .collect();
+            assert_eq!(
+                indices,
+                if name == "example" {
+                    vec![2, 3, 4]
+                } else {
+                    vec![0, 1, 2, 3, 4]
+                }
+            );
+        }
+        Ok(())
+    }
 }
