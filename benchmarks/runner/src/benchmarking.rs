@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::process::Command;
 use std::process::Stdio;
+use std::time::Duration;
 use std::time::Instant;
 use wait4::Wait4 as _;
 
@@ -77,11 +78,13 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
         println!("  {bench}");
     }
 
-    if !args.no_verify {
-        verify(&bins, &benchmarks)?;
-    }
+    let estimates = if args.no_verify {
+        Vec::new()
+    } else {
+        verify(&bins, &benchmarks)?
+    };
 
-    let results = run(&bins, &benchmarks, args)?;
+    let results = run(&bins, &benchmarks, args, &estimates)?;
 
     let output_path = crate::default_result_path(config, args.output.as_ref());
 
@@ -161,9 +164,129 @@ fn remove_output(bench: &Benchmark) -> Result {
     Ok(())
 }
 
-fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Benchmarks> {
+#[derive(Default)]
+struct TimingEstimate {
+    duration: Option<Duration>,
+    samples: u32,
+    remaining: u64,
+}
+
+impl TimingEstimate {
+    fn complete(&mut self, duration: Duration) {
+        self.remaining -= 1;
+        self.samples += 1;
+        self.duration = Some(match self.duration {
+            Some(previous) if self.samples > 1 => {
+                previous.mul_f64(1.0 - 1.0 / f64::from(self.samples)) + duration / self.samples
+            }
+            _ => duration,
+        });
+    }
+}
+
+struct CaseEstimate {
+    normal: TimingEstimate,
+    memory: TimingEstimate,
+}
+
+impl CaseEstimate {
+    fn new(args: &BenchArgs, estimate: Option<Duration>) -> Self {
+        let memory_batches = u32::from(!args.no_mem && args.num_batches > 0);
+        Self {
+            normal: TimingEstimate {
+                duration: estimate,
+                remaining: 1 + u64::from(args.num_batches - memory_batches)
+                    * u64::from(args.batch_size),
+                ..Default::default()
+            },
+            memory: TimingEstimate {
+                remaining: u64::from(memory_batches) * u64::from(args.batch_size),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn complete(&mut self, memory: bool, duration: Duration) {
+        if memory {
+            self.memory.complete(duration);
+        } else {
+            self.normal.complete(duration);
+        }
+    }
+
+    fn remaining_seconds(&self) -> Option<f64> {
+        let estimate = |timing: &TimingEstimate, fallback: Option<Duration>| {
+            if timing.remaining == 0 {
+                Some(0.0)
+            } else {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "Progress estimates are approximate"
+                )]
+                let remaining = timing.remaining as f64;
+                timing
+                    .duration
+                    .or(fallback)
+                    .map(|duration| duration.as_secs_f64() * remaining)
+            }
+        };
+        Some(estimate(&self.normal, None)? + estimate(&self.memory, self.normal.duration)?)
+    }
+}
+
+fn update_overall(
+    bar: &indicatif::ProgressBar,
+    elapsed: Duration,
+    remaining: &[Vec<CaseEstimate>],
+) {
+    let seconds: Option<f64> = remaining
+        .iter()
+        .flatten()
+        .map(CaseEstimate::remaining_seconds)
+        .sum();
+    if let Some(seconds) = seconds {
+        let total = elapsed.as_secs_f64() + seconds;
+        bar.set_position(if total > 0.0 {
+            (elapsed.as_secs_f64() / total * 1_000_000.0) as u64
+        } else {
+            0
+        });
+        bar.set_message(format!(
+            "~{} remaining",
+            indicatif::HumanDuration(Duration::from_secs_f64(seconds))
+        ));
+    } else {
+        bar.set_message("estimating…");
+    }
+}
+
+fn run(
+    bins: &[Bin],
+    benchmarks: &[Benchmark],
+    args: &BenchArgs,
+    estimates: &[Vec<Duration>],
+) -> Result<Benchmarks> {
     let mut out = Vec::new();
     let start = Instant::now();
+    let progress = indicatif::MultiProgress::new();
+    let overall = progress
+        .add(indicatif::ProgressBar::new(1_000_000))
+        .with_style(indicatif::ProgressStyle::with_template(
+            "Overall [{elapsed_precise}] [{wide_bar:.cyan/blue}] {msg}",
+        )?);
+    overall.enable_steady_tick(Duration::from_millis(200));
+    let mut remaining: Vec<Vec<_>> = benchmarks
+        .iter()
+        .enumerate()
+        .map(|(index, bench)| {
+            benchmark_cases(bins, bench)
+                .iter()
+                .enumerate()
+                .map(|(case, _)| CaseEstimate::new(args, estimates.get(index).map(|e| e[case])))
+                .collect()
+        })
+        .collect();
+    update_overall(&overall, start.elapsed(), &remaining);
 
     for (bench_index, bench) in benchmarks.iter().enumerate() {
         let cases = benchmark_cases(bins, bench);
@@ -174,25 +297,30 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
             benchmarks.len()
         );
 
-        let progress_bar = indicatif::ProgressBar::new(u64::from(
-            args.num_batches * args.batch_size * cases.len() as u32,
-        ))
-        .with_style(indicatif::ProgressStyle::with_template(
-            "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}]",
-        )?)
-        .with_message(message.clone());
+        let progress_bar = progress
+            .add(indicatif::ProgressBar::new(
+                u64::from(args.num_batches) * u64::from(args.batch_size) * cases.len() as u64,
+            ))
+            .with_style(indicatif::ProgressStyle::with_template(
+                "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}]",
+            )?)
+            .with_message(message.clone());
 
         if cases.is_empty() {
             progress_bar.finish_and_clear();
             continue;
         }
-        for &(bin, threads) in &cases {
+        for (case_index, &(bin, threads)) in cases.iter().enumerate() {
+            let run_start = Instant::now();
             run_once(bin, bench, &[], threads)?;
+            remaining[bench_index][case_index].complete(false, run_start.elapsed());
+            update_overall(&overall, start.elapsed(), &remaining);
         }
         let mut bench_results = Vec::new();
         for batch_num in 0..args.num_batches {
             for offset in 0..cases.len() {
-                let (bin, threads) = cases[(offset + batch_num as usize) % cases.len()];
+                let case_index = (offset + batch_num as usize) % cases.len();
+                let (bin, threads) = cases[case_index];
                 let mut bin_results = Vec::new();
                 for _ in 0..args.batch_size {
                     let extra_flags = if !args.no_mem && batch_num == 0 {
@@ -200,7 +328,11 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
                     } else {
                         &[]
                     };
+                    let run_start = Instant::now();
                     bin_results.push(run_once(bin, bench, extra_flags, threads)?);
+                    remaining[bench_index][case_index]
+                        .complete(!extra_flags.is_empty(), run_start.elapsed());
+                    update_overall(&overall, start.elapsed(), &remaining);
                     progress_bar.inc(1);
                 }
                 bench_results.push(BatchResult {
@@ -217,9 +349,13 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
         };
         out.push(r);
         progress_bar.finish_and_clear();
-        println!("{message}: done in {} s", bench_start.elapsed().as_secs());
+        progress.println(format!(
+            "{message}: done in {} s",
+            bench_start.elapsed().as_secs()
+        ))?;
     }
 
+    overall.finish_and_clear();
     let elapsed = start.elapsed();
     println!(
         "All done in {}h {}m {}s",
@@ -231,24 +367,36 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
     Ok(Benchmarks { benchmarks: out })
 }
 
-/// Runs each benchmark once with each linker.
-fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result {
+/// Warms each benchmark, then verifies and estimates each linker/thread combination.
+fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result<Vec<Vec<Duration>>> {
     let mut success = true;
+    let mut estimates = Vec::new();
     for bench in benchmarks {
         println!("Verifying: {bench}");
-        for (bin, threads) in benchmark_cases(bins, bench) {
+        let cases = benchmark_cases(bins, bench);
+        if let Some(&(bin, threads)) = cases.last()
+            && let Err(error) = run_once(bin, bench, &[], threads)
+        {
+            eprintln!("{error}");
+            success = false;
+        }
+        let mut timings = Vec::new();
+        for (bin, threads) in cases {
+            let start = Instant::now();
             if let Err(error) = run_once(bin, bench, &[], threads) {
                 eprintln!("{error}");
                 success = false;
             }
+            timings.push(start.elapsed());
         }
+        estimates.push(timings);
     }
 
     if !success {
         bail!("One or more benchmark/linker combinations failed");
     }
 
-    Ok(())
+    Ok(estimates)
 }
 
 fn benchmark_cases<'a>(bins: &'a [Bin], bench: &'a Benchmark) -> Vec<(&'a Bin, Option<u32>)> {
@@ -446,6 +594,41 @@ fn is_thread_flag(flag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
+
+    #[test]
+    fn remaining_time_tracks_modes_and_warmup() {
+        let args = BenchArgs::parse_from(["bench", "--batch-size=2", "--num-batches=2"]);
+        let mut estimate = CaseEstimate::new(&args, Some(Duration::from_secs(2)));
+        assert_eq!(estimate.remaining_seconds(), Some(10.0));
+        estimate.complete(false, Duration::from_secs(3));
+        assert_eq!(estimate.remaining_seconds(), Some(12.0));
+        estimate.complete(true, Duration::from_secs(5));
+        assert_eq!(estimate.remaining_seconds(), Some(11.0));
+        estimate.complete(true, Duration::from_secs(7));
+        assert_eq!(estimate.remaining_seconds(), Some(6.0));
+        estimate.complete(false, Duration::from_secs(3));
+        estimate.complete(false, Duration::from_secs(3));
+        assert_eq!(estimate.remaining_seconds(), Some(0.0));
+    }
+
+    #[test]
+    fn unknown_estimate_is_seeded_by_warmup() {
+        let args =
+            BenchArgs::parse_from(["bench", "--batch-size=2", "--num-batches=1", "--no-mem"]);
+        let mut estimate = CaseEstimate::new(&args, None);
+        assert_eq!(estimate.remaining_seconds(), None);
+        estimate.complete(false, Duration::from_secs(2));
+        assert_eq!(estimate.remaining_seconds(), Some(4.0));
+    }
+
+    #[test]
+    fn zero_batches_only_estimates_warmup() {
+        let args = BenchArgs::parse_from(["bench", "--num-batches=0"]);
+        let mut estimate = CaseEstimate::new(&args, None);
+        estimate.complete(false, Duration::from_secs(2));
+        assert_eq!(estimate.remaining_seconds(), Some(0.0));
+    }
 
     #[test]
     fn latest_versions_per_linker() -> Result {
