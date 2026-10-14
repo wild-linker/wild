@@ -95,11 +95,14 @@ pub(crate) fn produce_chart(
         "#00ff00", "#ff60ff", "#60b0ff", "#ffb040", "#40ffff", "#ff6060", "#ffff60", "#c090ff",
     ];
 
+    let mut foreground = String::new();
     for (index, points) in series.values_mut().enumerate() {
         points.sort_by_key(|(n, _)| *n);
         let colour = COLOURS[index % COLOURS.len()];
         let dash = if index < COLOURS.len() { "none" } else { "6 4" };
         let mut path = String::new();
+        let mut band = String::new();
+        let mut lower_points = Vec::new();
 
         for (i, (n, batch)) in points.iter().enumerate() {
             let value = mean(batch, mode) * multiplier;
@@ -111,22 +114,40 @@ pub(crate) fn produce_chart(
             let command = if i == 0 { 'M' } else { 'L' };
 
             write!(path, "{command}{x:.2} {point_y:.2} ")?;
+            write!(band, "{command}{x:.2} {upper:.2} ")?;
+            lower_points.push((x, lower));
+            if points.len() == 1 {
+                writeln!(
+                    foreground,
+                    r#"<path d="M{x} {upper} V{lower}" stroke="{colour}"/>"#
+                )?;
+            }
             writeln!(
-                svg,
-                r#"<path d="M{x} {upper} V{lower}" stroke="{colour}"/><circle cx="{x}" cy="{point_y}" r="3" fill="{colour}"><title>{n} threads: {value:.3}</title></circle>"#
+                foreground,
+                r#"<circle cx="{x}" cy="{point_y}" r="3" fill="{colour}"><title>{n} threads: {value:.3} ± {interval:.3} (99% CI)</title></circle>"#
             )?;
         }
+
+        for (x, lower) in lower_points.into_iter().rev() {
+            write!(band, "L{x:.2} {lower:.2} ")?;
+        }
+        band.push('Z');
+        writeln!(
+            svg,
+            r#"<path d="{band}" fill="{colour}" fill-opacity="0.2" stroke="none"/>"#
+        )?;
 
         let label = escape(&points[0].1.bin.to_string());
         let legend_y = 565 + index * 26;
 
         writeln!(
-            svg,
+            foreground,
             r#"<path d="{path}" fill="none" stroke="{colour}" stroke-width="2" stroke-dasharray="{dash}"/>
 <path d="M100 {legend_y} h35" stroke="{colour}" stroke-width="2" stroke-dasharray="{dash}"/><text x="145" y="{legend_y}" dominant-baseline="middle">{label}</text>"#
         )?;
     }
 
+    svg.push_str(&foreground);
     svg.push_str("</g></svg>\n");
 
     Ok(svg)
