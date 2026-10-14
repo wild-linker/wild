@@ -123,6 +123,7 @@ pub struct ElfArgs {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) fix_cortex_a53_843419: bool,
     pub(crate) should_write_linker_identity: bool,
     pub(crate) hash_style: HashStyle,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
@@ -276,7 +277,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 
-const IGNORED_FLAGS: &[&str] = &["fix-cortex-a53-835769", "fix-cortex-a53-843419"];
+const IGNORED_FLAGS: &[&str] = &["fix-cortex-a53-835769"];
 
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
@@ -398,6 +399,7 @@ impl Default for ElfArgs {
             tbss: None,
             got_plt_syms: false,
             relax: true,
+            fix_cortex_a53_843419: false,
             hash_style: HashStyle::Both,
             trace: false,
             pack_dyn_relocs: PackDynRelocs::None,
@@ -1368,6 +1370,15 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Enable target-specific optimization (instruction relaxation)")
         .execute(|args, _modifier_stack| {
             args.relax = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("fix-cortex-a53-843419")
+        .help("Workaround Cortex-A53 erratum 843419")
+        .execute(|args, _modifier_stack| {
+            args.fix_cortex_a53_843419 = true;
             Ok(())
         });
 

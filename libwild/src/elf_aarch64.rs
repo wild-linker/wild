@@ -44,7 +44,7 @@ const THUNK_TEMPLATE: &[u8] = &[
 ];
 
 /// The shortest range-limited branch for this arch.
-const MIN_BRANCH_RANGE: u64 = 128 * 1024 * 1024;
+pub(crate) const MIN_BRANCH_RANGE: u64 = 128 * 1024 * 1024;
 
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);

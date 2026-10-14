@@ -66,6 +66,7 @@ pub(crate) mod timing;
 pub(crate) use timing::timing_guard;
 pub(crate) use timing::timing_phase;
 pub(crate) use timing::verbose_timing_phase;
+pub(crate) mod erratum843419;
 pub(crate) mod trie;
 pub(crate) mod validation;
 pub(crate) mod value_flags;

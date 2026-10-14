@@ -815,7 +815,7 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
 
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail>,
 
-    /// Total size in bytes of all executable input sections in this object. Used to determine
+    /// Total size including reserved padding of all executable input sections. Used to determine
     /// early-on if we can be sure that thunks won't be needed.
     pub(crate) executable_bytes: u64,
 
@@ -1525,7 +1525,8 @@ fn resolve_sections_for_object<'data, P: Platform>(
     for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
         let section_size = obj.common.object.section_size(input_section).unwrap_or(0);
         if input_section.is_executable() {
-            executable_bytes += section_size;
+            executable_bytes +=
+                section_size + P::analyze_unloaded_text_section(obj, input_section_index, args)?;
         }
         let (slot, part_id) = resolve_section(
             input_section_index,
