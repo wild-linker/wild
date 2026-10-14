@@ -37,6 +37,7 @@ pub(crate) struct BenchConfig {
     #[serde(default)]
     pub(crate) skip_linkers: Vec<LinkerKind>,
     pub(crate) filesystem: Option<String>,
+    pub(crate) threads: Option<ThreadCounts>,
     #[serde(default, rename = "delete-output")]
     pub(crate) delete_output: Option<bool>,
     #[serde(default)]
@@ -62,6 +63,19 @@ impl Config {
 }
 
 impl BenchConfig {
+    pub(crate) fn thread_counts(&self) -> Vec<Option<u32>> {
+        match &self.threads {
+            Some(counts) if !counts.0.is_empty() => counts.0.iter().copied().map(Some).collect(),
+            _ => vec![None],
+        }
+    }
+
+    pub(crate) fn has_explicit_threads(&self) -> bool {
+        self.threads
+            .as_ref()
+            .is_some_and(|counts| !counts.0.is_empty())
+    }
+
     pub(crate) fn filesystem(&self) -> &str {
         self.filesystem.as_deref().unwrap_or("tmpfs")
     }
@@ -92,6 +106,7 @@ impl BenchConfig {
                 .clone()
                 .or_else(|| parent.filesystem.clone()),
             delete_output: self.delete_output.or(parent.delete_output),
+            threads: self.threads.clone().or_else(|| parent.threads.clone()),
             flags,
             linker_flags,
             variants: IndexMap::new(),
@@ -204,5 +219,55 @@ binary = "mold"
             expanded.keys().collect::<Vec<_>>()
         );
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct ThreadCounts(Vec<u32>);
+
+impl std::str::FromStr for ThreadCounts {
+    type Err = anyhow::Error;
+
+    fn from_str(input: &str) -> Result<Self> {
+        if input == "default" {
+            return Ok(Self(Vec::new()));
+        }
+        let mut counts = std::collections::BTreeSet::new();
+        for part in input.split(',') {
+            let part = part.trim();
+            let (start, end) = part.split_once('-').unwrap_or((part, part));
+            let start: u32 = start.parse().context("Invalid thread count")?;
+            let end: u32 = end.parse().context("Invalid thread count")?;
+            anyhow::ensure!(
+                start > 0 && start <= end,
+                "Thread ranges must be positive and ascending"
+            );
+            counts.extend(start..=end);
+        }
+        Ok(Self(counts.into_iter().collect()))
+    }
+}
+
+impl TryFrom<String> for ThreadCounts {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+impl From<ThreadCounts> for String {
+    fn from(counts: ThreadCounts) -> Self {
+        if counts.0.is_empty() {
+            "default".to_owned()
+        } else {
+            counts
+                .0
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        }
     }
 }

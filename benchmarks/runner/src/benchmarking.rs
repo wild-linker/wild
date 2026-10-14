@@ -50,7 +50,7 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
     let benchmarks = filter_benchmarks_by_wild_version(benchmarks, &bins);
 
     for bench in &benchmarks {
-        if args.threads.is_some() {
+        if bench.config.has_explicit_threads() {
             for bin in bins.iter().filter(|bin| bench.supports_bin(bin)) {
                 anyhow::ensure!(
                     bin.identifier.kind != LinkerKind::Bfd,
@@ -78,7 +78,7 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
     }
 
     if !args.no_verify {
-        verify(&bins, &benchmarks, args)?;
+        verify(&bins, &benchmarks)?;
     }
 
     let results = run(&bins, &benchmarks, args)?;
@@ -162,11 +162,11 @@ fn remove_output(bench: &Benchmark) -> Result {
 }
 
 fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Benchmarks> {
-    let counts = thread_counts(args);
     let mut out = Vec::new();
     let start = Instant::now();
 
     for (bench_index, bench) in benchmarks.iter().enumerate() {
+        let cases = benchmark_cases(bins, bench);
         let bench_start = Instant::now();
         let message = format!(
             "Benchmark {} of {}: {bench}",
@@ -175,14 +175,13 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
         );
 
         let progress_bar = indicatif::ProgressBar::new(u64::from(
-            args.num_batches * args.batch_size * bins.len() as u32 * counts.len() as u32,
+            args.num_batches * args.batch_size * cases.len() as u32,
         ))
         .with_style(indicatif::ProgressStyle::with_template(
             "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}]",
         )?)
         .with_message(message.clone());
 
-        let cases = benchmark_cases(bins, bench, &counts);
         if cases.is_empty() {
             progress_bar.finish_and_clear();
             continue;
@@ -233,12 +232,11 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
 }
 
 /// Runs each benchmark once with each linker.
-fn verify(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result {
+fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result {
     let mut success = true;
-    let counts = thread_counts(args);
     for bench in benchmarks {
         println!("Verifying: {bench}");
-        for (bin, threads) in benchmark_cases(bins, bench, &counts) {
+        for (bin, threads) in benchmark_cases(bins, bench) {
             if let Err(error) = run_once(bin, bench, &[], threads) {
                 eprintln!("{error}");
                 success = false;
@@ -253,14 +251,12 @@ fn verify(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result {
     Ok(())
 }
 
-fn benchmark_cases<'a>(
-    bins: &'a [Bin],
-    bench: &Benchmark,
-    counts: &[Option<u32>],
-) -> Vec<(&'a Bin, Option<u32>)> {
-    counts
-        .iter()
-        .flat_map(|&threads| {
+fn benchmark_cases<'a>(bins: &'a [Bin], bench: &Benchmark) -> Vec<(&'a Bin, Option<u32>)> {
+    bench
+        .config
+        .thread_counts()
+        .into_iter()
+        .flat_map(|threads| {
             bins.iter()
                 .filter(|bin| bench.supports_bin(bin))
                 .map(move |bin| (bin, threads))
@@ -421,13 +417,6 @@ fn filter_benchmarks_by_wild_version(benchmarks: Vec<Benchmark>, bins: &[Bin]) -
             supported
         })
         .collect()
-}
-
-fn thread_counts(args: &BenchArgs) -> Vec<Option<u32>> {
-    args.threads.as_ref().map_or_else(
-        || vec![None],
-        |counts| counts.0.iter().copied().map(Some).collect(),
-    )
 }
 
 fn is_thread_flag(flag: &str) -> bool {

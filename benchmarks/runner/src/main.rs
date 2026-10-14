@@ -45,7 +45,7 @@ mod scaling;
 mod system;
 mod table;
 
-const RESULT_HEADER: &[u8] = b"wild-bench-results-v3\n";
+const RESULT_HEADER: &[u8] = b"wild-bench-results-v4\n";
 
 type Result<T = (), E = anyhow::Error> = std::result::Result<T, E>;
 
@@ -106,10 +106,6 @@ struct BenchArgs {
     /// `benchmarks/[benchmark-name].bench-results`.
     #[clap(long)]
     output: Option<PathBuf>,
-
-    /// Thread counts, comma-separated and/or inclusive ranges (e.g. 1-32 or 1,2,4,8).
-    #[clap(long)]
-    threads: Option<ThreadCounts>,
 
     /// Named linker configurations from the config. Defaults to all when no binaries are supplied.
     #[clap(long, value_delimiter = ',')]
@@ -595,28 +591,5 @@ mod tests {
         assert!(!version_less_than("0.5.0", "0.5.0"));
         assert!(!version_less_than("0.6.0", "0.5.0"));
         assert!(version_less_than("0.5.0", "0.10.0"));
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ThreadCounts(Vec<u32>);
-
-impl std::str::FromStr for ThreadCounts {
-    type Err = anyhow::Error;
-
-    fn from_str(input: &str) -> Result<Self> {
-        let mut counts = std::collections::BTreeSet::new();
-        for part in input.split(',') {
-            let part = part.trim();
-            let (start, end) = part.split_once('-').unwrap_or((part, part));
-            let start: u32 = start.parse().context("Invalid thread count")?;
-            let end: u32 = end.parse().context("Invalid thread count")?;
-            anyhow::ensure!(
-                start > 0 && start <= end,
-                "Thread ranges must be positive and ascending"
-            );
-            counts.extend(start..=end);
-        }
-        Ok(Self(counts.into_iter().collect()))
     }
 }
