@@ -151,8 +151,8 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Address subtracted by a DTPREL relocation.
     ///
     /// Allocated relocations in a shared object pass `for_shared_object`. Debug relocations pass
-    /// false, which keeps the historical executable base (the end of the TLS segment) for every
-    /// target except ppc64.
+    /// `false`, which selects the end of the TLS segment. ppc64 overrides this and always uses the
+    /// DTV point.
     fn dtp_offset_base(layout: &Layout<Self::Platform>, for_shared_object: bool) -> u64 {
         if for_shared_object {
             layout.tls_start_address()
