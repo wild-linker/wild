@@ -20,13 +20,18 @@ as fast as we can be for non-incremental linking and for the initial link when i
 
 We run benchmarks on a few different systems:
 
-* [Ryzen 9 9955HX (16 core, 32 thread)](benchmarks/ryzen-9955hx.md)
-* [2020 era Intel-based laptop with 4 cores and 8 threads](benchmarks/lemp9.md)
-* [Raspberry Pi 5](benchmarks/raspberrypi.md)
+* [Ryzen 9 9955HX (16 core, 32 thread) - ELF](benchmarks/ryzen-9955hx.md)
+* [Ryzen 9 9955HX (16 core, 32 thread) - Wasm](benchmarks/ryzen-wasm.md)
+* [Raspberry Pi 5 - ELF](benchmarks/raspberrypi.md)
+* [Mac Mini - Mach-O](benchmarks/mac-mini-m4.md)
 
 For example, linking Chromium with CREL relocations on the Ryzen system:
 
 ![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-time.svg)
+
+Or linking a Wasm build of spidermonkey on the same system:
+
+![Benchmark of linking a Wasm build of spidermonkey](benchmarks/images/ryzen-wasm/spidermonkey-wasm-time.svg)
 
 ## Feature support
 

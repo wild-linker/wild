@@ -1,0 +1,19 @@
+name = "mac-mini-m4"
+
+[defaults]
+filesystem = "apfs"
+
+[defaults.linker-flags]
+apple = ["-no_function_starts", "-no_data_in_code_info"]
+lld = [
+  "-no_function_starts",
+  "-no_data_in_code_info",
+  "--no-deduplicate-strings",
+  "-no-deduplicate-symbol-strings",
+]
+
+[bench.clang-release]
+
+[bench.wild-no-debug]
+
+[bench.duckdb-release]

@@ -1,0 +1,21 @@
+name = "ryzen-wasm"
+
+[defaults]
+filesystem = "ext4"
+delete-output = true
+
+[bench.ripgrep-wasm]
+
+[bench.spidermonkey-wasm]
+
+[bench.wild-release-wasm]
+
+[bench.cruby-wasm]
+
+[bench.cpython-wasm]
+
+[bench.sqlite-wasm]
+
+[bench.spidermonkey-wasm.variants.threads]
+threads = "1-32"
+latest-only = true

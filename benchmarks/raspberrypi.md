@@ -30,3 +30,11 @@ These benchmarks are for linking on a Raspberry Pi 5 with 8 GB of RAM.
 ### librustc-driver - memory
 ![Memory consumption while linking librustc-driver](images/raspberrypi/librustc-driver-memory.svg)
 
+## Other filesystems
+
+### wild-no-debug.ext4 - time
+![Time to link wild-no-debug.ext4](images/raspberrypi/wild-no-debug.ext4-time.svg)
+
+### wild-no-debug.ext4 - memory
+![Memory consumption while linking wild-no-debug.ext4](images/raspberrypi/wild-no-debug.ext4-memory.svg)
+

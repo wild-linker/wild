@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="638" viewBox="0 0 1000 638">
+<rect width="100%" height="100%" fill="#000"/>
+<g fill="white" font-family="sans-serif" font-size="16">
+<text x="500" y="35" text-anchor="middle" font-size="26">ryzen-9955hx - zed-debug.threads-tmpfs</text>
+<text x="100" y="75">Memory (MiB)</text>
+<text x="520" y="535" text-anchor="middle">Threads</text>
+<path d="M100 480 H940" stroke="#555"/><text x="90" y="480" text-anchor="end" dominant-baseline="middle">0.00</text>
+<path d="M100 404 H940" stroke="#555"/><text x="90" y="404" text-anchor="end" dominant-baseline="middle">1619.27</text>
+<path d="M100 328 H940" stroke="#555"/><text x="90" y="328" text-anchor="end" dominant-baseline="middle">3238.55</text>
+<path d="M100 252 H940" stroke="#555"/><text x="90" y="252" text-anchor="end" dominant-baseline="middle">4857.82</text>
+<path d="M100 176 H940" stroke="#555"/><text x="90" y="176" text-anchor="end" dominant-baseline="middle">6477.10</text>
+<path d="M100 100 H940" stroke="#555"/><text x="90" y="100" text-anchor="end" dominant-baseline="middle">8096.37</text>
+<path d="M100 480 v6" stroke="white"/><text x="100" y="510" text-anchor="middle">1</text>
+<path d="M154.19354838709677 480 v6" stroke="white"/><text x="154.19354838709677" y="510" text-anchor="middle">3</text>
+<path d="M208.38709677419354 480 v6" stroke="white"/><text x="208.38709677419354" y="510" text-anchor="middle">5</text>
+<path d="M262.5806451612903 480 v6" stroke="white"/><text x="262.5806451612903" y="510" text-anchor="middle">7</text>
+<path d="M316.7741935483871 480 v6" stroke="white"/><text x="316.7741935483871" y="510" text-anchor="middle">9</text>
+<path d="M370.96774193548384 480 v6" stroke="white"/><text x="370.96774193548384" y="510" text-anchor="middle">11</text>
+<path d="M425.1612903225806 480 v6" stroke="white"/><text x="425.1612903225806" y="510" text-anchor="middle">13</text>
+<path d="M479.3548387096774 480 v6" stroke="white"/><text x="479.3548387096774" y="510" text-anchor="middle">15</text>
+<path d="M533.5483870967741 480 v6" stroke="white"/><text x="533.5483870967741" y="510" text-anchor="middle">17</text>
+<path d="M587.741935483871 480 v6" stroke="white"/><text x="587.741935483871" y="510" text-anchor="middle">19</text>
+<path d="M641.9354838709677 480 v6" stroke="white"/><text x="641.9354838709677" y="510" text-anchor="middle">21</text>
+<path d="M696.1290322580645 480 v6" stroke="white"/><text x="696.1290322580645" y="510" text-anchor="middle">23</text>
+<path d="M750.3225806451612 480 v6" stroke="white"/><text x="750.3225806451612" y="510" text-anchor="middle">25</text>
+<path d="M804.516129032258 480 v6" stroke="white"/><text x="804.516129032258" y="510" text-anchor="middle">27</text>
+<path d="M858.7096774193548 480 v6" stroke="white"/><text x="858.7096774193548" y="510" text-anchor="middle">29</text>
+<path d="M912.9032258064516 480 v6" stroke="white"/><text x="912.9032258064516" y="510" text-anchor="middle">31</text>
+<path d="M940 480 v6" stroke="white"/><text x="940" y="510" text-anchor="middle">32</text>
+<path d="M100.00 139.85 L127.10 137.00 L154.19 135.68 L181.29 135.75 L208.39 135.51 L235.48 135.14 L262.58 134.55 L289.68 135.34 L316.77 135.00 L343.87 135.85 L370.97 136.49 L398.06 136.09 L425.16 135.04 L452.26 135.10 L479.35 135.81 L506.45 136.10 L533.55 135.24 L560.65 135.39 L587.74 136.95 L614.84 135.82 L641.94 136.16 L669.03 135.66 L696.13 136.04 L723.23 134.99 L750.32 136.49 L777.42 135.35 L804.52 135.11 L831.61 136.59 L858.71 136.10 L885.81 135.50 L912.90 135.45 L940.00 135.39 L940.00 136.57 L912.90 137.30 L885.81 136.42 L858.71 136.23 L831.61 136.76 L804.52 137.59 L777.42 137.35 L750.32 137.34 L723.23 137.80 L696.13 136.38 L669.03 137.75 L641.94 137.81 L614.84 136.91 L587.74 137.21 L560.65 137.61 L533.55 136.61 L506.45 137.46 L479.35 135.93 L452.26 135.30 L425.16 136.21 L398.06 136.87 L370.97 136.55 L343.87 136.23 L316.77 135.60 L289.68 136.35 L262.58 136.94 L235.48 136.11 L208.39 136.48 L181.29 137.99 L154.19 139.25 L127.10 137.50 L100.00 140.14 Z" fill="#00ff00" fill-opacity="0.2" stroke="none"/>
+<path d="M100.00 176.02 L127.10 172.72 L154.19 171.30 L181.29 171.03 L208.39 168.52 L235.48 168.23 L262.58 166.26 L289.68 166.01 L316.77 162.23 L343.87 164.87 L370.97 163.05 L398.06 162.47 L425.16 161.03 L452.26 160.28 L479.35 158.85 L506.45 158.22 L533.55 158.57 L560.65 156.86 L587.74 156.13 L614.84 155.55 L641.94 153.33 L669.03 152.93 L696.13 152.67 L723.23 151.73 L750.32 150.35 L777.42 149.87 L804.52 150.58 L831.61 148.00 L858.71 148.68 L885.81 147.04 L912.90 147.17 L940.00 147.56 L940.00 148.08 L912.90 147.34 L885.81 149.68 L858.71 149.12 L831.61 148.38 L804.52 151.51 L777.42 151.31 L750.32 152.48 L723.23 152.51 L696.13 153.04 L669.03 154.98 L641.94 156.63 L614.84 158.63 L587.74 157.70 L560.65 158.23 L533.55 159.97 L506.45 159.49 L479.35 159.30 L452.26 161.00 L425.16 161.22 L398.06 162.98 L370.97 165.79 L343.87 165.23 L316.77 166.10 L289.68 167.53 L262.58 167.25 L235.48 169.11 L208.39 170.91 L181.29 171.44 L154.19 171.85 L127.10 172.73 L100.00 176.03 Z" fill="#ff60ff" fill-opacity="0.2" stroke="none"/>
+<path d="M100.00 202.08 L127.10 201.11 L154.19 203.31 L181.29 201.49 L208.39 203.94 L235.48 203.21 L262.58 202.24 L289.68 201.53 L316.77 203.86 L343.87 203.91 L370.97 203.50 L398.06 203.12 L425.16 202.37 L452.26 202.02 L479.35 201.67 L506.45 201.21 L533.55 200.91 L560.65 203.79 L587.74 203.70 L614.84 203.58 L641.94 203.37 L669.03 203.20 L696.13 202.86 L723.23 202.68 L750.32 202.52 L777.42 202.25 L804.52 202.01 L831.61 202.00 L858.71 201.81 L885.81 201.53 L912.90 201.25 L940.00 201.10 L940.00 201.40 L912.90 201.33 L885.81 201.60 L858.71 201.85 L831.61 202.01 L804.52 202.20 L777.42 202.48 L750.32 202.68 L723.23 202.82 L696.13 203.06 L669.03 203.27 L641.94 203.55 L614.84 203.79 L587.74 203.79 L560.65 203.94 L533.55 201.06 L506.45 201.55 L479.35 201.88 L452.26 202.41 L425.16 202.82 L398.06 203.24 L370.97 203.63 L343.87 204.14 L316.77 204.17 L289.68 201.80 L262.58 202.39 L235.48 203.29 L208.39 203.94 L181.29 201.95 L154.19 203.46 L127.10 201.38 L100.00 202.20 Z" fill="#60b0ff" fill-opacity="0.2" stroke="none"/>
+<circle cx="100" cy="139.99674354660903" r="3" fill="#00ff00"><title>1 threads: 7244.193 ± 3.134 (99% CI)</title></circle>
+<circle cx="127.09677419354838" cy="137.24932822739873" r="3" fill="#00ff00"><title>2 threads: 7302.730 ± 5.379 (99% CI)</title></circle>
+<circle cx="154.19354838709677" cy="137.46658405157973" r="3" fill="#00ff00"><title>3 threads: 7298.102 ± 38.049 (99% CI)</title></circle>
+<circle cx="181.29032258064515" cy="136.86935970789233" r="3" fill="#00ff00"><title>4 threads: 7310.826 ± 23.902 (99% CI)</title></circle>
+<circle cx="208.38709677419354" cy="135.99676131532743" r="3" fill="#00ff00"><title>5 threads: 7329.418 ± 10.345 (99% CI)</title></circle>
+<circle cx="235.48387096774192" cy="135.62320963450992" r="3" fill="#00ff00"><title>6 threads: 7337.377 ± 10.384 (99% CI)</title></circle>
+<circle cx="262.5806451612903" cy="135.74274617237148" r="3" fill="#00ff00"><title>7 threads: 7334.830 ± 25.510 (99% CI)</title></circle>
+<circle cx="289.67741935483866" cy="135.84349053978707" r="3" fill="#00ff00"><title>8 threads: 7332.684 ± 10.793 (99% CI)</title></circle>
+<circle cx="316.7741935483871" cy="135.30145100882413" r="3" fill="#00ff00"><title>9 threads: 7344.232 ± 6.457 (99% CI)</title></circle>
+<circle cx="343.8709677419355" cy="136.03755407556395" r="3" fill="#00ff00"><title>10 threads: 7328.549 ± 4.038 (99% CI)</title></circle>
+<circle cx="370.96774193548384" cy="136.52312542606467" r="3" fill="#00ff00"><title>11 threads: 7318.203 ± 0.647 (99% CI)</title></circle>
+<circle cx="398.06451612903226" cy="136.47692418750466" r="3" fill="#00ff00"><title>12 threads: 7319.188 ± 8.331 (99% CI)</title></circle>
+<circle cx="425.1612903225806" cy="135.62531802436484" r="3" fill="#00ff00"><title>13 threads: 7337.332 ± 12.437 (99% CI)</title></circle>
+<circle cx="452.258064516129" cy="135.19997328841555" r="3" fill="#00ff00"><title>14 threads: 7346.395 ± 2.070 (99% CI)</title></circle>
+<circle cx="479.3548387096774" cy="135.87181629914232" r="3" fill="#00ff00"><title>15 threads: 7332.080 ± 1.334 (99% CI)</title></circle>
+<circle cx="506.4516129032258" cy="136.78099067223388" r="3" fill="#00ff00"><title>16 threads: 7312.709 ± 14.525 (99% CI)</title></circle>
+<circle cx="533.5483870967741" cy="135.92315100865346" r="3" fill="#00ff00"><title>17 threads: 7330.986 ± 14.631 (99% CI)</title></circle>
+<circle cx="560.6451612903226" cy="136.49984146853643" r="3" fill="#00ff00"><title>18 threads: 7318.699 ± 23.749 (99% CI)</title></circle>
+<circle cx="587.741935483871" cy="137.07854864915015" r="3" fill="#00ff00"><title>19 threads: 7306.369 ± 2.728 (99% CI)</title></circle>
+<circle cx="614.8387096774194" cy="136.36554620169034" r="3" fill="#00ff00"><title>20 threads: 7321.561 ± 11.679 (99% CI)</title></circle>
+<circle cx="641.9354838709677" cy="136.98779621626443" r="3" fill="#00ff00"><title>21 threads: 7308.303 ± 17.548 (99% CI)</title></circle>
+<circle cx="669.0322580645161" cy="136.7043552844637" r="3" fill="#00ff00"><title>22 threads: 7314.342 ± 22.337 (99% CI)</title></circle>
+<circle cx="696.1290322580645" cy="136.2078753081919" r="3" fill="#00ff00"><title>23 threads: 7324.920 ± 3.646 (99% CI)</title></circle>
+<circle cx="723.2258064516129" cy="136.39478865228682" r="3" fill="#00ff00"><title>24 threads: 7320.938 ± 30.031 (99% CI)</title></circle>
+<circle cx="750.3225806451612" cy="136.91482759345934" r="3" fill="#00ff00"><title>25 threads: 7309.857 ± 8.975 (99% CI)</title></circle>
+<circle cx="777.4193548387096" cy="136.34812906810623" r="3" fill="#00ff00"><title>26 threads: 7321.932 ± 21.341 (99% CI)</title></circle>
+<circle cx="804.516129032258" cy="136.35161249482303" r="3" fill="#00ff00"><title>27 threads: 7321.857 ± 26.371 (99% CI)</title></circle>
+<circle cx="831.6129032258065" cy="136.67547951036374" r="3" fill="#00ff00"><title>28 threads: 7314.957 ± 1.850 (99% CI)</title></circle>
+<circle cx="858.7096774193548" cy="136.16689920970714" r="3" fill="#00ff00"><title>29 threads: 7325.793 ± 1.380 (99% CI)</title></circle>
+<circle cx="885.8064516129032" cy="135.95899363618707" r="3" fill="#00ff00"><title>30 threads: 7330.223 ± 9.797 (99% CI)</title></circle>
+<circle cx="912.9032258064516" cy="136.37773819519924" r="3" fill="#00ff00"><title>31 threads: 7321.301 ± 19.694 (99% CI)</title></circle>
+<circle cx="940" cy="135.97659410801947" r="3" fill="#00ff00"><title>32 threads: 7329.848 ± 12.600 (99% CI)</title></circle>
+<path d="M100.00 140.00 L127.10 137.25 L154.19 137.47 L181.29 136.87 L208.39 136.00 L235.48 135.62 L262.58 135.74 L289.68 135.84 L316.77 135.30 L343.87 136.04 L370.97 136.52 L398.06 136.48 L425.16 135.63 L452.26 135.20 L479.35 135.87 L506.45 136.78 L533.55 135.92 L560.65 136.50 L587.74 137.08 L614.84 136.37 L641.94 136.99 L669.03 136.70 L696.13 136.21 L723.23 136.39 L750.32 136.91 L777.42 136.35 L804.52 136.35 L831.61 136.68 L858.71 136.17 L885.81 135.96 L912.90 136.38 L940.00 135.98 " fill="none" stroke="#00ff00" stroke-width="2" stroke-dasharray="none"/>
+<path d="M100 565 h35" stroke="#00ff00" stroke-width="2" stroke-dasharray="none"/><text x="145" y="565" dominant-baseline="middle">LLD 22.1.2 Ubuntu</text>
+<circle cx="100" cy="176.0264677626089" r="3" fill="#ff60ff"><title>1 threads: 6476.535 ± 0.114 (99% CI)</title></circle>
+<circle cx="127.09677419354838" cy="172.72812100739532" r="3" fill="#ff60ff"><title>2 threads: 6546.811 ± 0.110 (99% CI)</title></circle>
+<circle cx="154.19354838709677" cy="171.5752901023742" r="3" fill="#ff60ff"><title>3 threads: 6571.373 ± 5.774 (99% CI)</title></circle>
+<circle cx="181.29032258064515" cy="171.23299759288398" r="3" fill="#ff60ff"><title>4 threads: 6578.666 ± 4.308 (99% CI)</title></circle>
+<circle cx="208.38709677419354" cy="169.714315213472" r="3" fill="#ff60ff"><title>5 threads: 6611.023 ± 25.549 (99% CI)</title></circle>
+<circle cx="235.48387096774192" cy="168.67084557353434" r="3" fill="#ff60ff"><title>6 threads: 6633.256 ± 9.338 (99% CI)</title></circle>
+<circle cx="262.5806451612903" cy="166.75496087928002" r="3" fill="#ff60ff"><title>7 threads: 6674.076 ± 10.619 (99% CI)</title></circle>
+<circle cx="289.67741935483866" cy="166.77164465987113" r="3" fill="#ff60ff"><title>8 threads: 6673.721 ± 16.261 (99% CI)</title></circle>
+<circle cx="316.7741935483871" cy="164.16402475495454" r="3" fill="#ff60ff"><title>9 threads: 6729.279 ± 41.219 (99% CI)</title></circle>
+<circle cx="343.8709677419355" cy="165.04890681015246" r="3" fill="#ff60ff"><title>10 threads: 6710.426 ± 3.863 (99% CI)</title></circle>
+<circle cx="370.96774193548384" cy="164.4207899716343" r="3" fill="#ff60ff"><title>11 threads: 6723.809 ± 29.277 (99% CI)</title></circle>
+<circle cx="398.06451612903226" cy="162.72582786652606" r="3" fill="#ff60ff"><title>12 threads: 6759.922 ± 5.507 (99% CI)</title></circle>
+<circle cx="425.1612903225806" cy="161.12812670211662" r="3" fill="#ff60ff"><title>13 threads: 6793.963 ± 2.038 (99% CI)</title></circle>
+<circle cx="452.258064516129" cy="160.644113726726" r="3" fill="#ff60ff"><title>14 threads: 6804.275 ± 7.659 (99% CI)</title></circle>
+<circle cx="479.3548387096774" cy="159.0708882184585" r="3" fill="#ff60ff"><title>15 threads: 6837.795 ± 4.799 (99% CI)</title></circle>
+<circle cx="506.4516129032258" cy="158.85244069566386" r="3" fill="#ff60ff"><title>16 threads: 6842.449 ± 13.554 (99% CI)</title></circle>
+<circle cx="533.5483870967741" cy="159.27118525467597" r="3" fill="#ff60ff"><title>17 threads: 6833.527 ± 14.841 (99% CI)</title></circle>
+<circle cx="560.6451612903226" cy="157.5465223533506" r="3" fill="#ff60ff"><title>18 threads: 6870.273 ± 14.564 (99% CI)</title></circle>
+<circle cx="587.741935483871" cy="156.91253869088825" r="3" fill="#ff60ff"><title>19 threads: 6883.781 ± 16.691 (99% CI)</title></circle>
+<circle cx="614.8387096774194" cy="157.08579333548835" r="3" fill="#ff60ff"><title>20 threads: 6880.090 ± 32.827 (99% CI)</title></circle>
+<circle cx="641.9354838709677" cy="154.98070356903594" r="3" fill="#ff60ff"><title>21 threads: 6924.941 ± 35.097 (99% CI)</title></circle>
+<circle cx="669.0322580645161" cy="153.9562094377926" r="3" fill="#ff60ff"><title>22 threads: 6946.770 ± 21.807 (99% CI)</title></circle>
+<circle cx="696.1290322580645" cy="152.8528798598" r="3" fill="#ff60ff"><title>23 threads: 6970.277 ± 3.899 (99% CI)</title></circle>
+<circle cx="723.2258064516129" cy="152.11897685203928" r="3" fill="#ff60ff"><title>24 threads: 6985.914 ± 8.367 (99% CI)</title></circle>
+<circle cx="750.3225806451612" cy="151.41697469947468" r="3" fill="#ff60ff"><title>25 threads: 7000.871 ± 22.703 (99% CI)</title></circle>
+<circle cx="777.4193548387096" cy="150.59277760444883" r="3" fill="#ff60ff"><title>26 threads: 7018.432 ± 15.350 (99% CI)</title></circle>
+<circle cx="804.516129032258" cy="151.04433970989845" r="3" fill="#ff60ff"><title>27 threads: 7008.811 ± 9.900 (99% CI)</title></circle>
+<circle cx="831.6129032258065" cy="148.19058820670085" r="3" fill="#ff60ff"><title>28 threads: 7069.613 ± 4.141 (99% CI)</title></circle>
+<circle cx="858.7096774193548" cy="148.8972654845959" r="3" fill="#ff60ff"><title>29 threads: 7054.557 ± 4.664 (99% CI)</title></circle>
+<circle cx="885.8064516129032" cy="148.35733434348782" r="3" fill="#ff60ff"><title>30 threads: 7066.061 ± 28.092 (99% CI)</title></circle>
+<circle cx="912.9032258064516" cy="147.25253805950922" r="3" fill="#ff60ff"><title>31 threads: 7089.600 ± 1.825 (99% CI)</title></circle>
+<circle cx="940" cy="147.81721986413157" r="3" fill="#ff60ff"><title>32 threads: 7077.568 ± 5.553 (99% CI)</title></circle>
+<path d="M100.00 176.03 L127.10 172.73 L154.19 171.58 L181.29 171.23 L208.39 169.71 L235.48 168.67 L262.58 166.75 L289.68 166.77 L316.77 164.16 L343.87 165.05 L370.97 164.42 L398.06 162.73 L425.16 161.13 L452.26 160.64 L479.35 159.07 L506.45 158.85 L533.55 159.27 L560.65 157.55 L587.74 156.91 L614.84 157.09 L641.94 154.98 L669.03 153.96 L696.13 152.85 L723.23 152.12 L750.32 151.42 L777.42 150.59 L804.52 151.04 L831.61 148.19 L858.71 148.90 L885.81 148.36 L912.90 147.25 L940.00 147.82 " fill="none" stroke="#ff60ff" stroke-width="2" stroke-dasharray="none"/>
+<path d="M100 591 h35" stroke="#ff60ff" stroke-width="2" stroke-dasharray="none"/><text x="145" y="591" dominant-baseline="middle">Mold 3.0.0</text>
+<circle cx="100" cy="202.13933446142585" r="3" fill="#60b0ff"><title>1 threads: 5920.168 ± 1.195 (99% CI)</title></circle>
+<circle cx="127.09677419354838" cy="201.24739388367016" r="3" fill="#60b0ff"><title>2 threads: 5939.172 ± 2.889 (99% CI)</title></circle>
+<circle cx="154.19354838709677" cy="203.38887629240094" r="3" fill="#60b0ff"><title>3 threads: 5893.545 ± 1.597 (99% CI)</title></circle>
+<circle cx="181.29032258064515" cy="201.71884818905528" r="3" fill="#60b0ff"><title>4 threads: 5929.127 ± 4.927 (99% CI)</title></circle>
+<circle cx="208.38709677419354" cy="203.93934938278358" r="3" fill="#60b0ff"><title>5 threads: 5881.816 ± 0.071 (99% CI)</title></circle>
+<circle cx="235.48387096774192" cy="203.2518309518311" r="3" fill="#60b0ff"><title>6 threads: 5896.465 ± 0.840 (99% CI)</title></circle>
+<circle cx="262.5806451612903" cy="202.3117640839087" r="3" fill="#60b0ff"><title>7 threads: 5916.494 ± 1.633 (99% CI)</title></circle>
+<circle cx="289.67741935483866" cy="201.66293002333782" r="3" fill="#60b0ff"><title>8 threads: 5930.318 ± 2.828 (99% CI)</title></circle>
+<circle cx="316.7741935483871" cy="204.0171764691674" r="3" fill="#60b0ff"><title>9 threads: 5880.158 ± 3.276 (99% CI)</title></circle>
+<circle cx="343.8709677419355" cy="204.02478500646993" r="3" fill="#60b0ff"><title>10 threads: 5879.996 ± 2.355 (99% CI)</title></circle>
+<circle cx="370.96774193548384" cy="203.56662272408317" r="3" fill="#60b0ff"><title>11 threads: 5889.758 ± 1.316 (99% CI)</title></circle>
+<circle cx="398.06451612903226" cy="203.1807873806327" r="3" fill="#60b0ff"><title>12 threads: 5897.979 ± 1.213 (99% CI)</title></circle>
+<circle cx="425.1612903225806" cy="202.59511334658526" r="3" fill="#60b0ff"><title>13 threads: 5910.457 ± 4.895 (99% CI)</title></circle>
+<circle cx="452.258064516129" cy="202.21596984919597" r="3" fill="#60b0ff"><title>14 threads: 5918.535 ± 4.240 (99% CI)</title></circle>
+<circle cx="479.3548387096774" cy="201.77513303126926" r="3" fill="#60b0ff"><title>15 threads: 5927.928 ± 2.252 (99% CI)</title></circle>
+<circle cx="506.4516129032258" cy="201.3799474371578" r="3" fill="#60b0ff"><title>16 threads: 5936.348 ± 3.550 (99% CI)</title></circle>
+<circle cx="533.5483870967741" cy="200.9833868061844" r="3" fill="#60b0ff"><title>17 threads: 5944.797 ± 1.601 (99% CI)</title></circle>
+<circle cx="560.6451612903226" cy="203.86583074523372" r="3" fill="#60b0ff"><title>18 threads: 5883.383 ± 1.579 (99% CI)</title></circle>
+<circle cx="587.741935483871" cy="203.74106906729685" r="3" fill="#60b0ff"><title>19 threads: 5886.041 ± 0.950 (99% CI)</title></circle>
+<circle cx="614.8387096774194" cy="203.68753429880667" r="3" fill="#60b0ff"><title>20 threads: 5887.182 ± 2.216 (99% CI)</title></circle>
+<circle cx="641.9354838709677" cy="203.45753646637206" r="3" fill="#60b0ff"><title>21 threads: 5892.082 ± 1.871 (99% CI)</title></circle>
+<circle cx="669.0322580645161" cy="203.23303878138506" r="3" fill="#60b0ff"><title>22 threads: 5896.865 ± 0.743 (99% CI)</title></circle>
+<circle cx="696.1290322580645" cy="202.95748139425928" r="3" fill="#60b0ff"><title>23 threads: 5902.736 ± 2.145 (99% CI)</title></circle>
+<circle cx="723.2258064516129" cy="202.7467340778913" r="3" fill="#60b0ff"><title>24 threads: 5907.227 ± 1.494 (99% CI)</title></circle>
+<circle cx="750.3225806451612" cy="202.59969680279164" r="3" fill="#60b0ff"><title>25 threads: 5910.359 ± 1.736 (99% CI)</title></circle>
+<circle cx="777.4193548387096" cy="202.3652988523989" r="3" fill="#60b0ff"><title>26 threads: 5915.354 ± 2.501 (99% CI)</title></circle>
+<circle cx="804.516129032258" cy="202.10239180440266" r="3" fill="#60b0ff"><title>27 threads: 5920.955 ± 2.074 (99% CI)</title></circle>
+<circle cx="831.6129032258065" cy="202.00439751071087" r="3" fill="#60b0ff"><title>28 threads: 5923.043 ± 0.050 (99% CI)</title></circle>
+<circle cx="858.7096774193548" cy="201.82710942464928" r="3" fill="#60b0ff"><title>29 threads: 5926.820 ± 0.406 (99% CI)</title></circle>
+<circle cx="885.8064516129032" cy="201.56319401628764" r="3" fill="#60b0ff"><title>30 threads: 5932.443 ± 0.736 (99% CI)</title></circle>
+<circle cx="912.9032258064516" cy="201.29167007062347" r="3" fill="#60b0ff"><title>31 threads: 5938.229 ± 0.829 (99% CI)</title></circle>
+<circle cx="940" cy="201.25096897951107" r="3" fill="#60b0ff"><title>32 threads: 5939.096 ± 3.205 (99% CI)</title></circle>
+<path d="M100.00 202.14 L127.10 201.25 L154.19 203.39 L181.29 201.72 L208.39 203.94 L235.48 203.25 L262.58 202.31 L289.68 201.66 L316.77 204.02 L343.87 204.02 L370.97 203.57 L398.06 203.18 L425.16 202.60 L452.26 202.22 L479.35 201.78 L506.45 201.38 L533.55 200.98 L560.65 203.87 L587.74 203.74 L614.84 203.69 L641.94 203.46 L669.03 203.23 L696.13 202.96 L723.23 202.75 L750.32 202.60 L777.42 202.37 L804.52 202.10 L831.61 202.00 L858.71 201.83 L885.81 201.56 L912.90 201.29 L940.00 201.25 " fill="none" stroke="#60b0ff" stroke-width="2" stroke-dasharray="none"/>
+<path d="M100 617 h35" stroke="#60b0ff" stroke-width="2" stroke-dasharray="none"/><text x="145" y="617" dominant-baseline="middle">Wild 0.11.0</text>
+</g></svg>

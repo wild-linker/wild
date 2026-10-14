@@ -1,5 +1,9 @@
 name = "ryzen-9955hx"
 
+[defaults]
+filesystem = "tmpfs"
+delete-output = false
+
 [bench.bevy-dylib]
 skip_linkers = ["bfd"]
 
@@ -34,17 +38,8 @@ min_wild_version = "0.6.0"
 
 [bench.rust-hello-world]
 
-[bench.rustc]
-# Too short to be interesting and we have other short benchmarks.
-skip = true
-skip_linkers = ["bfd"]
-
 [bench.librustc-driver]
 skip_linkers = ["bfd"]
-
-[bench.trivial]
-# Too short to be interesting
-skip = true
 
 [bench.wild]
 skip_linkers = ["bfd"]
@@ -56,20 +51,42 @@ min_wild_version = "0.9.0"
 min_wild_version = "0.6.0"
 skip_linkers = ["bfd"]
 
-[bench.zed]
-skip = true
-skip_linkers = ["bfd"]
-
 [bench.zed-release]
 skip_linkers = ["bfd"]
 
 [bench.zed-debug]
 skip_linkers = ["bfd"]
 
+[bench.zed-debug.variants.ext4-no-delete-output]
+filesystem = "ext4"
+delete-output = false
+
+[bench.zed-debug.variants.ext4-delete-output]
+filesystem = "ext4"
+delete-output = true
+
+[bench.zed-debug.variants.xfs-delete-output]
+filesystem = "xfs"
+delete-output = true
+
+[bench.zed-debug.variants.btrfs-delete-output]
+filesystem = "btrfs"
+delete-output = true
+
+[bench.zed-debug.variants.threads-tmpfs]
+threads = "1-32"
+latest-only = true
+
+[bench.zed-debug.variants.threads-ext4-delete-output]
+threads = "1-32"
+latest-only = true
+filesystem = "ext4"
+delete-output = true
+
 [bench.clang-debug-strip]
 skip_linkers = ["bfd"]
 
-[bench.chrome-arm64]
+[bench.chrome-android]
 min_wild_version = "0.9.0"
 skip_linkers = ["bfd"]
 
@@ -83,29 +100,6 @@ min_wild_version = "0.9.0"
 skip_linkers = ["bfd"]
 min_wild_version = "0.9.0"
 
-
-[bench.trivial-with-bevy-version-script]
-skip = true
-
-[bench.chrome-android]
-skip = true
-
-[bench.chrome-android-old]
-skip = true
-
-[bench.chrome-android-old2]
-skip = true
-
-[bench.chrome-android-old3]
-skip = true
-
-[bench.libmonochrome-arm64]
-skip = true
-
 [bench.mold-gdb-index]
-
-[bench.ripgrep-wasm]
-skip = true
-
-[bench.ytsaurus-debug]
-skip = true
+skip_linkers = ["bfd"]
+min_wild_version = "0.10.0"

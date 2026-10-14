@@ -1,0 +1,30 @@
+<svg width="1000" height="600" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="1000" height="600" fill="#000000"/>
+<text x="500" y="10" dy="0.8em" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#FFFFFF">
+ryzen-9955hx-wasm - spidermonkey-no-debug-wasm - memory</text>
+<text x="5" y="300" dy="0.76em" text-anchor="middle" font-family="sans-serif" 
+font-size="16" fill="#FFFFFF" transform="rotate(270, 5, 288)">MiB</text>
+<line x1="100" y1="460" x2="950" y2="460" stroke="#FFFFFF" />
+<text x="90" y="460" dy="0.5ex" text-anchor="end" fill="#FFFFFF">0</text>
+<line x1="100" y1="384" x2="950" y2="384" stroke="#FFFFFF" />
+<text x="90" y="384" dy="0.5ex" text-anchor="end" fill="#FFFFFF">50</text>
+<line x1="100" y1="308" x2="950" y2="308" stroke="#FFFFFF" />
+<text x="90" y="308" dy="0.5ex" text-anchor="end" fill="#FFFFFF">100</text>
+<line x1="100" y1="232" x2="950" y2="232" stroke="#FFFFFF" />
+<text x="90" y="232" dy="0.5ex" text-anchor="end" fill="#FFFFFF">150</text>
+<line x1="100" y1="156" x2="950" y2="156" stroke="#FFFFFF" />
+<text x="90" y="156" dy="0.5ex" text-anchor="end" fill="#FFFFFF">200</text>
+<line x1="100" y1="80" x2="950" y2="80" stroke="#FFFFFF" />
+<text x="90" y="80" dy="0.5ex" text-anchor="end" fill="#FFFFFF">250</text>
+<rect fill="#0000FF" opacity="0.8" x="142" y="103" width="341" height="357" />
+<line stroke="#FFFFFF" x1="312" y1="102" x2="312" y2="103" />
+<text x="312" y="484" fill="#FFFFFF" text-anchor="middle">LLD</text>
+<text x="312" y="502" fill="#FFFFFF" text-anchor="middle">22.1.2</text>
+<text x="312" y="520" fill="#FFFFFF" text-anchor="middle">Ubuntu</text>
+<text x="312" y="580" fill="#FFFFFF" text-anchor="middle">+99%</text>
+<rect fill="#00FF00" opacity="0.8" x="567" y="281" width="341" height="179" />
+<line stroke="#FFFFFF" x1="737" y1="280" x2="737" y2="282" />
+<text x="737" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="737" y="502" fill="#FFFFFF" text-anchor="middle">d4fdf810</text>
+<text x="737" y="580" fill="#FFFFFF" text-anchor="middle">+0%</text>
+</svg>

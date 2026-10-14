@@ -1,0 +1,40 @@
+<svg width="1000" height="600" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="1000" height="600" fill="#000000"/>
+<text x="500" y="10" dy="0.8em" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#FFFFFF">
+ryzen-9955hx-wasm - wild-release-wasm - time</text>
+<text x="5" y="300" dy="0.76em" text-anchor="middle" font-family="sans-serif" 
+font-size="16" fill="#FFFFFF" transform="rotate(270, 5, 288)">ms</text>
+<line x1="100" y1="460" x2="950" y2="460" stroke="#FFFFFF" />
+<text x="90" y="460" dy="0.5ex" text-anchor="end" fill="#FFFFFF">0</text>
+<line x1="100" y1="422" x2="950" y2="422" stroke="#FFFFFF" />
+<text x="90" y="422" dy="0.5ex" text-anchor="end" fill="#FFFFFF">10</text>
+<line x1="100" y1="384" x2="950" y2="384" stroke="#FFFFFF" />
+<text x="90" y="384" dy="0.5ex" text-anchor="end" fill="#FFFFFF">20</text>
+<line x1="100" y1="346" x2="950" y2="346" stroke="#FFFFFF" />
+<text x="90" y="346" dy="0.5ex" text-anchor="end" fill="#FFFFFF">30</text>
+<line x1="100" y1="308" x2="950" y2="308" stroke="#FFFFFF" />
+<text x="90" y="308" dy="0.5ex" text-anchor="end" fill="#FFFFFF">40</text>
+<line x1="100" y1="270" x2="950" y2="270" stroke="#FFFFFF" />
+<text x="90" y="270" dy="0.5ex" text-anchor="end" fill="#FFFFFF">50</text>
+<line x1="100" y1="232" x2="950" y2="232" stroke="#FFFFFF" />
+<text x="90" y="232" dy="0.5ex" text-anchor="end" fill="#FFFFFF">60</text>
+<line x1="100" y1="194" x2="950" y2="194" stroke="#FFFFFF" />
+<text x="90" y="194" dy="0.5ex" text-anchor="end" fill="#FFFFFF">70</text>
+<line x1="100" y1="156" x2="950" y2="156" stroke="#FFFFFF" />
+<text x="90" y="156" dy="0.5ex" text-anchor="end" fill="#FFFFFF">80</text>
+<line x1="100" y1="118" x2="950" y2="118" stroke="#FFFFFF" />
+<text x="90" y="118" dy="0.5ex" text-anchor="end" fill="#FFFFFF">90</text>
+<line x1="100" y1="80" x2="950" y2="80" stroke="#FFFFFF" />
+<text x="90" y="80" dy="0.5ex" text-anchor="end" fill="#FFFFFF">100</text>
+<rect fill="#0000FF" opacity="0.8" x="142" y="120" width="341" height="340" />
+<line stroke="#FFFFFF" x1="312" y1="116" x2="312" y2="123" />
+<text x="312" y="484" fill="#FFFFFF" text-anchor="middle">LLD</text>
+<text x="312" y="502" fill="#FFFFFF" text-anchor="middle">22.1.2</text>
+<text x="312" y="520" fill="#FFFFFF" text-anchor="middle">Ubuntu</text>
+<text x="312" y="580" fill="#FFFFFF" text-anchor="middle">+138%</text>
+<rect fill="#00FF00" opacity="0.8" x="567" y="317" width="341" height="143" />
+<line stroke="#FFFFFF" x1="737" y1="316" x2="737" y2="318" />
+<text x="737" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="737" y="502" fill="#FFFFFF" text-anchor="middle">d4fdf810</text>
+<text x="737" y="580" fill="#FFFFFF" text-anchor="middle">+0%</text>
+</svg>

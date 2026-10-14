@@ -13,7 +13,7 @@ resolver = "2"
 [workspace.package]
 repository = "https://github.com/wild-linker/wild"
 license = "MIT OR Apache-2.0"
-version = "0.10.0"
+version = "0.11.0"
 rust-version = "1.99.0"
 edition = "2024"
 

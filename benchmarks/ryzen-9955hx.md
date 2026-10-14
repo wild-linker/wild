@@ -2,10 +2,7 @@
 
 This page contains benchmarks of linking various programs. The benchmarks are just running the
 linker, not the compiler. All benchmarks are run on an AMD Ryzen 9 9955HX 16-Core (32 thread)
-processor with 92GiB of RAM. The output file is always on tmpfs.
-
-For benchmarks run on David's 2020 era laptop which were used in benchmark reports prior to 2026,
-see [lemp9.md](lemp9.md).
+processor with 92GiB of RAM. The output file is on tmpfs unless otherwise stated.
 
 The benchmarks include several other linkers for Linux as well as several recent versions of Wild.
 This allows us to both compare between linkers and to see how Wild's performance is changing over
@@ -38,8 +35,8 @@ we benchmark CREL relocations from 0.8.0. Chrome uses CREL relocations by defaul
 
 ![Benchmark of linking chrome-crel](images/ryzen-9955hx/chrome-crel-time.svg)
 
-### chrome-arm64 - time
-![Time to link chrome-arm64](images/ryzen-9955hx/chrome-arm64-time.svg)
+### chrome-android - time
+![Time to link chrome-android](images/ryzen-9955hx/chrome-android-time.svg)
 
 ### mold-crel - time
 
@@ -132,6 +129,37 @@ Now a couple of trivial, hello-world programs. One written in Rust and one writt
 ### c-hello-world - time
 ![Benchmark of linking c-hello-world](images/ryzen-9955hx/c-hello-world-time.svg)
 
+The next benchmark shows linking with --gdb-index which builds an index for use by GDB. Note that
+Wild didn't support this until 0.10.0.
+
+### mold-gdb-index - time
+![Time to link mold-gdb-index](images/ryzen-9955hx/mold-gdb-index-time.svg)
+
+## Filesystem performance
+
+How fast linkers are able to write the output file depends a lot on what filesystem that output file
+is on as well as various OS-specific tweaks that the linker may have done which can help (or in some
+cases hurt) performance on that particular filesystem. Other factors, like whether the output file
+already exists can also have a substantial effect on write performance.
+
+### zed-debug.ext4-no-delete-output - time
+![Time to link zed-debug.ext4-no-delete-output](images/ryzen-9955hx/zed-debug.ext4-no-delete-output-time.svg)
+
+### zed-debug.ext4-delete-output - time
+![Time to link zed-debug.ext4-delete-output](images/ryzen-9955hx/zed-debug.ext4-delete-output-time.svg)
+
+### zed-debug.xfs-delete-output - time
+![Time to link zed-debug.xfs-delete-output](images/ryzen-9955hx/zed-debug.xfs-delete-output-time.svg)
+
+### zed-debug.btrfs-delete-output - time
+![Time to link zed-debug.btrfs-delete-output](images/ryzen-9955hx/zed-debug.btrfs-delete-output-time.svg)
+
+### zed-debug.threads-tmpfs - time
+![Time to link zed-debug.threads-tmpfs](images/ryzen-9955hx/zed-debug.threads-tmpfs-time.svg)
+
+### zed-debug.threads-ext4-delete-output - time
+![Time to link zed-debug.threads-ext4-delete-output](images/ryzen-9955hx/zed-debug.threads-ext4-delete-output-time.svg)
+
 ## Memory consumption
 
 We care not just about execution time, but also memory consumption. Here are the same benchmarks as
@@ -143,8 +171,8 @@ above repeated, but this time measuring the peak memory consumption of the linke
 ### chrome-crel - memory
 ![Memory consumption while linking chrome-crel](images/ryzen-9955hx/chrome-crel-memory.svg)
 
-### chrome-arm64 - memory
-![Memory consumption while linking chrome-arm64](images/ryzen-9955hx/chrome-arm64-memory.svg)
+### chrome-android - memory
+![Memory consumption while linking chrome-android](images/ryzen-9955hx/chrome-android-memory.svg)
 
 ### mold-crel - memory
 ![Memory consumption while linking mold-crel](images/ryzen-9955hx/mold-crel-memory.svg)
@@ -202,10 +230,25 @@ above repeated, but this time measuring the peak memory consumption of the linke
 
 ### c-hello-world - memory
 ![Memory consumption while linking c-hello-world](images/ryzen-9955hx/c-hello-world-memory.svg)
-## UNGROUPED
-### mold-gdb-index - time
-![Time to link mold-gdb-index](images/ryzen-9955hx/mold-gdb-index-time.svg)
 
 ### mold-gdb-index - memory
 ![Memory consumption while linking mold-gdb-index](images/ryzen-9955hx/mold-gdb-index-memory.svg)
+## UNGROUPED
+### zed-debug.ext4-no-delete-output - memory
+![Memory consumption while linking zed-debug.ext4-no-delete-output](images/ryzen-9955hx/zed-debug.ext4-no-delete-output-memory.svg)
+
+### zed-debug.ext4-delete-output - memory
+![Memory consumption while linking zed-debug.ext4-delete-output](images/ryzen-9955hx/zed-debug.ext4-delete-output-memory.svg)
+
+### zed-debug.xfs-delete-output - memory
+![Memory consumption while linking zed-debug.xfs-delete-output](images/ryzen-9955hx/zed-debug.xfs-delete-output-memory.svg)
+
+### zed-debug.btrfs-delete-output - memory
+![Memory consumption while linking zed-debug.btrfs-delete-output](images/ryzen-9955hx/zed-debug.btrfs-delete-output-memory.svg)
+
+### zed-debug.threads-tmpfs - memory
+![Memory consumption while linking zed-debug.threads-tmpfs](images/ryzen-9955hx/zed-debug.threads-tmpfs-memory.svg)
+
+### zed-debug.threads-ext4-delete-output - memory
+![Memory consumption while linking zed-debug.threads-ext4-delete-output](images/ryzen-9955hx/zed-debug.threads-ext4-delete-output-memory.svg)
 
