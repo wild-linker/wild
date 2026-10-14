@@ -31,6 +31,8 @@ pub(crate) struct Config {
 #[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BenchConfig {
+    #[serde(default, rename = "abstract")]
+    pub(crate) is_abstract: bool,
     #[serde(default)]
     pub(crate) skip: bool,
     pub(crate) min_wild_version: Option<String>,
@@ -95,6 +97,7 @@ impl BenchConfig {
         skip_linkers.extend_from_slice(&self.skip_linkers);
 
         Self {
+            is_abstract: self.is_abstract,
             skip: parent.skip || self.skip,
             min_wild_version: self
                 .min_wild_version
@@ -127,22 +130,20 @@ impl Config {
             validate_name(directory)?;
             let base = bench.inherit(&self.defaults);
 
-            let entries = if bench.variants.is_empty() {
-                vec![(directory.clone(), base)]
-            } else {
-                let mut entries = Vec::new();
-                for (variant, settings) in &bench.variants {
-                    validate_name(variant)?;
-                    if !settings.variants.is_empty() {
-                        bail!("Nested variants are not permitted: {directory}.{variant}");
-                    }
-                    entries.push((format!("{directory}.{variant}"), settings.inherit(&base)));
+            let mut entries = vec![(directory.clone(), base.clone())];
+            for (variant, settings) in &bench.variants {
+                validate_name(variant)?;
+                if !settings.variants.is_empty() {
+                    bail!("Nested variants are not permitted: {directory}.{variant}");
                 }
-                entries
-            };
+                entries.push((format!("{directory}.{variant}"), settings.inherit(&base)));
+            }
 
             for (name, settings) in entries {
                 validate_name(settings.filesystem())?;
+                if settings.is_abstract {
+                    continue;
+                }
 
                 if out
                     .insert(name.clone(), (directory.clone(), settings))
