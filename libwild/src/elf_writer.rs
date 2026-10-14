@@ -319,6 +319,16 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
+    let erratum_padding = layout.erratum_padding.load(Relaxed);
+    if erratum_padding > 0 {
+        tracing::debug!(
+            target: "metrics",
+            patches = layout.erratum_patches.load(Relaxed),
+            padding_bytes = erratum_padding,
+            "AArch64 erratum 843419 workaround"
+        );
+    }
+
     fill_padding(section_buffers);
 
     Ok(())
@@ -2354,7 +2364,8 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
-    let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    let (out, instruction_mapping) =
+        write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -2385,6 +2396,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             out,
             section_index,
             rela.iter().map(|rela| Ok(elf::ElfRela::new(*rela))),
+            &instruction_mapping,
             layout,
             table_writer,
             trace,
@@ -2394,6 +2406,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             out,
             section_index,
             crel_iter.map(|r| r.map(elf::ElfCrel::new)),
+            &instruction_mapping,
             layout,
             table_writer,
             trace,
@@ -2445,6 +2458,7 @@ fn write_section_reversed<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 crel.r_offset = section_size.saturating_sub(crel.r_offset + word_size as u64);
                 Ok(elf::ElfCrel::new(crel))
             }),
+            &HashMap::new(),
             layout,
             table_writer,
             trace,
@@ -2459,6 +2473,7 @@ fn write_section_reversed<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     elf::ElfCrel::new(crel)
                 })
             }),
+            &HashMap::new(),
             layout,
             table_writer,
             trace,
@@ -2491,7 +2506,7 @@ fn write_debug_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         return Ok(());
     }
 
-    let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    let (out, _) = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
         elf::RelocationList::Rela(rela) => {
@@ -2523,7 +2538,7 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     sec: Section,
     section_index: object::SectionIndex,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
-) -> Result<&'out mut [u8]> {
+) -> Result<(&'out mut [u8], HashMap<u64, u64>)> {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
@@ -2546,13 +2561,15 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         let section_info = layout
             .output_sections
             .output_info(part_id.output_section_id::<elf::Elf<C>>());
-        match relax_deltas {
+        let effective_size = match relax_deltas {
             None => {
                 let section_size = object.object.section_size(object_section)?;
-                let (out, padding) = out.split_at_mut(section_size as usize);
-                object.object.copy_section_data(object_section, out)?;
-                fill_section_padding::<C, A>(padding, section_info);
-                Ok(out)
+                let section_size = section_size as usize;
+                object
+                    .object
+                    .copy_section_data(object_section, &mut out[..section_size])?;
+                fill_section_padding::<C, A>(&mut out[section_size..], section_info);
+                section_size
             }
             Some(deltas) => {
                 let input_data = object.object.raw_section_data(object_section)?;
@@ -2583,11 +2600,34 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 }
                 fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
 
-                Ok(&mut out[..effective_size])
+                effective_size
             }
+        };
+
+        // AArch64 erratum is mutually exclusive from architectures using relax relocations.
+        if let Some(offsets) = object.erratum_offsets.get(&section_index.0) {
+            debug_assert!(!layout.args().should_output_partial_object());
+            let address = object.section_resolutions[section_index.0]
+                .address()
+                .context("Missing erratum section address")?;
+            let instruction_mapping = crate::erratum843419::patch_erratum_sequences(
+                out,
+                effective_size,
+                address,
+                offsets,
+                object.object,
+                section_index,
+                &layout.erratum_patches,
+            )?;
+            layout
+                .erratum_padding
+                .fetch_add(u64::from(sec.maximal_padding), Relaxed);
+            Ok((out, instruction_mapping))
+        } else {
+            Ok((&mut out[..effective_size], HashMap::new()))
         }
     } else {
-        Ok(&mut [])
+        Ok((&mut [], HashMap::new()))
     }
 }
 
@@ -2685,6 +2725,7 @@ fn apply_relocations<
     out: &mut [u8],
     section_index: object::SectionIndex,
     mut relocations: I,
+    instruction_mapping: &HashMap<u64, u64>,
     layout: &ElfLayout<'data, C>,
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
@@ -2741,6 +2782,7 @@ fn apply_relocations<
             &relocation_cache,
             &relocations,
             relax_deltas,
+            instruction_mapping,
         )
         .with_context(|| {
             format!(
@@ -3388,6 +3430,7 @@ fn write_eh_frame_relocations<
                     &RelocationCache::default(),
                     &iter::empty(),
                     None,
+                    &HashMap::new(),
                 )
                 .with_context(|| {
                     format!(
@@ -3709,8 +3752,13 @@ fn apply_relocation<
     relocation_cache: &RelocationCache<R>,
     relocation_iterator: &I,
     relax_deltas: Option<&SectionRelaxDeltas>,
+    instruction_mapping: &HashMap<u64, u64>,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
+    // Erratum instructions are moved to the veneer location after a section.
+    if let Some(&new_place) = instruction_mapping.get(&(section_address + offset_in_section)) {
+        offset_in_section = new_place - section_address;
+    }
     let original_place = section_address + offset_in_section;
     let _span = tracing::trace_span!(
         "relocation",
