@@ -5152,14 +5152,6 @@ fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'stat
     }
 }
 
-fn empty_linker_function_body() -> WasmFunctionBody<'static> {
-    borrowed_linker_function_body(EMPTY_FUNCTION_BODY)
-}
-
-fn unreachable_linker_function_body() -> WasmFunctionBody<'static> {
-    borrowed_linker_function_body(UNREACHABLE_FUNCTION_BODY)
-}
-
 fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
     WasmFunctionBody {
         bytes: Cow::Owned(bytes),
@@ -5446,7 +5438,7 @@ fn emit_reserved_linker_definitions(
             type_indices.push(merged_type_index(&layout.output_types, &void_void)?);
             bodies.push(match call_ctors_body {
                 Some(bytes) => owned_linker_function_body(bytes),
-                None => empty_linker_function_body(),
+                None => borrowed_linker_function_body(EMPTY_FUNCTION_BODY),
             });
         }
         if indices.init_tls_func.is_some() || indices.init_memory_func.is_some() {
@@ -5477,7 +5469,7 @@ fn emit_reserved_linker_definitions(
 
         for stub in &indices.weak_undef_stubs {
             type_indices.push(merged_type_index(&layout.output_types, &stub.ty)?);
-            bodies.push(unreachable_linker_function_body());
+            bodies.push(borrowed_linker_function_body(UNREACHABLE_FUNCTION_BODY));
         }
         type_indices.append(&mut layout.function_type_indices);
 
