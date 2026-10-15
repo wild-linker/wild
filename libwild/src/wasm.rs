@@ -1822,13 +1822,6 @@ fn classify_data_reloc_ranges(
             .saturating_add(segment.encoded_size.saturating_sub(data_len))
     };
 
-    if relocs.is_empty() {
-        return segments
-            .iter()
-            .map(|segment| (0..0, payload_start_of(segment)))
-            .collect();
-    }
-
     let mut out = Vec::with_capacity(segments.len());
     let mut i = 0usize;
     for segment in segments {
