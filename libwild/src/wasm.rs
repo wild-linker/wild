@@ -4948,40 +4948,34 @@ impl LinkerDefinedIndices {
         };
         needs_memory_base |= export_memory_base;
 
+        fn take_index(next: &mut u32, needed: bool) -> Option<u32> {
+            needed.then(|| {
+                let idx = *next;
+                *next += 1;
+                idx
+            })
+        }
+        fn take_index_count(next: &mut u32, count: u32) -> Result<Option<u32>> {
+            if count == 0 {
+                return Ok(None);
+            }
+            let base = *next;
+            *next = next
+                .checked_add(count)
+                .context("Wasm global index overflow")?;
+            Ok(Some(base))
+        }
+
         let mut next_global = global_import_count;
         // Defined-global slot before `__stack_pointer` (used for its init expression).
         let stack_pointer_defined_slot =
             Some(u32::from(needs_memory_base) + u32::from(needs_table_base));
-        let memory_base_global = needs_memory_base.then(|| {
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
-        let table_base_global = needs_table_base.then(|| {
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
-        let stack_pointer_global = Some({
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
-        let tls_base_global = needs_tls_base.then(|| {
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
-        let tls_size_global = needs_tls_size.then(|| {
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
-        let tls_align_global = needs_tls_align.then(|| {
-            let idx = next_global;
-            next_global += 1;
-            idx
-        });
+        let memory_base_global = take_index(&mut next_global, needs_memory_base);
+        let table_base_global = take_index(&mut next_global, needs_table_base);
+        let stack_pointer_global = take_index(&mut next_global, true);
+        let tls_base_global = take_index(&mut next_global, needs_tls_base);
+        let tls_size_global = take_index(&mut next_global, needs_tls_size);
+        let tls_align_global = take_index(&mut next_global, needs_tls_align);
         let mut data_address_globals = Vec::with_capacity(export_data.len());
         for known in export_data {
             data_address_globals.push((known, next_global));
@@ -4989,51 +4983,16 @@ impl LinkerDefinedIndices {
                 .checked_add(1)
                 .context("Wasm global index overflow")?;
         }
-        let got_mem_global_base = if request.got_mem_count > 0 {
-            let base = next_global;
-            next_global = next_global
-                .checked_add(request.got_mem_count)
-                .context("Wasm global index overflow")?;
-            Some(base)
-        } else {
-            None
-        };
-        let got_func_global_base = if request.got_func_count > 0 {
-            let base = next_global;
-            next_global = next_global
-                .checked_add(request.got_func_count)
-                .context("Wasm global index overflow")?;
-            Some(base)
-        } else {
-            None
-        };
-        let dynamic_data_global_base = if request.dynamic_data_count > 0 {
-            let base = next_global;
-            next_global = next_global
-                .checked_add(request.dynamic_data_count)
-                .context("Wasm global index overflow")?;
-            Some(base)
-        } else {
-            None
-        };
+        let got_mem_global_base = take_index_count(&mut next_global, request.got_mem_count)?;
+        let got_func_global_base = take_index_count(&mut next_global, request.got_func_count)?;
+        let dynamic_data_global_base =
+            take_index_count(&mut next_global, request.dynamic_data_count)?;
         let num_defined_globals = next_global - global_import_count;
 
         let mut next_func = function_import_count;
-        let call_ctors_func = needs_ctors.then(|| {
-            let idx = next_func;
-            next_func += 1;
-            idx
-        });
-        let init_tls_func = needs_init_tls.then(|| {
-            let idx = next_func;
-            next_func += 1;
-            idx
-        });
-        let init_memory_func = request.needs_init_memory.then(|| {
-            let idx = next_func;
-            next_func += 1;
-            idx
-        });
+        let call_ctors_func = take_index(&mut next_func, needs_ctors);
+        let init_tls_func = take_index(&mut next_func, needs_init_tls);
+        let init_memory_func = take_index(&mut next_func, request.needs_init_memory);
         for stub in &mut weak_undef_stubs {
             stub.function_index = next_func;
             next_func = next_func
