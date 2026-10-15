@@ -5453,32 +5453,14 @@ fn emit_reserved_linker_definitions(
             Cow::Owned(i32_const_for_u32(layout.tls_align)?),
         );
     }
-    for _ in &indices.data_address_globals {
-        push_i32_global(
-            &mut linker_globals,
-            false,
-            Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        );
-    }
-    // GOT.mem placeholders. wasm-ld emits static GOT.data.internal.* as immutable i32 for
-    // freestanding executables.
-    for _ in 0..indices.got_mem_count {
-        push_i32_global(
-            &mut linker_globals,
-            false,
-            Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        );
-    }
-    // GOT.func placeholders. Filled with table indices after the indirect table is finalized.
-    for _ in 0..indices.got_func_count {
-        push_i32_global(
-            &mut linker_globals,
-            false,
-            Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        );
-    }
-    // `--export-dynamic` data symbol addresses. Filled once data addresses are known.
-    for _ in 0..indices.dynamic_data_count {
+    // Immutable i32 placeholders, as wasm-ld does for static GOT.data.internal.*.
+    // Exported data addresses, GOT.mem, GOT.func, and `--export-dynamic` data globals are
+    // filled once their addresses or table slots are known.
+    let placeholder_globals = indices.data_address_globals.len()
+        + indices.got_mem_count as usize
+        + indices.got_func_count as usize
+        + indices.dynamic_data_count as usize;
+    for _ in 0..placeholder_globals {
         push_i32_global(
             &mut linker_globals,
             false,
