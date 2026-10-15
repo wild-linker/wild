@@ -46,7 +46,7 @@ end lists the features required to link the Linux kernel.
 | Symbol assignment inside sections (`sym = .`) | ✅ | |
 | Location counter assignment (`. = expr`) | 🧪 | constant expressions (e.g. `. = 0x1000 * 2`) are supported |
 | `ALIGN(n)` on the location counter (`. = ALIGN(n)`) | ✅ | |
-| Per-section `ALIGN(n)` specifier | ✅ | |
+| Per-section `ALIGN(n)` specifier | 🧪 | Only constant expressions are supported |
 | `ASSERT(expr, "msg")` inside `SECTIONS` | ✅ | |
 | `OVERLAY { ... }` | ❌ | |
 | Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 🧪 | Setting the section type using the `TYPE` attribute is not yet supported |

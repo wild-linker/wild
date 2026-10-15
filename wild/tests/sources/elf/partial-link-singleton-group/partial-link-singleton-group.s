@@ -1,17 +1,14 @@
-# Wild doesn't yet properly support COMDAT groups. This test checks that we remove the group flag
-# when doing partial linking so that we don't end up with a dangling grouped section. This isn't
-# what our usual reference linkers do, since they have proper COMDAT support.
-#
-# TODO: Update this test when we add proper COMDAT support.
-
+//#AbstractConfig:base
 //#Arch: x86_64
 //#LinkArgs:-r
 //#RunEnabled:false
 //#TestUpdateInPlace:true
-//#ReferenceLinkers:
-//#DiffEnabled:false
-//#ExpectSection:.text.group_member flags=AX
-//#NoSection:.group
+//#ExpectSection:.text.group_member flags=AXG
+//#ExpectSection:.group type=17
+
+//#Config:default:base
+//#Config:strip-signature:base
+//#LinkArgs:-r --retain-symbols-file=./keep.txt
 
 .section .text.group_member,"axG",@progbits,group_signature,comdat
 .globl group_signature

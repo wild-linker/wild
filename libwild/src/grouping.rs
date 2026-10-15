@@ -325,7 +325,10 @@ impl<'data, P: Platform> SequencedInputObject<'data, P> {
         self.parsed.object.is_dynamic()
     }
 
-    pub(crate) fn symbol_strength(&self, symbol_id: crate::symbol_db::SymbolId) -> SymbolStrength {
+    pub(crate) fn input_symbol_strength(
+        &self,
+        symbol_id: crate::symbol_db::SymbolId,
+    ) -> SymbolStrength {
         let local_index = symbol_id.to_input(self.symbol_id_range);
         let Ok(obj_symbol) = self.parsed.object.symbol(local_index) else {
             return SymbolStrength::Undefined;
@@ -369,7 +372,7 @@ impl<'data> SequencedStubLibrary<'data> {
         )
     }
 
-    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+    pub(crate) fn input_symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
         if local_index < self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
@@ -400,10 +403,10 @@ impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
         }
     }
 
-    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+    pub(crate) fn input_symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         match self {
-            SequencedInput::Object(o) => o.symbol_strength(symbol_id),
-            SequencedInput::StubLibrary(o) => o.symbol_strength(symbol_id),
+            SequencedInput::Object(o) => o.input_symbol_strength(symbol_id),
+            SequencedInput::StubLibrary(o) => o.input_symbol_strength(symbol_id),
             _ => SymbolStrength::Undefined,
         }
     }

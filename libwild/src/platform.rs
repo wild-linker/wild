@@ -1178,6 +1178,10 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn is_dynamic(&self) -> bool;
 
+    fn section_groups(&self) -> Result<Vec<crate::comdat::SectionGroup<'data>>> {
+        Ok(Vec::new())
+    }
+
     fn num_symbols(&self) -> usize;
 
     fn enumerate_symbols(
@@ -1365,6 +1369,10 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
     fn should_exclude(&self) -> bool;
 
     fn is_group(&self) -> bool;
+
+    fn is_group_header(&self) -> bool {
+        false
+    }
 
     fn is_note(&self) -> bool;
 

@@ -418,6 +418,17 @@ mod tests {
     }
 
     #[test]
+    fn builds_thread_local_symbol() {
+        let mut symbols = [Symbol {
+            name: b"_tls",
+            address: 42,
+            flags: macho::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL.into(),
+        }];
+
+        check(&mut symbols);
+    }
+
+    #[test]
     fn builds_shared_prefix_trie() {
         check(&mut [
             Symbol {
