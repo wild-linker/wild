@@ -3817,14 +3817,6 @@ fn linker_defined_import_resolution(
     linker_defined_from_prelude_def(def_id, expected_kind, symbol_db)
 }
 
-fn object_needs_linker_memory(input: &WasmObjectLayoutInput<'_>) -> bool {
-    !input.memory_imports.is_empty() || !input.memories.is_empty()
-}
-
-fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
-    inputs.iter().any(object_needs_linker_memory)
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct LinkerImportAbsorption {
     needs_memory_base: bool,
@@ -6274,7 +6266,9 @@ where
             .collect::<Result<Vec<_>>>()?
     };
 
-    let linker_memory = any_object_needs_linker_memory(&layout_inputs);
+    let linker_memory = layout_inputs
+        .iter()
+        .any(|input| !input.memory_imports.is_empty() || !input.memories.is_empty());
     let stack_size = symbol_db.args.z_stack_size;
     let stack_first = symbol_db.args.stack_first;
     let initial_memory = symbol_db.args.initial_memory;
