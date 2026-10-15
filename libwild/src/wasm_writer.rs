@@ -27,11 +27,11 @@ use crate::wasm::WasmRelocation;
 use crate::wasm::WasmSymbol;
 use crate::wasm::WasmSymbolKind;
 use crate::wasm::count_output_imports;
+use crate::wasm::deferred_tls_template_pointer;
 use crate::wasm::demangle_symbol_name;
 use crate::wasm::output_data_has_passive;
 use crate::wasm::output_data_segment_count;
 use crate::wasm::output_section_id;
-use crate::wasm::reject_tls_template_reloc;
 use crate::wasm::relocation_type_to_string;
 use crate::wasm::section_id;
 use crate::wasm::wasm_symbol_name_str;
@@ -194,8 +194,9 @@ fn apply_section_reloc(
         .offset
         .checked_sub(local_base)
         .context("Wasm relocation offset is before the body or payload start")?;
-    if in_tls_template {
-        reject_tls_template_reloc(index_map, &reloc)?;
+    // The passive template is shared. Per-thread TLS pointers are stored by `__wasm_init_tls`.
+    if in_tls_template && deferred_tls_template_pointer(index_map, &reloc)?.is_some() {
+        return Ok(());
     }
     apply_resolved_reloc(
         index_map,

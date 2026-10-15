@@ -5453,6 +5453,7 @@ fn emit_reserved_linker_definitions(
     indices: &LinkerDefinedIndices,
     call_ctors_body: Option<Vec<u8>>,
     init_memory_flag: Option<u32>,
+    tls_pointer_fixups: &[TlsPointerFixup],
 ) -> Result {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
@@ -5562,6 +5563,7 @@ fn emit_reserved_linker_definitions(
                     tls_base_global,
                     layout.tls_size,
                     &copies.tls,
+                    tls_pointer_fixups,
                 )?));
             }
             if let Some(init_memory_func) = indices.init_memory_func {
@@ -5750,43 +5752,60 @@ fn passive_init_copies(
     Ok(PassiveInitCopies { tls, shared })
 }
 
+/// One `R_WASM_MEMORY_ADDR_I32` in a shared-memory TLS template whose target is a TLS symbol.
+struct TlsPointerFixup {
+    dest: u32,
+    offset: i32,
+}
+
 fn encode_init_tls_body(
     tls_base_global: u32,
     tls_size: u32,
     copies: &[PassiveSegmentCopy],
+    fixups: &[TlsPointerFixup],
 ) -> Result<Vec<u8>> {
-    let mut bytes = vec![0x00];
-    bytes.push(0x20);
-    bytes.push(0x00);
-    bytes.push(0x24);
-    leb128::write::unsigned(&mut bytes, u64::from(tls_base_global))
-        .expect("leb128 write to Vec cannot fail");
+    let memarg = wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let mut func = wasm_encoder::Function::new([]);
+    let mut ins = func.instructions();
+    ins.local_get(0);
+    ins.global_set(tls_base_global);
     if tls_size > 0 {
-        bytes.push(0x20);
-        bytes.push(0x00);
-        bytes.push(0x41);
-        bytes.push(0x00);
-        bytes.extend(i32_const_for_u32(tls_size)?);
-        bytes.extend_from_slice(&[0xfc, 0x0b, 0x00]);
+        let tls_size = i32::try_from(tls_size).context("Wasm TLS size out of range")?;
+        ins.local_get(0);
+        ins.i32_const(0);
+        ins.i32_const(tls_size);
+        ins.memory_fill(0);
     }
     for copy in copies {
-        bytes.push(0x20);
-        bytes.push(0x00);
+        let len = i32::try_from(copy.len).context("Wasm data segment too large")?;
+        ins.local_get(0);
         if copy.offset != 0 {
-            bytes.extend(i32_const_for_u32(copy.offset)?);
-            bytes.push(0x6a);
+            let offset =
+                i32::try_from(copy.offset).context("Wasm TLS template offset out of range")?;
+            ins.i32_const(offset);
+            ins.i32_add();
         }
-        bytes.push(0x41);
-        bytes.push(0x00);
-        bytes.extend(i32_const_for_u32(copy.len)?);
-        bytes.push(0xfc);
-        bytes.push(0x08);
-        leb128::write::unsigned(&mut bytes, u64::from(copy.segment_index))
-            .expect("leb128 write to Vec cannot fail");
-        bytes.push(0x00);
+        ins.i32_const(0);
+        ins.i32_const(len);
+        ins.memory_init(0, copy.segment_index);
     }
-    bytes.push(0x0b);
-    Ok(bytes)
+    // After the copy. `memory.init` would overwrite a store into the thread's block.
+    for fixup in fixups {
+        let dest = i32::try_from(fixup.dest).context("Wasm TLS relocation offset out of range")?;
+        ins.i32_const(dest);
+        ins.global_get(tls_base_global);
+        ins.i32_add();
+        ins.global_get(tls_base_global);
+        ins.i32_const(fixup.offset);
+        ins.i32_add();
+        ins.i32_store(memarg);
+    }
+    ins.end();
+    Ok(func.into_raw_body())
 }
 
 fn encode_init_memory_body(flag: u32, copies: &[PassiveSegmentCopy]) -> Result<Vec<u8>> {
@@ -6583,7 +6602,6 @@ where
         } else {
             None
         };
-        emit_reserved_linker_definitions(&mut layout, &indices, call_ctors_body, init_memory_flag)?;
 
         // wasm-ld always defines a linear memory for executables.
         if layout.memories.is_empty() {
@@ -6631,6 +6649,22 @@ where
             stack_size,
             heap_end,
             stack_first,
+        )?;
+        let tls_pointer_fixups = collect_tls_pointer_fixups(&layout)?;
+        if !tls_pointer_fixups.is_empty() {
+            indices
+                .tls_base_global
+                .context("shared-memory TLS pointer relocation is missing __tls_base")?;
+            indices
+                .init_tls_func
+                .context("shared-memory TLS pointer relocation is missing __wasm_init_tls")?;
+        }
+        emit_reserved_linker_definitions(
+            &mut layout,
+            &indices,
+            call_ctors_body,
+            init_memory_flag,
+            &tls_pointer_fixups,
         )?;
         fill_got_mem_inits(
             &mut layout,
@@ -6902,8 +6936,7 @@ const PASSIVE_DATA_RELOC_ERROR: &str =
 const SHARED_TLS_RELOC_ERROR: &str =
     "relocation to a shared-memory TLS symbol is not supported yet";
 
-const SHARED_TLS_TEMPLATE_RELOC_ERROR: &str =
-    "relocation to a TLS symbol in a shared-memory TLS template is not supported yet";
+const SHARED_TLS_TEMPLATE_RELOC_ERROR: &str = "only R_WASM_MEMORY_ADDR_I32 relocations to a TLS symbol are supported in a shared-memory TLS template";
 
 fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
     match addr {
@@ -6914,20 +6947,59 @@ fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
     }
 }
 
-// Data relocations inside a TLS template cannot bake a per-thread address.
-pub(crate) fn reject_tls_template_reloc(
+pub(crate) fn deferred_tls_template_pointer(
     index_map: &WasmObjectIndexMap,
     reloc: &WasmRelocation,
-) -> Result {
-    if is_memory_addr_relocation(reloc.ty)
-        && matches!(
-            index_map.data_addresses.get(reloc.index as usize),
-            Some(WasmDataAddress::TlsOffset(_))
-        )
-    {
-        bail!("{SHARED_TLS_TEMPLATE_RELOC_ERROR}");
+) -> Result<Option<i32>> {
+    let Some(addr) = index_map.data_addresses.get(reloc.index as usize).copied() else {
+        return Ok(None);
+    };
+    if !matches!(addr, WasmDataAddress::TlsOffset(_)) {
+        return Ok(None);
     }
-    Ok(())
+    if reloc.ty != RelocationType::MemoryAddrI32 {
+        if is_memory_addr_relocation(reloc.ty) {
+            bail!("{SHARED_TLS_TEMPLATE_RELOC_ERROR}");
+        }
+        return Ok(None);
+    }
+    Ok(Some(tls_reloc_value(addr, 0, reloc.addend)? as i32))
+}
+
+fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerFixup>> {
+    let mut fixups = Vec::new();
+    for (segments, (relocs, index_map)) in layout.object_data_layouts.iter().zip(
+        layout
+            .object_data_relocations
+            .iter()
+            .zip(layout.object_index_maps.iter()),
+    ) {
+        for segment in segments {
+            if !segment.tls_template {
+                continue;
+            }
+            let start = segment.reloc_range.start as usize;
+            let end = segment.reloc_range.end as usize;
+            let segment_relocs = relocs.get(start..end).ok_or_else(|| {
+                crate::error!("Wasm TLS template relocation range {start}..{end} is out of range")
+            })?;
+            for reloc in segment_relocs {
+                let Some(offset) = deferred_tls_template_pointer(index_map, reloc)? else {
+                    continue;
+                };
+                let at = reloc
+                    .offset
+                    .checked_sub(segment.payload_start)
+                    .context("Wasm TLS relocation offset is before the segment payload")?;
+                let dest = segment
+                    .output_memory_offset
+                    .checked_add(at)
+                    .context("Wasm TLS relocation offset overflow")?;
+                fixups.push(TlsPointerFixup { dest, offset });
+            }
+        }
+    }
+    Ok(fixups)
 }
 
 #[derive(Clone, Copy)]
