@@ -261,6 +261,7 @@ impl<'data> LinkerPlugin<'data> {
         // than of `__wrap_*`.
         symbol_db.restore_wrapped_symbol_names();
 
+        resolver.begin_lto_output(symbol_db.groups.len());
         symbol_db.add_inputs(
             per_symbol_flags,
             output_sections,
@@ -840,6 +841,7 @@ enum PluginSymbolResolution {
 pub(crate) struct PluginSymbol<'data> {
     pub(crate) name: UnversionedSymbolName<'data>,
     pub(crate) version: Option<&'data [u8]>,
+    pub(crate) comdat_key: Option<crate::hash::PreHashed<&'data [u8]>>,
     pub(crate) visibility: u8,
     pub(crate) kind: Option<SymbolKind>,
     pub(crate) size: u64,
@@ -925,6 +927,11 @@ extern "C" fn add_symbols(
                     ),
                     version: sym.version.is_null().not().then(|| {
                         &*arena.alloc_slice_copy(unsafe { CStr::from_ptr(sym.version) }.to_bytes())
+                    }),
+                    comdat_key: (!sym.comdat_key.is_null()).then(|| {
+                        let name: &[u8] = arena
+                            .alloc_slice_copy(unsafe { CStr::from_ptr(sym.comdat_key) }.to_bytes());
+                        crate::hash::PreHashed::new(name, crate::hash::hash_bytes(name))
                     }),
                     kind: sym.kind(),
                     visibility: sym.visibility as u8,

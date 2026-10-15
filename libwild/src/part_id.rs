@@ -34,6 +34,11 @@ pub(crate) fn should_merge_sections(
     if !args.should_merge_sections() {
         return false;
     }
+    if args.should_output_partial_object()
+        && (section_header.is_group() || section_header.is_group_header())
+    {
+        return false;
+    }
     section_header.is_merge_section() && section_alignment <= 1
 }
 

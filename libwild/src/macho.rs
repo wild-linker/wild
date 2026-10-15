@@ -786,7 +786,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_group(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_note(&self) -> bool {
