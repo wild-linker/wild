@@ -44,6 +44,13 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
+// https://en.wikipedia.org/wiki/REX_prefix
+
+// 64-bit instruction REX encoding.
+const REX_W: u8 = 0x48;
+// 64-bit instruction REX encoding (extended registers used).
+const REX_W_R: u8 = 0x4c;
+
 macro_rules! rel_info_from_type {
     ($r_type:expr) => {
         const { relocation_from_raw($r_type).unwrap() }
@@ -156,7 +163,7 @@ impl crate::platform::Arch for ElfX86_64 {
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
         _sym_addr: u64,
         _section_address: u64,
-        _rel_addend: i64,
+        rel_addend: i64,
         _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
     ) -> Option<Self::Relaxation> {
         let is_known_address = flags.has_link_time_address();
@@ -297,10 +304,9 @@ impl crate::platform::Arch for ElfX86_64 {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTPCREL if !interposable && offset >= 2 => {
-                match section_bytes.get(offset - 2)? {
-                    // mov *x(%rip), reg
-                    0x8b => {
+            object::elf::R_X86_64_GOTPCREL if !interposable && rel_addend == -4 && offset >= 3 => {
+                match section_bytes.get(offset - 3..offset - 1)? {
+                    [REX_W | REX_W_R, 0x8b] => {
                         return Some(Relaxation {
                             kind: RelaxationKind::MovIndirectToLea,
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
