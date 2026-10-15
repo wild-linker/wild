@@ -1,24 +1,55 @@
 use crate::Result;
+use anyhow::Context;
 use anyhow::bail;
-use std::process::Command;
+use std::path::Path;
 
 pub(crate) fn check_system_settings() -> Result {
-    let Ok(output) = Command::new("cpupower")
-        .args(["frequency-info", "-o", "proc"])
-        .output()
-    else {
-        // If cpupower isn't installed, then don't worry about it. It's generally only installed on
-        // systems where it's supported.
-        return Ok(());
+    let policies = match std::fs::read_dir("/sys/devices/system/cpu/cpufreq") {
+        Ok(policies) => policies,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("Failed to read CPU frequency policies"),
     };
 
-    let output = String::from_utf8_lossy(&output.stdout);
-    if !output.contains("performance") {
+    for policy in policies {
+        let policy = policy?;
+        if !policy.file_name().as_encoded_bytes().starts_with(b"policy") {
+            continue;
+        }
+        let path = policy.path();
+        let min = read_setting(&path.join("scaling_min_freq"))?;
+        let max = read_setting(&path.join("scaling_max_freq"))?;
+        if min != max {
+            bail!(
+                "CPU frequency limits differ for {} ({min}–{max} kHz). Set equal limits with:\n\
+                sudo cpupower frequency-set --min <frequency> --max <frequency>",
+                path.display()
+            );
+        }
+    }
+
+    let boost = Path::new("/sys/devices/system/cpu/cpufreq/boost");
+    let no_turbo = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
+    let boost_enabled = if boost.try_exists()? {
+        read_setting(boost)? != 0
+    } else if no_turbo.try_exists()? {
+        read_setting(no_turbo)? == 0
+    } else {
+        false
+    };
+    if boost_enabled {
         bail!(
-            "CPU isn't set to performance mode, please run:\n\
-        sudo cpupower frequency-set --governor performance"
+            "CPU boost is enabled, please run:\n\
+            sudo cpupower set --boost 0"
         );
     }
 
     Ok(())
+}
+
+fn read_setting(path: &Path) -> Result<u64> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?
+        .trim()
+        .parse()
+        .with_context(|| format!("Invalid CPU setting in {}", path.display()))
 }
