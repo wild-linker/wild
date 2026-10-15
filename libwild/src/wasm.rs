@@ -2584,9 +2584,15 @@ impl<'data> WasmObjectLayout<'data> {
             decode_sorted_relocs_for(file, file.standard_section_index[section_id::DATA as usize])?;
 
         let function_bodies = file.function_bodies()?;
-        let function_body_spans = function_body_spans_from_bodies(&function_bodies)?;
+        let function_body_spans = function_bodies
+            .iter()
+            .map(function_body_span)
+            .collect::<Result<Vec<_>>>()?;
         let data_segments = file.data_segments()?;
-        let data_segment_spans = data_segment_spans_from_segments(&data_segments)?;
+        let data_segment_spans = data_segments
+            .iter()
+            .map(data_segment_span)
+            .collect::<Result<Vec<_>>>()?;
 
         self.function_bodies = function_bodies;
         self.data_segments = data_segments;
@@ -2749,10 +2755,6 @@ fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[
     &relocs[reloc_index_range(relocs, start, end)]
 }
 
-fn function_body_spans_from_bodies(bodies: &[WasmFunctionBody<'_>]) -> Result<Vec<(u32, u32)>> {
-    bodies.iter().map(function_body_span).collect()
-}
-
 fn function_body_span(body: &WasmFunctionBody<'_>) -> Result<(u32, u32)> {
     let start = body.code_offset;
     let len = u32::try_from(body.bytes.len()).context("Wasm function body too large")?;
@@ -2760,10 +2762,6 @@ fn function_body_span(body: &WasmFunctionBody<'_>) -> Result<(u32, u32)> {
         .checked_add(len)
         .context("Wasm function body span overflow")?;
     Ok((start, end))
-}
-
-fn data_segment_spans_from_segments(segments: &[WasmDataSegment<'_>]) -> Result<Vec<(u32, u32)>> {
-    segments.iter().map(data_segment_span).collect()
 }
 
 fn data_segment_span(segment: &WasmDataSegment<'_>) -> Result<(u32, u32)> {
