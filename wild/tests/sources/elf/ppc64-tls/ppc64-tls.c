@@ -26,6 +26,13 @@
 //#CompArgs:-fno-pie -ftls-model=local-exec
 //#LinkArgs:-no-pie
 
+//#Config:local-exec-import-no-pie:local-exec-no-pie
+//#CompArgs:-DPPC64_TLS_IMPORT
+//#CompSoArgs:-fPIC
+//#Shared:ppc64-tls-dso.c
+//#ReferenceLinkers:lld
+//#ExpectError:relocation R_PPC64_TPREL16_.*cannot be used against symbol
+
 // A local-exec TLS reference inside the shared object itself. The thread-pointer offset is not
 // known when linking a DSO. GNU ld accepts this with DF_STATIC_TLS and text relocations; wild
 // rejects it.
@@ -49,11 +56,17 @@
 extern int ppc64_tls_dso_value(void);
 #endif
 
+#if defined(PPC64_TLS_IMPORT)
+extern __thread int imported_tls;
+#endif
+
 static __thread long local_tls = 40;
 static __thread char local_tls_byte = 2;
 
 int main(void) {
-#if defined(PPC64_TLS_DSO)
+#if defined(PPC64_TLS_IMPORT)
+  return imported_tls;
+#elif defined(PPC64_TLS_DSO)
   return ppc64_tls_dso_value();
 #else
   return (int)local_tls + local_tls_byte;

@@ -3814,7 +3814,9 @@ fn apply_relocation<
         local_symbol_id,
         flags,
     } = get_resolution(rel, object_layout, layout)?;
-    if layout.symbol_db.output_kind.is_position_independent()
+    let reject_dynamic_direct = layout.symbol_db.output_kind.is_position_independent()
+        || A::relocation_from_raw(r_type)?.kind == RelocationKind::TpOff;
+    if reject_dynamic_direct
         && (flags.is_interposable() || flags.is_dynamic())
         && !flags.needs_copy_relocation()
         && !flags.needs_plt()
