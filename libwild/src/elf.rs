@@ -500,11 +500,14 @@ pub(crate) struct File<'data, C: ElfClass> {
     pub(crate) arch: Architecture,
     #[debug(skip)]
     pub(crate) data: &'data [u8],
+
     #[debug(skip)]
     pub(crate) sections: SectionTable<'data, C>,
+
     /// This may be symtab or dynsym depending on the file type.
     #[debug(skip)]
     pub(crate) symbols: SymbolTable<'data, C>,
+
     #[debug(skip)]
     pub(crate) versym: &'data [Versym],
 
@@ -521,6 +524,10 @@ pub(crate) struct File<'data, C: ElfClass> {
     pub(crate) eflags: object::elf::FileFlags,
 
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
+
+    /// There won't be any SHT_GROUP sections outside of this range. This is here as an
+    /// optimisation to avoid rescanning more sections than necessary.
+    group_sections: std::ops::Range<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -2185,13 +2192,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
                 strings_size += symtab_name_for_strtab(info.name).len() + 1;
             } else if symbol_db.args.should_output_partial_object
-                && sym.is_undefined()
-                && symbol_db.is_canonical(symbol_id)
-                && let Ok(name) = state.object.symbol_name(sym)
-                && !name.is_empty()
+                && let Some(info) = SymbolCopyInfo::for_undefined(
+                    state.object,
+                    sym_index,
+                    sym,
+                    symbol_id,
+                    symbol_db,
+                    &state.section_groups,
+                )
             {
                 num_globals += 1;
-                strings_size += symtab_name_for_strtab(name).len() + 1;
+                strings_size += symtab_name_for_strtab(info.name).len() + 1;
             }
         }
         let entry_size = C::SYMTAB_ENTRY_SIZE;
@@ -2673,10 +2684,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut num_phdrs = 0;
         let mut has_filehdr = false;
         let mut load_without_hdrs = false;
+        let mut has_headers = false;
 
         for script in linker_scripts {
             num_phdrs += script.parsed.program_headers.len();
             for phdr in &script.parsed.program_headers {
+                has_headers = has_headers || phdr.has_filehdr || phdr.has_phdrs;
                 let ptype = expression_eval::evaluate_const(&phdr.ptype)? as u32;
                 if ptype == pt::LOAD.0 {
                     if phdr.has_filehdr || phdr.has_phdrs {
@@ -2815,6 +2828,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         };
 
+        builder.set_custom_phdrs_include_headers(has_headers);
+
         for (pos, section_id) in ordered_sections.iter().enumerate() {
             let section_id = *section_id;
 
@@ -2856,11 +2871,20 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 while let Some((_, seg_id)) = it.next_if(|&(cat, _)| cat == 3) {
                     builder.push_event(OrderEvent::SegmentEnd(seg_id));
                 }
-
+                let sec_info = output_sections.output_info(section_id);
+                if let Some(ref loc_info) = sec_info.location_info {
+                    let (_, lc_stop) = loc_info.location_counters;
+                    builder.emit_location_counters_up_to(lc_stop);
+                }
                 for (_, seg_id) in it {
                     builder.push_event(OrderEvent::SegmentStart(seg_id));
                 }
             } else {
+                let sec_info = output_sections.output_info(section_id);
+                if let Some(ref loc_info) = sec_info.location_info {
+                    let (_, lc_stop) = loc_info.location_counters;
+                    builder.emit_location_counters_up_to(lc_stop);
+                }
                 for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
                     let entry = segment_entries[seg_idx];
                     if *segment == Some(pos) && !entry.has_filehdr && !entry.has_phdrs {
@@ -2965,6 +2989,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         section: &Self::SectionHeader,
         args: &Self::Args,
     ) -> SectionRuleOutcome {
+        if section.is_group() || section.is_group_header() {
+            return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(
+                output_section_id::PARTIAL_LINKING_SINGLETONS,
+            ));
+        }
+
         if section.should_exclude() {
             return SectionRuleOutcome::Discard;
         }
@@ -3158,6 +3188,7 @@ impl<'data, C: ElfClass> File<'data, C> {
         let sections = header.sections(endian, data)?;
         let eflags = header.e_flags(endian);
 
+        let mut group_sections = 0..0;
         let mut symbols = SymbolTable::<C>::default();
         let mut versym: &[Versym] = &[];
         let mut verdef = None;
@@ -3168,6 +3199,12 @@ impl<'data, C: ElfClass> File<'data, C> {
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
             match section.sh_type(endian) {
+                sht::GROUP if !is_dynamic => {
+                    if group_sections.is_empty() {
+                        group_sections.start = section_index.0;
+                    }
+                    group_sections.end = section_index.0 + 1;
+                }
                 sht::DYNSYM if is_dynamic => {
                     symbols =
                         SymbolTable::<C>::parse(endian, data, &sections, section_index, section)?;
@@ -3194,6 +3231,7 @@ impl<'data, C: ElfClass> File<'data, C> {
             is_dynamic.then(|| DynamicTagValues::read::<C>(&sections, data, &symbols));
 
         Ok(Self {
+            group_sections,
             arch: architecture,
             data,
             sections,
@@ -3265,6 +3303,65 @@ fn normalize_note_alignment(
 
 impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
     type Platform = Elf<C>;
+
+    fn section_groups(&self) -> Result<Vec<crate::comdat::SectionGroup<'data>>> {
+        self.group_sections
+            .clone()
+            .filter_map(|index| {
+                let index = object::SectionIndex(index);
+                let header = self
+                    .sections
+                    .section(index)
+                    .expect("Invalid group section index");
+                (header.sh_type(LittleEndian) == sht::GROUP).then_some((index, header))
+            })
+            .map(|(index, header)| {
+                if header.sh_link(LittleEndian) as usize != self.symbols.section().0 {
+                    bail!("Group {} links to an unsupported symbol table", index.0);
+                }
+
+                let symbol = self
+                    .symbols
+                    .symbol(object::SymbolIndex(header.sh_info(LittleEndian) as usize))?;
+
+                object::read::elf::Sym::name(symbol, LittleEndian, self.symbols.strings())?;
+
+                let words: &[object::endian::U32<LittleEndian>] =
+                    header.data_as_array(LittleEndian, self.data)?;
+
+                let Some((flags, members)) = words.split_first() else {
+                    bail!("Empty section group {}", index.0)
+                };
+
+                let flags = flags.get(LittleEndian);
+                if flags & !object::elf::GRP_COMDAT.0 != 0 {
+                    bail!("Unsupported section group flags {flags:#x}");
+                }
+
+                members.iter().try_for_each(|word| {
+                    let member = object::SectionIndex(word.get(LittleEndian) as usize);
+                    let section = self.sections.section(member)?;
+                    if member.0 == 0
+                        || member == index
+                        || section.sh_type(LittleEndian) == object::elf::SHT_GROUP
+                    {
+                        bail!("Invalid member {} of section group {}", member.0, index.0);
+                    }
+                    if !section.sh_flags(LittleEndian).contains(shf::GROUP) {
+                        bail!("Section {} in group {} lacks SHF_GROUP", member.0, index.0);
+                    }
+                    Ok(())
+                })?;
+
+                Ok(crate::comdat::SectionGroup {
+                    index: index.into(),
+                    signature_symbol: object::SymbolIndex(header.sh_info(LittleEndian) as usize),
+                    is_comdat: flags & object::elf::GRP_COMDAT.0 != 0,
+                    member_data: members,
+                })
+            })
+            .collect()
+    }
 
     fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -4082,6 +4179,10 @@ impl platform::SectionHeader for object::elf::SectionHeader64<LittleEndian> {
 
     fn is_group(&self) -> bool {
         self.sh_flags(LittleEndian).contains(shf::GROUP)
+    }
+
+    fn is_group_header(&self) -> bool {
+        self.sh_type(LittleEndian) == sht::GROUP
     }
 
     fn is_note(&self) -> bool {
@@ -5173,6 +5274,7 @@ pub(crate) fn process_aarch64_build_attributes(
 ) -> Result<AArch64BuildAttributes> {
     let section = object.section(section_index)?;
     let mut content = section.data(LittleEndian, object.data)?;
+    let section_size = content.len();
 
     ensure!(content.starts_with(b"A"), "Header must start with 'A'");
     content = &content[1..];
@@ -5180,6 +5282,16 @@ pub(crate) fn process_aarch64_build_attributes(
     let mut attributes = AArch64BuildAttributes::default();
 
     while !content.is_empty() {
+        let read_offset = section_size - content.len();
+        if content.len() < size_of::<u32>() {
+            bail!(
+                "({}): unexpected end of data at offset {:#x} while reading [{:#x}, {:#x})",
+                secnames::ARM_ATTRIBUTES_SECTION_NAME_STR,
+                section_size,
+                read_offset,
+                read_offset + size_of::<u32>()
+            );
+        }
         let subsection_size =
             read_u32(&mut content).context("Cannot read AArch64 subsection size")? as usize;
 

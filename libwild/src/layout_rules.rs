@@ -167,7 +167,7 @@ pub(crate) struct SectionOutputInfo {
 }
 
 impl SectionOutputInfo {
-    const fn regular(section_id: OutputSectionId) -> Self {
+    pub(crate) const fn regular(section_id: OutputSectionId) -> Self {
         Self {
             section_id,
             must_keep: false,
@@ -283,8 +283,13 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                 }
                             }
-                            let min_alignment =
-                                sec.alignment.unwrap_or(alignment::MIN).max(alignment::MIN);
+                            let min_alignment = sec
+                                .alignment
+                                .clone()
+                                .map_or(Ok(alignment::MIN), |expr| {
+                                    evaluate_const(&expr).and_then(alignment::Alignment::new)
+                                })?
+                                .max(alignment::MIN);
 
                             let location_info = SectionLocationInfo {
                                 location_counters: (section_start_lc_idx, last_lc_idx),

@@ -1,6 +1,5 @@
 //! This module is responsible for parsing linker scripts.
 
-use crate::alignment::Alignment;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
@@ -87,7 +86,7 @@ pub(crate) struct Sections<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SectionCommand<'a> {
-    Section(Section<'a>),
+    Section(Box<Section<'a>>),
     SetLocation(Location<'a>),
     Assert(AssertCommand<'a>),
     Provide(ProvideSymbolDefinition<'a>),
@@ -118,7 +117,7 @@ pub(crate) enum SectionAttributes {
 pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
     pub(crate) commands: Vec<ContentsCommand<'a>>,
-    pub(crate) alignment: Option<Alignment>,
+    pub(crate) alignment: Option<Expression<'a>>,
     pub(crate) start_address_expression: Option<Expression<'a>>,
     pub(crate) phdrs: Vec<&'a [u8]>,
     pub(crate) at_address: Option<Expression<'a>>,
@@ -1293,7 +1292,7 @@ fn parse_section_command<'input>(
     opt(',').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
-    Ok(SectionCommand::Section(Section {
+    Ok(SectionCommand::Section(Box::new(Section {
         output_section_name: name,
         commands,
         alignment,
@@ -1303,7 +1302,7 @@ fn parse_section_command<'input>(
         region,
         fill,
         attributes: section_type,
-    }))
+    })))
 }
 
 fn parse_section_attribute(input: &mut &BStr) -> winnow::Result<SectionAttributes> {
@@ -1334,15 +1333,12 @@ fn parse_fill<'input>(input: &mut &'input BStr) -> winnow::Result<Fill<'input>> 
     });
 }
 
-fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
+fn parse_alignment<'input>(input: &mut &'input BStr) -> winnow::Result<Expression<'input>> {
     "ALIGN".parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
-    let raw_alignment = dec_uint.parse_next(input)?;
-    let alignment = Alignment::new(raw_alignment).map_err(|_| {
-        ContextError::from_external_error(input, LinkerScriptError::InvalidAlignment)
-    })?;
+    let alignment = parse_expression.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     ')'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
@@ -1543,7 +1539,6 @@ fn to_str(bytes: &[u8]) -> Result<&str> {
 
 #[derive(Debug)]
 enum LinkerScriptError {
-    InvalidAlignment,
     UnclosedComment,
     UnsupportedNestedSort,
 }
@@ -1553,7 +1548,6 @@ impl std::error::Error for LinkerScriptError {}
 impl std::fmt::Display for LinkerScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
             LinkerScriptError::UnclosedComment => write!(f, "Unclosed comment"),
             LinkerScriptError::UnsupportedNestedSort => write!(
                 f,
@@ -1704,7 +1698,7 @@ mod tests {
     fn test_section_command() {
         check_section_command(
             ".text : { *(.text .text2) *(.text3) }",
-            &SectionCommand::Section(Section {
+            &SectionCommand::Section(Box::new(Section {
                 output_section_name: b".text",
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
@@ -1737,7 +1731,7 @@ mod tests {
                 region: None,
                 fill: None,
                 attributes: None,
-            }),
+            })),
         );
     }
 
@@ -1745,7 +1739,7 @@ mod tests {
     fn test_section_command_with_start_address_expression() {
         check_section_command(
             "__ksymtab 0 : ALIGN(8) { *(___ksymtab+) }",
-            &SectionCommand::Section(Section {
+            &SectionCommand::Section(Box::new(Section {
                 output_section_name: b"__ksymtab",
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
@@ -1755,14 +1749,14 @@ mod tests {
                         sorted: false,
                     }],
                 })],
-                alignment: Some(Alignment::new(8).unwrap()),
+                alignment: Some(Expression::Number(8)),
                 start_address_expression: Some(Expression::Number(0)),
                 phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
                 attributes: None,
-            }),
+            })),
         );
     }
 
@@ -1799,7 +1793,7 @@ mod tests {
                             SectionCommand::SetLocation(Location {
                                 address: Expression::Align(Box::new(Expression::Number(16)), None),
                             }),
-                            SectionCommand::Section(Section {
+                            SectionCommand::Section(Box::new(Section {
                                 output_section_name: b".foo",
                                 commands: vec![
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
@@ -1825,14 +1819,14 @@ mod tests {
                                         expr: Expression::LocationCounter,
                                     }),
                                 ],
-                                alignment: Some(Alignment::new(8).unwrap()),
+                                alignment: Some(Expression::Number(8)),
                                 start_address_expression: None,
                                 phdrs: vec![],
                                 at_address: None,
                                 region: None,
                                 fill: None,
                                 attributes: None,
-                            }),
+                            })),
                         ],
                     }),
                 ],
@@ -1952,7 +1946,7 @@ mod tests {
     fn test_section_command_with_filename() {
         check_section_command(
             ".text : { foo.o(.text .text2) *(.text3) }",
-            &SectionCommand::Section(Section {
+            &SectionCommand::Section(Box::new(Section {
                 output_section_name: b".text",
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
@@ -1985,7 +1979,7 @@ mod tests {
                 region: None,
                 fill: None,
                 attributes: None,
-            }),
+            })),
         );
     }
 
@@ -1993,7 +1987,7 @@ mod tests {
     fn test_section_command_with_glob_filename() {
         check_section_command(
             ".ctors : { *crtbegin*.o(.ctors) }",
-            &SectionCommand::Section(Section {
+            &SectionCommand::Section(Box::new(Section {
                 output_section_name: b".ctors",
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
@@ -2010,7 +2004,7 @@ mod tests {
                 region: None,
                 fill: None,
                 attributes: None,
-            }),
+            })),
         );
     }
 
@@ -2018,7 +2012,7 @@ mod tests {
     fn test_keep_with_filename() {
         check_section_command(
             ".init : { KEEP(crti.o(.init)) }",
-            &SectionCommand::Section(Section {
+            &SectionCommand::Section(Box::new(Section {
                 output_section_name: b".init",
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: true,
@@ -2035,7 +2029,7 @@ mod tests {
                 region: None,
                 fill: None,
                 attributes: None,
-            }),
+            })),
         );
     }
 
@@ -2051,7 +2045,7 @@ mod tests {
             &LinkerScript {
                 commands: vec![
                     Command::Sections(Sections {
-                        commands: vec![SectionCommand::Section(Section {
+                        commands: vec![SectionCommand::Section(Box::new(Section {
                             output_section_name: b".text",
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
@@ -2068,7 +2062,7 @@ mod tests {
                             region: None,
                             fill: None,
                             attributes: None,
-                        })],
+                        }))],
                     }),
                     Command::Assert(AssertCommand {
                         expression: Box::new(Expression::LessThan(
@@ -2095,7 +2089,7 @@ mod tests {
             &LinkerScript {
                 commands: vec![Command::Sections(Sections {
                     commands: vec![
-                        SectionCommand::Section(Section {
+                        SectionCommand::Section(Box::new(Section {
                             output_section_name: b".text",
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
@@ -2112,7 +2106,7 @@ mod tests {
                             region: None,
                             fill: None,
                             attributes: None,
-                        }),
+                        })),
                         SectionCommand::Assert(AssertCommand {
                             expression: Box::new(Expression::LessThan(
                                 Box::new(Expression::Sizeof(b".text")),

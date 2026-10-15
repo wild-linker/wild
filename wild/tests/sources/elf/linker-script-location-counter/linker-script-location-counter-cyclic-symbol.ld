@@ -5,7 +5,7 @@ second = first;
 
 SECTIONS
 {
-    . = first;
+    . = first + SIZEOF_HEADERS;
     .text : {
         *(.text)
     }

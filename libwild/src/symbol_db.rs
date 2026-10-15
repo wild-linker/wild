@@ -38,7 +38,6 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
-use crate::platform::SectionHeader;
 use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -817,6 +816,13 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.symbol_file_ids[symbol_id.as_usize()]
     }
 
+    pub(crate) fn release_alternatives(&mut self) {
+        self.buckets.par_iter_mut().for_each(|bucket| {
+            bucket.alternative_definitions = Default::default();
+            bucket.alternative_versioned_definitions = Default::default();
+        });
+    }
+
     /// Returns whether the supplied symbol ID is the canonical ID. A symbol won't be canonical, if
     /// it resolves to a different symbol. The symbol may still be undefined.
     pub(crate) fn is_canonical(&self, symbol_id: SymbolId) -> bool {
@@ -932,27 +938,52 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     #[inline(always)]
-    pub(crate) fn symbol_strength(
+    pub(crate) fn resolved_symbol_strength(
         &self,
         symbol_id: SymbolId,
         resolved: &[ResolvedGroup<'data, P>],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         match &resolved[file_id.group()].files[file_id.file()] {
-            ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
-            ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
-            ResolvedFile::StubLibrary(stub) => stub.symbol_strength(symbol_id),
+            ResolvedFile::Object(obj) => {
+                let index = obj.common.symbol_id_range.id_to_input(symbol_id);
+                let Ok(symbol) = obj.common.object.symbol(index) else {
+                    return SymbolStrength::Undefined;
+                };
+                if obj
+                    .common
+                    .object
+                    .symbol_section(symbol, index)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|section| obj.section_groups.is_discarded(section))
+                {
+                    SymbolStrength::Undefined
+                } else {
+                    SymbolStrength::of(symbol)
+                }
+            }
+            ResolvedFile::Dynamic(obj) => obj.common.input_symbol_strength(symbol_id),
+            ResolvedFile::StubLibrary(stub) => stub.input_symbol_strength(symbol_id),
             #[cfg(feature = "plugins")]
-            ResolvedFile::LtoInput(obj) => {
+            ResolvedFile::LtoInput(resolved_obj) => {
                 use crate::linker_plugins::SymbolKind;
 
-                let SequencedInput::LtoInput(obj) = self.file(obj.file_id) else {
+                let SequencedInput::LtoInput(obj) = self.file(resolved_obj.file_id) else {
                     unreachable!();
                 };
                 if !obj.enabled {
                     return SymbolStrength::Undefined;
                 }
                 let local_index = symbol_id.to_input(obj.symbol_id_range);
+                if resolved_obj
+                    .comdat_discarded
+                    .get(local_index.0)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    return SymbolStrength::Undefined;
+                }
                 let obj_symbol = &obj.symbols[local_index.0];
                 match obj_symbol.kind {
                     Some(SymbolKind::Def) => SymbolStrength::Strong,
@@ -963,32 +994,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
             _ => SymbolStrength::Undefined,
         }
-    }
-
-    /// Returns whether the specified symbol is defined in a section with the SHF_GROUP flag set.
-    fn is_in_comdat_group(
-        &self,
-        symbol_id: SymbolId,
-        resolved: &[ResolvedGroup<'data, P>],
-    ) -> bool {
-        let file_id = self.file_id_for_symbol(symbol_id);
-        let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] else {
-            return false;
-        };
-
-        let local_index = symbol_id.to_input(obj.common.symbol_id_range);
-        let Ok(obj_symbol) = obj.common.object.symbol(local_index) else {
-            return false;
-        };
-        let Ok(Some(section_index)) = obj.common.object.symbol_section(obj_symbol, local_index)
-        else {
-            return false;
-        };
-        let Ok(header) = obj.common.object.section(section_index) else {
-            return false;
-        };
-
-        header.is_group()
     }
 
     pub(crate) fn entry_point(&self) -> crate::platform::EntryPoint<'_> {
@@ -1213,7 +1218,7 @@ impl<'data> SymbolBucket<'data> {
             if file.is_dynamic() {
                 continue;
             }
-            selector.consider(alt, file.symbol_strength(alt));
+            selector.consider(alt, file.input_symbol_strength(alt));
         }
         selector.best::<P>()
     }
@@ -1232,6 +1237,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
     timing_phase!("Resolve alternative symbol definitions");
 
     let mut buckets = take(&mut symbol_db.buckets);
+    let retain_alternatives = symbol_db.num_lto_objects() > 0;
     let atomic_symbol_db = symbol_db.borrow_atomic();
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     let error_queue = SegQueue::new();
@@ -1240,7 +1246,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
         verbose_timing_phase!("Resolve alternative for bucket");
 
         process_alternatives(
-            &mut bucket.alternative_definitions,
+            &bucket.alternative_definitions,
             &error_queue,
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
@@ -1249,13 +1255,17 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
         );
 
         process_alternatives(
-            &mut bucket.alternative_versioned_definitions,
+            &bucket.alternative_versioned_definitions,
             &error_queue,
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
             resolved,
             true,
         );
+        if !retain_alternatives {
+            bucket.alternative_definitions.clear();
+            bucket.alternative_versioned_definitions.clear();
+        }
     });
 
     drop(atomic_symbol_db);
@@ -1286,14 +1296,14 @@ pub(crate) enum Visibility {
 }
 
 fn process_alternatives<'data, P: Platform>(
-    alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
+    alternative_definitions: &HashMap<SymbolId, Vec<SymbolId>>,
     error_queue: &SegQueue<Error>,
     symbol_db: &AtomicSymbolDb<'data, '_, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resolved: &[ResolvedGroup<'data, P>],
     versioned: bool,
 ) {
-    for (first, alternatives) in std::mem::take(alternative_definitions) {
+    for (&first, alternatives) in alternative_definitions {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
         // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it
         // matches what GNU ld appears to do and some programs will fail to link if we don't do
@@ -1319,14 +1329,14 @@ fn process_alternatives<'data, P: Platform>(
             Ok(selected) => {
                 symbol_db.update_definition(first, selected);
 
-                for &alt in &alternatives {
+                for &alt in alternatives {
                     symbol_db.update_definition(alt, selected);
                 }
 
                 if visibility != Visibility::Default {
                     handle_non_default_visibility(per_symbol_flags, first, visibility);
 
-                    for alt in alternatives {
+                    for &alt in alternatives {
                         handle_non_default_visibility(per_symbol_flags, alt, visibility);
                     }
                 }
@@ -1397,7 +1407,7 @@ fn select_symbol<'data, P: Platform>(
     symbol_db: &AtomicSymbolDb<'data, '_, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     first_id: SymbolId,
-    candidates: impl Iterator<Item = SymbolId> + Clone,
+    mut candidates: impl Iterator<Item = SymbolId> + Clone,
     resolved: &[ResolvedGroup<'data, P>],
 ) -> Result<SymbolId> {
     let mut selector = SymbolPrioritySelector::new();
@@ -1411,30 +1421,23 @@ fn select_symbol<'data, P: Platform>(
             continue;
         }
 
-        let strength = symbol_db.symbol_strength(id, resolved);
+        let strength = symbol_db.resolved_symbol_strength(id, resolved);
 
-        // Check for duplicate strong definitions (COMDAT handling).
+        // Check for duplicate strong definitions.
         if matches!(strength, SymbolStrength::Strong)
             && let Some(existing) = selector.first_strong
+            && !symbol_db.db.args.allow_multiple_definitions()
         {
             if existing == id {
                 continue;
             }
 
-            // We don't implement full COMDAT logic, however if we encounter duplicate
-            // strong definitions, then we don't emit errors if all the strong definitions
-            // are defined in COMDAT group sections.
-            if (!symbol_db.is_in_comdat_group(existing, resolved)
-                || !symbol_db.is_in_comdat_group(id, resolved))
-                && !symbol_db.db.args.allow_multiple_definitions()
-            {
-                bail!(
-                    "{}, defined in {} and {}",
-                    symbol_db.symbol_name_for_display(first_id),
-                    symbol_db.file(symbol_db.file_id_for_symbol(existing)),
-                    symbol_db.file(symbol_db.file_id_for_symbol(id)),
-                );
-            }
+            bail!(
+                "{}, defined in {} and {}",
+                symbol_db.symbol_name_for_display(first_id),
+                symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                symbol_db.file(symbol_db.file_id_for_symbol(id)),
+            );
         }
 
         selector.consider(id, strength);
@@ -1444,17 +1447,27 @@ fn select_symbol<'data, P: Platform>(
         return Ok(best);
     }
 
-    // If we've made it this far, then the symbol is only defined in shared objects. Pick the first
-    // definition. Note, we don't check for duplicate strong definitions here because it's OK for
-    // multiple shared objects to define the same symbol strongly.
-    for alt in candidates {
-        let strength = symbol_db.symbol_strength(alt, resolved);
+    // Any remaining definition is in a shared object. Pick the first one without checking for
+    // duplicate strong definitions, since multiple shared objects may define the same symbol.
+    for alt in candidates.clone() {
+        let strength = symbol_db.resolved_symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
             return Ok(alt);
         }
     }
 
-    Ok(first_id)
+    // No surviving definition remains. Prefer a loaded native object so that a live reference to
+    // a discarded COMDAT definition can be diagnosed using its original symbol and section,
+    // rather than resolving to an unloaded archive member or an LTO input.
+    Ok(candidates
+        .find(|id| {
+            matches!(
+                &resolved[symbol_db.file_id_for_symbol(*id).group()].files
+                    [symbol_db.file_id_for_symbol(*id).file()],
+                ResolvedFile::Object(_)
+            )
+        })
+        .unwrap_or(first_id))
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -2268,20 +2281,12 @@ impl<'data, 'db, P: Platform> AtomicSymbolDb<'data, 'db, P> {
         self.definitions[to_update.as_usize()].store(new_definition);
     }
 
-    fn symbol_strength(
+    fn resolved_symbol_strength(
         &self,
         symbol_id: SymbolId,
         resolved: &[ResolvedGroup<'data, P>],
     ) -> SymbolStrength {
-        self.db.symbol_strength(symbol_id, resolved)
-    }
-
-    fn is_in_comdat_group(
-        &self,
-        symbol_id: SymbolId,
-        resolved: &[ResolvedGroup<'data, P>],
-    ) -> bool {
-        self.db.is_in_comdat_group(symbol_id, resolved)
+        self.db.resolved_symbol_strength(symbol_id, resolved)
     }
 
     fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolNameDisplay<'data> {

@@ -543,7 +543,9 @@ fn write_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         FileLayout::Object(s) => {
             write_object::<C, A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
         }
-        FileLayout::Prelude(s) => write_prelude::<C, A>(s, buffers, table_writer, layout)?,
+        FileLayout::Prelude(s) => {
+            write_prelude::<C, A>(s, buffers, table_writer, layout, sym_index_map)?;
+        }
         FileLayout::Epilogue(s) => write_epilogue::<C, A>(s, buffers, table_writer, layout, trace)?,
         FileLayout::SyntheticSymbols(s) => {
             write_synthetic_symbols::<C, A>(s, table_writer, layout)?;
@@ -1930,6 +1932,10 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 let input_header = object.object.section(section_index)?;
 
                 if layout.args().should_output_partial_object()
+                    && input_header.sh_type(LittleEndian) == object::elf::SHT_GROUP
+                {
+                    write_group_section::<C, A>(object, *sec, section_index, buffers, layout)?;
+                } else if layout.args().should_output_partial_object()
                     && input_header.sh_type(LittleEndian) == object::elf::SHT_RELA
                 {
                     write_rela_section(
@@ -2186,17 +2192,17 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
                     }
                 }
 
-                let e = LittleEndian;
                 for (sym_index, sym) in object.object.symbols.enumerate() {
-                    if !sym.is_undefined(e) {
-                        continue;
-                    }
                     let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-                    if !layout.symbol_db.is_canonical(symbol_id) {
-                        continue;
-                    }
-                    if let Ok(name) = object.object.symbol_name(sym)
-                        && !name.is_empty()
+                    if SymbolCopyInfo::for_undefined(
+                        object.object,
+                        sym_index,
+                        sym,
+                        symbol_id,
+                        &layout.symbol_db,
+                        &object.section_groups,
+                    )
+                    .is_some()
                     {
                         map[symbol_id.as_usize() - start_symbol_index] = Some(group_global_base);
                         group_global_base += 1;
@@ -2229,6 +2235,37 @@ fn build_section_sym_indices<C: ElfClass>(layout: &ElfLayout<C>) -> (OutputSecti
         next_sym_idx += 1;
     }
     (map, next_sym_idx)
+}
+
+fn write_group_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    section: Section,
+    section_index: object::SectionIndex,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &ElfLayout<'data, C>,
+) -> Result {
+    let (out, _) = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
+    let section_groups = &object.section_groups.groups;
+    let group_index = section_groups
+        .binary_search_by_key(&section_index.0, |section_group| {
+            section_group.index.as_usize()
+        })
+        .expect("Missing section group metadata");
+    let section_group = &section_groups[group_index];
+
+    for (word, input_index) in out
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .skip(1)
+        .zip(section_group.members())
+    {
+        let output_index = partial_link_output_index_for_input_section(object, input_index, layout)
+            .context("Missing output group member")?;
+        word.copy_from_slice(&output_index.to_le_bytes());
+    }
+
+    Ok(())
 }
 
 fn write_rela_section<'data, C: ElfClass>(
@@ -2556,6 +2593,9 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
         let object_section = object.object.section(section_index)?;
+        if object_section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
+            return Ok((out, HashMap::new()));
+        }
         let relax_deltas = object.section_relax_deltas.get(section_index.0);
 
         let section_info = layout
@@ -2684,20 +2724,18 @@ fn write_symbols<'data, C: ElfClass>(
 
     if layout.args().should_output_partial_object() {
         for (sym_index, sym) in object.object.symbols.enumerate() {
-            if !platform::Symbol::is_undefined(sym) {
-                continue;
-            }
-            let Ok(name) = object.object.symbol_name(sym) else {
+            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+            let Some(info) = SymbolCopyInfo::for_undefined(
+                object.object,
+                sym_index,
+                sym,
+                symbol_id,
+                &layout.symbol_db,
+                &object.section_groups,
+            ) else {
                 continue;
             };
-            if name.is_empty() {
-                continue;
-            }
-            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-            if !layout.symbol_db.is_canonical(symbol_id) {
-                continue;
-            }
-            let name = RawSymbolName::parse(name).name;
+            let name = RawSymbolName::parse(info.name).name;
             let entry = symbol_writer
                 .undefined_symbol(false, name)
                 .with_context(|| {
@@ -4575,7 +4613,9 @@ fn apply_debug_relocation<
                 false,
             )?
             .context("Cannot get merged string offset for a debug info section")?,
-            SectionSlot::Discard | SectionSlot::Unloaded(..) => section_tombstone_value,
+            SectionSlot::Discard
+            | SectionSlot::Unloaded(..)
+            | SectionSlot::UnloadedDebugInfo { .. } => section_tombstone_value,
             _ => bail!("Could not find a relocation resolution for a debug info section"),
         }
     } else {
@@ -4666,6 +4706,7 @@ fn write_prelude<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter<'_, '_, C>,
     layout: &ElfLayout<'data, C>,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     let gdb_buf = buffers.take(part_id::GDB_INDEX);
     let (a, b) = rayon::join(
@@ -4677,7 +4718,15 @@ fn write_prelude<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 Ok(())
             }
         },
-        || write_prelude_except_gdb_index::<C, A>(prelude, buffers, table_writer, layout),
+        || {
+            write_prelude_except_gdb_index::<C, A>(
+                prelude,
+                buffers,
+                table_writer,
+                layout,
+                sym_index_map,
+            )
+        },
     );
     a.and(b)
 }
@@ -4687,6 +4736,7 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter<'_, '_, C>,
     layout: &ElfLayout<'data, C>,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
@@ -4701,7 +4751,7 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
         ProgramHeaderWriter::<C>::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
     write_program_headers(&mut program_headers, layout)?;
 
-    write_section_headers(table_writer, layout)?;
+    write_section_headers(table_writer, layout, sym_index_map)?;
 
     // Skip PLT/GOT writes in --only-keep-debug since alloc sections are NOBITS.
     if !layout.args().only_keep_debug() {
@@ -6509,6 +6559,7 @@ impl<'out, C: ElfClass> DynamicEntriesWriter<'out, C> {
 fn write_section_headers<C: ElfClass>(
     table_writer: &mut TableWriter<'_, '_, C>,
     layout: &ElfLayout<C>,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     let output_sections = &layout.output_sections;
     let num_entries = table_writer.section_header_count();
@@ -6648,7 +6699,7 @@ fn write_section_headers<C: ElfClass>(
 
         name_offset += name.len() as u32 + 1;
     }
-    write_partial_link_singleton_headers(table_writer, layout, &mut name_offset)?;
+    write_partial_link_singleton_headers(table_writer, layout, &mut name_offset, sym_index_map)?;
     Ok(())
 }
 
@@ -6656,6 +6707,7 @@ fn write_partial_link_singleton_headers<C: ElfClass>(
     table_writer: &mut TableWriter<C>,
     layout: &Layout<elf::Elf<C>>,
     name_offset: &mut u32,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     if layout.partial_link.is_empty() {
         return Ok(());
@@ -6706,6 +6758,7 @@ fn write_partial_link_singleton_headers<C: ElfClass>(
                         section_index,
                         singleton,
                         name_offset,
+                        sym_index_map,
                     )
                     .with_context(|| {
                         format!(
@@ -6746,6 +6799,7 @@ fn write_partial_link_singleton_header<C: ElfClass>(
     section_index: object::SectionIndex,
     singleton: &PartialLinkSingleton,
     name_offset: u32,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     let e = LittleEndian;
 
@@ -6762,12 +6816,14 @@ fn write_partial_link_singleton_header<C: ElfClass>(
         .context("Partial-link singleton precedes its output section part")?;
 
     header_out.set_address(0)?;
-    header_out.set_size(singleton.section.size)?;
+    header_out.set_size(if input_header.sh_type(e) == object::elf::SHT_NOBITS {
+        input_header.sh_size(e).into()
+    } else {
+        singleton.section.size
+    })?;
     let section_type = input_header.sh_type(e);
 
-    let section_flags = input_header
-        .sh_flags(e)
-        .without(shf::COMPRESSED | shf::GROUP);
+    let section_flags = input_header.sh_flags(e).without(shf::COMPRESSED);
 
     header_out.set_type(section_type);
     header_out.set_flags(section_flags)?;
@@ -6775,7 +6831,7 @@ fn write_partial_link_singleton_header<C: ElfClass>(
 
     let is_relocation_section =
         section_type == object::elf::SHT_RELA || section_type == object::elf::SHT_REL;
-    let output_link = if is_relocation_section {
+    let output_link = if is_relocation_section || section_type == object::elf::SHT_GROUP {
         layout
             .output_sections
             .output_index_of_section(output_section_id::SYMTAB_LOCAL)
@@ -6789,7 +6845,16 @@ fn write_partial_link_singleton_header<C: ElfClass>(
     header_out.set_link(output_link);
 
     let input_info = input_header.sh_info(e);
-    let output_info = if is_relocation_section || section_flags.contains(shf::INFO_LINK) {
+    let output_info = if section_type == object::elf::SHT_GROUP {
+        let id = object
+            .symbol_id_range
+            .input_to_id(object::SymbolIndex(input_info as usize));
+        sym_index_map
+            .get(layout.symbol_db.definition(id).as_usize())
+            .copied()
+            .flatten()
+            .context("Missing group signature symbol")?
+    } else if is_relocation_section || section_flags.contains(shf::INFO_LINK) {
         partial_link_output_index_for_input_section(
             object,
             object::SectionIndex(input_info as usize),

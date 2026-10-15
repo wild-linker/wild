@@ -74,11 +74,17 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 pub(crate) struct Resolver<'data, P: Platform> {
+    comdat: crate::comdat::Selection<'data>,
     undefined_symbols: Vec<UndefinedSymbol<'data>>,
     pub(crate) resolved_groups: Vec<ResolvedGroup<'data, P>>,
 }
 
 impl<'data, P: Platform> Resolver<'data, P> {
+    #[cfg(feature = "plugins")]
+    pub(crate) fn begin_lto_output(&mut self, first_group: usize) {
+        self.comdat.begin_lto_output(first_group);
+    }
+
     /// Resolves undefined symbols. In the process of resolving symbols, we decide which archive
     /// entries to load. Some symbols may not have definitions, in which case we'll note those for
     /// later processing. Can be called multiple times with additional groups having been added to
@@ -103,6 +109,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
         layout_rules: &LayoutRules<'data>,
     ) -> Result<Vec<ResolvedGroup<'data, P>>> {
         timing_phase!("Section resolution");
+        symbol_db.release_alternatives();
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
 
@@ -128,6 +135,32 @@ impl<'data, P: Platform> Resolver<'data, P> {
             per_symbol_flags,
             &mut syn,
         );
+
+        if symbol_db.args.should_output_partial_object() {
+            for group in &self.resolved_groups {
+                for file in &group.files {
+                    let ResolvedFile::Object(object) = file else {
+                        continue;
+                    };
+                    for section_group in &object.section_groups.groups {
+                        if !object
+                            .section_groups
+                            .is_discarded(section_group.index.into())
+                        {
+                            per_symbol_flags.set_flag(
+                                symbol_db.definition(
+                                    object
+                                        .common
+                                        .symbol_id_range
+                                        .input_to_id(section_group.signature_symbol),
+                                ),
+                                ValueFlags::GROUP_SIGNATURE,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         populate_start_stop_sections(
             &self.resolved_groups,
@@ -264,6 +297,11 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
             ResolvedFile::LtoInput(obj);
     }
 
+    resolver.comdat.select(
+        &mut resolver.resolved_groups,
+        outputs.section_groups.into_iter().collect(),
+        symbol_db,
+    )?;
     resolver.undefined_symbols.extend(outputs.undefined_symbols);
 
     Ok(())
@@ -643,6 +681,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
             outputs
                 .loaded_lto_objects
                 .push(ResolvedLtoInput {
+                    comdat_discarded: Vec::new(),
                     file_id: obj.file_id,
                     symbol_id_range: obj.symbol_id_range,
                     section_id_range: obj.section_id_range,
@@ -738,8 +777,10 @@ pub(crate) enum SectionSlot {
     /// The section is a string-merge section.
     MergeStrings(StringMergeSectionSlot),
 
-    // The section contains a debug info section that might be loaded.
-    UnloadedDebugInfo,
+    // Debug info in a group containing allocatable sections follows the group's liveness.
+    UnloadedDebugInfo {
+        must_load: bool,
+    },
 
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
@@ -803,6 +844,7 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     pub(crate) common: ResolvedCommon<'data, P>,
     pub(crate) section_id_range: SectionIdRange,
 
+    pub(crate) section_groups: crate::comdat::ObjectSectionGroups<'data>,
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: P::RelocationSections,
 
@@ -861,6 +903,7 @@ pub(crate) struct StartStopCandidate<P: Platform> {
 #[cfg(feature = "plugins")]
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLtoInput {
+    pub(crate) comdat_discarded: Vec<bool>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) section_id_range: SectionIdRange,
@@ -1106,6 +1149,7 @@ struct Outputs<'data, P: Platform> {
     /// Any errors that we encountered.
     errors: ArrayQueue<Error>,
 
+    section_groups: SegQueue<(FileId, Vec<crate::comdat::SectionGroup<'data>>)>,
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
 }
 
@@ -1117,6 +1161,7 @@ impl<'data, P: Platform> Outputs<'data, P> {
             #[cfg(feature = "plugins")]
             loaded_lto_objects: ArrayQueue::new(num_lto_objects.max(1)),
             errors: ArrayQueue::new(1),
+            section_groups: SegQueue::new(),
             undefined_symbols: SegQueue::new(),
         }
     }
@@ -1140,6 +1185,22 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
             verbose_timing_phase!("Resolve object symbols");
 
             let obj = &parsed_input_objects[file_id.file()];
+            if work_item.symbol_start_offset == 0 {
+                resources.handle_result(
+                    obj.parsed
+                        .object
+                        .section_groups()
+                        .map(|section_groups| {
+                            if !section_groups.is_empty() {
+                                resources
+                                    .outputs
+                                    .section_groups
+                                    .push((file_id, section_groups));
+                            }
+                        })
+                        .with_context(|| format!("Failed to read section groups in {obj}")),
+                );
+            }
 
             resources.handle_result(
                 resolve_symbols(
@@ -1304,7 +1365,11 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
             continue;
         }
 
-        if symbol_db.symbol_strength(undefined.symbol_id, groups) == SymbolStrength::Weak {
+        let is_weak = symbol_db
+            .file(symbol_db.file_id_for_symbol(undefined.symbol_id))
+            .input_symbol_strength(undefined.symbol_id)
+            == SymbolStrength::Weak;
+        if is_weak {
             per_symbol_flags.set_flag(undefined.symbol_id, ValueFlags::UNDEFINED_WEAK);
         }
 
@@ -1340,9 +1405,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
 
                             if visibility == Visibility::Default
                                 && (output_kind.is_shared_object()
-                                    || (output_kind.is_dynamic_executable()
-                                        && symbol_db.symbol_strength(undefined.symbol_id, groups)
-                                            == SymbolStrength::Weak))
+                                    || (output_kind.is_dynamic_executable() && is_weak))
                             {
                                 per_symbol_flags.set_flag(undefined.symbol_id, ValueFlags::DYNAMIC);
                             } else {
@@ -1441,7 +1504,7 @@ impl<'data, P: Platform> ResolvedCommon<'data, P> {
         }
     }
 
-    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+    pub(crate) fn input_symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = symbol_id.to_input(self.symbol_id_range);
         let Ok(obj_symbol) = self.object.symbol(local_index) else {
             // Errors from this function should have been reported elsewhere.
@@ -1480,6 +1543,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             common,
             section_id_range,
             // We'll fill this the rest during section resolution.
+            section_groups: Default::default(),
             sections: Default::default(),
             relocations: Default::default(),
             string_merge_extras: Default::default(),
@@ -1523,6 +1587,27 @@ fn resolve_sections_for_object<'data, P: Platform>(
     let mut section_part_ids = Vec::with_capacity(obj.common.object.num_sections());
     let mut executable_bytes: u64 = 0;
     for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
+        if input_section.is_group()
+            && obj
+                .section_groups
+                .group_for_section_before_gc(input_section_index)
+                .is_none()
+        {
+            bail!(
+                "{}: grouped section {} has no section group",
+                obj.common.input,
+                input_section_index.0
+            );
+        }
+
+        if (input_section.is_group() || input_section.is_group_header())
+            && obj.section_groups.is_discarded(input_section_index)
+        {
+            sections.push(SectionSlot::Discard);
+            section_part_ids.push(part_id::UNMAPPED);
+            continue;
+        }
+
         let section_size = obj.common.object.section_size(input_section).unwrap_or(0);
         if input_section.is_executable() {
             executable_bytes +=
@@ -1541,7 +1626,12 @@ fn resolve_sections_for_object<'data, P: Platform>(
         sections.push(slot);
         section_part_ids.push(part_id);
     }
+
+    obj.section_groups
+        .prepare_gc(&sections, args.should_gc_sections());
+
     obj.executable_bytes = executable_bytes;
+
     Ok((sections, section_part_ids))
 }
 
@@ -1556,6 +1646,9 @@ fn resolve_section<'data, P: Platform>(
     layout_rules: &LayoutRules,
     error_builder: &Mutex<error::MultiErrorBuilder>,
 ) -> Result<(SectionSlot, PartId)> {
+    if !args.should_output_partial_object() && input_section.is_group_header() {
+        return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+    }
     let section_name = obj
         .common
         .object
@@ -1616,7 +1709,9 @@ fn resolve_section<'data, P: Platform>(
             must_load |= output_info.must_keep;
 
             unloaded_section = UnloadedSection::new();
-            unloaded_section.needs_sorting = output_info.sorted || args.sort_sections_by_name();
+            unloaded_section.needs_sorting = Some(output_info.section_id)
+                != P::PARTIAL_SINGLETONS_ID
+                && (output_info.sorted || args.sort_sections_by_name());
         }
         SectionRuleOutcome::SortedSection(output_info) => {
             part_id = if output_info.section_id.is_regular::<P>() {
@@ -1737,7 +1832,19 @@ fn resolve_section<'data, P: Platform>(
 
         SectionSlot::MergeStrings(StringMergeSectionSlot::new())
     } else if is_debug_info {
-        SectionSlot::UnloadedDebugInfo
+        must_load |= obj
+            .section_groups
+            .group_for_section_before_gc(input_section_index)
+            .is_none_or(|group| {
+                !group.members().any(|member| {
+                    obj.common
+                        .object
+                        .section(member)
+                        .expect("Invalid section group member")
+                        .is_alloc()
+                })
+            });
+        SectionSlot::UnloadedDebugInfo { must_load }
     } else if must_load {
         SectionSlot::MustLoad(unloaded_section)
     } else {
@@ -1922,7 +2029,7 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
 }
 
 impl ResolvedStubLibrary<'_> {
-    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+    pub(crate) fn input_symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
         if local_index < self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
@@ -1981,6 +2088,7 @@ impl SectionSlot {
             self,
             SectionSlot::Discard
                 | SectionSlot::Unloaded(..)
+                | SectionSlot::UnloadedDebugInfo { .. }
                 | SectionSlot::InitFunc(..)
                 | SectionSlot::CompactUnwind(..)
                 | SectionSlot::NoteGnuProperty(..)
@@ -2027,6 +2135,7 @@ impl<'data, P: Platform> ResolvedSyntheticSymbols<'data, P> {
 impl<'data, P: Platform> Default for Resolver<'data, P> {
     fn default() -> Self {
         Self {
+            comdat: Default::default(),
             undefined_symbols: Default::default(),
             resolved_groups: Default::default(),
         }
