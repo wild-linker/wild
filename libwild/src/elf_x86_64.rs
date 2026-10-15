@@ -306,6 +306,7 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             object::elf::R_X86_64_GOTPCREL if !interposable && rel_addend == -4 && offset >= 3 => {
                 match section_bytes.get(offset - 3..offset - 1)? {
+                    // mov *x(%rip), reg
                     [REX_W | REX_W_R, 0x8b] => {
                         return Some(Relaxation {
                             kind: RelaxationKind::MovIndirectToLea,
