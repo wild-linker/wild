@@ -5361,17 +5361,7 @@ fn function_type_for_symbol<'a>(
     let type_index = if sym_index < n_imports {
         input.function_imports[sym_index].type_index
     } else {
-        let original = sym_index - n_imports;
-        let dense = input
-            .defined_function_live_ordinal
-            .get(original)
-            .copied()
-            .unwrap_or(WASM_DEAD_INDEX);
-        ensure!(
-            dense != WASM_DEAD_INDEX,
-            "Wasm init/reference to GC'd function index {}",
-            sym.index
-        );
+        let dense = local_defined_function_index(input, sym)?;
         *input
             .module_functions
             .get(dense as usize)
