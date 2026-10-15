@@ -8398,30 +8398,26 @@ fn wasm_symbol_from_info(
     to_name_range: impl Fn(&str) -> (u32, u32),
 ) -> WasmSymbol {
     let mut sym = WasmSymbol::default();
-    let mut set_name = |name: Option<&str>| {
-        if let Some(n) = name {
-            let (start, len) = to_name_range(n);
+    let mut fill_indexed = |kind: WasmSymbolKind, flags: u32, index: u32, name: Option<&str>| {
+        sym.kind = kind;
+        sym.flags = flags;
+        sym.index = index;
+        if let Some(name) = name {
+            let (start, len) = to_name_range(name);
             sym.name_start = start;
             sym.name_len = len;
         }
     };
     match info {
         SymbolInfo::Func { flags, index, name } => {
-            sym.kind = WasmSymbolKind::Func;
-            sym.flags = flags.bits();
-            sym.index = index;
-            set_name(name);
+            fill_indexed(WasmSymbolKind::Func, flags.bits(), index, name);
         }
         SymbolInfo::Data {
             flags,
             name,
             symbol,
         } => {
-            sym.kind = WasmSymbolKind::Data;
-            sym.flags = flags.bits();
-            let (start, len) = to_name_range(name);
-            sym.name_start = start;
-            sym.name_len = len;
+            fill_indexed(WasmSymbolKind::Data, flags.bits(), 0, Some(name));
             if let Some(def) = symbol {
                 sym.index = def.index;
                 sym.offset = def.offset;
@@ -8429,10 +8425,7 @@ fn wasm_symbol_from_info(
             }
         }
         SymbolInfo::Global { flags, index, name } => {
-            sym.kind = WasmSymbolKind::Global;
-            sym.flags = flags.bits();
-            sym.index = index;
-            set_name(name);
+            fill_indexed(WasmSymbolKind::Global, flags.bits(), index, name);
         }
         SymbolInfo::Section { flags, section } => {
             sym.kind = WasmSymbolKind::Section;
@@ -8440,16 +8433,10 @@ fn wasm_symbol_from_info(
             sym.index = section;
         }
         SymbolInfo::Event { flags, index, name } => {
-            sym.kind = WasmSymbolKind::Event;
-            sym.flags = flags.bits();
-            sym.index = index;
-            set_name(name);
+            fill_indexed(WasmSymbolKind::Event, flags.bits(), index, name);
         }
         SymbolInfo::Table { flags, index, name } => {
-            sym.kind = WasmSymbolKind::Table;
-            sym.flags = flags.bits();
-            sym.index = index;
-            set_name(name);
+            fill_indexed(WasmSymbolKind::Table, flags.bits(), index, name);
         }
     }
 
