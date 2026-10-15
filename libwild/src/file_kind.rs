@@ -30,7 +30,7 @@ pub(crate) enum FileKind {
 }
 
 impl FileKind {
-    pub(crate) fn identify_bytes(bytes: &[u8]) -> Result<FileKind> {
+    pub(crate) fn identify_bytes(bytes: &[u8], has_plugin: bool) -> Result<FileKind> {
         if bytes.starts_with(&object::archive::MAGIC) {
             Ok(FileKind::Archive)
         } else if bytes.starts_with(&object::archive::THIN_MAGIC) {
@@ -52,9 +52,9 @@ impl FileKind {
 
             match header.e_type.get(LittleEndian) {
                 object::elf::ET_REL => {
-                    if is_gcc_bitcode(bytes, header).unwrap_or(false) {
+                    if has_plugin && is_gcc_bitcode(bytes, header).unwrap_or(false) {
                         Ok(FileKind::GccIr)
-                    } else if is_llvm_bitcode(bytes, header).unwrap_or(false) {
+                    } else if has_plugin && is_llvm_bitcode(bytes, header).unwrap_or(false) {
                         Ok(FileKind::LlvmIr)
                     } else {
                         Ok(FileKind::ElfObject)
@@ -118,12 +118,6 @@ fn determine_macho_kind(bytes: &[u8]) -> Result<FileKind> {
 /// so just scan part of the section header strings table. It's unfortunate that GCC didn't tag
 /// these objects in some fast-to-check way.
 fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
-    // If we don't have plugin support, then we skip checking if the file contains GCC IR. If it is,
-    // then we'll figure that out later on and report an error. We do this because this code has a
-    // measurable performance impact.
-    if !crate::linker_plugins::ENABLED {
-        return Some(false);
-    }
     let e = LittleEndian;
     let section_headers = header.section_headers(e, data).ok()?;
     let sh_str_index = header.shstrndx(e, data).ok()?;
@@ -144,12 +138,6 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool
 const SHT_LLVM_LTO: object::elf::SectionType = object::elf::SectionType(0x6fff4c0c);
 
 fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
-    // If we don't have plugin support, then we skip checking if the file contains LLVM IR. If it
-    // is, then we'll figure that out later on and report an error. We do this because this code
-    // has a measurable performance impact.
-    if !crate::linker_plugins::ENABLED {
-        return Some(false);
-    }
     let e = LittleEndian;
     let section_headers = header.section_headers(e, data).ok()?;
     Some(section_headers.iter().any(|s| s.sh_type(e) == SHT_LLVM_LTO))

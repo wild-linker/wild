@@ -458,6 +458,8 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
         }
 
+        P::validate_input_symbols(self)?;
+
         rayon::join(
             || {
                 // This can take a while, so do it in parallel with other work.

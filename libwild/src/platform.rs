@@ -888,9 +888,8 @@ pub(crate) trait Platform:
         None
     }
 
-    /// Verifies that it's OK to load a section with the given name. Mostly just used to detect
-    /// linker plugin inputs, since we shouldn't be loading those.
-    fn verify_allowed_input_section_name(_name: &[u8]) -> Result {
+    /// Check that there aren't any platform-specific symbols defined that shouldn't be.
+    fn validate_input_symbols(_symbol_db: &SymbolDb<Self>) -> Result {
         Ok(())
     }
 

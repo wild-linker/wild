@@ -199,7 +199,6 @@ tests = [
 reason = "Failing LTO tests."
 tests = [
   "lto-no-plugin.sh",       # We don't currently support LTO without an explicit plugin
-  "lto-gcc.sh",             # We don't currently support LTO without an explicit plugin
   "lto-llvm2.sh",           # -m llvm is not yet supported
   "duplicate-error-lto.sh", # Wild deduplicates inputs
   "lto-archive4.sh",

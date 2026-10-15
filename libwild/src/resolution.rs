@@ -1655,8 +1655,6 @@ fn resolve_section<'data, P: Platform>(
         .section_name(input_section_index)
         .unwrap_or_default();
 
-    P::verify_allowed_input_section_name(section_name)?;
-
     let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
     let should_merge_sections = part_id::should_merge_sections(input_section, raw_alignment, args);

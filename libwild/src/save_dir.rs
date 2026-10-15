@@ -383,7 +383,7 @@ impl SaveDirState {
             }
         } else {
             if let Ok(data) = std::fs::read(source_path) {
-                match FileKind::identify_bytes(&data) {
+                match FileKind::identify_bytes(&data, false) {
                     Ok(FileKind::ThinArchive) => {
                         self.handle_thin_archive(source_path, parsed_args)?;
                     }

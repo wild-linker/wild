@@ -170,6 +170,7 @@ pub(crate) struct InputLinkerScript<'data> {
 
 struct TemporaryState<'data, P: Platform, F: FileSystem> {
     args: &'data P::Args,
+    has_plugin: bool,
 
     inputs_by_path: Mutex<HashMap<PathBuf, InputLoadInfo>>,
 
@@ -330,6 +331,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
         let temporary_state = TemporaryState {
             args,
+            has_plugin: plugin.is_some(),
             inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
@@ -532,13 +534,14 @@ fn process_archive<'data, P: Platform, F: FileSystem>(
                 let start_offset = archive_entry.data_offset;
                 let end_offset = archive_entry.data_offset + archive_entry.entry_data.len();
                 let member_data = &archive_data[start_offset..end_offset];
-                let kind = FileKind::identify_bytes(member_data).with_context(|| {
-                    format!(
-                        "Failed process input `{}` in archive `{}`",
-                        archive_entry.ident.as_path().display(),
-                        parent_file.filename.display()
-                    )
-                })?;
+                let kind =
+                    FileKind::identify_bytes(member_data, state.has_plugin).with_context(|| {
+                        format!(
+                            "Failed process input `{}` in archive `{}`",
+                            archive_entry.ident.as_path().display(),
+                            parent_file.filename.display()
+                        )
+                    })?;
                 members.push((start_offset, end_offset, archive_entry.ident, kind));
             }
             ArchiveEntry::Thin(_) => unreachable!(),
@@ -612,7 +615,7 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
                 entry: None,
             };
 
-            let kind = FileKind::identify_bytes(input_ref.data())
+            let kind = FileKind::identify_bytes(input_ref.data(), state.has_plugin)
                 .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
             let parsed = state.process_input(input_ref, file.as_ref(), kind)?;
@@ -639,7 +642,8 @@ fn process_fat_macho_object<'data, P: Platform, F: FileSystem>(
     let data = select_fat_entry_for_cpu_type(input_ref.data(), object::macho::CPU_TYPE_ARM64)
         .with_context(|| format!("Failed to parse FAT object {input_ref}"))?;
 
-    let kind = FileKind::identify_bytes(data).context("Unrecognised entry in FAT file")?;
+    let kind = FileKind::identify_bytes(data, state.has_plugin)
+        .context("Unrecognised entry in FAT file")?;
 
     let input_ref = InputRef {
         file: input_ref.file,
@@ -704,7 +708,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
             entry: None,
         };
 
-        let kind = FileKind::identify_bytes(input_ref.data())
+        let kind = FileKind::identify_bytes(input_ref.data(), self.has_plugin)
             .with_context(|| format!("Failed to identify {input_ref}"))?;
 
         match kind {

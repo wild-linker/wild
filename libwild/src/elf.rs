@@ -2476,14 +2476,21 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         init_fini_priority(name)
     }
 
-    fn verify_allowed_input_section_name(name: &[u8]) -> Result {
-        if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-            if crate::linker_plugins::ENABLED {
-                bail!("Found GCC LTO input that we didn't supply to linker plugin");
-            }
-            return Err(crate::symbol_db::linker_plugin_disabled_error());
-        }
+    fn validate_input_symbols(symbol_db: &SymbolDb<Self>) -> Result {
+        // If __gnu_lto_slim ends up being defined, then that means that an input wasn't claimed by
+        // the linker plugin, likely because we don't have a linker plugin.
+        if let Some(symbol_id) =
+            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(b"__gnu_lto_slim"))
+        {
+            let input = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
 
+            if crate::linker_plugins::ENABLED {
+                bail!("GCC slim LTO input {input} was not processed by a linker plugin");
+            }
+
+            return Err(crate::symbol_db::linker_plugin_disabled_error())
+                .with_context(|| format!("Input file {input}"));
+        }
         Ok(())
     }
 
