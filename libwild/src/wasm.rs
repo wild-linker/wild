@@ -3860,7 +3860,6 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
 struct LinkerImportAbsorption {
     needs_memory_base: bool,
     needs_table_base: bool,
-    needs_stack_pointer: bool,
     needs_tls_base: bool,
     needs_tls_size: bool,
     needs_tls_align: bool,
@@ -3874,7 +3873,6 @@ impl LinkerImportAbsorption {
             WasmLinkerSymbol::CallCtors => self.needs_ctors = true,
             WasmLinkerSymbol::MemoryBase => self.needs_memory_base = true,
             WasmLinkerSymbol::TableBase => self.needs_table_base = true,
-            WasmLinkerSymbol::StackPointer => self.needs_stack_pointer = true,
             // Single-thread `__tls_base` is immutable. Shared-memory TLS forces the mutable base
             // plus `__tls_size`, `__tls_align`, and `__wasm_init_tls`.
             WasmLinkerSymbol::TlsBase => self.needs_tls_base = true,
@@ -4887,8 +4885,6 @@ impl LinkerDefinedIndices {
     ) -> Result<Self> {
         let mut needs_memory_base = request.needs_memory_base;
         let mut needs_table_base = request.needs_table_base;
-        // wasm-ld always defines `__stack_pointer` for non-PIC executables.
-        let mut needs_stack_pointer = true;
         let mut needs_tls_base = false;
         let mut needs_tls_size = false;
         let mut needs_tls_align = false;
@@ -4910,7 +4906,6 @@ impl LinkerDefinedIndices {
         }
         needs_ctors |= export_needs.needs_ctors;
         needs_table_base |= export_needs.needs_table_base;
-        needs_stack_pointer |= export_needs.needs_stack_pointer;
         let export_memory_base = export_needs.needs_memory_base;
 
         for (input, resolutions) in layout_inputs.iter().zip(import_resolutions.iter()) {
@@ -4922,7 +4917,6 @@ impl LinkerDefinedIndices {
             needs_ctors |= absorption.needs_ctors;
             needs_memory_base |= absorption.needs_memory_base;
             needs_table_base |= absorption.needs_table_base;
-            needs_stack_pointer |= absorption.needs_stack_pointer;
             needs_tls_base |= absorption.needs_tls_base;
             needs_tls_size |= absorption.needs_tls_size;
             needs_tls_align |= absorption.needs_tls_align;
@@ -4947,8 +4941,8 @@ impl LinkerDefinedIndices {
 
         let mut next_global = global_import_count;
         // Defined-global slot before `__stack_pointer` (used for its init expression).
-        let stack_pointer_defined_slot = needs_stack_pointer
-            .then_some(u32::from(needs_memory_base) + u32::from(needs_table_base));
+        let stack_pointer_defined_slot =
+            Some(u32::from(needs_memory_base) + u32::from(needs_table_base));
         let memory_base_global = needs_memory_base.then(|| {
             let idx = next_global;
             next_global += 1;
@@ -4959,7 +4953,7 @@ impl LinkerDefinedIndices {
             next_global += 1;
             idx
         });
-        let stack_pointer_global = needs_stack_pointer.then(|| {
+        let stack_pointer_global = Some({
             let idx = next_global;
             next_global += 1;
             idx
