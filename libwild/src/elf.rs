@@ -1183,8 +1183,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let section_id: InputSectionIndex = section_index.into();
         if let Some(info) = state.format_specific.erratum_sections.remove(&section_id) {
             tracing::trace!(info.maximal_padding, section = %state.object.section_display_name(section_index));
-            section.maximal_padding = u32::try_from(info.maximal_padding).unwrap();
-            state.erratum_offsets.insert(section_index.0, info.offsets);
+            section.size += info.maximal_padding as u64;
+            state.erratum_sections.insert(section_index.0, info);
         }
         Ok(())
     }

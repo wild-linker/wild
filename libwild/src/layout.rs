@@ -11,7 +11,7 @@ use crate::compression::CompressedSection;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
-use crate::erratum843419::ErratumOffset;
+use crate::erratum843419::ErratumSectionInfo;
 use crate::error;
 use crate::error::Context;
 use crate::error::Error;
@@ -1186,7 +1186,7 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) owns_thunk_block: bool,
 
     /// AArch64 erratum identified for input sections.
-    pub(crate) erratum_offsets: HashMap<usize, SmallVec<[ErratumOffset; 2]>>,
+    pub(crate) erratum_sections: HashMap<usize, ErratumSectionInfo>,
 }
 
 #[derive(Debug)]
@@ -1614,7 +1614,7 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     pub(crate) post_gc_primary_bytes: u64,
 
     // Sections with erratum sequences are rare, so use a sparse map.
-    pub(crate) erratum_offsets: HashMap<usize, SmallVec<[ErratumOffset; 2]>>,
+    pub(crate) erratum_sections: HashMap<usize, ErratumSectionInfo>,
 }
 
 #[derive(Debug, Default)]
@@ -1646,11 +1646,9 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Section {
-    /// Size in the output. This starts as the input section size, then may be reduced by
-    /// relaxation-induced byte deletions during `scan_relaxations`.
+    /// Size in the output, including reserved erratum padding. This starts as the input section
+    /// size, then may be reduced by relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
-    /// Reserved space for section padding (used by AArch64 erratum).
-    pub(crate) maximal_padding: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1978,7 +1976,9 @@ impl<'data, P: Platform> Layout<'data, P> {
                                 .then(|| {
                                     let address = res.address;
                                     let size = match section_slot {
-                                        SectionSlot::Loaded(sec) => sec.size,
+                                        SectionSlot::Loaded(sec) => {
+                                            sec.content_size(obj.erratum_sections.get(&idx))
+                                        }
                                         _ => obj.object.section_size(section).unwrap(),
                                     };
                                     linker_layout::Section {
@@ -3375,6 +3375,10 @@ impl<'data, P: Platform> std::fmt::Display for ObjectLayout<'data, P> {
 }
 
 impl Section {
+    pub(crate) fn content_size(self, erratum: Option<&ErratumSectionInfo>) -> u64 {
+        self.size - erratum.map_or(0, |info| info.maximal_padding as u64)
+    }
+
     fn create<'data, P: Platform>(
         header: &P::SectionHeader,
         object_state: &ObjectLayoutState<'data, P>,
@@ -3388,10 +3392,7 @@ impl Section {
         } else {
             object_state.object.section_size(header)?
         };
-        let section = Section {
-            size,
-            maximal_padding: 0,
-        };
+        let section = Section { size };
         Ok(section)
     }
 
@@ -3402,13 +3403,10 @@ impl Section {
         part_id: PartId,
         output_sections: &OutputSections<P>,
     ) -> u64 {
-        let maximal_padding = u64::from(self.maximal_padding);
         if part_id.should_pack::<P>() {
-            self.size + maximal_padding
+            self.size
         } else {
-            part_id
-                .alignment(output_sections)
-                .align_up(self.size + maximal_padding)
+            part_id.alignment(output_sections).align_up(self.size)
         }
     }
 }
@@ -4456,7 +4454,7 @@ fn new_object_layout_state<P: Platform>(
         thunk_block_id: ThunkBlockId::default(),
         owns_thunk_block: false,
         post_gc_primary_bytes: 0,
-        erratum_offsets: HashMap::new(),
+        erratum_sections: HashMap::new(),
     })
 }
 
@@ -4795,7 +4793,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             && resources.thunk_layout_builder.is_some()
             && part_id == config.primary_function_part_id
         {
-            self.post_gc_primary_bytes += section.size + u64::from(section.maximal_padding);
+            self.post_gc_primary_bytes += section.size;
         }
 
         let section_id = part_id.output_section_id::<P>();
@@ -4908,7 +4906,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     // Collect SFrame section ranges while we're already iterating
                     if Some(part_id.output_section_id::<P>()) == sframe_section_id {
                         let offset = (address - sframe_start_address.unwrap()) as usize;
-                        let len = sec.size as usize;
+                        let len = sec
+                            .content_size(self.erratum_sections.get(&section_resolutions.len()))
+                            as usize;
                         sframe_ranges.push(offset..offset + len);
                     }
 
@@ -4988,7 +4988,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             section_relax_deltas: self.section_relax_deltas,
             thunk_block_id: self.thunk_block_id,
             owns_thunk_block: self.owns_thunk_block,
-            erratum_offsets: self.erratum_offsets,
+            erratum_sections: self.erratum_sections,
         })
     }
 

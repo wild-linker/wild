@@ -2146,8 +2146,9 @@ impl<'data, P: Platform> Default for Resolver<'data, P> {
 // eventually drop the Vecs that contain them. Dropping those Vecs is a lot cheaper if the slots
 // don't need to have run Drop. We check for this, by making sure the type implements `Copy`
 #[test]
-fn section_slot_is_copy() {
+fn section_slot_is_compact_and_copy() {
     fn assert_copy<T: Copy>(_v: T) {}
 
     assert_copy(SectionSlot::Discard);
+    assert!(size_of::<SectionSlot>() <= 24);
 }

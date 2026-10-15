@@ -2645,7 +2645,7 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         };
 
         // AArch64 erratum is mutually exclusive from architectures using relax relocations.
-        if let Some(offsets) = object.erratum_offsets.get(&section_index.0) {
+        if let Some(info) = object.erratum_sections.get(&section_index.0) {
             debug_assert!(!layout.args().should_output_partial_object());
             let address = object.section_resolutions[section_index.0]
                 .address()
@@ -2654,14 +2654,14 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 out,
                 effective_size,
                 address,
-                offsets,
+                &info.offsets,
                 object.object,
                 section_index,
                 &layout.erratum_patches,
             )?;
             layout
                 .erratum_padding
-                .fetch_add(u64::from(sec.maximal_padding), Relaxed);
+                .fetch_add(info.maximal_padding as u64, Relaxed);
             Ok((out, instruction_mapping))
         } else {
             Ok((&mut out[..effective_size], HashMap::new()))

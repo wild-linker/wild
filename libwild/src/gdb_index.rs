@@ -639,7 +639,7 @@ fn build_address_entries<C: ElfClass>(
                     let local_cu = section_cu_map.get(&si).copied().unwrap_or(0);
                     entries.push(GdbIndexAddressEntry {
                         low_address: addr,
-                        high_address: addr + section.size,
+                        high_address: addr + section.content_size(obj.erratum_sections.get(&si)),
                         cu_index: base_cu + local_cu,
                     });
                 }
