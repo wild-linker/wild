@@ -3290,29 +3290,30 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         // Full function index space: imports (above) + original defined ordinals.
-        for &dense_or_dead in &self.defined_function_live_ordinal {
-            if dense_or_dead == WASM_DEAD_INDEX {
-                index_map.function_indices.push(WASM_DEAD_INDEX);
-            } else {
-                let output_function_index = index_bases
-                    .defined_function_base
-                    .checked_add(dense_or_dead)
-                    .context("Wasm function index overflow")?;
-                index_map.function_indices.push(output_function_index);
-            }
-        }
-
-        for &dense_or_dead in &self.defined_global_live_ordinal {
-            if dense_or_dead == WASM_DEAD_INDEX {
-                index_map.global_indices.push(WASM_DEAD_INDEX);
-            } else {
-                let output_global_index = index_bases
-                    .defined_global_base
-                    .checked_add(dense_or_dead)
-                    .context("Wasm global index overflow")?;
-                index_map.global_indices.push(output_global_index);
-            }
-        }
+        let push_defined =
+            |ordinals: &[u32], base: u32, overflow: &'static str, dst: &mut Vec<u32>| -> Result {
+                for &dense_or_dead in ordinals {
+                    let output_index = if dense_or_dead == WASM_DEAD_INDEX {
+                        WASM_DEAD_INDEX
+                    } else {
+                        base.checked_add(dense_or_dead).context(overflow)?
+                    };
+                    dst.push(output_index);
+                }
+                Ok(())
+            };
+        push_defined(
+            &self.defined_function_live_ordinal,
+            index_bases.defined_function_base,
+            "Wasm function index overflow",
+            &mut index_map.function_indices,
+        )?;
+        push_defined(
+            &self.defined_global_live_ordinal,
+            index_bases.defined_global_base,
+            "Wasm global index overflow",
+            &mut index_map.global_indices,
+        )?;
 
         // Imported and defined memories are merged into a single output memory.
         let memory_slot_count = self.memory_imports.len() + self.memories.len();
