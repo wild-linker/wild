@@ -6942,9 +6942,7 @@ fn data_segment_places(object_data_layout: &[WasmDataSegmentLayout<'_>]) -> Vec<
         }
         by_original[slot] = if segment.tls_template {
             SegmentPlace::Tls(segment.output_memory_offset)
-        } else if segment.shared_init {
-            SegmentPlace::Active(segment.output_memory_offset)
-        } else if segment.passive {
+        } else if segment.passive && !segment.shared_init {
             SegmentPlace::Passive
         } else {
             SegmentPlace::Active(segment.output_memory_offset)
