@@ -5946,24 +5946,6 @@ fn resolve_entry_function<'data>(
     }))
 }
 
-/// Export the command entry (default `_start`).
-fn ensure_entry_export<'data>(
-    exports: &mut Vec<OutputExport<'data>>,
-    entry: Option<&ResolvedEntry<'data>>,
-) {
-    let Some(entry) = entry else {
-        return;
-    };
-    if export_name_exists(exports, entry.export_name) {
-        return;
-    }
-    exports.push(OutputExport {
-        name: entry.export_name,
-        kind: wasmparser::ExternalKind::Func,
-        index: entry.function_index,
-    });
-}
-
 fn requested_linker_export_symbols(args: &WasmArgs) -> Vec<WasmLinkerSymbol> {
     let mut symbols = Vec::new();
     for name in args.force_export_symbol_names() {
@@ -6640,7 +6622,14 @@ where
         )?;
         fill_dynamic_data_global_inits(&mut layout, &indices, &dynamic_exports)?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
-        ensure_entry_export(&mut layout.exports, entry.as_ref());
+        if let Some(entry) = entry.as_ref() {
+            push_export(
+                &mut layout.exports,
+                entry.export_name,
+                wasmparser::ExternalKind::Func,
+                entry.function_index,
+            );
+        }
         if layout.shared_memory_tls {
             if let Some(index) = indices.tls_size_global {
                 push_export(
