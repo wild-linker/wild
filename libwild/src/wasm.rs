@@ -581,6 +581,18 @@ pub(crate) struct DebugSectionInput<'data> {
     pub(crate) data: &'data [u8],
 }
 
+macro_rules! wasm_section_reader {
+    ($($fn_name:ident, $section:ident, $reader:ident;)*) => {
+        $(
+            pub(crate) fn $fn_name(&self) -> Result<Option<$reader<'data>>> {
+                self.standard_section_reader(section_id::$section)
+                    .map(|reader| $reader::new(reader).map_err(Into::into))
+                    .transpose()
+            }
+        )*
+    };
+}
+
 impl<'data> File<'data> {
     fn debug_sections(&self) -> impl Iterator<Item = DebugSectionInput<'data>> + '_ {
         self.sections
@@ -632,52 +644,15 @@ impl<'data> File<'data> {
         ))
     }
 
-    pub(crate) fn import_section_reader(&self) -> Result<Option<ImportSectionReader<'data>>> {
-        self.standard_section_reader(section_id::IMPORT)
-            .map(|r| ImportSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn function_section_reader(&self) -> Result<Option<FunctionSectionReader<'data>>> {
-        self.standard_section_reader(section_id::FUNCTION)
-            .map(|r| FunctionSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn global_section_reader(&self) -> Result<Option<GlobalSectionReader<'data>>> {
-        self.standard_section_reader(section_id::GLOBAL)
-            .map(|r| GlobalSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn data_section_reader(&self) -> Result<Option<DataSectionReader<'data>>> {
-        self.standard_section_reader(section_id::DATA)
-            .map(|r| DataSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn code_section_reader(&self) -> Result<Option<CodeSectionReader<'data>>> {
-        self.standard_section_reader(section_id::CODE)
-            .map(|r| CodeSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn memory_section_reader(&self) -> Result<Option<MemorySectionReader<'data>>> {
-        self.standard_section_reader(section_id::MEMORY)
-            .map(|r| MemorySectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn export_section_reader(&self) -> Result<Option<ExportSectionReader<'data>>> {
-        self.standard_section_reader(section_id::EXPORT)
-            .map(|r| ExportSectionReader::new(r).map_err(Into::into))
-            .transpose()
-    }
-
-    pub(crate) fn type_section_reader(&self) -> Result<Option<TypeSectionReader<'data>>> {
-        self.standard_section_reader(section_id::TYPE)
-            .map(|r| TypeSectionReader::new(r).map_err(Into::into))
-            .transpose()
+    wasm_section_reader! {
+        import_section_reader, IMPORT, ImportSectionReader;
+        function_section_reader, FUNCTION, FunctionSectionReader;
+        global_section_reader, GLOBAL, GlobalSectionReader;
+        data_section_reader, DATA, DataSectionReader;
+        code_section_reader, CODE, CodeSectionReader;
+        memory_section_reader, MEMORY, MemorySectionReader;
+        export_section_reader, EXPORT, ExportSectionReader;
+        type_section_reader, TYPE, TypeSectionReader;
     }
 
     /// Type indices of functions defined in this module (excluding imports), in `function`
