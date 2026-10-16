@@ -50,6 +50,7 @@ const _ASSERTS: () = {
 const REX_W: u8 = 0x48;
 // 64-bit instruction REX encoding (extended registers used).
 const REX_W_R: u8 = 0x4c;
+const REX2_PREFIX: u8 = 0xd5;
 
 macro_rules! rel_info_from_type {
     ($r_type:expr) => {
@@ -199,7 +200,7 @@ impl crate::platform::Arch for ElfX86_64 {
         match relocation_kind {
             object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_CODE_4_GOTPCRELX
                 if (relocation_kind == object::elf::R_X86_64_CODE_4_GOTPCRELX
-                    && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                    && (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX))
                     || offset >= 3 =>
             {
                 let b1 = section_bytes[offset - 2];
@@ -322,7 +323,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 if output_kind.is_executable()
                     && !interposable
                     && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTTPOFF
-                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        && (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX))
                         || offset >= 3) =>
             {
                 let inst_offset = if relocation_kind == object::elf::R_X86_64_GOTTPOFF {
@@ -446,7 +447,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 if !interposable
                     && output_kind.is_executable()
                     && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
-                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        && (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX))
                         || offset >= 3) =>
             {
                 // We require that the instruction that this relocation applies to is a LEA
@@ -468,7 +469,13 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
             // TLSDESC_CALL below.
-            object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
+            object::elf::R_X86_64_GOTPC32_TLSDESC
+            | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+                if output_kind.is_executable()
+                    && offset >= 3
+                    && (relocation_kind == object::elf::R_X86_64_GOTPC32_TLSDESC
+                        || (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX)) =>
+            {
                 // We require that the instruction that this relocation applies to is a LEA
                 // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
