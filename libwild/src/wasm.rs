@@ -6613,13 +6613,16 @@ where
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
     }
-    layout.name_inputs = wasm_name_inputs(
-        &indices,
-        got_mem,
-        got_func,
-        &layout_inputs,
-        symbol_db.args.common().demangle,
-    );
+    let strip_all = symbol_db.args.should_strip_all();
+    if !strip_all {
+        layout.name_inputs = wasm_name_inputs(
+            &indices,
+            got_mem,
+            got_func,
+            &layout_inputs,
+            symbol_db.args.common().demangle,
+        );
+    }
     layout.target_feature_inputs = layout_inputs
         .iter()
         .flat_map(|input| {
@@ -6655,7 +6658,7 @@ where
         layout.code_section_size = compute_code_section_size(&layout.function_bodies);
         layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
     }
-    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
+    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout, strip_all)?;
     layout.encoded_metadata = encoded_metadata;
     Ok(layout)
 }
