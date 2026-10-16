@@ -10,7 +10,6 @@
 //#Config:gcc-static:default
 //#SkipArch: ppc64le
 //#LinkArgs:-static -Wl,--gc-sections
-//#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
 // TODO: RISC-V BFD linker keeps the symbol in .dynsym section
 //#DiffIgnore:section.rela.dyn
@@ -28,7 +27,6 @@
 //#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkArgs:-static
-//#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
 //#DiffIgnore:rel.extra-got-plt-got
 // LoongArch GNU ld puts static IFUNC relocations in .rela.dyn instead of .rela.plt.

@@ -29,7 +29,6 @@
 //#LinkerDriver:g++
 //#LinkArgs:-no-pie -static -Wl,-z,now,-no-relax
 //#DiffIgnore:rel.extra-got-plt-got
-//#DiffIgnore:section.rela.plt.link
 // Wild uses similar order as LLD, which is different from GNU ld.
 //#DiffIgnore:init_array
 // TODO: We probably picked weak symbols from different objects than GNU ld.

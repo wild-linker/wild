@@ -6,11 +6,9 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie
-//#DiffIgnore:section.rela.plt.link
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
-//#DiffIgnore:section.rela.plt.link
 
 #include "../common/ifunc_init.h"
 #include "../common/init.h"

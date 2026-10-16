@@ -2,7 +2,6 @@
 //#Object:ifunc-address-equality-1.c:-fPIC
 //#Object:ifunc_init.c
 //#Object:runtime.c
-//#DiffIgnore:section.rela.plt.link
 //#RequiresGlibc:true
 //#Arch:x86_64
 

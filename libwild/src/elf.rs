@@ -6273,7 +6273,7 @@ impl<C: ElfClass> Elf<C> {
             ty: sht::RELA,
             section_flags: shf::ALLOC.with(shf::INFO_LINK),
             element_size: C::RELA_ENTRY_SIZE,
-            link: &[output_section_id::DYNSYM, output_section_id::SYMTAB_LOCAL],
+            link: &[output_section_id::DYNSYM],
             min_alignment: C::RELA_ENTRY_ALIGNMENT,
             ..Self::DEFAULT_DEFS
         };

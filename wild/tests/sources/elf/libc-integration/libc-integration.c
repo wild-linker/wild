@@ -5,8 +5,6 @@
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_PLTREL
-// This is only an issue on openSUSE
-//#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.data.alignment
 //#DiffIgnore:section.rela.dyn
 //#RequiresGlibc:true

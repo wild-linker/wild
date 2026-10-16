@@ -3,7 +3,6 @@
 //#Object:ptr_black_box.c
 //#DiffIgnore:section.tdata.alignment
 //#DiffIgnore:section.rodata
-//#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.rela.dyn
 //#DiffIgnore:section.data
 //#DiffIgnore:section.sdata
