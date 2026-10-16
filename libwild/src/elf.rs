@@ -6852,6 +6852,7 @@ fn classify_symbol_relocation<
     let section_flags = section.sh_flags(LittleEndian);
 
     let mut next_modifier = RelocationModifier::Normal;
+    let mut flags_to_add = ValueFlags::empty();
     let rel_info = if let Some(relaxation) = A::new_relaxation(
         r_type,
         object.object.raw_section_data(section)?,
@@ -6868,6 +6869,9 @@ fn classify_symbol_relocation<
     .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
     {
         next_modifier = relaxation.next_modifier();
+        if relaxation.needs_got_fallback() {
+            flags_to_add |= ValueFlags::GOT;
+        }
         relaxation.rel_info()
     } else {
         A::relocation_from_raw(r_type)?
@@ -6877,7 +6881,7 @@ fn classify_symbol_relocation<
         local_symbol_id,
         symbol_id,
         flags,
-        flags_to_add: layout::resolution_flags(rel_info.kind),
+        flags_to_add: flags_to_add | layout::resolution_flags(rel_info.kind),
         rel_offset,
         r_type,
         rel_kind: rel_info.kind,

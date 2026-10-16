@@ -331,6 +331,12 @@ pub(crate) trait Relaxation: Send + Sync + 'static {
     fn next_modifier(&self) -> RelocationModifier;
 
     fn is_mandatory(&self) -> bool;
+
+    /// Reserve a GOT entry in case the final symbol address prevents this relaxation.
+    /// Relocation scanning selects relaxations using a placeholder symbol address.
+    fn needs_got_fallback(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) struct RelaxSymbolInfo {

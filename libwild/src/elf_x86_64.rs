@@ -14,6 +14,7 @@ use crate::platform::Platform;
 use crate::platform::PreviousRelocationInfo;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
@@ -162,7 +163,7 @@ impl crate::platform::Arch for ElfX86_64 {
         output_kind: OutputKind,
         section_flags: SectionFlags,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
-        _sym_addr: u64,
+        sym_addr: u64,
         _section_address: u64,
         rel_addend: i64,
         _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
@@ -212,38 +213,33 @@ impl crate::platform::Arch for ElfX86_64 {
                 }
 
                 if is_absolute || is_absolute_address {
+                    let rel_info = rel_info_from_type!(object::elf::R_X86_64_32S);
+
+                    if !rel_info.range.contains(sym_addr as i64) {
+                        return None;
+                    }
+
                     let inst_offset = if relocation_kind == object::elf::R_X86_64_REX_GOTPCRELX {
                         3
                     } else {
                         4
                     };
-                    match b1 {
+
+                    let kind = match b1 {
                         // mov *x(%rip), reg
-                        0x8b => {
-                            return Some(Relaxation {
-                                kind: RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
-                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable() && is_absolute,
-                            });
-                        }
+                        0x8b => RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
                         // sub *x(%rip), reg
-                        0x2b => {
-                            return Some(Relaxation {
-                                kind: RelaxationKind::RexSubIndirectToAbsolute(inst_offset),
-                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable() && is_absolute,
-                            });
-                        }
+                        0x2b => RelaxationKind::RexSubIndirectToAbsolute(inst_offset),
                         // cmp *x(%rip), reg
-                        0x3b => {
-                            return Some(Relaxation {
-                                kind: RelaxationKind::RexCmpIndirectToAbsolute(inst_offset),
-                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable() && is_absolute,
-                            });
-                        }
+                        0x3b => RelaxationKind::RexCmpIndirectToAbsolute(inst_offset),
                         _ => return None,
-                    }
+                    };
+
+                    return Some(Relaxation {
+                        kind,
+                        rel_info,
+                        mandatory: output_kind.is_static_executable() && is_absolute,
+                    });
                 } else if !interposable {
                     match b1 {
                         // mov *x(%rip), reg
@@ -263,6 +259,12 @@ impl crate::platform::Arch for ElfX86_64 {
                     // mov *x(%rip), reg
                     0x8b => {
                         if is_absolute || is_absolute_address {
+                            if !rel_info_from_type!(object::elf::R_X86_64_32)
+                                .range
+                                .contains(sym_addr as i64)
+                            {
+                                return None;
+                            }
                             malfunction_point_ret!("no-mov-indirect-to-absolute", None);
                             return Some(Relaxation {
                                 kind: RelaxationKind::MovIndirectToAbsolute,
@@ -554,6 +556,10 @@ impl crate::platform::Relaxation for Relaxation {
 
     fn is_mandatory(&self) -> bool {
         self.mandatory
+    }
+
+    fn needs_got_fallback(&self) -> bool {
+        self.rel_info.kind == RelocationKind::Absolute
     }
 }
 

@@ -8,6 +8,7 @@
 //#RunDynSym:get_bar
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:section.got
+//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
 .text
 .globl get_bar

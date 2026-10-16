@@ -65,12 +65,14 @@ use anyhow::bail;
 use anyhow::ensure;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
+use linker_utils::elf::AllowedRange;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+use linker_utils::elf::Sign;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
@@ -1990,8 +1992,8 @@ impl<'data> RelaxationTester<'data> {
         };
 
         let value = match candidate
-            .relocation_size()
-            .and_then(|size| read_value(size, value_bytes))
+            .relocation_info()
+            .and_then(|info| read_value(info, value_bytes))
         {
             Ok(v) => v,
             Err(error) => return failure(error.to_string()),
@@ -4007,14 +4009,21 @@ fn relocation_num_bytes(info: RelocationKindInfo) -> usize {
     }
 }
 
-fn read_value(size: RelocationSize, value_bytes: &[u8]) -> Result<u64> {
-    match size {
+fn read_value(info: RelocationKindInfo, value_bytes: &[u8]) -> Result<u64> {
+    match info.size {
         RelocationSize::ByteSize(8) => Ok(u64::from_le_bytes(
             *value_bytes
                 .first_chunk::<8>()
                 .context("Invalid relocation offset")?,
         )),
-        RelocationSize::ByteSize(4) => Ok(u64::from(u32_from_slice(value_bytes))),
+        RelocationSize::ByteSize(4) => {
+            let value = u32_from_slice(value_bytes);
+            if info.range == AllowedRange::from_byte_size(4, Sign::Signed) {
+                Ok(i64::from(value as i32) as u64)
+            } else {
+                Ok(u64::from(value))
+            }
+        }
         RelocationSize::ByteSize(0) => Ok(0),
         RelocationSize::ByteSize(other) => bail!("Unsupported relocation size {other}"),
         RelocationSize::BitMasking(BitMask {
@@ -4028,15 +4037,15 @@ fn read_value(size: RelocationSize, value_bytes: &[u8]) -> Result<u64> {
 }
 
 impl<A: Arch> Relaxation<A> {
-    fn relocation_size(&self) -> Result<RelocationSize> {
-        let size = self.new_r_type.relocation_info()?.size;
+    fn relocation_info(&self) -> Result<RelocationKindInfo> {
+        let info = self.new_r_type.relocation_info()?;
 
         if let Some(alt_r_type) = self.alt_r_type {
             let alt_size = alt_r_type.relocation_info()?.size;
-            assert_eq!(alt_size, size);
+            assert_eq!(alt_size, info.size);
         }
 
-        Ok(size)
+        Ok(info)
     }
 
     fn relocation_num_bytes(&self) -> Result<usize> {
@@ -4044,6 +4053,27 @@ impl<A: Arch> Relaxation<A> {
 
         Ok(relocation_num_bytes(relocation_info))
     }
+}
+
+#[test]
+fn test_read_signed_and_unsigned_absolute_values() {
+    let signed = linker_utils::x86_64::relocation_from_raw(object::elf::R_X86_64_32S).unwrap();
+    let unsigned = linker_utils::x86_64::relocation_from_raw(object::elf::R_X86_64_32).unwrap();
+
+    for (encoded, signed_value) in [
+        (0u32, 0u64),
+        (0x7fff_ffff, 0x7fff_ffff),
+        (0x8000_0000, 0xffff_ffff_8000_0000),
+        (0xffff_ffff, u64::MAX),
+    ] {
+        let bytes = encoded.to_le_bytes();
+        assert_eq!(read_value(signed, &bytes).unwrap(), signed_value);
+        assert_eq!(read_value(unsigned, &bytes).unwrap(), u64::from(encoded));
+    }
+
+    let mixed =
+        linker_utils::aarch64::relocation_type_from_raw(object::elf::R_AARCH64_ABS32).unwrap();
+    assert_eq!(read_value(mixed, &[0xff; 4]).unwrap(), u64::from(u32::MAX));
 }
 
 fn has_copy_relocation_for_symbol_named<R: RType>(symbol_name: &[u8], bin: &Binary) -> bool {
