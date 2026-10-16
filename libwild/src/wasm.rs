@@ -3979,23 +3979,6 @@ struct LayoutRelocScan {
     table_index_symbol_indices: Vec<Vec<usize>>,
 }
 
-fn assign_reserved_got_globals(
-    out: &mut Vec<Vec<Option<u32>>>,
-    empty: bool,
-    base: Option<u32>,
-    slots: &GotSlotMap,
-    missing: &'static str,
-    resolutions: &mut [ObjectImportResolutions],
-    take_slot: impl Fn(ImportResolution) -> Option<usize>,
-) -> Result {
-    if empty {
-        return Ok(());
-    }
-    let first_got = base.context(missing)?;
-    *out = assign_got_slot_global_indices(slots, first_got)?;
-    finalize_got_import_resolutions(resolutions, first_got, take_slot)
-}
-
 /// Scan relocations, absorb GOT.mem / GOT.func / weak-undef imports, and reserve indices.
 fn setup_got_mem_and_indices<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
@@ -4039,60 +4022,62 @@ fn setup_got_mem_and_indices<'data>(
     report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
-    let indices = {
-        timing_phase!("Reserve linker-defined Wasm indices");
-        let indices = LinkerDefinedIndices::compute(
-            layout_inputs,
-            resolutions,
-            shared_imports.function_count(),
-            shared_imports.global_count(),
-            weak_undef_stubs,
-            &LinkerDefinedIndexRequest {
-                has_init_funcs,
-                export_symbols: requested_linker_export_symbols(symbol_db.args),
-                // Executables always get a defined linear memory.
-                has_memory: true,
-                got_mem_count: scan.got_mem.len(),
-                got_func_count: scan.got_func.len(),
-                dynamic_data_count,
-                needs_memory_base: scan.needs_memory_base,
-                needs_table_base: scan.needs_table_base,
-                shared_memory: symbol_db.args.shared_memory,
-                has_tls: layout_inputs.iter().any(input_has_tls_segments),
-                needs_init_memory: symbol_db.args.shared_memory
-                    && layout_inputs.iter().any(input_has_shared_init_segment),
-            },
-        )?;
+    let indices =
+        {
+            timing_phase!("Reserve linker-defined Wasm indices");
+            let indices = LinkerDefinedIndices::compute(
+                layout_inputs,
+                resolutions,
+                shared_imports.function_count(),
+                shared_imports.global_count(),
+                weak_undef_stubs,
+                &LinkerDefinedIndexRequest {
+                    has_init_funcs,
+                    export_symbols: requested_linker_export_symbols(symbol_db.args),
+                    // Executables always get a defined linear memory.
+                    has_memory: true,
+                    got_mem_count: scan.got_mem.len(),
+                    got_func_count: scan.got_func.len(),
+                    dynamic_data_count,
+                    needs_memory_base: scan.needs_memory_base,
+                    needs_table_base: scan.needs_table_base,
+                    shared_memory: symbol_db.args.shared_memory,
+                    has_tls: layout_inputs.iter().any(input_has_tls_segments),
+                    needs_init_memory: symbol_db.args.shared_memory
+                        && layout_inputs.iter().any(input_has_shared_init_segment),
+                },
+            )?;
 
-        let got_mem_empty = scan.got_mem.is_empty();
-        assign_reserved_got_globals(
-            &mut scan.got_mem.per_object_global_indices,
-            got_mem_empty,
-            indices.got_mem_global_base,
-            &scan.per_object_got_mem_slots,
-            "GOT.mem entries present but no global base reserved",
-            resolutions,
-            |resolution| match resolution {
-                ImportResolution::GotMemSlot(slot) => Some(slot),
-                _ => None,
-            },
-        )?;
-        let got_func_empty = scan.got_func.is_empty();
-        assign_reserved_got_globals(
-            &mut scan.got_func.per_object_global_indices,
-            got_func_empty,
-            indices.got_func_global_base,
-            &scan.per_object_got_func_slots,
-            "GOT.func entries present but no global base reserved",
-            resolutions,
-            |resolution| match resolution {
-                ImportResolution::GotFuncSlot(slot) => Some(slot),
-                _ => None,
-            },
-        )?;
+            if !scan.got_mem.is_empty() {
+                let first_got = indices
+                    .got_mem_global_base
+                    .context("GOT.mem entries present but no global base reserved")?;
+                scan.got_mem.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotMemSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
 
-        indices
-    };
+            if !scan.got_func.is_empty() {
+                let first_got = indices
+                    .got_func_global_base
+                    .context("GOT.func entries present but no global base reserved")?;
+                scan.got_func.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotFuncSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
+
+            indices
+        };
 
     Ok((indices, scan, shared_imports))
 }
