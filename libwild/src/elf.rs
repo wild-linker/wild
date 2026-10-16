@@ -6855,7 +6855,7 @@ fn classify_symbol_relocation<
         None,
         1,
         0,
-        0,
+        rel.addend(),
         None,
     )
     .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
