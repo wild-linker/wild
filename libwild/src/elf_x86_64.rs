@@ -560,7 +560,8 @@ impl TlsGdForm {
     fn identify(bytes: &[u8], offset: usize) -> Option<Self> {
         // data16 lea 0x0(%rip),%rdi
         // data16 data16 rex.W call {relative function offset}
-        if bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
+        if offset >= 4
+            && bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, REX_W, 0xe8])
         {
             return Some(Self::Regular);
@@ -568,7 +569,8 @@ impl TlsGdForm {
 
         // data16 lea 0x0(%rip),%rdi
         // data16 rex.W call *__tls_get_addr@GOTPCREL(%rip)
-        if bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
+        if offset >= 4
+            && bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 8) == Some(&[0x66, REX_W, 0xff, 0x15])
         {
             return Some(Self::RegularNoPlt);
@@ -578,7 +580,8 @@ impl TlsGdForm {
         // movabs $X,%rax
         // add %rbx,%rax
         // call *%rax
-        if bytes.get(offset - 3..offset) == Some(&[REX_W, 0x8d, 0x3d])
+        if offset >= 3
+            && bytes.get(offset - 3..offset) == Some(&[REX_W, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 6) == Some(&[REX_W, 0xb8])
             && bytes.get(offset + 14..offset + 19) == Some(&[REX_W, 0x01, 0xd8, 0xff, 0xd0])
         {
