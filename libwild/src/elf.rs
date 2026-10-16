@@ -1534,8 +1534,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             ))
             .hide();
 
-        // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
-        // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
+        // We define _TLS_MODULE_BASE_ at the start of the TLS segment for shared objects and at
+        // its aligned end for executables. This symbol is used for TLSDESC.
         // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
         let mut elf_symbol = SymtabEntry::<C>::default();
         elf_symbol.set_binding_and_type(object::elf::STB_GLOBAL, object::elf::STT_TLS);
@@ -1543,7 +1543,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             placement: if output_kind == OutputKind::SharedObject {
                 SymbolPlacement::SectionStart(output_section_id::TDATA)
             } else {
-                SymbolPlacement::SectionEnd(output_section_id::TBSS)
+                SymbolPlacement::TlsEnd(output_section_id::TBSS)
             },
             name: b"_TLS_MODULE_BASE_",
             symbol: elf_symbol,

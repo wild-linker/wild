@@ -2173,6 +2173,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
                 }
                 SymbolPlacement::SectionStart(_)
                 | SymbolPlacement::SectionEnd(_)
+                | SymbolPlacement::TlsEnd(_)
                 | SymbolPlacement::SectionGroupEnd(_)
                 | SymbolPlacement::LoadBaseAddress => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
@@ -2214,6 +2215,7 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
+            SymbolPlacement::TlsEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),
             // The other linkers attach to the closest section, but the address is nonetheless
             // outside of the selected section. It's tricky for us to find the closest section

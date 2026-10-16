@@ -26,6 +26,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
+use crate::platform::SectionAttributes;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
@@ -651,6 +652,25 @@ fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
             section_id: *section_id,
             address: section_layouts.get(*section_id).mem_size,
         }),
+        SymbolPlacement::TlsEnd(section_id) => {
+            let mut end = 0;
+            let mut alignment = crate::alignment::MIN;
+
+            // Segment layouts aren't available until all sections have been laid out, so use
+            // sections instead.
+            for (id, info) in output_sections.ids_with_info() {
+                if info.section_attributes.is_tls() {
+                    let section = section_layouts.get(id);
+                    end = end.max(section.mem_offset + section.mem_size);
+                    alignment = alignment.max(section.alignment);
+                }
+            }
+
+            Ok(SymbolValue::SectionRelative {
+                section_id: *section_id,
+                address: alignment.align_up(end),
+            })
+        }
         _ => {
             bail!("Unsupported symbol type");
         }

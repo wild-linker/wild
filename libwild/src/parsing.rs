@@ -84,6 +84,10 @@ pub(crate) enum SymbolPlacement<'data, P: Platform> {
     /// last byte of the section.
     SectionEnd(OutputSectionId),
 
+    /// The end of the TLS segment rounded up to its alignment. The section ID controls the
+    /// symbol's section association, not its address.
+    TlsEnd(OutputSectionId),
+
     /// Where secondary sections are merged into a primary section, this causes our symbol to point
     /// to the non-inclusive end of the last section merged into the specified primary.
     SectionGroupEnd(OutputSectionId),

@@ -1018,6 +1018,14 @@ pub(crate) struct SegmentLayouts {
     pub(crate) tls_layout: Option<OutputRecordLayout>,
 }
 
+impl SegmentLayouts {
+    fn tls_end_address(&self) -> u64 {
+        self.tls_layout.as_ref().map_or(0, |seg| {
+            seg.alignment.align_up(seg.mem_offset + seg.mem_size)
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SegmentLayout {
     pub(crate) id: ProgramSegmentId,
@@ -1915,12 +1923,9 @@ impl<'data, P: Platform> Layout<'data, P> {
             .map_or(0, |seg| seg.alignment.align_down(seg.mem_offset))
     }
 
-    /// Returns the memory address of the end of the TLS segment including any padding required to
-    /// make sure that the TCB will be usize-aligned.
+    /// Returns the memory address of the end of the TLS segment rounded up to its alignment.
     pub(crate) fn tls_end_address(&self) -> u64 {
-        self.segment_layouts.tls_layout.as_ref().map_or(0, |seg| {
-            seg.alignment.align_up(seg.mem_offset + seg.mem_size)
-        })
+        self.segment_layouts.tls_end_address()
     }
 
     /// Returns the memory address of the start of the TLS segment used by the AArch64.
@@ -4155,6 +4160,7 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
         }
+        SymbolPlacement::TlsEnd(_) => resources.segment_layouts.tls_end_address(),
         SymbolPlacement::SectionGroupEnd(section_id) => {
             let mut end = {
                 let sec = resources.section_layouts.get(section_id);
