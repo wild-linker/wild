@@ -148,6 +148,25 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
     fn tp_offset_start(layout: &Layout<Self::Platform>) -> u64;
 
+    /// Address subtracted by a DTPREL relocation.
+    ///
+    /// Allocated relocations in a shared object pass `for_shared_object`. Debug relocations pass
+    /// `false`, which selects the end of the TLS segment. ppc64 overrides this and always uses the
+    /// DTV point.
+    fn dtp_offset_base(layout: &Layout<Self::Platform>, for_shared_object: bool) -> u64 {
+        if for_shared_object {
+            layout.tls_start_address()
+        } else {
+            layout.tls_end_address()
+        }
+    }
+
+    /// Second TLSLD GOT slot in an executable. `__tls_get_addr` adds this to the module TLS block.
+    /// The default is the variant-II base: the thread pointer, at the end of the TLS segment.
+    fn executable_tlsld_offset(layout: &Layout<Self::Platform>) -> u64 {
+        Self::tp_offset_start(layout) - layout.tls_start_address()
+    }
+
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
 

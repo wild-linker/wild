@@ -278,11 +278,12 @@ impl CompressPageInProgress {
     }
 }
 
-pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Result<u64> {
+pub(crate) fn output_size(unwind_info_entries: &[Vec<UnwindInfoWithRelocs>]) -> Result<u64> {
     verbose_timing_phase!("Estimate compact unwind section size");
 
     let personalities_to_idx: HashMap<SymbolId, usize> = unwind_info_entries
         .iter()
+        .flatten()
         .filter_map(|entry| entry.personality_symbol_id)
         .unique()
         .sorted()
@@ -296,6 +297,7 @@ pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Resul
 
     let encoding_values = unwind_info_entries
         .iter()
+        .flatten()
         .map(|entry| {
             let encoding = entry.entry.encoding;
             if let Some(personality) = entry.personality_symbol_id {
@@ -319,6 +321,7 @@ pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Resul
 
     let lsdas = unwind_info_entries
         .iter()
+        .flatten()
         .filter_map(|entry| entry.lsda_relocation)
         .count();
 
@@ -336,6 +339,7 @@ pub(crate) fn output_size(unwind_info_entries: &[UnwindInfoWithRelocs]) -> Resul
     // will not fit into a single page. Investigate later if the situation arises.
     let large_functions = unwind_info_entries
         .iter()
+        .flatten()
         .filter(|entry| entry.entry.length >= (MAX_FUNCTION_OFFSET / 4) as u32)
         .count();
     compressed_pages_total_size += large_functions * size_of::<CompressedPage>();

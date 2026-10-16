@@ -3,7 +3,8 @@
 // lld and ld both use lazy binding, but we use chained fixups here.
 //#DiffIgnore:section.__stub_helper
 //#DiffIgnore:section.__la_symbol_ptr
-//#ExpectSym:_rust_eh_personality section="__text"
+// Note, we can't use ExpectSym, since newer versions of rustc mangle the symbol.
+//#Contains:rust_eh_personality
 
 fn main() {
     assert!(std::panic::catch_unwind(|| panic!("Local personality")).is_err());
