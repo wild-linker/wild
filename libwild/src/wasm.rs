@@ -4692,33 +4692,40 @@ fn fill_got_mem_inits(
     let defined_slot = (got_base - indices.global_import_count) as usize;
 
     for (i, entry) in got_mem.entries.iter().enumerate() {
-        let addr = match entry.def {
-            GotMemDef::Object {
-                object_index,
-                symbol_offset,
-            } => {
-                let addr = layout.object_index_maps[object_index]
-                    .data_addresses
-                    .get(symbol_offset)
-                    .copied()
-                    .context("GOT.mem missing data address for definition")?;
-                memory_address_base(addr)?.unwrap_or(0)
-            }
-            GotMemDef::LinkerDefined(known) => known
-                .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
-                .with_context(|| {
-                    format!(
-                        "GOT.mem linker-defined symbol `{}` has no data address",
-                        std::str::from_utf8(known.name()).unwrap_or("?")
-                    )
-                })?,
-        };
         let global_slot = defined_slot + i;
         let global = layout
             .globals
             .get_mut(global_slot)
             .with_context(|| format!("GOT.mem global slot {global_slot} out of range"))?;
-        global.init_expr_body = Cow::Owned(encode_i32_const_u32(addr));
+        let addr = match entry.def {
+            GotMemDef::Object {
+                object_index,
+                symbol_offset,
+            } => layout.object_index_maps[object_index]
+                .data_addresses
+                .get(symbol_offset)
+                .copied()
+                .context("GOT.mem missing data address for definition")?,
+            GotMemDef::LinkerDefined(known) => WasmDataAddress::Placed(
+                known
+                    .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
+                    .with_context(|| {
+                        format!(
+                            "GOT.mem linker-defined symbol `{}` has no data address",
+                            std::str::from_utf8(known.name()).unwrap_or("?")
+                        )
+                    })?,
+            ),
+        };
+        // Shared-memory TLS has no single address. `__wasm_init_tls` writes this mutable slot.
+        if matches!(addr, WasmDataAddress::TlsOffset(_)) {
+            global.ty.mutable = true;
+            global.init_expr_body = Cow::Borrowed(ZERO_I32_INIT_EXPR);
+            continue;
+        }
+        global.init_expr_body = Cow::Owned(encode_i32_const_u32(
+            memory_address_base(addr)?.unwrap_or(0),
+        ));
     }
     Ok(())
 }
@@ -5348,6 +5355,7 @@ fn emit_reserved_linker_definitions(
     call_ctors_body: Option<Vec<u8>>,
     init_memory_flag: Option<u32>,
     tls_pointer_fixups: &[TlsPointerFixup],
+    tls_got_fixups: &[TlsGotFixup],
 ) -> Result {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
@@ -5440,6 +5448,7 @@ fn emit_reserved_linker_definitions(
                     layout.tls_size,
                     &copies.tls,
                     tls_pointer_fixups,
+                    tls_got_fixups,
                 )?));
             }
             if let Some(init_memory_func) = indices.init_memory_func {
@@ -5634,11 +5643,18 @@ struct TlsPointerFixup {
     offset: i32,
 }
 
+/// One `sym@GOT@TLS` slot. The global is mutable and holds `__tls_base + offset` after init.
+struct TlsGotFixup {
+    global: u32,
+    offset: i32,
+}
+
 fn encode_init_tls_body(
     tls_base_global: u32,
     tls_size: u32,
     copies: &[PassiveSegmentCopy],
     fixups: &[TlsPointerFixup],
+    got_fixups: &[TlsGotFixup],
 ) -> Result<Vec<u8>> {
     let memarg = wasm_encoder::MemArg {
         offset: 0,
@@ -5679,6 +5695,12 @@ fn encode_init_tls_body(
         ins.i32_const(fixup.offset);
         ins.i32_add();
         ins.i32_store(memarg);
+    }
+    for got in got_fixups {
+        ins.global_get(tls_base_global);
+        ins.i32_const(got.offset);
+        ins.i32_add();
+        ins.global_set(got.global);
     }
     ins.end();
     Ok(func.into_raw_body())
@@ -6511,6 +6533,10 @@ where
             stack_first,
         )?;
         let tls_pointer_fixups = collect_tls_pointer_fixups(&layout)?;
+        let tls_got_fixups = match indices.got_mem_global_base {
+            Some(got_base) => collect_tls_got_fixups(&layout, got_mem, got_base)?,
+            None => Vec::new(),
+        };
         if !tls_pointer_fixups.is_empty() {
             indices
                 .tls_base_global
@@ -6519,12 +6545,21 @@ where
                 .init_tls_func
                 .context("shared-memory TLS pointer relocation is missing __wasm_init_tls")?;
         }
+        if !tls_got_fixups.is_empty() {
+            indices
+                .tls_base_global
+                .context("shared-memory TLS GOT is missing __tls_base")?;
+            indices
+                .init_tls_func
+                .context("shared-memory TLS GOT is missing __wasm_init_tls")?;
+        }
         emit_reserved_linker_definitions(
             &mut layout,
             &indices,
             call_ctors_body,
             init_memory_flag,
             &tls_pointer_fixups,
+            &tls_got_fixups,
         )?;
         fill_got_mem_inits(
             &mut layout,
@@ -6865,6 +6900,39 @@ fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerF
                 fixups.push(TlsPointerFixup { dest, offset });
             }
         }
+    }
+    Ok(fixups)
+}
+
+fn collect_tls_got_fixups(
+    layout: &WasmLayout<'_>,
+    got_mem: &GotMem,
+    got_base: u32,
+) -> Result<Vec<TlsGotFixup>> {
+    let mut fixups = Vec::new();
+    for (i, entry) in got_mem.entries.iter().enumerate() {
+        let GotMemDef::Object {
+            object_index,
+            symbol_offset,
+        } = entry.def
+        else {
+            continue;
+        };
+        let addr = layout.object_index_maps[object_index]
+            .data_addresses
+            .get(symbol_offset)
+            .copied()
+            .context("GOT.mem missing data address for definition")?;
+        if !matches!(addr, WasmDataAddress::TlsOffset(_)) {
+            continue;
+        }
+        let global = got_base
+            .checked_add(u32::try_from(i).context("Wasm GOT.mem index out of range")?)
+            .context("Wasm global index overflow")?;
+        fixups.push(TlsGotFixup {
+            global,
+            offset: tls_reloc_value(addr, 0, 0)? as i32,
+        });
     }
     Ok(fixups)
 }
