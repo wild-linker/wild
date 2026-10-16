@@ -66,6 +66,7 @@ pub struct WasmArgs {
     pub(crate) allow_undefined: bool,
     pub(crate) allow_multiple_definition: bool,
     pub(crate) strip_debug: bool,
+    pub(crate) strip_all: bool,
 }
 
 impl WasmArgs {
@@ -111,6 +112,7 @@ impl Default for WasmArgs {
             allow_undefined: false,
             allow_multiple_definition: false,
             strip_debug: false,
+            strip_all: false,
         }
     }
 }
@@ -125,11 +127,11 @@ impl platform::Args for WasmArgs {
     }
 
     fn should_strip_debug(&self) -> bool {
-        self.strip_debug
+        self.strip_debug || self.strip_all
     }
 
     fn should_strip_all(&self) -> bool {
-        false
+        self.strip_all
     }
 
     fn entry_point<'a>(
@@ -522,6 +524,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .execute(|_args, _modifier_stack, _value|
         // We don't use opt-level for now.
         Ok(()));
+
+    parser
+        .declare()
+        .long("strip-all")
+        .short("s")
+        .help("Strip all symbols")
+        .execute(|args, _modifier_stack| {
+            args.strip_all = true;
+            Ok(())
+        });
 
     parser
         .declare()

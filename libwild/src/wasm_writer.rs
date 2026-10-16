@@ -871,7 +871,10 @@ fn add_encoded_section_size(
     }
 }
 
-pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<EncodedMetadata> {
+pub(crate) fn encode_metadata_sections(
+    layout: &WasmLayout<'_>,
+    strip_all: bool,
+) -> Result<EncodedMetadata> {
     timing_phase!("Encode Wasm metadata sections");
     let mut encoded = EncodedMetadata::default();
 
@@ -937,18 +940,20 @@ pub(crate) fn encode_metadata_sections(layout: &WasmLayout<'_>) -> Result<Encode
 
     {
         timing_phase!("Encode Wasm name section");
-        if let Some(name_section) = build_name_section(layout) {
+        if !strip_all && let Some(name_section) = build_name_section(layout) {
             encoded.name = Some(encode_wasm_section(&name_section));
         }
     }
 
     {
         timing_phase!("Encode Wasm target_features section");
-        if let Some(target_features) = build_target_features_section(
+        // Still merge and check features when the section itself is omitted.
+        let target_features = build_target_features_section(
             &layout.target_feature_inputs,
             layout.extra_features,
             layout.check_features,
-        )? {
+        )?;
+        if !strip_all && let Some(target_features) = target_features {
             encoded.target_features = Some(encode_wasm_section(&target_features));
         }
     }

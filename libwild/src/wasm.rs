@@ -2077,6 +2077,16 @@ struct DataIndexImm {
 
 /// `memory.init` and `data.drop` carry a data-segment index immediate. No relocation type names it.
 fn data_index_immediates(body: &[u8]) -> Result<Vec<DataIndexImm>> {
+    // `memory.init` is `0xfc 0x08` and `data.drop` is `0xfc 0x09`, with a minimal ULEB opcode.
+    // Skip the decode when neither sequence is present.
+    static MEMORY_INIT: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+        std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"\xfc\x08"));
+    static DATA_DROP: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+        std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"\xfc\x09"));
+    if MEMORY_INIT.find(body).is_none() && DATA_DROP.find(body).is_none() {
+        return Ok(Vec::new());
+    }
+
     let reader = BinaryReader::new(body, 0);
     let mut ops = wasmparser::FunctionBody::new(reader)
         .get_operators_reader()
@@ -6613,13 +6623,16 @@ where
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
     }
-    layout.name_inputs = wasm_name_inputs(
-        &indices,
-        got_mem,
-        got_func,
-        &layout_inputs,
-        symbol_db.args.common().demangle,
-    );
+    let strip_all = symbol_db.args.should_strip_all();
+    if !strip_all {
+        layout.name_inputs = wasm_name_inputs(
+            &indices,
+            got_mem,
+            got_func,
+            &layout_inputs,
+            symbol_db.args.common().demangle,
+        );
+    }
     layout.target_feature_inputs = layout_inputs
         .iter()
         .flat_map(|input| {
@@ -6655,7 +6668,7 @@ where
         layout.code_section_size = compute_code_section_size(&layout.function_bodies);
         layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
     }
-    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout)?;
+    let encoded_metadata = crate::wasm_writer::encode_metadata_sections(&layout, strip_all)?;
     layout.encoded_metadata = encoded_metadata;
     Ok(layout)
 }
