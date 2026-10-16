@@ -352,7 +352,7 @@ pub(crate) struct LayoutExt {
     /// Final addresses of initializer functions, in input relocation order.
     pub(crate) init_function_addresses: Vec<u64>,
     pub(crate) fixups: Vec<Fixup>,
-    pub(crate) unwind_info_entries: Vec<UnwindInfoWithRelocs>,
+    pub(crate) unwind_info_entries: Vec<Vec<UnwindInfoWithRelocs>>,
 }
 
 #[derive(Debug, Default)]
@@ -361,14 +361,14 @@ pub(crate) struct FinaliseSizesExt {
     imported_symbols: Vec<SymbolId>,
     init_functions: Vec<SymbolId>,
     pending_fixups: Vec<PendingFixup>,
-    unwind_info_entries: Vec<UnwindInfoWithRelocs>,
+    unwind_info_entries: Vec<Vec<UnwindInfoWithRelocs>>,
     local_got_entries: Vec<SymbolId>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ObjectLayoutStateExt {
     init_functions: Vec<SymbolId>,
-    unwind_info_entries: Vec<UnwindInfoWithRelocs>,
+    unwind_info_entries: Vec<Vec<UnwindInfoWithRelocs>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1596,7 +1596,7 @@ impl platform::Platform for MachO {
         for group in groups {
             pending_fixups.append(&mut group.common.format_specific.pending_fixups);
             local_got_entries.append(&mut group.common.format_specific.local_got_entries);
-            for file in &group.files {
+            for file in &mut group.files {
                 match file {
                     layout::FileLayoutState::Object(state) => {
                         init_functions.extend(
@@ -1606,8 +1606,7 @@ impl platform::Platform for MachO {
                                 .iter()
                                 .map(|local_symbol_id| symbol_db.definition(*local_symbol_id)),
                         );
-                        unwind_info_entries
-                            .extend(state.format_specific.unwind_info_entries.iter().cloned());
+                        unwind_info_entries.append(&mut state.format_specific.unwind_info_entries);
                     }
                     layout::FileLayoutState::StubLibrary(state) => {
                         if state.format_specific.loaded {
@@ -1906,7 +1905,7 @@ impl platform::Platform for MachO {
             }
         }
 
-        object.format_specific.unwind_info_entries.extend(entries);
+        object.format_specific.unwind_info_entries.push(entries);
 
         Ok(())
     }

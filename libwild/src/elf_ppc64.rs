@@ -33,7 +33,11 @@ impl crate::platform::Arch for ElfPpc64 {
     }
 
     fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
-        matches!(r_type, object::elf::R_PPC64_ADDR32)
+        matches!(r_type, object::elf::R_PPC64_ADDR32) || is_tprel(r_type)
+    }
+
+    fn is_disallowed_in_shared_object(r_type: object::elf::RelocationType) -> bool {
+        is_tprel(r_type)
     }
 
     fn get_dynamic_relocation_type(
@@ -123,6 +127,19 @@ impl crate::platform::Arch for ElfPpc64 {
         0x8000
     }
 
+    /// DTPREL is relative to that DTV point for both executables and shared objects.
+    fn dtp_offset_base(layout: &crate::layout::Layout<Elf64>, _for_shared_object: bool) -> u64 {
+        layout
+            .tls_start_address()
+            .wrapping_add(Self::get_dtv_offset())
+    }
+
+    fn executable_tlsld_offset(_layout: &crate::layout::Layout<Elf64>) -> u64 {
+        // `__tls_get_addr` adds the 0x8000 DTV bias. A zero slot makes it return the DTP, and the
+        // compiler then adds the symbol's DTPREL.
+        0
+    }
+
     fn get_property_class(_property_type: u32) -> Option<crate::elf::PropertyClass> {
         None
     }
@@ -179,6 +196,19 @@ impl crate::platform::Arch for ElfPpc64 {
             offset_in_section,
         )
     }
+}
+
+fn is_tprel(r_type: object::elf::RelocationType) -> bool {
+    matches!(
+        r_type,
+        object::elf::R_PPC64_TPREL16
+            | object::elf::R_PPC64_TPREL16_LO
+            | object::elf::R_PPC64_TPREL16_HI
+            | object::elf::R_PPC64_TPREL16_HA
+            | object::elf::R_PPC64_TPREL16_DS
+            | object::elf::R_PPC64_TPREL16_LO_DS
+            | object::elf::R_PPC64_TPREL64
+    )
 }
 
 // Relaxations are not yet implemented for ppc64, so `new_relaxation` always returns `None` and

@@ -1,9 +1,10 @@
 //! Relocation utilities for the ppc64 (PowerPC64 LE, ELFv2) target.
 //!
-//! Only a static relocation subset is currently decoded (absolute data, PC-relative branches and
-//! `@ha`/`@lo` halves, and TOC-relative data access). Unsupported relocation types return `None`,
-//! which causes the linker to emit a clean "unsupported relocation" error rather than producing
-//! incorrect output.
+//! The decoded static relocations cover absolute data, PC-relative branches and `@ha`/`@lo`
+//! halves, TOC-relative data access, and the medium-model TLS sequences (local-exec, initial-exec,
+//! local-dynamic, and general-dynamic). Unsupported relocation types return `None`, which causes
+//! the linker to emit a clean "unsupported relocation" error rather than producing incorrect
+//! output.
 //!
 //! The TOC base (the value of `r2` / the `.TOC.` symbol) is the start of the GOT. The conventional
 //! 0x8000 bias used to centre the addressable TOC window is folded into the `@ha` relocation's
@@ -128,6 +129,203 @@ pub const fn relocation_type_from_raw(
             RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
             AllowedRange::no_check(),
             4,
+            0,
+        ),
+        // Local-exec. The value is `S + A - TP`, with TP = TLS start + 0x7000. `@ha` bias is the
+        // high-adjust only.
+        object::elf::R_PPC64_TPREL64 => (
+            RelocationKind::TpOff,
+            RelocationSize::ByteSize(8),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_TPREL16 => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_TPREL16_LO => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_TPREL16_HI => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_TPREL16_HA => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        object::elf::R_PPC64_TPREL16_DS => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            4,
+            0,
+        ),
+        object::elf::R_PPC64_TPREL16_LO_DS => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::no_check(),
+            4,
+            0,
+        ),
+        // Local-dynamic offset. `S + A - DTP`, DTP = TLS start + 0x8000, is applied by
+        // `dtp_offset_base`. The bias here is only the `@ha` high-adjust.
+        object::elf::R_PPC64_DTPREL64 => (
+            RelocationKind::DtpOff,
+            RelocationSize::ByteSize(8),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_DTPREL16 => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_DTPREL16_LO => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_DTPREL16_HI => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_DTPREL16_HA => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        object::elf::R_PPC64_DTPREL16_DS => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            4,
+            0,
+        ),
+        object::elf::R_PPC64_DTPREL16_LO_DS => (
+            RelocationKind::DtpOff,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::no_check(),
+            4,
+            0,
+        ),
+        // Initial-exec and general/local-dynamic address the GOT from `.TOC.`. `.TOC.` is the
+        // start of the GOT, so these distances are from `got_base`, with the same `@ha` adjust as
+        // `TOC16_*`.
+        object::elf::R_PPC64_GOT_TPREL16_HA => (
+            RelocationKind::GotTpOffGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        object::elf::R_PPC64_GOT_TPREL16_HI => (
+            RelocationKind::GotTpOffGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TPREL16_DS => (
+            RelocationKind::GotTpOffGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            4,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TPREL16_LO_DS => (
+            RelocationKind::GotTpOffGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::no_check(),
+            4,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSGD16 => (
+            RelocationKind::TlsGdGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSGD16_LO => (
+            RelocationKind::TlsGdGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSGD16_HI => (
+            RelocationKind::TlsGdGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSGD16_HA => (
+            RelocationKind::TlsGdGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        object::elf::R_PPC64_GOT_TLSLD16 => (
+            RelocationKind::TlsLdGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSLD16_LO => (
+            RelocationKind::TlsLdGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSLD16_HI => (
+            RelocationKind::TlsLdGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_GOT_TLSLD16_HA => (
+            RelocationKind::TlsLdGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        // Markers on a TLS sequence. The address calculation is a separate relocation.
+        object::elf::R_PPC64_TLS | object::elf::R_PPC64_TLSGD | object::elf::R_PPC64_TLSLD => (
+            RelocationKind::None,
+            RelocationSize::ByteSize(0),
+            AllowedRange::no_check(),
+            1,
             0,
         ),
         _ => return None,
