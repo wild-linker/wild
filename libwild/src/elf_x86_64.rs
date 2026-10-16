@@ -206,7 +206,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 let rex = section_bytes[offset - 3];
 
                 // REX prefixed instruction with W=1, R=0/1, X=0, B=0
-                if rex != 0x48 && rex != 0x4c {
+                if rex != REX_W && rex != REX_W_R {
                     return None;
                 }
 
@@ -333,7 +333,7 @@ impl crate::platform::Arch for ElfX86_64 {
 
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
-                    [0x48 | 0x4c, 0x8b] => {
+                    [REX_W | REX_W_R, 0x8b] => {
                         return Some(Relaxation {
                             kind: RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
@@ -341,7 +341,7 @@ impl crate::platform::Arch for ElfX86_64 {
                         });
                     }
                     // add *x(%rip), reg1, reg2
-                    [0x48 | 0x4c, 0x03] => {
+                    [REX_W | REX_W_R, 0x03] => {
                         return Some(Relaxation {
                             kind: RelaxationKind::RexAddIndirectToAbsolute(inst_offset),
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
@@ -412,7 +412,7 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 // lea    0x0(%rip),%rdi
-                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
+                if section_bytes.get(offset - 3..offset)? == [REX_W, 0x8d, 0x3d] {
                     match section_bytes.get(offset + 4..offset + 6) {
                         // PC-relative direct call
                         Some(&[0xe8, _]) => {
@@ -422,7 +422,7 @@ impl crate::platform::Arch for ElfX86_64 {
                                 mandatory: output_kind.is_static_executable(),
                             });
                         }
-                        Some(&[0x48, 0xb8]) => {
+                        Some(&[REX_W, 0xb8]) => {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec64,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
@@ -452,7 +452,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 // We require that the instruction that this relocation applies to is a LEA
                 // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
-                if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
+                if bytes == Some(&[REX_W, 0x8d]) || bytes == Some(&[REX_W_R, 0x8d]) {
                     return Some(Relaxation {
                         kind: RelaxationKind::TlsDescToLocalExec(
                             if relocation_kind == object::elf::R_X86_64_GOTPC32_TLSDESC {
@@ -472,7 +472,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 // We require that the instruction that this relocation applies to is a LEA
                 // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
-                if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
+                if bytes == Some(&[REX_W, 0x8d]) || bytes == Some(&[REX_W_R, 0x8d]) {
                     return Some(Relaxation {
                         kind: RelaxationKind::TlsDescToInitialExec,
                         rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
@@ -560,16 +560,16 @@ impl TlsGdForm {
     fn identify(bytes: &[u8], offset: usize) -> Option<Self> {
         // data16 lea 0x0(%rip),%rdi
         // data16 data16 rex.W call {relative function offset}
-        if bytes.get(offset - 4..offset) == Some(&[0x66, 0x48, 0x8d, 0x3d])
-            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, 0x48, 0xe8])
+        if bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, REX_W, 0xe8])
         {
             return Some(Self::Regular);
         }
 
         // data16 lea 0x0(%rip),%rdi
         // data16 rex.W call *__tls_get_addr@GOTPCREL(%rip)
-        if bytes.get(offset - 4..offset) == Some(&[0x66, 0x48, 0x8d, 0x3d])
-            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x48, 0xff, 0x15])
+        if bytes.get(offset - 4..offset) == Some(&[0x66, REX_W, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, REX_W, 0xff, 0x15])
         {
             return Some(Self::RegularNoPlt);
         }
@@ -578,9 +578,9 @@ impl TlsGdForm {
         // movabs $X,%rax
         // add %rbx,%rax
         // call *%rax
-        if bytes.get(offset - 3..offset) == Some(&[0x48, 0x8d, 0x3d])
-            && bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8])
-            && bytes.get(offset + 14..offset + 19) == Some(&[0x48, 0x01, 0xd8, 0xff, 0xd0])
+        if bytes.get(offset - 3..offset) == Some(&[REX_W, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 6) == Some(&[REX_W, 0xb8])
+            && bytes.get(offset + 14..offset + 19) == Some(&[REX_W, 0x01, 0xd8, 0xff, 0xd0])
         {
             malfunction_point_ret!("no-identify-tls-gd-large", None);
             return Some(Self::Large);
@@ -649,8 +649,8 @@ fn test_relaxation() {
 
     check(
         object::elf::R_X86_64_REX_GOTPCRELX,
-        &[0x48, 0x8b, 0xae],
-        &[0x48, 0x8d, 0xae],
-        &[0x48, 0xc7, 0xc5],
+        &[REX_W, 0x8b, 0xae],
+        &[REX_W, 0x8d, 0xae],
+        &[REX_W, 0xc7, 0xc5],
     );
 }
