@@ -100,15 +100,15 @@ impl Arch for X86_64 {
             (SectionKind::Text, object::elf::R_X86_64_REX_GOTPCRELX) => {
                 relax(
                     Self::RelaxationKind::RexMovIndirectToAbsolute(3),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
                 relax(
                     Self::RelaxationKind::RexSubIndirectToAbsolute(3),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
                 relax(
                     Self::RelaxationKind::RexCmpIndirectToAbsolute(3),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
                 relax(
                     Self::RelaxationKind::MovIndirectToLea,
@@ -118,15 +118,15 @@ impl Arch for X86_64 {
             (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTPCRELX) => {
                 relax(
                     Self::RelaxationKind::RexMovIndirectToAbsolute(4),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
                 relax(
                     Self::RelaxationKind::RexSubIndirectToAbsolute(4),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
                 relax(
                     Self::RelaxationKind::RexCmpIndirectToAbsolute(4),
-                    object::elf::R_X86_64_32,
+                    object::elf::R_X86_64_32S,
                 );
             }
             (SectionKind::Text, object::elf::R_X86_64_GOTPCRELX) => {
