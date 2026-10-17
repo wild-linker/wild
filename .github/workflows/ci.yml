@@ -61,7 +61,7 @@ jobs:
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
+      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace -- --skip wasm/
 
   external-tests:
     name: Test Linux (external tests)
@@ -166,7 +166,7 @@ jobs:
           version: '48.0.0'
       - run: cargo test --features wasm -- wasm
 
-  macho-build:
+  macho-test:
     name: Test Mach-O (AArch64)
     runs-on: macos-latest
     timeout-minutes: 10
@@ -186,7 +186,7 @@ jobs:
           env-vars: ImageVersion
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci --workspace --features macho
+      - run: cargo test --profile ci --workspace --features macho -- --skip wasm/
 
   windows-build:
     name: Build Windows (x86_64)
@@ -218,7 +218,7 @@ jobs:
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
-      - run: cargo minimal-versions --direct test --profile ci
+      - run: cargo minimal-versions --direct test --profile ci -- --skip wasm/
 
   clippy:
     name: Clippy

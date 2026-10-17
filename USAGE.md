@@ -92,12 +92,6 @@ binary with [readelf](FAQ.md#how-can-i-verify-that-wild-was-used-to-link-a-binar
 
 ## WebAssembly
 
-Wasm linking is experimental. Install Wild with the `wasm` feature:
-
-```sh
-cargo install --locked --features wasm wild-linker
-```
-
 ### Rust (Cargo)
 
 Pass the `wild` binary and `-C linker-flavor=wasm-ld`. The same flags apply to `wasm32-unknown-unknown`.

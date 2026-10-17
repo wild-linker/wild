@@ -1,6 +1,6 @@
 [package]
 name = "libwild"
-description = "A library that provides a fast Linux linker"
+description = "A library that provides a fast linker for Linux and WebAssembly"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -87,7 +87,7 @@ perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]
 # Enable work-in-progress features
 wip = []
 
-# Experimental support for linking WebAssembly. Currently incomplete.
+# WebAssembly support.
 wasm = []
 
 # Experimental support for linking Mach-O. Currently incomplete.

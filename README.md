@@ -37,12 +37,12 @@ The following platforms / architectures are currently supported:
 * RISC-V (riscv64gc) on Linux
 * LoongArch64 on Linux
 * PPC64LE on Linux (initial support)
+* WebAssembly (wasm32)
 
 Here are some of the bigger things we're looking ahead to:
 
 * Incremental linking
 * Mach-O support
-* WebAssembly support
 * Windows support
 
 ## Installation

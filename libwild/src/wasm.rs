@@ -66,8 +66,10 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
     args: &'data WasmArgs,
 ) -> crate::error::Result<crate::LinkerOutput<'data>> {
-    if !(cfg!(feature = "wasm") || args.common().experimental_platforms) {
-        bail!("Wasm support is still experimental. Rebuild with `--features wasm` to enable it.");
+    if !(cfg!(feature = "wasm")) {
+        bail!(
+            "Wasm support isn't included in this build. Rebuild with `--features wasm` to enable it."
+        );
     }
 
     linker.link_for_arch::<Wasm, crate::wasm_wasm32::WasmWasm32>(args)
