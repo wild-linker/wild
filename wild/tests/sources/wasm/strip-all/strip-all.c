@@ -5,7 +5,10 @@
 //#Config:default:base
 //#ExpectSection:name
 //#ExpectSection:target_features
-//#ExpectSection:.debug_info
+// TODO(wasm): This should be `ExpectSection` and `ReferenceLinkers` should be removed when full
+// debug info support lands
+//#NoSection:.debug_info
+//#ReferenceLinkers:
 //#Contains:strip_all_named_fn
 
 //#Config:strip-debug:base

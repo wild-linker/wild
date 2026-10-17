@@ -978,7 +978,10 @@ pub(crate) fn encode_metadata_sections(
         }));
     }
 
-    encoded.debug = build_debug_section(&layout.debug_sections)?;
+    // TODO(wasm): Enable this when full debug info lands
+    if false {
+        encoded.debug = build_debug_section(&layout.debug_sections)?;
+    }
 
     Ok(encoded)
 }
