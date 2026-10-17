@@ -567,6 +567,10 @@ impl<'data> LayoutRulesBuilder<'data> {
     pub(crate) fn add_section_rule(&mut self, rule: SectionRule<'data>) {
         self.rules.push(rule);
     }
+
+    pub(crate) fn prepend_section_rules(&mut self, rules: &[SectionRule<'data>]) {
+        self.rules.splice(0..0, rules.iter().cloned());
+    }
 }
 
 impl<'data> SectionRule<'data> {
@@ -630,16 +634,6 @@ impl<'data> SectionRule<'data> {
         };
 
         pattern.matches(name_str)
-    }
-
-    pub(crate) const fn exact_section(
-        name: &'data [u8],
-        section_id: OutputSectionId,
-    ) -> SectionRule<'data> {
-        Self::exact(
-            name,
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id)),
-        )
     }
 
     pub(crate) const fn exact_section_keep(

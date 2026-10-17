@@ -2433,8 +2433,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         };
 
         let mut rules = Vec::with_capacity(
-            DEFAULT_SECTION_PLACEMENT_RULES.len() + LINKER_MANAGED_SECTION_RULES.len() + 1,
+            LINKER_REPLACED_SECTION_RULES.len()
+                + DEFAULT_SECTION_PLACEMENT_RULES.len()
+                + LINKER_MANAGED_SECTION_RULES.len()
+                + 1,
         );
+
+        rules.extend(LINKER_REPLACED_SECTION_RULES.iter().cloned());
 
         if args.gdb_index {
             rules.push(SectionRule::exact(
@@ -2470,6 +2475,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         for rule in LINKER_MANAGED_SECTION_RULES {
             rule_builder.add_section_rule(rule.clone());
         }
+        rule_builder.prepend_section_rules(LINKER_REPLACED_SECTION_RULES);
     }
 
     fn init_section_priority(name: &[u8]) -> Option<u16> {
@@ -7342,10 +7348,6 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
         secnames::NOTE_ABI_TAG_SECTION_NAME,
         output_section_id::NOTE_ABI_TAG,
     ),
-    SectionRule::exact_section(
-        secnames::NOTE_GNU_BUILD_ID_SECTION_NAME,
-        output_section_id::NOTE_GNU_BUILD_ID,
-    ),
     SectionRule::prefix_section(secnames::RODATA_SECTION_NAME, output_section_id::RODATA),
     SectionRule::prefix_section(secnames::TEXT_SECTION_NAME, output_section_id::TEXT),
     SectionRule::prefix_section(
@@ -7371,6 +7373,13 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
         output_section_id::GCC_EXCEPT_TABLE,
     ),
 ];
+
+/// Rules for input sections that the linker writes its own version of, which take precedence over
+/// linker script rules.
+const LINKER_REPLACED_SECTION_RULES: &[SectionRule<'static>] = &[SectionRule::exact(
+    secnames::NOTE_GNU_BUILD_ID_SECTION_NAME,
+    SectionRuleOutcome::Discard,
+)];
 
 /// Rules for input sections that the linker processes itself instead of copying them into an output
 /// section.
