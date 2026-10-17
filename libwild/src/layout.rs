@@ -21,6 +21,7 @@ use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
 use crate::expression_eval::evaluate_early_expression;
+use crate::expression_eval::evaluate_expression;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
@@ -435,7 +436,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         script_sorted_sections: &script_sorted_sections,
     };
 
-    let group_layouts = compute_symbols_and_layouts(
+    let mut group_layouts = compute_symbols_and_layouts(
         group_states,
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
@@ -457,6 +458,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     );
     update_redirect_resolutions(
         &symbol_db,
+        &mut group_layouts,
         &mut symbol_resolutions.resolutions,
         &output_sections,
         &section_layouts,
@@ -529,6 +531,7 @@ pub(crate) struct FinaliseSizesResources<'data, 'scope, P: Platform> {
 /// Update resolutions for symbol redirects.
 fn update_redirect_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
+    group_layouts: &mut [GroupLayout<'data, P>],
     resolutions: &mut [Option<Resolution<P>>],
     output_sections: &OutputSections<'data, P>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
@@ -539,74 +542,66 @@ fn update_redirect_resolutions<'data, P: Platform>(
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
-    for group in &symbol_db.groups {
-        match group {
-            Group::Prelude(prelude) => {
-                for def_info in &prelude.symbol_definitions {
-                    update_defsym_symbol_resolution(
+    for group in group_layouts {
+        for file in &mut group.files {
+            match file {
+                FileLayout::Prelude(prelude) => {
+                    update_internal_symbols_resolutions(
                         None,
-                        def_info,
+                        &mut prelude.internal_symbols,
                         symbol_db,
                         resolutions,
                         output_sections,
+                        merged_section_layouts,
                         merged_section_layouts,
                         memory_regions,
                         sizeof_headers,
                         &[],
                     )?;
                 }
-            }
-            Group::LinkerScripts(scripts) => {
-                for script in scripts {
-                    for def_info in &script.parsed.symbol_defs {
-                        let SymbolPlacement::Redirect(redirect) = &def_info.placement else {
-                            continue;
-                        };
-                        let section_layouts = if matches!(
-                            redirect.loc,
-                            SymbolLoc::SectionStartRelative(_)
-                                | SymbolLoc::SectionEndRelative(_)
-                                | SymbolLoc::LocationCounter(..)
-                        ) {
-                            section_layouts
-                        } else {
-                            merged_section_layouts
-                        };
-                        update_defsym_symbol_resolution(
-                            Some(&script.parsed.input),
-                            def_info,
-                            symbol_db,
-                            resolutions,
-                            output_sections,
-                            section_layouts,
-                            memory_regions,
-                            sizeof_headers,
-                            resolved_location_counters,
-                        )?;
-                    }
+                FileLayout::LinkerScript(script) => {
+                    update_internal_symbols_resolutions(
+                        Some(&script.input),
+                        &mut script.internal_symbols,
+                        symbol_db,
+                        resolutions,
+                        output_sections,
+                        merged_section_layouts,
+                        section_layouts,
+                        memory_regions,
+                        sizeof_headers,
+                        resolved_location_counters,
+                    )?;
                 }
+                _ => {}
             }
-            Group::Objects(_) | Group::StubLibraries(_) | Group::SyntheticSymbols(_) => {}
-            #[cfg(feature = "plugins")]
-            Group::LtoInputs(_) => {}
         }
     }
 
     Ok(())
 }
 
-fn update_defsym_symbol_resolution<'data, P: Platform>(
+fn update_internal_symbols_resolutions<'data, P: Platform>(
     input_ref: Option<&InputRef<'data>>,
-    def_info: &InternalSymDefInfo<'data, P>,
+    internal_symbols: &mut InternalSymbols<'data, P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
     output_sections: &OutputSections<'data, P>,
+    merged_section_layouts: &OutputSectionMap<OutputRecordLayout>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
-    if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+    let range = SymbolIdRange::input(
+        internal_symbols.start_symbol_id,
+        internal_symbols.symbol_definitions.len(),
+    );
+    for i in 0..internal_symbols.symbol_definitions.len() {
+        let def_info = &internal_symbols.symbol_definitions[i];
+        let SymbolPlacement::Redirect(redirect) = &def_info.placement else {
+            continue;
+        };
         let canonical_symbol_id = (!def_info.name.is_empty())
             .then(|| {
                 symbol_db
@@ -620,15 +615,26 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             let canonical_symbol_id =
                 canonical_symbol_id.ok_or_else(|| redirect.missing_target(def_info.name))?;
             if resolutions[canonical_symbol_id.as_usize()].is_none() {
-                return Ok(());
+                continue;
             }
         }
 
-        let value = crate::expression_eval::evaluate_expression(
+        let cur_section_layouts = if matches!(
+            redirect.loc,
+            SymbolLoc::SectionStartRelative(_)
+                | SymbolLoc::SectionEndRelative(_)
+                | SymbolLoc::LocationCounter(..)
+        ) {
+            section_layouts
+        } else {
+            merged_section_layouts
+        };
+
+        let (value, section_id, is_absolute) = evaluate_expression(
             &redirect.expression,
             &redirect.loc,
             input_ref,
-            section_layouts,
+            cur_section_layouts,
             output_sections,
             memory_regions,
             symbol_db,
@@ -649,26 +655,39 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                     .as_ref()
                     .ok_or_else(|| redirect.missing_resolution(name))?;
 
-                let symbol_value = match symbol_db.output_section_id(canonical_target_id) {
-                    Some(section_id) => SymbolValue::SectionRelative {
-                        section_id,
-                        address: resolution.raw_value,
-                    },
-                    None => SymbolValue::Absolute(resolution.raw_value),
+                let section_id = if range.contains(canonical_target_id)
+                    && let SymbolPlacement::Redirect(r) = &internal_symbols.symbol_definitions
+                        [range.id_to_offset(canonical_target_id)]
+                    .placement
+                {
+                    r.loc.section_id()
+                } else {
+                    symbol_db.output_section_id(canonical_target_id)
                 };
-                Ok(symbol_value)
+
+                Ok(SymbolValue::new(resolution.raw_value, section_id))
             },
         )?;
 
-        let Some(canonical_symbol_id) = canonical_symbol_id else {
-            return Ok(());
+        let def_info = &mut internal_symbols.symbol_definitions[i];
+        let SymbolPlacement::Redirect(redirect) = &mut def_info.placement else {
+            continue;
         };
 
-        let resolution = resolutions[canonical_symbol_id.as_usize()]
-            .as_mut()
-            .ok_or_else(|| redirect.missing_resolution(def_info.name))?;
+        if is_absolute && redirect.loc.relative_section_id().is_some() {
+            redirect.loc = SymbolLoc::None;
+        } else if matches!(redirect.loc, SymbolLoc::None)
+            && let Some(sec_id) = section_id
+        {
+            redirect.loc = SymbolLoc::SectionEnd(sec_id);
+        }
 
-        resolution.raw_value = value;
+        if let Some(canonical_symbol_id) = canonical_symbol_id {
+            let resolution = resolutions[canonical_symbol_id.as_usize()]
+                .as_mut()
+                .ok_or_else(|| redirect.missing_resolution(def_info.name))?;
+            resolution.raw_value = value;
+        }
     }
 
     Ok(())
@@ -6195,6 +6214,7 @@ fn compute_layout_sections<'data, P: Platform>(
                 &section_positions,
                 &mut visited_nodes,
             )
+            .map(|(val, _, _)| val)
         };
 
     // Memory offsets of the output-section parts that have been laid out so far. Used to resolve

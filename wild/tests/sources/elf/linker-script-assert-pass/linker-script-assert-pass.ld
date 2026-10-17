@@ -1,9 +1,15 @@
 ENTRY(_start)
 
+zero = 0;
+one = 1;
+
 SECTIONS {
     .text : ALIGN((0x2 << 3)) {
         *(.text*)
         symbol3 = 0x3000;
+        symbol13 = .;
+        symbol13_other = . + 0x10;
+        symbol13_text_offset = symbol13 + 0x20;
     }
     symbol11 = 0x100;
     symbol11_assert = ASSERT(symbol11 == 0x100, "symbol11 must be 0x100");
@@ -75,3 +81,46 @@ ASSERT(ALIGN(0x38, 16) == 0x40, "ALIGN value is incorrect");
 ASSERT(ALIGN(0x38, 18) == 0x48, "ALIGN value is incorrect");
 
 ASSERT(ALIGNOF(.text) == 0x10, "ALIGNOF value is incorrect");
+
+symbol14 = 0x1000;
+symbol13a = one ? symbol13 : symbol14;
+symbol14a = zero ? symbol13 : symbol14;
+ASSERT(symbol13a == symbol13, "1 ? symbol13 : symbol14 must be symbol13");
+ASSERT(symbol14a == symbol14, "0 ? symbol13 : symbol14 must be symbol14");
+
+min_same_sec = MIN(symbol13, symbol13_other);
+max_same_sec = MAX(symbol13, symbol13_other);
+min_diff_sec = MIN(symbol13, data_start);
+max_diff_sec = MAX(symbol13, data_start);
+min_with_abs = MIN(symbol13, 0x10);
+max_with_abs = MAX(symbol13, 0x10);
+
+ASSERT(min_same_sec == symbol13, "min_same_sec is incorrect");
+ASSERT(max_same_sec == symbol13_other, "max_same_sec is incorrect");
+ASSERT(min_diff_sec == symbol13, "min_diff_sec is incorrect");
+ASSERT(max_diff_sec == data_start, "max_diff_sec is incorrect");
+ASSERT(min_with_abs == 0x10, "min_with_abs is incorrect");
+ASSERT(max_with_abs == symbol13, "max_with_abs is incorrect");
+
+symbol13_1 = symbol13;
+symbol13_2 = symbol13_1;
+symbol13_3 = symbol13_2;
+
+diff_same_sec = symbol13_other - symbol13;
+ASSERT(diff_same_sec == 0x10, "diff_same_sec must be 0x10");
+
+ASSERT(symbol13 > 0x10, "text address should be greater than 0x10");
+
+sym_log_and_true = symbol13 && symbol14;
+sym_log_and_false = symbol13 && zero;
+sym_log_or = zero || symbol13;
+sym_log_not = !symbol14;
+ASSERT(sym_log_and_true == 1, "sym_log_and_true incorrect");
+ASSERT(sym_log_and_false == 0, "sym_log_and_false incorrect");
+ASSERT(sym_log_or == 1, "sym_log_or incorrect");
+ASSERT(sym_log_not == 0, "sym_log_not incorrect");
+
+sym_bit_and = symbol14 & 0xff00;
+sym_neg = -symbol14;
+ASSERT(sym_bit_and == 0x1000, "sym_bit_and incorrect");
+ASSERT(sym_neg == -0x1000, "sym_neg incorrect");

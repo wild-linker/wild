@@ -338,6 +338,9 @@
 //! section="section-name": Type: string. Asserts the name of the section in which the symbol is
 //! located.
 //!
+//! is_abs: Type: bool. Asserts that the symbol is an absolute symbol. Mutually exclusive with
+//! `section`.
+//!
 //! segment="segment-name": Type: string. Asserts the name of the segment containing the symbol's
 //! section. Requires that section is also specified.
 //!
@@ -2160,6 +2163,9 @@ struct SymtabAssertions {
     #[serde(rename = "section")]
     section_name: Option<String>,
 
+    #[serde(default)]
+    is_abs: bool,
+
     #[serde(rename = "segment")]
     segment_name: Option<String>,
 
@@ -2194,6 +2200,10 @@ impl ExpectedSymtabEntry {
         ensure!(
             assertions.segment_name.is_none() || assertions.section_name.is_some(),
             "`segment` requires `section` for symbol `{name}`"
+        );
+        ensure!(
+            !assertions.is_abs || assertions.section_name.is_none(),
+            "`is_abs` and `section` are mutually exclusive for symbol `{name}`"
         );
         Ok(Self {
             name: name.to_owned(),
@@ -7483,6 +7493,16 @@ where
                 other => bail!(
                     "Expected symbol `{}` to be in section `{exp_name}`, \
                      but it was {other:?}",
+                    exp.name
+                ),
+            }
+        }
+
+        if exp.assertions.is_abs {
+            match sym.section() {
+                object::SymbolSection::Absolute => {}
+                other => bail!(
+                    "Expected symbol `{}` to be an absolute symbol, but it was {other:?}",
                     exp.name
                 ),
             }
