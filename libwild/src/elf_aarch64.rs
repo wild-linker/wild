@@ -381,6 +381,7 @@ impl crate::platform::Arch for ElfAArch64 {
                     && prev.kind == object::elf::R_AARCH64_ADR_PREL_PG_HI21
                     && prev.offset + 4 == offset_in_section
                     && prev.addend == 0
+                    && rel_addend == 0
                 {
                     let offset = offset_in_section as usize;
                     if let Some(adrp_bytes) = offset
