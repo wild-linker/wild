@@ -3,7 +3,7 @@
 
 // Default is `--demangle`.
 //#Config:default:base
-//#Contains: Foo::bar()
+//#Contains: Foo::bar
 //#DoesNotContain: _ZN3Foo3barEv
 
 //#Config:no-demangle:base
@@ -13,7 +13,7 @@
 
 //#Config:demangle:base
 //#LinkArgs: --no-demangle --demangle
-//#Contains: Foo::bar()
+//#Contains: Foo::bar
 //#DoesNotContain: _ZN3Foo3barEv
 
 // Single-dash form used by `clang -Wl,-no-demangle`.

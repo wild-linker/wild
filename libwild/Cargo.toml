@@ -29,6 +29,7 @@ glob.workspace = true
 hashbrown.workspace = true
 hex.workspace = true
 indexmap.workspace = true
+itanium-demangle.workspace = true
 itertools.workspace = true
 jobserver.workspace = true
 leb128.workspace = true

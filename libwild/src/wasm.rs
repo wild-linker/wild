@@ -1588,10 +1588,18 @@ pub(crate) struct WasmInputTargetFeature<'data> {
 }
 
 pub(crate) fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
-    if demangle {
-        symbolic_demangle::demangle(name)
-    } else {
-        Cow::Borrowed(name)
+    use symbolic_demangle::Demangle as _;
+
+    if !demangle {
+        return Cow::Borrowed(name);
+    }
+    if let Some(demangled) = itanium_demangle::demangle_owned(name) {
+        return Cow::Owned(demangled);
+    }
+    let parsed = symbolic_common::Name::from(name);
+    match parsed.try_demangle(symbolic_demangle::DemangleOptions::name_only()) {
+        Cow::Owned(demangled) => Cow::Owned(demangled),
+        Cow::Borrowed(_) => Cow::Borrowed(name),
     }
 }
 

@@ -1,7 +1,7 @@
 //#AbstractConfig:base
 
 //#Config:default:base
-//#ExpectError: undefined symbol: Foo::missing\(\)
+//#ExpectError: undefined symbol: Foo::missing(\(\))?\n
 
 //#Config:no-demangle:base
 //#LinkArgs: --no-demangle
@@ -9,7 +9,7 @@
 
 //#Config:demangle:base
 //#LinkArgs: --no-demangle --demangle
-//#ExpectError: undefined symbol: Foo::missing\(\)
+//#ExpectError: undefined symbol: Foo::missing(\(\))?\n
 
 struct Foo {
   void missing();
