@@ -6210,16 +6210,16 @@ fn compute_layout_sections<'data, P: Platform>(
         &laid_out_mem_offsets,
     )?;
     let alignment = args.loadable_segment_alignment().value();
-    if (output_order.custom_phdrs_include_headers() || !output_order.has_custom_phdrs())
-        && output_sections.has_custom_base_address()
-        && base_address < sizeof_headers
-    {
+
+    let should_place_headers_before_base = output_order.custom_phdrs_include_headers()
+        || (!output_order.has_custom_phdrs() && output_sections.has_custom_base_address());
+    if should_place_headers_before_base && base_address < sizeof_headers {
         bail!(
             "base address ({base_address:#x}) is less than the size of headers ({sizeof_headers:#x})"
         );
     }
     let mut mem_offset = base_address;
-    if output_order.custom_phdrs_include_headers() || output_sections.has_custom_base_address() {
+    let header_start_mem_offset = if should_place_headers_before_base {
         let offset_in_page = mem_offset % alignment;
         if offset_in_page >= sizeof_headers {
             mem_offset -= offset_in_page;
@@ -6229,7 +6229,10 @@ fn compute_layout_sections<'data, P: Platform>(
                 mem_offset = adjusted;
             }
         }
-    }
+        Some(mem_offset)
+    } else {
+        None
+    };
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
@@ -6254,6 +6257,7 @@ fn compute_layout_sections<'data, P: Platform>(
     // template, so we don't do it.
     let mut tls_memsave: Option<u64> = None;
     let mut in_tls = false;
+    let mut has_reset_base_address = !should_place_headers_before_base;
 
     for event in output_order {
         match event {
@@ -6339,6 +6343,17 @@ fn compute_layout_sections<'data, P: Platform>(
             }
             OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
+                if !has_reset_base_address
+                    && section_id != crate::output_section_id::FILE_HEADER
+                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id)
+                {
+                    if let Some(header_start) = header_start_mem_offset {
+                        mem_offset = base_address;
+                        file_offset = (base_address - header_start) as usize;
+                    }
+                    has_reset_base_address = true;
+                }
+
                 let section_info = output_sections.output_info(section_id);
                 let section_offset = pending_location.take();
 

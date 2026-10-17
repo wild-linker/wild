@@ -4,6 +4,7 @@
 //#DiffIgnore: segment.LOAD.RW.alignment
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
+//#ExpectMinAllocAddress:0x600000
 
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections

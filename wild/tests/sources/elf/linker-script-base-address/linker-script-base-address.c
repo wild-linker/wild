@@ -9,6 +9,13 @@
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],vaddr=0x5ff000
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.data,*],vaddr=0x800000
 
+//#Config:phdrs_no_base_address:default
+//#Arch:x86_64
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:phdrs-no-base-address.ld
+//#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],vaddr=0x3ff000
+//#ExpectSection:.text address=0x400000
+
 //#Config:page_aligned_aarch64:default
 //#Arch:aarch64
 //#LinkerScript:page-aligned.ld
