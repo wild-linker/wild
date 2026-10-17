@@ -660,6 +660,12 @@ impl Report {
         validate_objects(
             self,
             objects,
+            "section.null",
+            asm_diff::validate_null_section,
+        );
+        validate_objects(
+            self,
+            objects,
             GOT_PLT_SECTION_NAME_STR,
             asm_diff::validate_got_plt,
         );

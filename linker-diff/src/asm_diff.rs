@@ -3039,6 +3039,36 @@ pub(crate) fn validate_got_plt(bin: &Binary) -> Result {
     Ok(())
 }
 
+pub(crate) fn validate_null_section(bin: &Binary) -> Result {
+    let File::Elf64(elf_file) = bin.file else {
+        return Ok(());
+    };
+
+    let Some(header) = elf_file.elf_section_table().iter().next() else {
+        return Ok(());
+    };
+
+    let e = elf_file.endian();
+
+    let fields = [
+        ("sh_name", u64::from(header.sh_name.get(e))),
+        ("sh_type", u64::from(header.sh_type.get(e).0)),
+        ("sh_flags", header.sh_flags.get(e).0),
+        ("sh_addr", header.sh_addr.get(e)),
+        ("sh_offset", header.sh_offset.get(e)),
+        ("sh_addralign", header.sh_addralign.get(e)),
+        ("sh_entsize", header.sh_entsize.get(e)),
+    ];
+
+    for (name, value) in fields {
+        if value != 0 {
+            bail!("Section 0 has non-zero {name} ({value:#x})");
+        }
+    }
+
+    Ok(())
+}
+
 const ORIG: &str = "ORIG";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

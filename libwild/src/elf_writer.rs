@@ -6655,7 +6655,11 @@ fn write_section_headers<C: ElfClass>(
         };
         entry.set_type(sh_type);
 
-        let mut flags = output_sections.section_flags(section_id);
+        let mut flags = if section_type == sht::NULL {
+            SectionFlags(0)
+        } else {
+            output_sections.section_flags(section_id)
+        };
 
         if layout.compressed_debug_sections.get(section_id).is_some() {
             flags = flags.with(shf::COMPRESSED);
@@ -6685,11 +6689,13 @@ fn write_section_headers<C: ElfClass>(
             }
         }
 
-        entry.set_address(if layout.symbol_db.args.should_output_partial_object() {
-            0
-        } else {
-            section_layout.mem_offset
-        })?;
+        entry.set_address(
+            if section_type == sht::NULL || layout.symbol_db.args.should_output_partial_object() {
+                0
+            } else {
+                section_layout.mem_offset
+            },
+        )?;
         entry.set_offset(section_layout.file_offset as u64)?;
         entry.set_size(size)?;
         entry.set_link(link);
