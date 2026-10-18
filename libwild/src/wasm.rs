@@ -3916,6 +3916,9 @@ struct LinkerDefinedIndices {
     /// First module global index for `--export-dynamic` data address globals.
     dynamic_data_global_base: Option<u32>,
     dynamic_data_count: u32,
+    /// First module global index for `--export` data address globals.
+    force_data_global_base: Option<u32>,
+    force_data_count: u32,
     data_address_globals: Vec<(WasmLinkerSymbol, u32)>,
     // Linker symbols named by `--export` / `--export-if-defined`.
     requested_exports: Vec<WasmLinkerSymbol>,
@@ -3997,6 +4000,7 @@ fn setup_got_mem_and_indices<'data>(
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     has_init_funcs: bool,
     dynamic_data_count: u32,
+    force_data_count: u32,
 ) -> Result<(
     LinkerDefinedIndices,
     LayoutRelocScan,
@@ -4049,6 +4053,7 @@ fn setup_got_mem_and_indices<'data>(
                     got_mem_count: scan.got_mem.len(),
                     got_func_count: scan.got_func.len(),
                     dynamic_data_count,
+                    force_data_count,
                     needs_memory_base: scan.needs_memory_base,
                     needs_table_base: scan.needs_table_base,
                     shared_memory: symbol_db.args.shared_memory,
@@ -4843,6 +4848,7 @@ struct LinkerDefinedIndexRequest {
     got_mem_count: u32,
     got_func_count: u32,
     dynamic_data_count: u32,
+    force_data_count: u32,
     needs_memory_base: bool,
     needs_table_base: bool,
     shared_memory: bool,
@@ -4954,6 +4960,7 @@ impl LinkerDefinedIndices {
         let got_func_global_base = take_index_count(&mut next_global, request.got_func_count)?;
         let dynamic_data_global_base =
             take_index_count(&mut next_global, request.dynamic_data_count)?;
+        let force_data_global_base = take_index_count(&mut next_global, request.force_data_count)?;
         let num_defined_globals = next_global - global_import_count;
 
         let mut next_func = function_import_count;
@@ -4990,6 +4997,8 @@ impl LinkerDefinedIndices {
             got_func_count: request.got_func_count,
             dynamic_data_global_base,
             dynamic_data_count: request.dynamic_data_count,
+            force_data_global_base,
+            force_data_count: request.force_data_count,
             data_address_globals,
             requested_exports: request.export_symbols.clone(),
             memory_base_init,
@@ -5415,12 +5424,13 @@ fn emit_reserved_linker_definitions(
         );
     }
     // Immutable i32 placeholders, as wasm-ld does for static GOT.data.internal.*.
-    // Exported data addresses, GOT.mem, GOT.func, and `--export-dynamic` data globals are
-    // filled once their addresses or table slots are known.
+    // Exported data addresses, GOT.mem, GOT.func, and data symbols exported by
+    // `--export` / `--export-dynamic` are filled once their addresses or table slots are known.
     let placeholder_globals = indices.data_address_globals.len()
         + indices.got_mem_count as usize
         + indices.got_func_count as usize
-        + indices.dynamic_data_count as usize;
+        + indices.dynamic_data_count as usize
+        + indices.force_data_count as usize;
     for _ in 0..placeholder_globals {
         push_i32_global(
             &mut linker_globals,
@@ -5931,6 +5941,8 @@ fn ensure_force_exports<'data>(
     symbol_db: &SymbolDb<'data, Wasm>,
     indices: &LinkerDefinedIndices,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+    dynamic_data: &[DynamicExport<'data>],
+    force_data: &[DynamicExport<'data>],
 ) -> Result<()> {
     for &known in &indices.requested_exports {
         if try_export_linker_defined(exports, known, indices) {
@@ -5970,7 +5982,8 @@ fn ensure_force_exports<'data>(
             continue;
         };
         let def_input = &layout_inputs[def_obj_idx];
-        let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+        let symbol_offset = def_input.symbol_id_range.id_to_offset(def_id);
+        let def_sym = &def_input.symbols[symbol_offset];
         if def_sym.is_undefined() {
             if required {
                 bail!("symbol exported via --export not found: {name}");
@@ -5992,6 +6005,24 @@ fn ensure_force_exports<'data>(
             }
             WasmSymbolKind::Global => {
                 let index = remap_wasm_index(&index_map.global_indices, def_sym.index, "global")?;
+                push_export(
+                    exports,
+                    export_name,
+                    wasmparser::ExternalKind::Global,
+                    index,
+                );
+            }
+            WasmSymbolKind::Data => {
+                let index = exported_data_global_index(
+                    indices,
+                    dynamic_data,
+                    force_data,
+                    def_obj_idx,
+                    symbol_offset,
+                )
+                .with_context(|| {
+                    format!("Wasm --export data symbol `{name}` has no address global")
+                })?;
                 push_export(
                     exports,
                     export_name,
@@ -6126,27 +6157,92 @@ fn collect_dynamic_exports<'data>(
     Ok(exports)
 }
 
-/// Fill `--export-dynamic` data globals with symbol addresses. TLS symbols get their offset in the
-/// TLS block instead.
-fn fill_dynamic_data_global_inits(
-    layout: &mut WasmLayout<'_>,
+fn collect_force_data_exports<'data>(
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+    dynamic_exports: &DynamicExports<'data>,
+) -> Result<Vec<DynamicExport<'data>>> {
+    let mut exports = Vec::new();
+    for name in symbol_db.args.force_export_symbol_names() {
+        if WasmLinkerSymbol::parse(name).is_some() {
+            continue;
+        }
+        let Some(symbol_id) =
+            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        else {
+            continue;
+        };
+        let def_id = symbol_db.definition(symbol_id);
+        let def_file_id = symbol_db.file_id_for_symbol(def_id);
+        let Some(&object_index) = file_id_to_index.get(&def_file_id) else {
+            continue;
+        };
+        let input = &layout_inputs[object_index];
+        let symbol_offset = input.symbol_id_range.id_to_offset(def_id);
+        let sym = &input.symbols[symbol_offset];
+        if sym.is_undefined() || sym.kind != WasmSymbolKind::Data {
+            continue;
+        }
+        let already = dynamic_exports
+            .data
+            .iter()
+            .chain(exports.iter())
+            .any(|export| {
+                export.object_index == object_index && export.symbol_offset == symbol_offset
+            });
+        if already {
+            continue;
+        }
+        let export_name = core::str::from_utf8(symbol_db.symbol_name(def_id)?.bytes())
+            .context("invalid UTF-8 in Wasm --export symbol name")?;
+        exports.push(DynamicExport {
+            name: export_name,
+            object_index,
+            symbol_offset,
+        });
+    }
+    Ok(exports)
+}
+
+fn exported_data_global_index(
     indices: &LinkerDefinedIndices,
-    dynamic_exports: &DynamicExports<'_>,
+    dynamic_data: &[DynamicExport<'_>],
+    force_data: &[DynamicExport<'_>],
+    object_index: usize,
+    symbol_offset: usize,
+) -> Option<u32> {
+    let find = |exports: &[DynamicExport<'_>], base: Option<u32>| {
+        let position = exports.iter().position(|export| {
+            export.object_index == object_index && export.symbol_offset == symbol_offset
+        })?;
+        base.map(|base| base + position as u32)
+    };
+    find(force_data, indices.force_data_global_base)
+        .or_else(|| find(dynamic_data, indices.dynamic_data_global_base))
+}
+
+fn fill_data_export_global_inits(
+    layout: &mut WasmLayout<'_>,
+    global_import_count: u32,
+    base: Option<u32>,
+    exports: &[DynamicExport<'_>],
+    what: &str,
 ) -> Result {
-    let Some(base) = indices.dynamic_data_global_base else {
+    let Some(base) = base else {
         return Ok(());
     };
-    let defined_slot = (base - indices.global_import_count) as usize;
-    for (i, export) in dynamic_exports.data.iter().enumerate() {
+    let defined_slot = (base - global_import_count) as usize;
+    for (i, export) in exports.iter().enumerate() {
         let sym = layout.per_object_symbols[export.object_index][export.symbol_offset];
         let addr = layout.object_index_maps[export.object_index]
             .data_addresses
             .get(export.symbol_offset)
             .copied()
-            .context("--export-dynamic missing data address for definition")?;
+            .with_context(|| format!("{what} missing data address for definition"))?;
         ensure!(
             !matches!(addr, WasmDataAddress::Missing),
-            "--export-dynamic data symbol `{}` has no address",
+            "{what} data symbol `{}` has no address",
             export.name
         );
         let value = if sym.raw_flags().contains(SymbolFlags::TLS) {
@@ -6158,7 +6254,7 @@ fn fill_dynamic_data_global_inits(
         let global = layout
             .globals
             .get_mut(global_slot)
-            .with_context(|| format!("--export-dynamic global slot {global_slot} out of range"))?;
+            .with_context(|| format!("{what} global slot {global_slot} out of range"))?;
         global.init_expr_body = Cow::Owned(encode_i32_const_u32(value));
     }
     Ok(())
@@ -6253,6 +6349,12 @@ where
         .iter()
         .any(|input| !input.init_funcs.is_empty());
     let dynamic_exports = collect_dynamic_exports(&layout_inputs, symbol_db)?;
+    let force_data_exports = collect_force_data_exports(
+        &layout_inputs,
+        symbol_db,
+        &file_id_to_index,
+        &dynamic_exports,
+    )?;
 
     let (indices, reloc_scan, shared_imports) = setup_got_mem_and_indices(
         &layout_inputs,
@@ -6261,6 +6363,7 @@ where
         &file_id_to_index,
         has_init_funcs,
         u32::try_from(dynamic_exports.data.len()).context("too many Wasm data exports")?,
+        u32::try_from(force_data_exports.len()).context("too many Wasm --export data symbols")?,
     )?;
     let got_mem = &reloc_scan.got_mem;
     let got_func = &reloc_scan.got_func;
@@ -6590,7 +6693,20 @@ where
             heap_end,
             stack_first,
         )?;
-        fill_dynamic_data_global_inits(&mut layout, &indices, &dynamic_exports)?;
+        fill_data_export_global_inits(
+            &mut layout,
+            indices.global_import_count,
+            indices.dynamic_data_global_base,
+            &dynamic_exports.data,
+            "--export-dynamic",
+        )?;
+        fill_data_export_global_inits(
+            &mut layout,
+            indices.global_import_count,
+            indices.force_data_global_base,
+            &force_data_exports,
+            "--export",
+        )?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
         if let Some(entry) = entry.as_ref() {
             push_export(
@@ -6633,6 +6749,8 @@ where
             symbol_db,
             &indices,
             &file_id_to_index,
+            &dynamic_exports.data,
+            &force_data_exports,
         )?;
         ensure_dynamic_exports(&mut layout, &indices, &dynamic_exports)?;
         if should_wrap_command_exports(has_init_funcs, &layout_inputs, &layout.exports)
