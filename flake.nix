@@ -55,6 +55,10 @@
           # Use the crane-cached build artifacts to speed up building the unit tests.
           wild = pkgs.wild-unwrapped.overrideAttrs (old: {
             stdenv = p: p.stdenvNoCC;
+            CARGO_PROFILE = "ci";
+            cargoArtifacts = old.cargoArtifacts.overrideAttrs {
+              CARGO_PROFILE = "ci";
+            };
 
             doCheck = true;
             doInstallCheck = false;

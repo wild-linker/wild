@@ -61,7 +61,7 @@ craneLib.buildPackage (
     cargoBuildCommand = "cargo build --profile release -p wild-linker";
 
     # Do the check in the separate derivation so it can be done
-    # in parallel in the dev profile
+    # in parallel in the ci profile
     doCheck = false;
     nativeCheckInputs = [
       lld
