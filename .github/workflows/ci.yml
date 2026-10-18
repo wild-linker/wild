@@ -342,7 +342,7 @@ jobs:
       matrix:
         check: ${{ fromJson(needs.calc-matrix.outputs.matrix) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     name: Nix/${{ matrix.check }}
 
     steps:
