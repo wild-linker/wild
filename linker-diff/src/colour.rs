@@ -94,13 +94,9 @@ impl<T: std::fmt::Display> Painted<T> {
 impl<T: std::fmt::Display> std::fmt::Display for Painted<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.enabled {
-            write!(
-                f,
-                "{}{}{}",
-                self.style.render(),
-                self.text,
-                self.style.render_reset()
-            )
+            write!(f, "{}", self.style.render())?;
+            self.text.fmt(f)?;
+            write!(f, "{}", self.style.render_reset())
         } else {
             self.text.fmt(f)
         }

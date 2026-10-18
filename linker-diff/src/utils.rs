@@ -52,11 +52,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
         .context("No objdump output")?
         .to_owned();
 
-    Ok(insn_line
-        .split_whitespace()
-        .skip(2)
-        .join(" ")
-        .replacen(' ', "\t", 1))
+    Ok(insn_line.split_whitespace().skip(2).join(" "))
 }
 
 #[test]
@@ -71,7 +67,7 @@ fn test_align_up() {
     {
         assert_eq!(
             decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000, ArchKind::Aarch64).unwrap(),
-            "ldp\tx3, x4, [sp, #72]"
+            "ldp x3, x4, [sp, #72]"
         );
     }
 
@@ -81,7 +77,7 @@ fn test_align_up() {
     {
         assert_eq!(
             decode_insn_with_objdump(&[0x00, 0x20, 0xb0, 0x23], 0x1000, ArchKind::RiscV64).unwrap(),
-            "fld\tfa2,64(a5)"
+            "fld fa2,64(a5)"
         );
     }
 }
