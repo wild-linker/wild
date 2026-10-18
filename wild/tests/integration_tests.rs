@@ -208,6 +208,9 @@
 //! RequiresSFrameBacktrace:{bool} Defaults to false. Set to true to disable this test if we're
 //! running on a system without sframe backtrace support.
 //!
+//! RequiresTransparentHugePages:{bool} If set to true, skips the test on hosts where transparent
+//! huge pages aren't available. e.g. RaspberryPi OS disables them.
+//!
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
@@ -1524,6 +1527,7 @@ struct Config {
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
     requires_sframe_backtrace: bool,
+    requires_transparent_huge_pages: bool,
     requires_compiler_flags: Vec<String>,
     requires_linker_flags: Vec<String>,
     requires_nightly_rustc: bool,
@@ -2338,6 +2342,7 @@ impl Config {
             requires_glibc: false,
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
+            requires_transparent_huge_pages: false,
             requires_compiler_flags: Vec::new(),
             requires_linker_flags: Vec::new(),
             requires_nightly_rustc: false,
@@ -3054,6 +3059,9 @@ fn process_directive(
         }
         "RequiresSFrameBacktrace" => {
             config.requires_sframe_backtrace = arg.parse()?;
+        }
+        "RequiresTransparentHugePages" => {
+            config.requires_transparent_huge_pages = arg.parse()?;
         }
         "RequiresCompilerFlags" => {
             config
@@ -8690,6 +8698,14 @@ fn verify_platform_requirements(
     cross_arch: Option<Architecture>,
     src_path: &Path,
 ) -> Result {
+    if config.requires_transparent_huge_pages {
+        ensure!(
+            cfg!(target_os = "linux")
+                && Path::new("/sys/kernel/mm/transparent_hugepage/enabled").exists(),
+            "Host kernel does not expose transparent huge page support"
+        );
+    }
+
     if config.requires_linker_plugin {
         verify_linker_plugin_requirements(config, cross_arch, src_path)?;
     }

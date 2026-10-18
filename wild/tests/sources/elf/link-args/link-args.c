@@ -37,6 +37,7 @@
 //#LinkArgs:--fallocate-output-file
 
 //#Config:madvise-huge-pages
+//#RequiresTransparentHugePages:true
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--madvise-huge-pages --mmap-output-file
