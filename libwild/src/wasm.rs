@@ -1593,10 +1593,13 @@ pub(crate) fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
     if !demangle {
         return Cow::Borrowed(name);
     }
-    if let Some(demangled) = itanium_demangle::demangle_owned(name) {
+    //TODO(wasm): Remove this ad hoc code using itanium-demangle v0.2.0.
+    let parsed = symbolic_common::Name::from(name);
+    if parsed.detect_language() != symbolic_common::Language::Rust
+        && let Some(demangled) = itanium_demangle::demangle_owned(name)
+    {
         return Cow::Owned(demangled);
     }
-    let parsed = symbolic_common::Name::from(name);
     match parsed.try_demangle(symbolic_demangle::DemangleOptions::name_only()) {
         Cow::Owned(demangled) => Cow::Owned(demangled),
         Cow::Borrowed(_) => Cow::Borrowed(name),
@@ -8562,6 +8565,13 @@ impl SinglePartSectionId {
 mod tests {
     use super::*;
     use crate::args::wasm::DEFAULT_STACK_SIZE;
+
+    #[test]
+    fn demangle_legacy_rust_symbol() {
+        let name = "_ZN13_$LT$test$GT$17h05af221e174051e9E";
+        assert_eq!(demangle_symbol_name(name, false), name);
+        assert_eq!(demangle_symbol_name(name, true), "<test>");
+    }
 
     fn layout_input_with_features<'data>(
         file: u32,
