@@ -3,18 +3,21 @@ name: Refresh Nix Cache
 on:
   push:
     branches: ['main']
-    paths:
-      - flake.lock
-      - Cargo.lock
   workflow_dispatch:
 
 permissions: {}
+
+concurrency:
+  group: nix-cache-${{ github.ref }}
 
 jobs:
   nix-cache:
     name: Refresh Nix Cache
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    permissions:
+      # Needed so we can delete old cache entries.
+      actions: write
 
     steps:
       - name: Checkout
@@ -25,13 +28,48 @@ jobs:
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v35
 
-      - name: Build Wild
-        run: |
-          nix build -L --show-trace
-
-      - name: Cache Nix store
-        uses: nix-community/cache-nix-action/save@v7
+      - name: Check for Nix cache
+        uses: nix-community/cache-nix-action/restore@v7
         id: cache
         with:
-          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock' ) }}
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', '**/Cargo.toml', '**/*.nix', '.cargo/config.toml', '.github/workflows/nix.yml') }}
+          lookup-only: true
 
+      - name: Restore Nix store
+        if: steps.cache.outputs.hit-primary-key != 'true'
+        uses: nix-community/cache-nix-action/restore@v7
+        with:
+          primary-key: ${{ steps.cache.outputs.primary-key }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Build Nix checks
+        if: steps.cache.outputs.hit-primary-key != 'true'
+        run: |
+          checks=$(nix eval --json .#checks.x86_64-linux --apply builtins.attrNames)
+          mapfile -t targets < <(jq -r '.[] | ".#checks.x86_64-linux.\(.)"' <<< "$checks")
+          test "${#targets[@]}" -gt 0
+          nix build "${targets[@]}" --out-link "$RUNNER_TEMP/nix-cache-check" -L --show-trace
+
+      - name: Prune Nix store
+        if: steps.cache.outputs.hit-primary-key != 'true'
+        run: |
+          # Flake inputs are needed for evaluation but aren't retained by build outputs.
+          inputs=$(nix flake archive --json)
+          mapfile -t paths < <(jq -r '.. | objects | .path? // empty' <<< "$inputs")
+          for i in "${!paths[@]}"; do
+            nix-store --realise "${paths[$i]}" --add-root "$RUNNER_TEMP/nix-cache-input-$i"
+          done
+          du -sh /nix/store
+          # Keep the build dependencies, including Crane's compiled Cargo artifacts.
+          nix store gc --option keep-derivations true --option keep-outputs true
+          du -sh /nix/store
+
+      - name: Cache Nix store
+        if: steps.cache.outputs.hit-primary-key != 'true'
+        uses: nix-community/cache-nix-action/save@v7
+        with:
+          primary-key: ${{ steps.cache.outputs.primary-key }}
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
