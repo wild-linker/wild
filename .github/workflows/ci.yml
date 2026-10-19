@@ -1,10 +1,22 @@
 name: CI
 
 on:
+  push:
+    branches: ['main']
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: ['**']
   merge_group:
     types: [checks_requested]
+  # Scheduled run ensures that we don't go too long without a cache when things outside our control
+  # change. e.g. the MacOS ImageVersion.
+  schedule:
+    - cron: '23 18 * * *'
   workflow_dispatch:
 
 permissions:
@@ -58,10 +70,14 @@ jobs:
       - run: rm rust-toolchain.toml
       - uses: wild-linker/action@latest
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace -- --skip wasm/
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   external-tests:
     name: Test Linux (external tests)
@@ -77,10 +93,15 @@ jobs:
           submodules: recursive
       - run: rm rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - name: Check regressions
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         run: WILD_TEST_CROSS=all cargo test --features external_tests external_test_suites -- --skip expect_failure
       - name: Check tests that should fail still fail
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         run: WILD_TEST_CROSS=all cargo test --features external_tests expect_failure
 
   linux-cross-build:
@@ -107,13 +128,18 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
       - run: cp -f ${{ matrix.config }} .cargo/config.toml
+      - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ matrix.target }}
       - run: cargo build --target ${{ matrix.target }}
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   wasip1-build:
     name: Build wasip1
@@ -130,16 +156,21 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
         with:
           targets: wasm32-wasip1
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-wasip1
       - run: cp -f .cargo/config.toml.cross-wasm32p1 .cargo/config.toml
+      - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --target wasm32-wasip1
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
       # -p libwild prevents integration tests from running. they depend on
       # spawning processes, which isn't supported on wasi.
       - run: cargo test --profile ci -p libwild --target wasm32-wasip1
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   wasm-test:
     name: Test Wasm
@@ -152,19 +183,25 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.87.28
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         with:
           tool: wasm-tools
       - name: Setup Wasmtime
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: '48.0.0'
       - run: cargo test --features wasm -- wasm
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   macho-test:
     name: Test Mach-O (AArch64)
@@ -173,20 +210,25 @@ jobs:
     env:
       WILD_TEST_IGNORE_FORMAT: "1" # Checked by other jobs
     steps:
-      - run: brew install lld
-      - run: clang --version
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           env-vars: ImageVersion
+      - run: brew install lld
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
+      - run: clang --version
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - run: cargo build --profile ci --workspace --no-default-features
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
       - run: cargo test --profile ci --workspace --features macho -- --skip wasm/
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   windows-build:
     name: Build Windows (x86_64)
@@ -197,10 +239,14 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --profile ci --workspace --no-default-features
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   minimal-versions:
     runs-on: ubuntu-24.04
@@ -212,13 +258,17 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         id: rust-toolchain
       - uses: taiki-e/install-action@v2.87.28
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo minimal-versions --direct test --profile ci -- --skip wasm/
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   clippy:
     name: Clippy
@@ -237,10 +287,16 @@ jobs:
           components: clippy
       - uses: wild-linker/action@latest
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu --no-default-features
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
 
   cargo-deny:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     name: Cargo deny
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -253,6 +309,7 @@ jobs:
           command: check
 
   dependency_cooldown:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     name: Dependency cooldown
     runs-on: ubuntu-24.04
     steps:
@@ -267,6 +324,7 @@ jobs:
         run: cargo +nightly update
 
   rustfmt:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     name: Check formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -281,6 +339,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   yamlfmt:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     name: yamlfmt
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -297,6 +356,7 @@ jobs:
       - run: yamlfmt -lint .
 
   spelling:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -308,6 +368,7 @@ jobs:
         uses: crate-ci/typos@v1.51.1
 
   nix-checks:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -345,6 +406,7 @@ jobs:
           NIX_TARGETS: ${{ matrix.targets }}
 
   reuse-check:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
