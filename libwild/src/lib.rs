@@ -37,6 +37,8 @@ pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
+#[cfg_attr(not(feature = "plugins"), path = "lto_disabled.rs")]
+mod lto;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
 pub(crate) mod macho_stub_library;

@@ -585,7 +585,7 @@ pub(crate) trait Platform:
 
     #[allow(dead_code)]
     fn resolve_lto_symbols<'data, 'scope>(
-        _obj: &crate::linker_plugins::LtoInput<'data>,
+        _obj: &crate::lto::LtoInput<'data>,
         _resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
         _definitions_out: &mut [SymbolId],
         _scope: &Scope<'scope>,

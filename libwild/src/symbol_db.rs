@@ -497,7 +497,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     #[cfg(feature = "plugins")]
     fn create_lto_input_groups(
         &mut self,
-        lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
+        lto_objects: Vec<Result<Box<crate::lto::LtoInputInfo<'data>>>>,
     ) -> Result {
         if lto_objects.is_empty() {
             return Ok(());
@@ -542,7 +542,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     )]
     fn create_lto_input_groups(
         &mut self,
-        lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
+        lto_objects: Vec<Result<Box<crate::lto::LtoInputInfo<'data>>>>,
     ) -> Result {
         if !lto_objects.is_empty() {
             return Err(linker_plugin_disabled_error());
@@ -1000,7 +1000,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             ResolvedFile::StubLibrary(stub) => stub.input_symbol_strength(symbol_id),
             #[cfg(feature = "plugins")]
             ResolvedFile::LtoInput(resolved_obj) => {
-                use crate::linker_plugins::SymbolKind;
+                use crate::lto::SymbolKind;
 
                 let SequencedInput::LtoInput(obj) = self.file(resolved_obj.file_id) else {
                     unreachable!();
@@ -1713,7 +1713,7 @@ fn load_stub_library_symbols<'data, P: Platform>(
 fn load_lto_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
-    obj: &crate::linker_plugins::LtoInput<'data>,
+    obj: &crate::lto::LtoInput<'data>,
 ) {
     for (symbol_id, sym) in obj.symbols_iter() {
         if sym.is_definition() {

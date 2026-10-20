@@ -863,12 +863,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     }
 
     fn resolve_lto_symbols<'data, 'scope>(
-        obj: &crate::linker_plugins::LtoInput<'data>,
+        obj: &crate::lto::LtoInput<'data>,
         resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
         definitions_out: &mut [SymbolId],
         scope: &Scope<'scope>,
     ) -> Result {
-        crate::linker_plugins::resolve_lto_symbols(obj, resources, definitions_out, scope)
+        crate::lto::resolve_lto_symbols(obj, resources, definitions_out, scope)
     }
 
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
