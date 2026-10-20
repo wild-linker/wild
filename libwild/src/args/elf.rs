@@ -1949,6 +1949,46 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare_with_param()
+        .long("lto-O")
+        .prefix("-lto-O")
+        .help("Set the LLVM LTO optimization level (0-3)")
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_args.push(CString::new(format!("O{value}"))?);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("thinlto-jobs")
+        .help("Set the number of ThinLTO code generation jobs")
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_args
+                .push(CString::new(format!("jobs={value}"))?);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("thinlto-cache-dir")
+        .help("Set the ThinLTO cache directory")
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_args
+                .push(CString::new(format!("cache-dir={value}"))?);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("thinlto-cache-policy")
+        .help("Set the ThinLTO cache pruning policy")
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_args
+                .push(CString::new(format!("cache-policy={value}"))?);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("plugin-opt")
         .help("Pass options to the plugin")
         .execute(|args, _modifier_stack, value| {
