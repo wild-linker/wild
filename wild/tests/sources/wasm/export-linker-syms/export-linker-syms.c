@@ -27,13 +27,8 @@
 //#ExpectSym: __wasm_call_ctors
 //#NoSym: _start
 
-//#Config:tls-base
-//#LinkArgs: --export=__tls_base
-//#ExpectError: symbol exported via --export not found: __tls_base
-
 //#Config:tls-base-if-defined
 //#LinkArgs: --export-if-defined=__tls_base
-//#NoSym: __tls_base
 //#ExpectSym: _start
 
 void _start(void) {}

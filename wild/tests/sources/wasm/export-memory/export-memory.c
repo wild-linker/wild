@@ -1,9 +1,9 @@
 //#Config:no-option
+// Note the __stack_pointer (in Global section) used to be present
+// in older LLVM releases: (https://github.com/llvm/llvm-project/pull/199739).
 //#ExpectSection: Memory
-//#ExpectSection: Global
 //#ExpectSym: memory
 //#ExpectSym: _start
-//#Contains: __stack_pointer
 
 //#Config:default-value
 //#LinkArgs: --export-memory
