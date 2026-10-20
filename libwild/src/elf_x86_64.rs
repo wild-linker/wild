@@ -208,7 +208,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 let rex = section_bytes[offset - 3];
 
                 // REX prefixed instruction with W=1, R=0/1, X=0, B=0
-                if rex != REX_W && rex != REX_W_R {
+                if (rex != REX_W && rex != REX_W_R) || rel_addend != -4 {
                     return None;
                 }
 
@@ -254,7 +254,7 @@ impl crate::platform::Arch for ElfX86_64 {
                     }
                 }
             }
-            object::elf::R_X86_64_GOTPCRELX => {
+            object::elf::R_X86_64_GOTPCRELX if rel_addend == -4 => {
                 match section_bytes.get(offset - 2)? {
                     // mov *x(%rip), reg
                     0x8b => {
@@ -621,52 +621,64 @@ fn test_relaxation() {
     ) {
         let mut out = bytes_in.to_owned();
         let mut offset = bytes_in.len() as u64;
-        if let Some(r) = ElfX86_64::new_relaxation(
+        let r = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,
-            ValueFlags::empty(),
+            ValueFlags::NON_INTERPOSABLE,
             OutputKind::StaticExecutable(RelocationModel::PositionIndependent),
             shf::EXECINSTR,
             None,
             0,
             0,
-            0,
+            -4,
             None,
-        ) {
-            r.apply(&mut out, &mut offset, &mut 0);
+        )
+        .expect("expected relaxation for an address");
+        r.apply(&mut out, &mut offset, &mut -4);
 
-            assert_eq!(
-                out, address,
-                "resolved: Expected {address:x?}, got {out:x?}"
-            );
-        }
-        if let Some(r) = ElfX86_64::new_relaxation(
+        assert_eq!(
+            out, address,
+            "resolved: Expected {address:x?}, got {out:x?}"
+        );
+        let r = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,
-            ValueFlags::ABSOLUTE,
+            ValueFlags::ABSOLUTE | ValueFlags::NON_INTERPOSABLE,
             OutputKind::StaticExecutable(RelocationModel::PositionIndependent),
             shf::EXECINSTR,
             None,
             0,
             0,
-            0,
+            -4,
             None,
-        ) {
-            out.copy_from_slice(bytes_in);
-            r.apply(&mut out, &mut offset, &mut 0);
-            assert_eq!(
-                out, absolute,
-                "unresolved: Expected {absolute:x?}, got {out:x?}"
-            );
-        }
+        )
+        .expect("expected relaxation for an absolute value");
+        out.copy_from_slice(bytes_in);
+        r.apply(&mut out, &mut offset, &mut -4);
+        assert_eq!(
+            out, absolute,
+            "unresolved: Expected {absolute:x?}, got {out:x?}"
+        );
     }
 
     check(
         object::elf::R_X86_64_REX_GOTPCRELX,
-        &[REX_W, 0x8b, 0xae],
-        &[REX_W, 0x8d, 0xae],
+        &[REX_W, 0x8b, 0x2d],
+        &[REX_W, 0x8d, 0x2d],
         &[REX_W, 0xc7, 0xc5],
+    );
+    check(
+        object::elf::R_X86_64_CODE_4_GOTPCRELX,
+        &[REX2_PREFIX, 0x48, 0x8b, 0x2d],
+        &[REX2_PREFIX, 0x48, 0x8d, 0x2d],
+        &[REX2_PREFIX, 0x18, 0xc7, 0xc5],
+    );
+    check(
+        object::elf::R_X86_64_GOTPCRELX,
+        &[0x8b, 0x2d],
+        &[0x8d, 0x2d],
+        &[0xc7, 0xc5],
     );
 }
