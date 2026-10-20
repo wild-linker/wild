@@ -2621,8 +2621,7 @@ fn decode_relocs_for(
     };
     file.sections
         .get(target as usize)
-        .map(|section| section.relocations.clone())
-        .unwrap_or_default()
+        .map_or_default(|section| section.relocations.clone())
 }
 
 fn decode_sorted_relocs_for(
