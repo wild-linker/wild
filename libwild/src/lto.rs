@@ -199,7 +199,26 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
         )
 }
 
-pub(crate) fn mark_native_symbols_as_non_ir_ref<C: ElfClass>(
+pub(crate) fn prepare_symbols_for_lto<C: ElfClass>(
+    symbol_db: &SymbolDb<Elf<C>>,
+    per_symbol_flags: &mut PerSymbolFlags,
+    resolved_groups: &[ResolvedGroup<Elf<C>>],
+) {
+    mark_native_symbols_as_non_ir_ref(symbol_db, per_symbol_flags, resolved_groups);
+
+    // Mark wrapped symbol names and their __wrap_/__real_ variants as referenced by non-IR
+    // code. This ensures the plugin keeps them in the LTO output rather than
+    // internalising/removing them.
+    mark_wrap_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
+
+    // Likewise for the functions named by -init and -fini, which only DT_INIT and DT_FINI
+    // refer to.
+    mark_init_fini_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
+
+    mark_lto_symbols_for_dynamic_export(symbol_db, per_symbol_flags, resolved_groups);
+}
+
+fn mark_native_symbols_as_non_ir_ref<C: ElfClass>(
     symbol_db: &SymbolDb<Elf<C>>,
     per_symbol_flags: &mut PerSymbolFlags,
     resolved_groups: &[ResolvedGroup<Elf<C>>],
@@ -233,7 +252,7 @@ pub(crate) fn mark_native_symbols_as_non_ir_ref<C: ElfClass>(
     });
 }
 
-pub(crate) fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
+fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
 ) {
@@ -253,8 +272,8 @@ pub(crate) fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
 }
 
 /// Marks the symbols named by -init and -fini as having non-IR references. Only DT_INIT and
-/// DT_FINI refer to them, so without this the plugin could internalise or remove them.
-pub(crate) fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
+/// DT_FINI refer to them, so without this LTO could internalise or remove them.
+fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
     symbol_db: &SymbolDb<'data, Elf<C>>,
     per_symbol_flags: &mut PerSymbolFlags,
 ) {
@@ -272,7 +291,7 @@ pub(crate) fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
     }
 }
 
-pub(crate) fn mark_lto_symbols_for_dynamic_export<C: ElfClass>(
+fn mark_lto_symbols_for_dynamic_export<C: ElfClass>(
     symbol_db: &SymbolDb<Elf<C>>,
     per_symbol_flags: &mut PerSymbolFlags,
     resolved_groups: &[ResolvedGroup<Elf<C>>],
