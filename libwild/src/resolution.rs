@@ -2112,6 +2112,7 @@ impl SectionSlot {
                 | SectionSlot::InitFunc(..)
                 | SectionSlot::CompactUnwind(..)
                 | SectionSlot::NoteGnuProperty(..)
+                | SectionSlot::RiscvVAttributes(..)
                 | SectionSlot::AArch64Attributes(..)
         )
     }
