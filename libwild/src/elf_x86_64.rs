@@ -212,7 +212,7 @@ impl crate::platform::Arch for ElfX86_64 {
                     return None;
                 }
 
-                if is_absolute || is_absolute_address {
+                if !interposable && (is_absolute || is_absolute_address) {
                     let rel_info = rel_info_from_type!(object::elf::R_X86_64_32S);
 
                     if !rel_info.range.contains(sym_addr as i64) {
@@ -258,7 +258,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 match section_bytes.get(offset - 2)? {
                     // mov *x(%rip), reg
                     0x8b => {
-                        if is_absolute || is_absolute_address {
+                        if !interposable && (is_absolute || is_absolute_address) {
                             if !rel_info_from_type!(object::elf::R_X86_64_32)
                                 .range
                                 .contains(sym_addr as i64)
