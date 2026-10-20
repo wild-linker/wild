@@ -1,11 +1,20 @@
 #![cfg_attr(not(feature = "lto"), allow(dead_code))]
 
+use crate::FileSystem;
+use crate::args::elf::ElfArgs;
 use crate::elf;
 use crate::elf::Elf;
 use crate::elf::ElfClass;
+use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_kind::FileKind;
 use crate::input_data::FileId;
+use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
+use crate::layout_rules::LayoutRulesBuilder;
+use crate::linker_plugins::LinkerPlugin;
+use crate::linker_plugins::LoadedPlugin;
+use crate::output_section_id::OutputSections;
 use crate::platform::Args as _;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
@@ -13,6 +22,7 @@ use crate::platform::Symbol as _;
 use crate::resolution::ResolutionResources;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
+use crate::resolution::Resolver;
 use crate::resolution::SymbolAttributes;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -22,10 +32,74 @@ use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use bumpalo_herd::Herd;
+use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use rayon::Scope;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
+
+pub(crate) enum LtoBackend<'data> {
+    Plugin(LinkerPlugin<'data>),
+}
+
+impl<'data> LtoBackend<'data> {
+    pub(crate) fn from_args<C: ElfClass>(
+        args: &'data ElfArgs,
+        arena: &'data Arena<LoadedPlugin>,
+        herd: &'data Herd,
+    ) -> Result<Option<Self>> {
+        Ok(LinkerPlugin::from_args::<C>(args, arena, herd)?.map(Self::Plugin))
+    }
+
+    pub(crate) fn uses_embedded_ir(&self) -> bool {
+        match self {
+            Self::Plugin(_) => true,
+        }
+    }
+
+    pub(crate) fn process_input(
+        &mut self,
+        input: InputRef<'data>,
+        file: Option<&std::fs::File>,
+        kind: FileKind,
+    ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
+        match self {
+            Self::Plugin(plugin) => plugin.process_input(
+                input,
+                file.context("Linker plugins require a native filesystem input")?,
+                kind,
+            ),
+        }
+    }
+
+    pub(crate) fn is_initialised(&self) -> bool {
+        match self {
+            Self::Plugin(plugin) => plugin.is_initialised(),
+        }
+    }
+
+    pub(crate) fn all_symbols_read<F: FileSystem, C: ElfClass>(
+        &mut self,
+        symbol_db: &mut SymbolDb<'data, Elf<C>>,
+        resolver: &mut Resolver<'data, Elf<C>>,
+        file_loader: &mut FileLoader<'data, F>,
+        per_symbol_flags: &mut PerSymbolFlags,
+        output_sections: &mut OutputSections<'data, Elf<C>>,
+        layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+    ) -> Result {
+        match self {
+            Self::Plugin(plugin) => plugin.all_symbols_read(
+                symbol_db,
+                resolver,
+                file_loader,
+                per_symbol_flags,
+                output_sections,
+                layout_rules_builder,
+            ),
+        }
+    }
+}
 
 pub(crate) struct SymbolPropertiesDisplay<'data>(&'data LtoSymbol<'data>);
 #[derive(Debug)]

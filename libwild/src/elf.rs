@@ -886,16 +886,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         crate::only_keep_debug::maybe_only_keep_debug_elf::<C>(layout)
     }
 
-    fn maybe_init_linker_plugin<'data>(
+    fn maybe_init_lto<'data>(
         args: &'data Self::Args,
         linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
         herd: &'data bumpalo_herd::Herd,
-    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
-        crate::linker_plugins::LinkerPlugin::from_args::<C>(args, linker_plugin_arena, herd)
+    ) -> Result<Option<crate::lto::LtoBackend<'data>>> {
+        crate::lto::LtoBackend::from_args::<C>(args, linker_plugin_arena, herd)
     }
 
-    fn plugin_all_symbols_read<'data, F: FileSystem>(
-        plugin: &mut crate::linker_plugins::LinkerPlugin<'data>,
+    fn lto_all_symbols_read<'data, F: FileSystem>(
+        plugin: &mut crate::lto::LtoBackend<'data>,
         symbol_db: &mut SymbolDb<'data, Self>,
         resolver: &mut crate::resolution::Resolver<'data, Self>,
         file_loader: &mut crate::input_data::FileLoader<'data, F>,
