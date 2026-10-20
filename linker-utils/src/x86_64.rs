@@ -85,6 +85,7 @@ impl RelaxationKind {
             RelaxationKind::RexMovIndirectToAbsolute(inst_offset) => {
                 // Turn a PC-relative mov into an absolute mov.
                 let rex = section_bytes[offset - 3];
+                // Move the register extension bits from R to B.
                 if inst_offset == 3 {
                     section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
                 } else if inst_offset == 4 {
@@ -198,51 +199,15 @@ impl RelaxationKind {
                 *offset_in_section += 15;
             }
             RelaxationKind::TlsDescToLocalExec(inst_offset) => {
-                let rex = section_bytes[offset - 3];
-                let modrm = section_bytes[offset - 1];
-
-                // Extract REX.R (bit 2 of rex) and reg field (bits 3-5 of modrm)
-                let rex_r = (rex >> 2) & 1;
-                let reg = (modrm >> 3) & 0x7;
-
-                let rex = if inst_offset == 3 {
-                    if rex_r == 0 { 0x48 } else { 0x49 }
-                } else if inst_offset == 4 {
-                    if rex_r == 0 { 0x18 } else { 0x19 }
-                } else {
-                    return;
-                };
-                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
-                    // mov {offset},%{reg}
-                    rex,
-                    0xc7,
-                    0xc0 | reg,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]);
-                *addend = 0;
+                Self::RexMovIndirectToAbsolute(inst_offset).apply(
+                    section_bytes,
+                    offset_in_section,
+                    addend,
+                );
             }
             RelaxationKind::TlsDescToInitialExec => {
-                let rex = section_bytes[offset - 3];
-                let modrm = section_bytes[offset - 1];
-
-                // Extract REX.R (bit 2 of rex) and reg field (bits 3-5 of modrm)
-                let rex_r = (rex >> 2) & 1;
-                let reg = (modrm >> 3) & 0x7;
-
-                let rex = if rex_r == 0 { 0x48 } else { 0x4c };
-                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
-                    // mov {GOT}(%rip),%{reg}
-                    rex,
-                    0x8b,
-                    0x05 | reg << 3,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]);
+                // Change LEA to MOV, preserving the prefix and addressing mode.
+                section_bytes[offset - 2] = 0x8b;
             }
             RelaxationKind::SkipTlsDescCall => {
                 section_bytes[offset..offset + 2].copy_from_slice(&[

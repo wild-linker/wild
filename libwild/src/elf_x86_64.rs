@@ -446,48 +446,39 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
             | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
-                if !interposable
-                    && output_kind.is_executable()
-                    && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
-                        && (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX))
-                        || offset >= 3) =>
+                if output_kind.is_executable() =>
             {
-                // We require that the instruction that this relocation applies to is a LEA
-                // instruction.
-                let bytes = section_bytes.get(offset - 3..offset - 1);
-                if bytes == Some(&[REX_W, 0x8d]) || bytes == Some(&[REX_W_R, 0x8d]) {
-                    return Some(Relaxation {
-                        kind: RelaxationKind::TlsDescToLocalExec(
-                            if relocation_kind == object::elf::R_X86_64_GOTPC32_TLSDESC {
-                                3
-                            } else {
-                                4
-                            },
-                        ),
-                        rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
-                        mandatory: output_kind.is_static_executable(),
-                    });
-                }
-            }
-            // Note, the conditions on this relaxation (is_executable) must match those on
-            // TLSDESC_CALL below.
-            object::elf::R_X86_64_GOTPC32_TLSDESC
-            | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
-                if output_kind.is_executable()
-                    && offset >= 3
-                    && (relocation_kind == object::elf::R_X86_64_GOTPC32_TLSDESC
-                        || (offset >= 4 && section_bytes[offset - 4] == REX2_PREFIX)) =>
-            {
-                // We require that the instruction that this relocation applies to is a LEA
-                // instruction.
-                let bytes = section_bytes.get(offset - 3..offset - 1);
-                if bytes == Some(&[REX_W, 0x8d]) || bytes == Some(&[REX_W_R, 0x8d]) {
-                    return Some(Relaxation {
-                        kind: RelaxationKind::TlsDescToInitialExec,
-                        rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
-                        mandatory: output_kind.is_static_executable(),
-                    });
-                }
+                // Require a RIP-relative LEA with a REX.W or REX2.W prefix.
+                let inst_offset = match (relocation_kind, section_bytes.get(..offset)?) {
+                    (object::elf::R_X86_64_GOTPC32_TLSDESC, [.., REX_W | REX_W_R, 0x8d, modrm])
+                        if modrm & 0xc7 == 0x05 =>
+                    {
+                        3
+                    }
+                    (
+                        object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC,
+                        [.., REX2_PREFIX, 0x08 | 0x0c | 0x48 | 0x4c, 0x8d, modrm],
+                    ) if modrm & 0xc7 == 0x05 => 4,
+                    _ => return None,
+                };
+
+                let (kind, rel_info) = if interposable {
+                    (
+                        RelaxationKind::TlsDescToInitialExec,
+                        rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
+                    )
+                } else {
+                    (
+                        RelaxationKind::TlsDescToLocalExec(inst_offset),
+                        rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                    )
+                };
+
+                return Some(Relaxation {
+                    kind,
+                    rel_info,
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
             // GOTPC32_TLSDESC above.
