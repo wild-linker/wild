@@ -494,7 +494,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(feature = "lto")]
     fn create_lto_input_groups(
         &mut self,
         lto_objects: Vec<Result<Box<crate::lto::LtoInputInfo<'data>>>>,
@@ -534,7 +534,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(not(feature = "plugins"))]
+    #[cfg(not(feature = "lto"))]
     #[allow(
         clippy::unused_self,
         clippy::needless_pass_by_value,
@@ -637,7 +637,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     /// Restores name-table entries for wrapped symbols to their original (pre-wrap) definitions.
-    #[cfg(feature = "plugins")]
     pub(crate) fn restore_wrapped_symbol_names(&mut self) {
         let wrap = self.args.symbol_names_to_wrap();
         if wrap.is_empty() {
@@ -689,7 +688,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::StubLibraries(_) => Visibility::Default,
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
-            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => {
                 lto_objects[file_id.file()].symbol_visibility(symbol_id)
             }
@@ -728,7 +726,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
-            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => Ok(lto_objects[file_id.file()].symbol_name(symbol_id)),
         }
     }
@@ -787,7 +784,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups
             .iter()
             .map(|group| match group {
-                #[cfg(feature = "plugins")]
+                #[cfg(feature = "lto")]
                 Group::LtoInputs(objects) => objects.len(),
                 _ => 0,
             })
@@ -881,7 +878,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::StubLibraries(stubs) => SequencedInput::StubLibrary(&stubs[file_id.file()]),
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
-            #[cfg(feature = "plugins")]
             Group::LtoInputs(lto_objects) => SequencedInput::LtoInput(&lto_objects[file_id.file()]),
         }
     }
@@ -998,7 +994,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
             ResolvedFile::Dynamic(obj) => obj.common.input_symbol_strength(symbol_id),
             ResolvedFile::StubLibrary(stub) => stub.input_symbol_strength(symbol_id),
-            #[cfg(feature = "plugins")]
+            #[cfg(feature = "lto")]
             ResolvedFile::LtoInput(resolved_obj) => {
                 use crate::lto::SymbolKind;
 
@@ -1109,7 +1105,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups.push(group);
     }
 
-    #[cfg(feature = "plugins")]
     pub(crate) fn disable_lto_inputs(&mut self) {
         for group in &mut self.groups {
             if let Group::LtoInputs(objects) = group {
@@ -1687,7 +1682,6 @@ fn read_symbols_for_group<'data, P: Platform>(
         Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
-        #[cfg(feature = "plugins")]
         Group::LtoInputs(lto_objects) => {
             for obj in lto_objects {
                 load_lto_symbols(shard, &mut outputs, obj);
@@ -1716,7 +1710,6 @@ fn load_stub_library_symbols<'data, P: Platform>(
     }
 }
 
-#[cfg(feature = "plugins")]
 fn load_lto_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
@@ -2123,7 +2116,6 @@ impl<'a, 'data, P: Platform> std::fmt::Display for SymbolDebug<'a, 'data, P> {
                 SequencedInput::SyntheticSymbols(_) => {
                     write!(f, "<unnamed custom-section symbol>")?;
                 }
-                #[cfg(feature = "plugins")]
                 SequencedInput::LtoInput(_) => write!(f, "<unnamed symbol from LTO object>")?,
             }
         } else {

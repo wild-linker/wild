@@ -34,6 +34,7 @@ impl std::fmt::Display for WildVersionInfo {
             let mut separator = "";
             for (name, enabled) in [
                 ("fork", cfg!(feature = "fork")),
+                ("lto", cfg!(feature = "lto")),
                 ("macho", cfg!(feature = "macho")),
                 ("perfetto", cfg!(feature = "perfetto")),
                 ("plugins", cfg!(feature = "plugins")),

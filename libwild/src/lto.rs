@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "lto"), allow(dead_code))]
+
 use crate::elf;
 use crate::elf::Elf;
 use crate::elf::ElfClass;

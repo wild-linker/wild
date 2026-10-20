@@ -60,7 +60,6 @@ impl SectionIdRange {
         }
     }
 
-    #[cfg(feature = "plugins")]
     pub(crate) fn empty() -> Self {
         Self {
             start_section_id: InputSectionId(0),
