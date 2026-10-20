@@ -1533,6 +1533,9 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) shared_memory_tls: bool,
     pub(crate) tls_size: u32,
     pub(crate) tls_align: u32,
+    /// With shared-memory TLS, the main thread's TLS block in static memory, which
+    /// `__wasm_init_memory` initializes. Other threads' blocks are set up by whatever starts them.
+    pub(crate) main_thread_tls: Option<u32>,
     /// Start-function index. Set only for `__wasm_init_memory`.
     pub(crate) start_function: Option<u32>,
     pub(crate) data_end: u32,
@@ -4052,6 +4055,7 @@ fn setup_got_mem_and_indices<'data>(
     let indices =
         {
             timing_phase!("Reserve linker-defined Wasm indices");
+            let has_tls = layout_inputs.iter().any(input_has_tls_segments);
             let indices = LinkerDefinedIndices::compute(
                 layout_inputs,
                 resolutions,
@@ -4070,9 +4074,9 @@ fn setup_got_mem_and_indices<'data>(
                     needs_memory_base: scan.needs_memory_base,
                     needs_table_base: scan.needs_table_base,
                     shared_memory: symbol_db.args.shared_memory,
-                    has_tls: layout_inputs.iter().any(input_has_tls_segments),
+                    has_tls,
                     needs_init_memory: symbol_db.args.shared_memory
-                        && layout_inputs.iter().any(input_has_shared_init_segment),
+                        && (has_tls || layout_inputs.iter().any(input_has_shared_init_segment)),
                 },
             )?;
 
@@ -5487,10 +5491,18 @@ fn emit_reserved_linker_definitions(
             if let Some(init_memory_func) = indices.init_memory_func {
                 let flag =
                     init_memory_flag.context("shared-memory data init is missing its flag")?;
+                let main_tls = match (indices.init_tls_func, layout.main_thread_tls) {
+                    (Some(init_tls_func), Some(block_address)) => Some(MainThreadTls {
+                        init_tls_func,
+                        block_address,
+                    }),
+                    _ => None,
+                };
                 type_indices.push(merged_type_index(&layout.output_types, &void_void)?);
                 bodies.push(owned_linker_function_body(encode_init_memory_body(
                     flag,
                     &copies.shared,
+                    main_tls,
                 )?));
                 layout.start_function = Some(init_memory_func);
             }
@@ -5753,7 +5765,17 @@ fn encode_init_tls_body(
     Ok(func.into_raw_body())
 }
 
-fn encode_init_memory_body(flag: u32, copies: &[PassiveSegmentCopy]) -> Result<Vec<u8>> {
+/// Main thread TLS initialization performed by `__wasm_init_memory`.
+struct MainThreadTls {
+    init_tls_func: u32,
+    block_address: u32,
+}
+
+fn encode_init_memory_body(
+    flag: u32,
+    copies: &[PassiveSegmentCopy],
+    main_tls: Option<MainThreadTls>,
+) -> Result<Vec<u8>> {
     let flag = i32::try_from(flag).context("Wasm init-memory flag out of range")?;
     let memarg = wasm_encoder::MemArg {
         offset: 0,
@@ -5784,6 +5806,14 @@ fn encode_init_memory_body(flag: u32, copies: &[PassiveSegmentCopy]) -> Result<V
         ins.i32_const(0);
         ins.i32_const(len);
         ins.memory_init(0, copy.segment_index);
+    }
+
+    // Only the main thread runs this. Set up its TLS block if needed.
+    if let Some(tls) = main_tls {
+        ins.i32_const(
+            i32::try_from(tls.block_address).context("Wasm TLS block address out of range")?,
+        );
+        ins.call(tls.init_tls_func);
     }
 
     ins.i32_const(flag);
@@ -6559,6 +6589,15 @@ where
                         layout.object_data_layouts[obj_idx].extend(tls_segments);
                     }
                     layout.tls_size = tls_cursor;
+                    // The main thread exists before any code that could allocate its block runs,
+                    // so reserve it in static memory.
+                    let tls_align = max_tls_alignment(&layout_inputs);
+                    memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
+                        .context("Wasm TLS alignment overflow")?;
+                    layout.main_thread_tls = Some(memory_cursor);
+                    memory_cursor = memory_cursor
+                        .checked_add(layout.tls_size)
+                        .context("Wasm TLS block overflow")?;
                 } else {
                     let tls_align = max_tls_alignment(&layout_inputs);
                     memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
