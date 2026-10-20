@@ -307,7 +307,12 @@ impl crate::platform::Arch for ElfX86_64 {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTPCREL if !interposable && rel_addend == -4 && offset >= 3 => {
+            object::elf::R_X86_64_GOTPCREL
+                if !interposable
+                    && (is_known_address || output_kind.has_fixed_load_address())
+                    && rel_addend == -4
+                    && offset >= 3 =>
+            {
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
                     [REX_W | REX_W_R, 0x8b] => {
