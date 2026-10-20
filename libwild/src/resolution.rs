@@ -88,12 +88,16 @@ impl<'data, P: Platform> Resolver<'data, P> {
     /// entries to load. Some symbols may not have definitions, in which case we'll note those for
     /// later processing. Can be called multiple times with additional groups having been added to
     /// the SymbolDb in between.
+    ///
+    /// Extra roots are selected definitions whose defining objects must be loaded. They are also
+    /// marked as having non-IR references so LTO preserves them.
     pub(crate) fn resolve_symbols_and_select_archive_entries(
         &mut self,
         symbol_db: &mut SymbolDb<'data, P>,
         per_symbol_flags: &mut PerSymbolFlags,
+        extra_roots: &[SymbolId],
     ) -> Result {
-        resolve_symbols_and_select_archive_entries(self, symbol_db, per_symbol_flags)
+        resolve_symbols_and_select_archive_entries(self, symbol_db, per_symbol_flags, extra_roots)
     }
 
     /// For all regular objects that we've decided to load, decide what to do with each section.
@@ -181,6 +185,7 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
     resolver: &mut Resolver<'data, P>,
     symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
+    extra_roots: &[SymbolId],
 ) -> Result {
     timing_phase!("Resolve symbols");
 
@@ -262,6 +267,15 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
     };
 
     rayon::in_place_scope(|scope| {
+        for &symbol in extra_roots {
+            resources
+                .per_symbol_flags
+                .get_atomic(symbol)
+                .or_assign(ValueFlags::HAS_NON_IR_REF);
+
+            resources.try_request_file_id(symbol_db.file_id_for_symbol(symbol), scope);
+        }
+
         initial_work.into_par_iter().for_each(|work_item| {
             process_object(work_item, &resources, scope);
         });

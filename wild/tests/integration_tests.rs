@@ -278,6 +278,9 @@
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
+//! RequiresLlvmLto:{bool} Selects tests requiring the built-in LLVM backend to be enabled or
+//! disabled.
+//!
 //! RequiresLinkerPlugin:{bool} Requires Wild to have linker-plugin support. When using a compiler
 //! linker driver, checks that a simple C program can be linked with `-flto` and skips the test if
 //! that fails. This can be used for both C and Rust tests. In the case of Rust tests, the clang
@@ -1811,6 +1814,7 @@ struct Config {
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
     requires_linker_plugin: bool,
+    requires_llvm_lto: Option<bool>,
     test_update_in_place: bool,
     test_hard_links: bool,
     test_output_to_dev_null: bool,
@@ -2216,6 +2220,9 @@ impl Config {
             })
             || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
             || (self.requires_linker_plugin && !cfg!(all(feature = "plugins", unix)))
+            || self
+                .requires_llvm_lto
+                .is_some_and(|required| required != cfg!(feature = "llvm-lto"))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -2813,6 +2820,7 @@ impl Config {
             requires_linker_flags: Vec::new(),
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
+            requires_llvm_lto: None,
             requires_wasi_libc: false,
             requires_zstd_compression: false,
             auto_add_objects: true,
@@ -3643,6 +3651,9 @@ fn process_directive(
         }
         "RequiresRustMusl" => {
             config.requires_rust_musl = arg.parse()?;
+        }
+        "RequiresLlvmLto" => {
+            config.requires_llvm_lto = Some(arg.parse()?);
         }
         "RequiresLinkerPlugin" => {
             config.requires_linker_plugin = arg.parse()?;
@@ -5312,10 +5323,11 @@ fn make_archive(
 ) -> Result {
     // At least on NixOS, trying to use plain "ar" to create an archive containing GCC objects
     // fails, presumably because it's trying to index the symbols.
-    let ar_cmd = if config.platform == PlatformKind::Wasm {
-        // The host ar may accept Wasm objects without indexing their symbols (e.g. on macOS).
+    let ar_cmd = if config.platform == PlatformKind::Wasm || config.requires_llvm_lto == Some(true)
+    {
+        // The host ar may accept these objects without indexing their symbols.
         find_bin(&["llvm-ar"]).context(
-            "Wasm archive tests require llvm-ar. Install LLVM and add its bin directory to PATH",
+            "Wasm and LLVM bitcode archive tests require llvm-ar. Add LLVM's bin directory to PATH",
         )?
     } else if config.requires_linker_plugin
         && matches!(
@@ -5348,7 +5360,22 @@ fn make_archive(
         );
 
         let plugin_path = String::from_utf8(output.stdout).context("Non-UTF-8 LTO plugin path")?;
-        cmd.arg("--plugin").arg(plugin_path.trim());
+        let mut plugin_path = PathBuf::from(plugin_path.trim());
+
+        if plugin_path == Path::new("LLVMgold.so") {
+            // Older Clang versions omit their own library directory from -print-file-name's
+            // search, even though their linker invocation loads the plugin from there.
+            let compiler_path = find_bin(&[compiler.name()])?
+                .canonicalize()
+                .context("Failed to resolve Clang executable")?;
+            let candidate = compiler_path.parent().unwrap().join("../lib/LLVMgold.so");
+
+            if candidate.is_file() {
+                plugin_path = candidate;
+            }
+        }
+
+        cmd.arg("--plugin").arg(plugin_path);
     }
 
     cmd.arg("cr");
@@ -10210,6 +10237,22 @@ fn verify_platform_requirements(
                 && Path::new("/sys/kernel/mm/transparent_hugepage/enabled").exists(),
             "Host kernel does not expose transparent huge page support"
         );
+    }
+
+    if config.requires_llvm_lto == Some(true) {
+        let (compiler, _) = compiler_for_file(src_path, cross_arch, config)?
+            .context("LLVM LTO tests require a compiler")?;
+
+        verify_command_success(Command::new(compiler).args([
+            "-flto",
+            "-c",
+            "-x",
+            "c",
+            "-",
+            "-o",
+            "/dev/null",
+        ]))
+        .context("Compiler cannot produce LLVM bitcode")?;
     }
 
     if config.requires_linker_plugin {

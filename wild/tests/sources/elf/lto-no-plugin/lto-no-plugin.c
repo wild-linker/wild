@@ -13,6 +13,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:clang:default
+//#RequiresLlvmLto:false
 //#Compiler:clang
 //#ExpectError:(linker plugin was not supplied|Wild was compiled without linker-plugin support)
 //#CompArgs:-fPIE

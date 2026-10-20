@@ -99,6 +99,19 @@ pkgs.callPackage ./package { stdenv = wildStdenv; }
 
 to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md).
 
+## LLVM LTO support (experimental)
+
+In addition to supporting the GNU linker plugin API, which can be used for LTO, wild also supports
+LTO via direct use of LLVM similar to how LLD does. This support is however disabled by default. To
+enable it, build with `--features llvm-lto`. Wild will then be linked against whatever version of
+LLVM llvm-config uses. This can be overridden by setting LLVM_CONFIG. e.g.
+
+```sh
+LLVM_CONFIG=llvm-config-21 cargo build --release -p wild-linker --features llvm-lto
+```
+
+Dynamicially linking against LLVM means that wild will start up a bit slower - generally about 10ms.
+
 ## Contributing
 
 For more information on contributing to Wild, see [CONTRIBUTING.md](CONTRIBUTING.md).

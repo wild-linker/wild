@@ -54,6 +54,21 @@
 //#Archive:strong.c:-flto
 //#NoSym:strong_anchor
 
+//#AbstractConfig:llvm:clang
+// Prevent Clang from passing a linker plugin for the bitcode inputs.
+//#LinkArgs:-fno-lto
+//#RequiresLinkerPlugin:false
+//#RequiresLlvmLto:true
+//#ReferenceLinkers:lld
+
+//#Config:llvm-full:llvm
+//#Object:weak.c
+//#Object:strong.c:-flto
+
+//#Config:llvm-thin:llvm
+//#Object:weak.c
+//#Object:strong.c:-flto=thin
+
 //#Config:gcc-weak-first:gcc
 //#Object:weak.c
 //#Object:strong.c:-flto

@@ -1,5 +1,5 @@
 //#AbstractConfig:base
-//#Arch:x86_64
+//#Arch:x86_64,aarch64
 //#RequiresLinkerPlugin:true
 //#Object:runtime.c
 //#Object:other.cc
@@ -27,6 +27,21 @@
 
 //#Config:clang-mixed:clang
 //#Object:native.cc:-fno-lto
+
+//#Config:llvm
+//#Compiler:clang
+//#RequiresLlvmLto:true
+// LLD fails to define .TOC. when it is first referenced by LTO-generated code.
+//#SkipArch:ppc64le
+//#ReferenceLinkers:lld
+//#Object:runtime.c:-fno-lto
+//#CompArgs:-flto -O1 -fno-pie
+//#LinkArgs:-z now -no-pie
+//#Object:other.cc
+//#Object:native.cc:-fno-lto
+
+//#Config:llvm-thin:llvm
+//#CompArgs:-flto=thin
 
 #include "value.h"
 

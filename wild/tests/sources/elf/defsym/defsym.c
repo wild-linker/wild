@@ -56,6 +56,13 @@
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
+//#Config:llvm-lto:symbol_alias-base
+//#RequiresLlvmLto:true
+//#Compiler:clang
+//#CompArgs:-flto -O2 -fno-pie
+//#ReferenceLinkers:lld
+//#LinkArgs:--defsym=bar=foo -no-pie
+
 int foo(void) { return 0; }
 
 void _start(void) { foo(); }

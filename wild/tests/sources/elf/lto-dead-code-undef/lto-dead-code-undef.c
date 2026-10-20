@@ -17,6 +17,20 @@
 //#CompArgs:-fPIE
 //#LinkArgs:-pie
 
+//#Config:llvm
+//#RequiresLlvmLto:true
+// LLD fails to define .TOC. when it is first referenced by LTO-generated code.
+//#SkipArch:ppc64le
+//#Compiler:clang
+//#CompArgs:-flto -O2 -fno-pie
+//#LinkArgs:-no-pie
+//#ReferenceLinkers:lld
+//#Object:runtime.c:-fno-lto
+//#Object:lto-dead-code-undef-1.c
+
+//#Config:llvm-thin:llvm
+//#CompArgs:-flto=thin
+
 #include "../common/runtime.h"
 
 int foo(int x);

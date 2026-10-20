@@ -40,6 +40,8 @@ pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
+#[cfg(feature = "llvm-lto")]
+mod llvm_lto;
 mod lto;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
@@ -390,8 +392,11 @@ impl<F: FileSystem> Linker<F> {
 
         let mut resolver = resolution::Resolver::default();
 
-        resolver
-            .resolve_symbols_and_select_archive_entries(&mut symbol_db, &mut per_symbol_flags)?;
+        resolver.resolve_symbols_and_select_archive_entries(
+            &mut symbol_db,
+            &mut per_symbol_flags,
+            &[],
+        )?;
 
         // Now that we know which archive entries are being loaded, we can resolve alternative
         // symbol definitions.

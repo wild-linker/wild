@@ -63,7 +63,7 @@ impl FileKind {
             Ok(FileKind::MachOStubLibrary)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
-        } else if bytes.starts_with(b"BC") {
+        } else if bytes.starts_with(b"BC") || bytes.starts_with(&[0xde, 0xc0, 0x17, 0x0b]) {
             Ok(FileKind::LlvmIr)
         } else if bytes.starts_with(&object::pe::IMAGE_FILE_MACHINE_AMD64.0.to_le_bytes()) {
             Ok(FileKind::CoffObject)

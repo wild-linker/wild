@@ -17,6 +17,12 @@
 //#DiffIgnore:section.got
 //#LinkArgs:-pie
 
+//#Config:llvm-lto:default
+//#RequiresLlvmLto:true
+//#Compiler:clang
+//#ReferenceLinkers:
+//#CompArgs:-flto -O2
+
 #include "../common/runtime.h"
 
 int value1 = 100;

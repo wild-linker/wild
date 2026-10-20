@@ -306,6 +306,8 @@ impl<'data> LinkerPlugin<'data> {
                 input_ref,
                 symbols: ctx.symbols,
                 handle: Some(&handle.file_id),
+                #[cfg(feature = "llvm-lto")]
+                backend_index: 0,
             })))
         })
     }
