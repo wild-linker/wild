@@ -5499,7 +5499,9 @@ impl LinkCommand {
                         command.arg("-mno-fix-cortex-a53-835769");
                         // Disable the compiler driver's default erratum fix so only tests
                         // that explicitly request it pass --fix-cortex-a53-843419.
-                        command.arg("-mno-fix-cortex-a53-843419");
+                        if matches!(linker_driver, Compiler::Gcc(_)) {
+                            command.arg("-mno-fix-cortex-a53-843419");
+                        }
                     }
 
                     command.args(&linker_args.args);
