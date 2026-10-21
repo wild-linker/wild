@@ -1,7 +1,39 @@
 use crate::Result;
-use anyhow::Context;
+use anyhow::Context as _;
 use anyhow::bail;
 use std::path::Path;
+#[cfg(not(target_os = "macos"))]
+use std::process::Command;
+
+#[cfg(target_os = "macos")]
+pub(crate) fn filesystem_type(path: &Path) -> Result<String> {
+    let stat = nix::sys::statfs::statfs(path)
+        .with_context(|| format!("Failed to determine filesystem for {}", path.display()))?;
+    Ok(stat.filesystem_type_name().to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn filesystem_type(path: &Path) -> Result<String> {
+    let output = Command::new("findmnt")
+        .args([
+            "--first-only",
+            "--noheadings",
+            "--output",
+            "FSTYPE",
+            "--target",
+        ])
+        .arg(path)
+        .output()
+        .context("Failed to run findmnt")?;
+    if !output.status.success() {
+        bail!(
+            "Failed to determine filesystem for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
 
 pub(crate) fn check_system_settings() -> Result {
     let policies = match std::fs::read_dir("/sys/devices/system/cpu/cpufreq") {

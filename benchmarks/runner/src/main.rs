@@ -82,7 +82,7 @@ struct BenchArgs {
     no_check_system: bool,
 
     /// Output filename template. %fs is replaced with the configured filesystem type.
-    #[clap(long, default_value = "/ram/%fs/linker-benchmark-out")]
+    #[clap(long, default_value_os_t = default_tmp_path())]
     tmp: PathBuf,
 
     /// Number of runs per batch.
@@ -222,7 +222,7 @@ struct LinkerIdentifier {
     kind: LinkerKind,
     version: String,
     variant: Option<String>,
-    /// The commit hash reported by Wild, including a modification suffix when present.
+    /// The commit hash reported by the linker, including a modification suffix when present.
     hash: Option<String>,
     /// If we've got a hash, then this is one patch level higher than version. Empty when the
     /// version output only contains a commit hash.
@@ -236,6 +236,7 @@ enum LinkerKind {
     Lld,
     Mold,
     Bfd,
+    Apple,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -256,41 +257,14 @@ impl LinkerKind {
             LinkerKind::Lld => "LLD",
             LinkerKind::Mold => "Mold",
             LinkerKind::Bfd => "GNU ld",
-        }
-    }
-
-    fn supports_arg(self, arg: &str) -> bool {
-        match arg {
-            "--no-fork" => matches!(self, LinkerKind::Wild | LinkerKind::Mold),
-            _ => true,
+            LinkerKind::Apple => "Apple ld",
         }
     }
 }
 
 impl Bin {
     fn new(bin_path: &Path, index: u32) -> Result<Self> {
-        let output = Command::new(bin_path)
-            .arg("--version")
-            .output()
-            .with_context(|| format!("Failed to run `{}`", bin_path.display()))?;
-
-        if !output.status.success() {
-            bail!(
-                "{} --version failed: {}",
-                bin_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        let version_line = String::from_utf8_lossy(&output.stdout)
-            .to_string()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-
-        let identifier = LinkerIdentifier::parse(&version_line, bin_path)
-            .with_context(|| format!("Failed to parse linker version `{version_line}`"))?;
+        let identifier = LinkerIdentifier::query(bin_path)?;
 
         let label = display_version_override(bin_path)?
             .map(|version| format!("{} {version}", identifier.kind));
@@ -392,6 +366,44 @@ impl Benchmark {
 }
 
 impl LinkerIdentifier {
+    fn supports_arg(&self, arg: &str) -> bool {
+        match arg {
+            "--no-fork" => {
+                self.kind == LinkerKind::Wild
+                    || (self.kind == LinkerKind::Mold && self.variant.as_deref() != Some("Mach-O"))
+            }
+            _ => true,
+        }
+    }
+
+    fn query(bin_path: &Path) -> Result<Self> {
+        let mut diagnostics = String::new();
+        for flag in ["--version", "-v"] {
+            let output = Command::new(bin_path)
+                .arg(flag)
+                .output()
+                .with_context(|| format!("Failed to run `{}`", bin_path.display()))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stdout.lines().chain(stderr.lines()) {
+                if let Some(identifier) = Self::parse(line.trim(), bin_path) {
+                    // Apple ld writes its version to stderr with -v. Older versions also
+                    // report an error because no input files were supplied.
+                    if output.status.success()
+                        || (flag == "-v" && identifier.kind == LinkerKind::Apple)
+                    {
+                        return Ok(identifier);
+                    }
+                }
+            }
+            diagnostics.push_str(&format!("\n{flag} ({}):\n{stdout}{stderr}", output.status));
+        }
+        bail!(
+            "Failed to identify linker `{}`:{diagnostics}",
+            bin_path.display()
+        )
+    }
+
     fn parse(version_line: &str, bin_path: &Path) -> Option<Self> {
         let kind;
         let version;
@@ -444,6 +456,24 @@ impl LinkerIdentifier {
             kind = LinkerKind::Lld;
             version = take_word(&mut rest).to_owned();
             variant = Some("Debian".to_owned());
+        } else if let Some(mut rest) = version_line.strip_prefix("Homebrew LLD ") {
+            kind = LinkerKind::Lld;
+            version = take_word(&mut rest).to_owned();
+            variant = Some("Homebrew".to_owned());
+        } else if let Some(mut rest) = version_line
+            .strip_prefix("@(#)PROGRAM:ld")
+            .and_then(|rest| rest.trim_start().strip_prefix("PROJECT:ld-"))
+        {
+            kind = LinkerKind::Apple;
+            version = take_word(&mut rest).to_owned();
+        } else if let Some(mut rest) = version_line.strip_prefix("mold-macho ") {
+            kind = LinkerKind::Mold;
+            version = take_word(&mut rest).to_owned();
+            variant = Some("Mach-O".to_owned());
+            let token = take_word(&mut rest).trim_matches(['(', ')']);
+            if (7..=40).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+                hash = Some(token.to_owned());
+            }
         } else if let Some(mut rest) = version_line.strip_prefix("mold ") {
             kind = LinkerKind::Mold;
             version = take_word(&mut rest).to_owned();
@@ -482,6 +512,14 @@ impl LinkerIdentifier {
     fn name_parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
         parts.push(self.kind.to_string());
+        if self.kind == LinkerKind::Mold
+            && self.variant.as_deref() == Some("Mach-O")
+            && let Some(hash) = &self.hash
+        {
+            parts.push(self.version.clone());
+            parts.push(hash.chars().take(8).collect());
+            return parts;
+        }
         if let Some(hash) = &self.hash {
             parts.push(hash.chars().take(8).collect());
         } else {
@@ -514,19 +552,7 @@ impl Display for Bin {
 
 impl Display for LinkerIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind)?;
-
-        if let Some(hash) = &self.hash {
-            let prefix: String = hash.chars().take(8).collect();
-            write!(f, " {prefix}")?;
-        } else {
-            write!(f, " {}", self.version)?;
-        }
-
-        if let Some(variant) = &self.variant {
-            write!(f, " {variant}")?;
-        }
-        Ok(())
+        write!(f, "{}", self.name_parts().join(" "))
     }
 }
 
@@ -557,6 +583,14 @@ fn default_result_path(config: &Config, path_buf: Option<&PathBuf>) -> PathBuf {
     })
 }
 
+fn default_tmp_path() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        std::env::temp_dir().join("linker-benchmark-out")
+    } else {
+        PathBuf::from("/ram/%fs/linker-benchmark-out")
+    }
+}
+
 impl ReportArgs {
     fn configs(&self) -> Result<Vec<PathBuf>> {
         if !self.config.is_empty() {
@@ -577,6 +611,97 @@ impl ReportArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linker_versions() {
+        for (line, kind, version, variant) in [
+            (
+                "@(#)PROGRAM:ld PROJECT:ld-1267",
+                LinkerKind::Apple,
+                "1267",
+                None,
+            ),
+            (
+                "@(#)PROGRAM:ld  PROJECT:ld-951.9",
+                LinkerKind::Apple,
+                "951.9",
+                None,
+            ),
+            (
+                "Homebrew LLD 22.1.8",
+                LinkerKind::Lld,
+                "22.1.8",
+                Some("Homebrew"),
+            ),
+            (
+                "LLD 20.1.0 (compatible with GNU linkers)",
+                LinkerKind::Lld,
+                "20.1.0",
+                None,
+            ),
+            ("GNU ld (GNU Binutils) 2.44", LinkerKind::Bfd, "2.44", None),
+            (
+                "mold 2.40.0 (compatible with GNU ld)",
+                LinkerKind::Mold,
+                "2.40.0",
+                None,
+            ),
+            (
+                "mold-macho 3.0.0 (331ac663668dc0b1f4949403854613b9b1913025)",
+                LinkerKind::Mold,
+                "3.0.0",
+                Some("Mach-O"),
+            ),
+            (
+                "Wild 0.10.0 (compatible with GNU linkers)",
+                LinkerKind::Wild,
+                "0.10.0",
+                None,
+            ),
+        ] {
+            let id = LinkerIdentifier::parse(line, Path::new("linker")).unwrap();
+            assert_eq!(id.kind, kind, "{line}");
+            assert_eq!(id.version, version, "{line}");
+            assert_eq!(id.variant.as_deref(), variant, "{line}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_query_fallback() -> Result {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("linker");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+            if [ \"$1\" = --version ]; then\n\
+              echo 'ld: unknown option: --version' >&2\n\
+              exit 1\n\
+            fi\n\
+            echo '@(#)PROGRAM:ld PROJECT:ld-1267' >&2\n\
+            echo 'ld: no object files specified' >&2\n\
+            exit 1\n",
+        )?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        let id = LinkerIdentifier::query(&path)?;
+        assert_eq!(id.kind, LinkerKind::Apple);
+        assert_eq!(id.version, "1267");
+
+        std::fs::write(&path, "#!/bin/sh\necho 'Homebrew LLD 22.1.8'\n")?;
+        assert_eq!(LinkerIdentifier::query(&path)?.kind, LinkerKind::Lld);
+
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho 'unrecognised version' >&2\nexit 1\n",
+        )?;
+        let error = LinkerIdentifier::query(&path).unwrap_err().to_string();
+        assert!(error.contains("--version"));
+        assert!(error.contains("-v"));
+        assert!(error.contains("unrecognised version"));
+        Ok(())
+    }
 
     fn version_less_than(a: &str, b: &str) -> bool {
         let (Ok(a), Ok(b)) = (parse_version_number(a), parse_version_number(b)) else {

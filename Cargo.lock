@@ -138,8 +138,10 @@ dependencies = [
  "clap",
  "indexmap",
  "indicatif",
+ "nix",
  "postcard",
  "serde",
+ "tempfile",
  "toml",
  "wait4",
 ]

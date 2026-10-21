@@ -81,7 +81,13 @@ impl BenchConfig {
     }
 
     pub(crate) fn filesystem(&self) -> &str {
-        self.filesystem.as_deref().unwrap_or("tmpfs")
+        self.filesystem
+            .as_deref()
+            .unwrap_or(if cfg!(target_os = "macos") {
+                "apfs"
+            } else {
+                "tmpfs"
+            })
     }
 
     fn inherit(&self, parent: &Self) -> Self {

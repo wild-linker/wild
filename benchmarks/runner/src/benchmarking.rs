@@ -54,8 +54,9 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
         if bench.config.has_explicit_threads() {
             for bin in benchmark_bins(&bins, bench) {
                 anyhow::ensure!(
-                    bin.identifier.kind != LinkerKind::Bfd,
-                    "Thread sweeps are not supported for GNU ld"
+                    !matches!(bin.identifier.kind, LinkerKind::Bfd | LinkerKind::Apple),
+                    "Thread sweeps are not supported for {}",
+                    bin.identifier.kind
                 );
                 for flag in configured_flags(bin, bench) {
                     anyhow::ensure!(
@@ -114,27 +115,7 @@ fn check_filesystem(bench: &Benchmark) -> Result {
         )
     })?;
 
-    let output = Command::new("findmnt")
-        .args([
-            "--first-only",
-            "--noheadings",
-            "--output",
-            "FSTYPE",
-            "--target",
-        ])
-        .arg(&target)
-        .output()
-        .context("Failed to run findmnt")?;
-
-    if !output.status.success() {
-        bail!(
-            "Failed to determine filesystem for {}: {}",
-            target.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let actual = String::from_utf8_lossy(&output.stdout);
+    let actual = crate::system::filesystem_type(&target)?;
     let expected = bench.config.filesystem();
 
     if actual.trim() != expected {
@@ -455,7 +436,7 @@ fn run_once(
     flags.extend(
         extra_flags
             .iter()
-            .filter(|f| bin.identifier.kind.supports_arg(f))
+            .filter(|f| bin.identifier.supports_arg(f))
             .map(|f| (*f).to_owned()),
     );
 
@@ -465,6 +446,13 @@ fn run_once(
         .env("OUT", &bench.output)
         .arg(&bin.path)
         .args(&flags);
+    if extra_flags.contains(&"--no-fork")
+        && bin.identifier.kind == LinkerKind::Mold
+        && bin.identifier.variant.as_deref() == Some("Mach-O")
+    {
+        // Mach-O mold uses an environment variable instead of --no-fork.
+        command.env("MOLD_NO_FORK", "1");
+    }
 
     let (mut pipe_read, pipe_write) = std::io::pipe()?;
     command
