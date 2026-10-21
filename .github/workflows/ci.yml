@@ -128,7 +128,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
         with:
           targets: ${{ matrix.target }}
@@ -156,7 +156,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
         with:
           targets: wasm32-wasip1
@@ -183,7 +183,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
         with:
           targets: wasm32-wasip1
@@ -214,7 +214,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
@@ -239,7 +239,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
@@ -258,7 +258,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
       - uses: taiki-e/install-action@v2.87.28
         with:
