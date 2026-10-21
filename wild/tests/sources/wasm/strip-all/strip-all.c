@@ -37,6 +37,39 @@
 //#NoSection:target_features
 //#NoSection:.debug_info
 
+//#Config:keep-target-features:base
+//#LinkArgs:--strip-all --keep-section=target_features
+//#NoSection:name
+//#ExpectSection:target_features
+//#NoSection:.debug_info
+//#DoesNotContain:strip_all_named_fn
+
+//#Config:keep-name:base
+//#LinkArgs:--strip-all --keep-section=name
+//#ExpectSection:name
+//#NoSection:target_features
+//#NoSection:.debug_info
+//#Contains:strip_all_named_fn
+
+//#Config:keep-both:base
+//#LinkArgs:--strip-all --keep-section=name --keep-section=target_features
+//#ExpectSection:name
+//#ExpectSection:target_features
+//#NoSection:.debug_info
+//#Contains:strip_all_named_fn
+
+//#Config:keep-debug-ignored:base
+//#LinkArgs:--strip-all --keep-section=.debug_info
+//#NoSection:name
+//#NoSection:target_features
+//#NoSection:.debug_info
+
+//#Config:strip-all-short-keep-features:base
+//#LinkArgs:-s --keep-section=target_features
+//#NoSection:name
+//#ExpectSection:target_features
+//#NoSection:.debug_info
+
 void strip_all_named_fn(void) {}
 
 void _start(void) { strip_all_named_fn(); }

@@ -871,7 +871,8 @@ fn add_encoded_section_size(
 
 pub(crate) fn encode_metadata_sections(
     layout: &WasmLayout<'_>,
-    strip_all: bool,
+    emit_name: bool,
+    emit_target_features: bool,
 ) -> Result<EncodedMetadata> {
     timing_phase!("Encode Wasm metadata sections");
     let mut encoded = EncodedMetadata::default();
@@ -938,7 +939,7 @@ pub(crate) fn encode_metadata_sections(
 
     {
         timing_phase!("Encode Wasm name section");
-        if !strip_all && let Some(name_section) = build_name_section(layout) {
+        if emit_name && let Some(name_section) = build_name_section(layout) {
             encoded.name = Some(name_section);
         }
     }
@@ -951,7 +952,7 @@ pub(crate) fn encode_metadata_sections(
             layout.extra_features,
             layout.check_features,
         )?;
-        if !strip_all && let Some(target_features) = target_features {
+        if emit_target_features && let Some(target_features) = target_features {
             encoded.target_features = Some(encode_wasm_section(&target_features));
         }
     }

@@ -67,6 +67,8 @@ pub struct WasmArgs {
     pub(crate) allow_multiple_definition: bool,
     pub(crate) strip_debug: bool,
     pub(crate) strip_all: bool,
+    /// Section names passed to `--keep-section`.
+    pub(crate) keep_sections: Vec<String>,
 }
 
 impl WasmArgs {
@@ -87,6 +89,12 @@ impl WasmArgs {
         self.import_memory
             .as_ref()
             .map(|(module, name)| (module.as_str(), name.as_str()))
+    }
+
+    /// `name` and `target_features` are omitted by `--strip-all` unless named here.
+    /// `.debug_*` and other custom sections are not preserved by this list.
+    pub(crate) fn emit_stripped_section(&self, name: &str) -> bool {
+        !self.strip_all || self.keep_sections.iter().any(|kept| kept == name)
     }
 }
 
@@ -113,6 +121,7 @@ impl Default for WasmArgs {
             allow_multiple_definition: false,
             strip_debug: false,
             strip_all: false,
+            keep_sections: Vec::new(),
         }
     }
 }
@@ -545,6 +554,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         });
 
     parser
+        .declare_with_param()
+        .long("keep-section")
+        .help("Preserve a section when --strip-all is given")
+        .execute(|args, _modifier_stack, value| {
+            args.keep_sections.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
         .declare()
         .long("demangle")
         .help("Demangle symbol names (default)")
@@ -650,6 +668,24 @@ mod tests {
             Args::force_export_symbol_names(&args),
             ["foo", "bar", "baz"]
         );
+    }
+
+    #[test]
+    fn keep_section_repeats() {
+        let mut args = parse_args([
+            "--keep-section=target_features",
+            "--keep-section",
+            "name",
+            "-keep-section=producers",
+            "-o",
+            "out.wasm",
+        ]);
+        assert_eq!(args.keep_sections, ["target_features", "name", "producers"]);
+        assert!(args.emit_stripped_section("name"));
+        args.strip_all = true;
+        assert!(args.emit_stripped_section("name"));
+        assert!(args.emit_stripped_section("target_features"));
+        assert!(!args.emit_stripped_section(".debug_info"));
     }
 
     #[test]
