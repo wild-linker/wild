@@ -82,7 +82,11 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
     let estimates = if args.no_verify {
         Vec::new()
     } else {
-        verify(&bins, &benchmarks)?
+        verify(
+            &bins,
+            &benchmarks,
+            !args.no_mem && args.num_batches > 0 && args.batch_size > 0,
+        )?
     };
 
     let results = run(&bins, &benchmarks, args, &estimates)?;
@@ -349,7 +353,11 @@ fn run(
 }
 
 /// Warms each benchmark, then verifies and estimates each linker/thread combination.
-fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result<Vec<Vec<Duration>>> {
+fn verify(
+    bins: &[Bin],
+    benchmarks: &[Benchmark],
+    verify_memory: bool,
+) -> Result<Vec<Vec<Duration>>> {
     let mut success = true;
     let mut estimates = Vec::new();
     for bench in benchmarks {
@@ -369,6 +377,10 @@ fn verify(bins: &[Bin], benchmarks: &[Benchmark]) -> Result<Vec<Vec<Duration>>> 
                 success = false;
             }
             timings.push(start.elapsed());
+            if verify_memory && let Err(error) = run_once(bin, bench, &["--no-fork"], threads) {
+                eprintln!("{error}");
+                success = false;
+            }
         }
         estimates.push(timings);
     }
@@ -445,6 +457,7 @@ fn run_once(
     command
         .env("OUT", &bench.output)
         .arg(&bin.path)
+        .arg("--")
         .args(&flags);
     if extra_flags.contains(&"--no-fork")
         && bin.identifier.kind == LinkerKind::Mold
