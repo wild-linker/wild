@@ -1509,7 +1509,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         if args.architecture() == Architecture::Ppc64 {
-            symbols.section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME);
+            symbols
+                .section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME)
+                .hide();
         }
 
         symbols
@@ -1524,7 +1526,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .hide();
 
         if output_kind != OutputKind::StaticExecutable(RelocationModel::Fixed) {
-            symbols.section_start(output_section_id::DYNAMIC, "_DYNAMIC");
+            symbols
+                .section_start(output_section_id::DYNAMIC, "_DYNAMIC")
+                .hide();
         }
 
         symbols
@@ -1539,15 +1543,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
         let mut elf_symbol = SymtabEntry::<C>::default();
         elf_symbol.set_binding_and_type(object::elf::STB_GLOBAL, object::elf::STT_TLS);
-        symbols.add_symbol(InternalSymDefInfo {
-            placement: if output_kind == OutputKind::SharedObject {
-                SymbolPlacement::SectionStart(output_section_id::TDATA)
-            } else {
-                SymbolPlacement::TlsEnd(output_section_id::TBSS)
-            },
-            name: b"_TLS_MODULE_BASE_",
-            symbol: elf_symbol,
-        });
+        symbols
+            .add_symbol(InternalSymDefInfo {
+                placement: if output_kind == OutputKind::SharedObject {
+                    SymbolPlacement::SectionStart(output_section_id::TDATA)
+                } else {
+                    SymbolPlacement::TlsEnd(output_section_id::TBSS)
+                },
+                name: b"_TLS_MODULE_BASE_",
+                symbol: elf_symbol,
+            })
+            .hide();
     }
 
     fn built_in_section_infos<'data>()

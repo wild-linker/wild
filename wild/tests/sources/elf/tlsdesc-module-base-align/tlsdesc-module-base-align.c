@@ -9,12 +9,12 @@
 
 //#Config:pie:default
 //#LinkArgs:-pie
-//#ExpectSym:_TLS_MODULE_BASE_ type=tls
+//#ExpectSym:_TLS_MODULE_BASE_ type=tls,binding=local
 
 //#Config:non-pie:default
 //#LinkArgs:-no-pie
 //#DiffIgnore:section.data
-//#ExpectSym:_TLS_MODULE_BASE_ type=tls
+//#ExpectSym:_TLS_MODULE_BASE_ type=tls,binding=local
 // LLD relaxes to lea. Wild and BFD relax to mov.
 //#DiffMatchAny:true
 
@@ -22,7 +22,7 @@
 //#LinkerDriver:none
 //#LinkerScript:module-base.ld
 //#RunEnabled:false
-//#ExpectSym:_TLS_MODULE_BASE_ type=tls
+//#ExpectSym:_TLS_MODULE_BASE_ type=tls,binding=local
 //#ExpectSym:script_start address=0x10000
 
 _Thread_local long initialized = 1;

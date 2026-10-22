@@ -13,6 +13,7 @@
 //#DiffIgnore:section.got
 //#ExpectSym:_start section=".text"
 //#ExpectSym:foo_ptr section=".data"
+//#ExpectSym:_DYNAMIC binding=local
 //#DiffMatchAny:true
 
 //#Config:origin:default
