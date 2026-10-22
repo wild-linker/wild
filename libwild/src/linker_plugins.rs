@@ -1159,16 +1159,6 @@ extern "C" fn add_input_library(lib_name: *const c_char) -> Status {
     Status::Ok
 }
 
-#[link(name = "c")]
-unsafe extern "C" {
-    fn vsnprintf(
-        str: *mut c_char,
-        n: usize,
-        format: *const c_char,
-        ap: core::ffi::VaList<'_>,
-    ) -> c_int;
-}
-
 /// This function is called when the plugin wants to emit a message.
 unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> Status {
     catch_panics(|| {
@@ -1176,25 +1166,51 @@ unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> 
             return Status::Err;
         };
 
-        let mut buf = [0u8; 4096];
-        let written_chars = unsafe {
-            vsnprintf(buf.as_mut_ptr().cast::<c_char>(), buf.len(), format, args) as usize
-        };
-
-        let (text, status) = if let Ok(str) = std::str::from_utf8(&buf[..written_chars]) {
-            (str, Status::Ok)
-        } else {
-            ("Malformed message from the linker plugin", Status::Err)
+        let result = format_with_vsnprintf(format, args);
+        let (text, status) = match result {
+            Ok(str) => (str, Status::Ok),
+            Err(()) => (
+                "Malformed message from the linker plugin".to_string(),
+                Status::Err,
+            ),
         };
 
         eprintln!("Linker plugin {level}: {text}");
 
         if level == MessageLevel::Error || level == MessageLevel::Fatal {
-            ERROR_MESSAGE.replace(Some(text.to_string()));
+            ERROR_MESSAGE.replace(Some(text));
         }
 
         status
     })
+}
+
+fn format_with_vsnprintf(format: *const c_char, args: core::ffi::VaList) -> Result<String, ()> {
+    #[link(name = "c")]
+    unsafe extern "C" {
+        fn vsnprintf(
+            str: *mut c_char,
+            n: usize,
+            format: *const c_char,
+            ap: core::ffi::VaList<'_>,
+        ) -> c_int;
+    }
+
+    let mut buf = {
+        let bytes_count = unsafe { vsnprintf(std::ptr::null_mut(), 0, format, args.clone()) };
+        if bytes_count < 0 {
+            return Err(());
+        }
+        vec![0u8; bytes_count as usize + 1]
+    };
+
+    let written_chars = unsafe { vsnprintf(buf.as_mut_ptr().cast(), buf.len(), format, args) };
+    if written_chars < 0 {
+        return Err(());
+    }
+
+    buf.truncate(written_chars as usize);
+    String::from_utf8(buf).map_err(|_| ())
 }
 
 /// Runs `body`, catching any panics. In the case of a panic, the return status is changed to an
