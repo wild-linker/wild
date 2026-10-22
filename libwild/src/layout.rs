@@ -3700,6 +3700,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     return true;
                 }
 
+                // We don't emit unreferenced symbols that are outside their own section.
+                if matches!(
+                    def_info.placement,
+                    SymbolPlacement::LoadBaseAddress
+                        | SymbolPlacement::SectionStart(output_section_id::FILE_HEADER)
+                ) {
+                    return false;
+                }
+
                 // We always emit symbols that the user requested be undefined.
                 let mut should_emit = matches!(def_info.placement, SymbolPlacement::ForceUndefined);
 
