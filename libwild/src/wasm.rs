@@ -7282,12 +7282,6 @@ fn compute_data_addresses(
             }
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
-            if !sym.is_undefined() {
-                data_addresses[sym_idx] =
-                    try_data_symbol_memory_address(&segment_places_by_object[obj_idx], sym)?;
-                continue;
-            }
-
             let def_id = symbol_db.definition(symbol_id);
             let def_file_id = symbol_db.file_id_for_symbol(def_id);
 
@@ -8444,7 +8438,7 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
 
-        if sym.is_weak() && sym.kind == WasmSymbolKind::Func {
+        if sym.is_weak() && matches!(sym.kind, WasmSymbolKind::Func | WasmSymbolKind::Data) {
             send_wasm_definition_request::<A>(
                 object,
                 reloc.index as usize,
