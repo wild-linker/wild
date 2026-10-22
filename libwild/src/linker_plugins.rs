@@ -1213,7 +1213,7 @@ fn format_with_vsnprintf(format: *const c_char, args: core::ffi::VaList) -> Resu
     }
 
     buf.truncate(written_chars as usize);
-    String::from_utf8(buf).map_err(|_| ())
+    Ok(String::from_utf8_lossy_owned(buf))
 }
 
 /// Runs `body`, catching any panics. In the case of a panic, the return status is changed to an
