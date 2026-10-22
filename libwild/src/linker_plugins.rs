@@ -1170,7 +1170,10 @@ unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> 
         let (text, status) = match result {
             Ok(str) => (str, Status::Ok),
             Err(()) => (
-                "Malformed message from the linker plugin".to_string(),
+                format!(
+                    "Linker plugin message format error, raw message: {}",
+                    unsafe { CStr::from_ptr(format) }.to_string_lossy()
+                ),
                 Status::Err,
             ),
         };
