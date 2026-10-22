@@ -1211,8 +1211,8 @@ fn format_with_vsnprintf(format: *const c_char, args: core::ffi::VaList) -> Resu
     if written_chars < 0 {
         return Err(());
     }
-
     buf.truncate(written_chars as usize);
+
     Ok(String::from_utf8_lossy_owned(buf))
 }
 
