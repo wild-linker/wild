@@ -387,5 +387,4 @@ names of the directories are the names of the benchmarks.
 ```sh
 cargo run --bin benchmark-runner -- \
     bench --config benchmarks/ryzen-9955hx.toml --saves ~/save --tmp /ram/%fs/out linker1 linker2 linker3
-cargo run --bin benchmark-runner -- report
 ```

@@ -19,7 +19,7 @@
 //! parse their output, which would probably be more complex than doing it ourselves. We'd also have
 //! less control over how exactly things are done. So we just do it ourselves.
 //!
-//! Benchmarking and producing reports are two separate steps. This is useful since benchmarking is
+//! Benchmarking and producing reports are separate steps, both run by default. Benchmarking is
 //! slow, while producing reports is very fast. By being separate, we can run the slow benchmark
 //! hopefully just once, then produce the report multiple times as we tweak the presentation. The
 //! format of the intermediate file uses postcard because we already had a dependency on it. It's
@@ -57,8 +57,12 @@ struct Args {
 
 #[derive(clap::Subcommand, Clone)]
 enum Subcommand {
+    /// Run benchmarks, save results, and generate reports.
     Bench(BenchArgs),
+
+    /// Regenerate reports from saved benchmark results.
     Report(ReportArgs),
+
     /// Print benchmark timings as a Markdown table.
     Table(table::TableArgs),
 }
@@ -107,6 +111,23 @@ struct BenchArgs {
     #[clap(long)]
     output: Option<PathBuf>,
 
+    /// Save benchmark results without generating reports.
+    #[clap(long, conflicts_with_all = ["report_dir", "absolute", "print_stats"])]
+    no_report: bool,
+
+    /// Directory for generated reports and charts.
+    #[clap(long, default_value = "benchmarks")]
+    report_dir: PathBuf,
+
+    /// Label charts with absolute values (ms for time, MiB for memory) instead of percentage
+    /// changes.
+    #[clap(long)]
+    absolute: bool,
+
+    /// Print report statistics to stdout.
+    #[clap(long)]
+    print_stats: bool,
+
     /// Named linker configurations from the config. Defaults to all when no binaries are supplied.
     #[clap(long, value_delimiter = ',')]
     linkers: Vec<String>,
@@ -151,7 +172,23 @@ fn main() -> Result {
             if !bench_args.no_check_system {
                 system::check_system_settings()?;
             }
-            benchmarking::run_bench(&bench_args, &config)
+            benchmarking::run_bench(&bench_args, &config)?;
+            if !bench_args.no_report {
+                let report_args = ReportArgs {
+                    config: vec![bench_args.config],
+                    dir: bench_args.report_dir,
+                    input: bench_args.output,
+                    print_stats: bench_args.print_stats,
+                    absolute: bench_args.absolute,
+                };
+                reporting::run_report(&report_args, &config).with_context(|| {
+                    format!(
+                        "Benchmark results saved to `{}`, but report generation failed",
+                        default_result_path(&config, report_args.input.as_ref()).display()
+                    )
+                })?;
+            }
+            Ok(())
         }
         Subcommand::Table(table_args) => table::run(&table_args),
         Subcommand::Report(report_args) => {
