@@ -26,9 +26,9 @@ impl std::fmt::Display for WildVersionInfo {
         if f.alternate() {
             writeln!(f, "linker: {}", self.name)?;
             writeln!(f, "version: {PACKAGE_VERSION}")?;
-            writeln!(f, "hash: {}", self.commit_hash.unwrap_or("unknown"))?;
-            writeln!(f, "commit_date: {}", self.commit_date.unwrap_or("unknown"))?;
-            writeln!(f, "has_tag: {}", self.has_tag)?;
+            writeln!(f, "commit-hash: {}", self.commit_hash.unwrap_or("unknown"))?;
+            writeln!(f, "commit-date: {}", self.commit_date.unwrap_or("unknown"))?;
+            writeln!(f, "has-tag: {}", self.has_tag)?;
             writeln!(f, "modified: {}", self.modified)?;
             write!(f, "features: ")?;
             let mut separator = "";
@@ -50,15 +50,20 @@ impl std::fmt::Display for WildVersionInfo {
         }
 
         if self.has_tag && !self.modified {
-            f.write_str(PACKAGE_VERSION)
+            f.write_str(PACKAGE_VERSION)?;
         } else if let Some(hash) = self.commit_hash {
             if self.modified {
-                write!(f, "{PACKAGE_VERSION} {hash}-modified")
+                write!(f, "{PACKAGE_VERSION} {hash}-modified")?;
+                if let Some(commit_date) = self.commit_date {
+                    write!(f, " ({commit_date})")?;
+                }
             } else {
-                f.write_str(hash)
+                f.write_str(hash)?;
             }
         } else {
-            write!(f, "{PACKAGE_VERSION} non-git-build")
+            write!(f, "{PACKAGE_VERSION} non-git-build")?;
         }
+
+        Ok(())
     }
 }
