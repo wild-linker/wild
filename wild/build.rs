@@ -1,4 +1,4 @@
-//! A build script that writes `version.txt`. This will then be used by wild as the version written
+//! A build script that writes `version.rs`. This will then be used by wild as the version written
 //! into the .comment section and reported when the --version flag is used.
 //!
 //! The version will be the version from `Cargo.toml`, but only if there's a git tag with the same
@@ -10,8 +10,8 @@ use std::process::Command;
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("Needs OUT_DIR to be set");
-    let out = Path::new(&out_dir).join("version.txt");
-    let version = version_string();
+    let out = Path::new(&out_dir).join("version.rs");
+    let version = version_info();
 
     println!("cargo:rerun-if-changed=../.git/HEAD");
 
@@ -21,28 +21,32 @@ fn main() {
         return;
     }
 
-    std::fs::write(&out, &version).expect("Failed to write version.txt");
+    std::fs::write(&out, &version).expect("Failed to write version.rs");
 }
 
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn version_string() -> String {
-    if let Some(version) = get_version_tag().or_else(main_hash)
-        && !has_changes_relative_to(&version)
-    {
-        return version;
-    }
-
-    if let Some(version) = main_hash() {
-        if has_changes_relative_to(&version) {
-            format!("{PKG_VERSION} {version}-modified")
-        } else {
-            version
-        }
+fn version_info() -> String {
+    let has_tag = get_version_tag().is_some() && !has_changes_relative_to(PKG_VERSION);
+    let commit_hash = if has_tag {
+        git_output_line(&["rev-parse", "HEAD"])
     } else {
-        // Fallback for if we can't query git.
-        format!("{PKG_VERSION} non-git-build")
-    }
+        main_hash()
+    };
+    let modified = !has_tag && commit_hash.as_deref().is_some_and(has_changes_relative_to);
+    let commit_date = commit_hash
+        .as_deref()
+        .and_then(|hash| git_output_line(&["show", "-s", "--format=%cs", hash]));
+
+    format!(
+        "libwild::WildVersionInfo {{ \
+            name: libwild::DEFAULT_LINKER_NAME,
+            commit_hash: {commit_hash:?}, \
+            commit_date: {commit_date:?}, \
+            has_tag: {has_tag}, \
+            modified: {modified}, \
+         }}"
+    )
 }
 
 fn has_changes_relative_to(version_ref: &str) -> bool {
@@ -56,12 +60,15 @@ fn has_changes_relative_to(version_ref: &str) -> bool {
 
 /// Returns the hash of the merge-point with origin/main.
 fn main_hash() -> Option<String> {
-    let output = Command::new("git")
-        .arg("merge-base")
-        .arg("HEAD")
-        .arg("origin/main")
-        .output()
-        .ok()?;
+    git_output_line(&["merge-base", "HEAD", "origin/main"])
+}
+
+fn git_output_line(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
 
     String::from_utf8(output.stdout)
         .ok()?

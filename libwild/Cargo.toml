@@ -70,6 +70,7 @@ nix.workspace = true
 ar.workspace = true
 tempfile.workspace = true
 
+# When adding new features, please update version.rs.
 [features]
 default = ["zstd"]
 

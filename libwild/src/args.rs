@@ -100,6 +100,8 @@ pub struct CommonArgs {
     pub(crate) sym_info: Option<String>,
     pub(crate) numeric_experiments: Vec<Option<u64>>,
     pub(crate) version_mode: VersionMode,
+    pub(crate) verbose: bool,
+    pub(crate) version_info: Option<crate::WildVersionInfo>,
 
     /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
     /// counters, if any.
@@ -193,6 +195,13 @@ impl Args {
     /// Set the version identifier of the linker.
     pub fn set_version(&mut self, version: &str) {
         self.common_mut().version = std::borrow::Cow::Owned(version.to_owned());
+        self.common_mut().version_info = None;
+    }
+
+    /// Set the build metadata used for both concise and verbose version output.
+    pub fn set_version_info(&mut self, version: crate::WildVersionInfo) {
+        self.set_version(&version.to_string());
+        self.common_mut().version_info = Some(version);
     }
 
     /// Calls the callback whenever a warning is emitted. The default, if this method is never
@@ -337,6 +346,8 @@ impl Default for CommonArgs {
             should_fork: true,
             demangle: true,
             version_mode: VersionMode::None,
+            verbose: false,
+            version_info: None,
             validate_output: env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             verify_allocation_consistency: env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
                 .is_ok_and(|v| v == "1"),
@@ -400,9 +411,19 @@ impl CommonArgs {
                 // Our parent "holds" one jobserver token, add it.
                 NonZeroUsize::new(tokens.len() + 1).unwrap()
             } else {
-                std::thread::available_parallelism()
-                    .unwrap_or(NonZeroUsize::new(1).unwrap())
-                    .min(DEFAULT_THREAD_CAP)
+                let available =
+                    std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap());
+
+                if available > DEFAULT_THREAD_CAP {
+                    if self.verbose {
+                        println!(
+                            "wild: Capping threads at {DEFAULT_THREAD_CAP}. Use --threads=N to override."
+                        );
+                    }
+                    DEFAULT_THREAD_CAP
+                } else {
+                    available
+                }
             }
         });
 
@@ -1519,6 +1540,15 @@ impl std::str::FromStr for CounterKind {
 }
 
 fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
+    parser
+        .declare()
+        .long("verbose")
+        .help("Be more verbose. Most affects --version output.")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().verbose = true;
+            Ok(())
+        });
+
     parser
         .declare()
         .long("write-layout")

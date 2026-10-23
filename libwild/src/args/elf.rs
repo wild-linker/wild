@@ -274,7 +274,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "sort-common",
     "no-keep-memory",
     "stats",
-    "verbose",
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
 

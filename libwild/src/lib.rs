@@ -72,6 +72,9 @@ pub(crate) mod trie;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;
+mod version;
+pub use version::DEFAULT_LINKER_NAME;
+pub use version::WildVersionInfo;
 pub(crate) mod version_script;
 pub(crate) mod wasm;
 pub(crate) mod wasm_wasm32;
@@ -230,7 +233,15 @@ impl<F: FileSystem> Linker<F> {
         match args.common().version_mode {
             args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "{identity}")?;
+                if args.common().verbose {
+                    if let Some(version) = &args.common().version_info {
+                        write!(stdout, "{version:#}")?;
+                    } else {
+                        writeln!(stdout, "version: {}", args.common().version)?;
+                    }
+                } else {
+                    writeln!(stdout, "{identity}")?;
+                }
                 return Ok(LinkerOutput::empty());
             }
             args::VersionMode::Verbose => {
