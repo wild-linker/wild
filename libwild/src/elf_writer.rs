@@ -1918,6 +1918,8 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
+        A::write_thunk_landing_pads(object, buffers, layout, section_index)?;
+
         match sec {
             SectionSlot::Loaded(sec)
             | SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section: sec, .. }) => {
@@ -2063,7 +2065,13 @@ fn write_thunks<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 )
             })?;
 
-        let target_address = res.plt_address().unwrap_or(res.raw_value);
+        // If the architecture gave the target a landing pad (e.g. a `bti c` on AArch64 when BTI is
+        // enforced), the thunk branches to the pad instead of directly to the target.
+        let target_address = layout
+            .thunk_landing_pad_addresses
+            .get(symbol_id)
+            .copied()
+            .unwrap_or_else(|| res.plt_address().unwrap_or(res.raw_value));
 
         if !layout.args().only_keep_debug() {
             let buf = buffers.get_mut(primary_part_id);

@@ -6,11 +6,19 @@ use crate::elf::output_section_id;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::layout::FileLayoutState;
+use crate::layout::GroupState;
+use crate::layout::HandlerData as _;
 use crate::layout::Layout;
 use crate::malfunction_point_ret;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::PreviousRelocationInfo;
+use crate::platform::SectionAttributes as _;
+use crate::resolution::SectionSlot;
+use crate::symbol_db::SymbolId;
+use crate::value_flags::FlagsForSymbol as _;
+use crate::value_flags::ValueFlags;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::bit_misc::BitExtraction;
@@ -45,6 +53,138 @@ const THUNK_TEMPLATE: &[u8] = &[
 
 /// The shortest range-limited branch for this arch.
 pub(crate) const MIN_BRANCH_RANGE: u64 = 128 * 1024 * 1024;
+
+/// `bti c`: a valid landing pad for indirect calls and for branches through x16/x17.
+pub(crate) const BTI_C: u32 = 0xd503_245f;
+/// `bti jc`: a valid landing pad for both indirect calls and indirect jumps.
+pub(crate) const BTI_JC: u32 = 0xd503_24df;
+/// `paciasp`: implicitly a landing pad for indirect calls and branches through x16/x17.
+pub(crate) const PACIASP: u32 = 0xd503_233f;
+/// `pacibsp`: implicitly a landing pad for indirect calls and branches through x16/x17.
+pub(crate) const PACIBSP: u32 = 0xd503_237f;
+
+/// Whether the instruction at the start of `bytes` is a valid target for an indirect branch through
+/// x16/x17 when BTI is enabled.
+fn is_bti_landing_pad(bytes: &[u8]) -> bool {
+    bytes.first_chunk::<4>().is_some_and(|insn| {
+        matches!(
+            u32::from_le_bytes(*insn),
+            BTI_C | BTI_JC | PACIASP | PACIBSP
+        )
+    })
+}
+
+/// Returns the thunk targets that need a BTI landing pad, grouped by the input section that each
+/// pad is placed immediately before. Targets that already start with a landing pad are skipped.
+fn collect_bti_pad_targets(
+    thunk_blocks: &[crate::thunks::ThunkBlock],
+    group_states: &[GroupState<Elf64>],
+    symbol_db: &crate::symbol_db::SymbolDb<Elf64>,
+    per_symbol_flags: &crate::value_flags::PerSymbolFlags,
+    output_sections: &crate::output_section_id::OutputSections<Elf64>,
+) -> Result<crate::thunks::LandingPadPlan> {
+    let mut plan = crate::thunks::LandingPadPlan::default();
+
+    let targets: std::collections::BTreeSet<SymbolId> = thunk_blocks
+        .iter()
+        .flat_map(|block| block.symbols.iter().copied())
+        .collect();
+
+    for symbol_id in targets {
+        if per_symbol_flags
+            .flags_for_symbol(symbol_id)
+            .intersects(ValueFlags::IFUNC | ValueFlags::DYNAMIC | ValueFlags::PLT)
+        {
+            continue;
+        }
+
+        let file_id = symbol_db.file_id_for_symbol(symbol_id);
+        let Some(FileLayoutState::Object(obj)) =
+            group_states[file_id.group()].files.get(file_id.file())
+        else {
+            continue;
+        };
+
+        let symbol_index = obj.symbol_id_range().id_to_input(symbol_id);
+        let symbol = obj.object.symbol(symbol_index)?;
+
+        let Some(section_index) = obj.object.symbol_section(symbol, symbol_index)? else {
+            continue;
+        };
+
+        // Pads are placed while laying out each object's sections. Linker-script-sorted sections
+        // are laid out in a separate pass, so pads aren't supported for targets in them.
+        let in_sorted_section = match obj.sections.get(section_index.0) {
+            Some(SectionSlot::Loaded(_)) => false,
+            Some(SectionSlot::Sorted(_)) => true,
+            _ => continue,
+        };
+
+        let part_id = symbol_db.part_id_for_symbol(symbol_id);
+        if !output_sections
+            .output_info(part_id.output_section_id::<Elf64>())
+            .section_attributes
+            .is_executable()
+        {
+            continue;
+        }
+
+        let section = obj.object.section(section_index)?;
+        let symbol_offset = obj.object.symbol_offset_in_section(symbol, section_index)?;
+
+        // Targets that already begin with a valid landing pad don't need one.
+        let section_data = obj.object.raw_section_data(section)?;
+        if section_data
+            .get(symbol_offset as usize..)
+            .is_some_and(is_bti_landing_pad)
+        {
+            continue;
+        }
+
+        ensure!(
+            !in_sorted_section,
+            "Thunk target `{}` needs a landing pad, but is in a linker-script-sorted section, \
+             which is not supported",
+            symbol_db.symbol_name_for_display(symbol_id)
+        );
+
+        plan.add(
+            file_id,
+            section_index.0,
+            crate::thunks::LandingPad {
+                target: symbol_id,
+                part_id,
+                size: bti_pad_size(part_id, output_sections),
+            },
+        );
+    }
+
+    tracing::debug!(count = plan.len(), "BTI landing pads");
+
+    Ok(plan)
+}
+
+/// Reserves space for each BTI landing pad in the group that owns its target.
+fn reserve_bti_pad_space(
+    plan: &crate::thunks::LandingPadPlan,
+    group_states: &mut [GroupState<Elf64>],
+    total_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+) {
+    for (group_index, pad) in plan.iter() {
+        group_states[group_index]
+            .common
+            .allocate(pad.part_id, pad.size);
+        total_sizes.increment(pad.part_id, pad.size);
+    }
+}
+
+/// Bytes reserved for a BTI landing pad (`bti c; b target`), rounded up to the part's alignment.
+fn bti_pad_size(
+    part_id: crate::part_id::PartId,
+    output_sections: &crate::output_section_id::OutputSections<Elf64>,
+) -> u64 {
+    part_id.alignment(output_sections).align_up(8)
+}
 
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
@@ -179,7 +319,7 @@ impl crate::platform::Arch for ElfAArch64 {
 
         // Replace ADRP/LDR/BR/NOP with BTI/ADRP/LDR/BR.
         plt_entry.copy_within(0..12, 4);
-        plt_entry[..4].copy_from_slice(&[0x5f, 0x24, 0x03, 0xd5]);
+        plt_entry[..4].copy_from_slice(&BTI_C.to_le_bytes());
 
         Ok(())
     }
@@ -494,6 +634,84 @@ impl crate::platform::Arch for ElfAArch64 {
             false,
             &mut buf[4..8],
         );
+    }
+
+    /// When BTI is enforced, a thunk reaches its target with an indirect `br`, so targets that
+    /// don't already start with a landing pad get `bti c; b target` written just before them.
+    fn write_thunk_landing_pads<'data>(
+        object: &crate::layout::ObjectLayout<'data, Elf64>,
+        buffers: &mut crate::output_section_part_map::OutputSectionPartMap<&mut [u8]>,
+        layout: &Layout<'data, Elf64>,
+        section_index: object::SectionIndex,
+    ) -> Result {
+        if layout.args().only_keep_debug() {
+            return Ok(());
+        }
+
+        for pad in layout
+            .thunk_landing_pads
+            .pads_before_section(object.file_id, section_index.0)
+        {
+            let &pad_address = layout
+                .thunk_landing_pad_addresses
+                .get(&pad.target)
+                .with_context(|| format!("Missing BTI pad address for {}", pad.target))?;
+
+            let resolution = layout
+                .merged_symbol_resolution(pad.target)
+                .with_context(|| format!("Missing BTI target resolution for {}", pad.target))?;
+
+            let target_address = resolution.raw_value;
+            // The `b` is the second instruction of the pad.
+            let branch_address = pad_address + 4;
+            let displacement = target_address.wrapping_sub(branch_address);
+
+            ensure!(
+                displacement.is_multiple_of(4)
+                    && AllowedRange::from_bit_size(28, Sign::Signed).contains(displacement as i64),
+                "BTI landing pad branch from {branch_address:#x} to {target_address:#x} is out of range"
+            );
+
+            let branch = crate::erratum843419::encode_branch(branch_address, target_address)?;
+
+            let buf = buffers
+                .get_mut(pad.part_id)
+                .split_off_mut(..pad.size as usize)
+                .ok_or_else(|| crate::file_writer::insufficient_allocation("BTI landing pad"))?;
+
+            // Any alignment padding after the two instructions is zero (`udf`) and never executed.
+            buf.fill(0);
+            buf[..4].copy_from_slice(&BTI_C.to_le_bytes());
+            buf[4..8].copy_from_slice(&branch.to_le_bytes());
+        }
+
+        Ok(())
+    }
+
+    /// When BTI is enforced, a thunk reaches its target with an indirect `br`, so every thunk
+    /// target that doesn't already start with a landing pad gets one.
+    fn allocate_thunk_landing_pads<'data>(
+        thunk_blocks: &[crate::thunks::ThunkBlock],
+        group_states: &mut [crate::layout::GroupState<Elf64>],
+        total_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        symbol_db: &crate::symbol_db::SymbolDb<Elf64>,
+        per_symbol_flags: &crate::value_flags::PerSymbolFlags,
+        output_sections: &crate::output_section_id::OutputSections<Elf64>,
+        format_specific: &<Elf64 as Platform>::FinaliseSizesExt<'data>,
+    ) -> Result<crate::thunks::LandingPadPlan> {
+        if !format_specific.has_aarch64_bti() {
+            return Ok(crate::thunks::LandingPadPlan::default());
+        }
+
+        let plan = collect_bti_pad_targets(
+            thunk_blocks,
+            group_states,
+            symbol_db,
+            per_symbol_flags,
+            output_sections,
+        )?;
+        reserve_bti_pad_space(&plan, group_states, total_sizes);
+        Ok(plan)
     }
 }
 

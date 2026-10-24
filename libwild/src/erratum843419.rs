@@ -304,9 +304,16 @@ fn is_code_range(mapping_symbols: &[SectionMappingRange], offset: usize, size: u
 }
 
 fn write_branch(out: &mut [u8], from: usize, to: usize) -> Result {
-    let displacement = u32::try_from((to.wrapping_sub(from) / INSN_SIZE) & 0x03ff_ffff)?;
-    out[from..from + INSN_SIZE].copy_from_slice(&(B_OPCODE | displacement).to_le_bytes());
+    let insn = encode_branch(from as u64, to as u64)?;
+    out[from..from + INSN_SIZE].copy_from_slice(&insn.to_le_bytes());
     Ok(())
+}
+
+/// Encodes a `b` instruction at address `from` that branches to `to`. The caller is responsible
+/// for checking that `to` is within range.
+pub(crate) fn encode_branch(from: u64, to: u64) -> Result<u32> {
+    let displacement = u32::try_from((to.wrapping_sub(from) / INSN_SIZE as u64) & 0x03ff_ffff)?;
+    Ok(B_OPCODE | displacement)
 }
 
 pub(crate) fn erratum_section_info(

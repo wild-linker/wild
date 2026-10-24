@@ -320,6 +320,34 @@ pub(crate) trait Arch: Send + Sync + 'static {
         unimplemented!();
     }
 
+    /// Writes the landing pads needed by thunk targets in `section_index` of `object`. Layout
+    /// reserves the space for them immediately before that section and `write_thunks` branches to
+    /// the pads instead of the targets. Must be called just before the section's own data is
+    /// written, so that the reserved space is consumed in the order layout assigned addresses.
+    fn write_thunk_landing_pads<'data>(
+        _object: &layout::ObjectLayout<'data, Self::Platform>,
+        _buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        _layout: &Layout<'data, Self::Platform>,
+        _section_index: object::SectionIndex,
+    ) -> Result {
+        Ok(())
+    }
+
+    /// Decides which thunk targets need a landing pad and reserves space for the pads. Called after
+    /// thunk blocks have been allocated. Returns the targets grouped by the input section each pad
+    /// is placed immediately before; the default is no landing pads.
+    fn allocate_thunk_landing_pads<'data>(
+        _thunk_blocks: &[crate::thunks::ThunkBlock],
+        _group_states: &mut [layout::GroupState<Self::Platform>],
+        _total_sizes: &mut OutputSectionPartMap<u64>,
+        _symbol_db: &SymbolDb<Self::Platform>,
+        _per_symbol_flags: &PerSymbolFlags,
+        _output_sections: &OutputSections<Self::Platform>,
+        _format_specific: &<Self::Platform as Platform>::FinaliseSizesExt<'data>,
+    ) -> Result<crate::thunks::LandingPadPlan> {
+        Ok(crate::thunks::LandingPadPlan::default())
+    }
+
     /// Return the starting load address for non-PIE output.
     fn start_memory_address(output_kind: OutputKind) -> u64 {
         if output_kind.has_fixed_load_address() {

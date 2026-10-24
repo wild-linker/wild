@@ -486,6 +486,75 @@ impl std::fmt::Debug for ThunkBlock {
     }
 }
 
+/// A landing pad that a range-extension thunk branches to instead of its target, on architectures
+/// where the thunk's indirect branch must land on a particular instruction.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LandingPad {
+    pub(crate) target: crate::symbol_db::SymbolId,
+    pub(crate) part_id: PartId,
+    pub(crate) size: u64,
+}
+
+/// Landing pads planned by `Arch::allocate_thunk_landing_pads`. Each pad is placed immediately
+/// before the input section that contains its target.
+#[derive(Debug, Default)]
+pub(crate) struct LandingPadPlan {
+    /// Keyed by (group index, file index, input section index).
+    by_section: hashbrown::HashMap<(usize, usize, usize), Vec<LandingPad>>,
+}
+
+impl LandingPadPlan {
+    pub(crate) fn add(&mut self, file_id: FileId, section_index: usize, pad: LandingPad) {
+        self.by_section
+            .entry((file_id.group(), file_id.file(), section_index))
+            .or_default()
+            .push(pad);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.by_section.values().map(Vec::len).sum()
+    }
+
+    /// All planned pads, each with the index of the group that owns its target.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &LandingPad)> {
+        self.by_section
+            .iter()
+            .flat_map(|(&(group, _, _), pads)| pads.iter().map(move |pad| (group, pad)))
+    }
+
+    /// The pads placed immediately before `section_index` of `file_id`, in layout order.
+    pub(crate) fn pads_before_section(
+        &self,
+        file_id: FileId,
+        section_index: usize,
+    ) -> &[LandingPad] {
+        self.by_section
+            .get(&(file_id.group(), file_id.file(), section_index))
+            .map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Assigns addresses to the pads placed immediately before `section_index` of `file_id`,
+    /// advancing `memory_offsets` past them.
+    pub(crate) fn assign_before_section(
+        &self,
+        file_id: FileId,
+        section_index: usize,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        addresses: &std::sync::Mutex<hashbrown::HashMap<crate::symbol_db::SymbolId, u64>>,
+    ) {
+        let pads = self.pads_before_section(file_id, section_index);
+        if pads.is_empty() {
+            return;
+        }
+        let mut addresses = addresses.lock().unwrap();
+        for pad in pads {
+            let address = memory_offsets.get_mut(pad.part_id);
+            addresses.insert(pad.target, *address);
+            *address += pad.size;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

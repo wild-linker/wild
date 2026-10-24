@@ -286,6 +286,16 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &symbol_db,
     );
 
+    let thunk_landing_pads = A::allocate_thunk_landing_pads(
+        &thunk_blocks,
+        &mut group_states,
+        &mut section_part_sizes,
+        &symbol_db,
+        &per_symbol_flags,
+        &output_sections,
+        &finalise_sizes_ext,
+    )?;
+
     let mut memory_regions = HashMap::new();
     for s in &linker_scripts {
         for region in &s.parsed.memory_regions {
@@ -419,6 +429,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         .take(thunk_blocks.len())
         .collect();
 
+    let thunk_landing_pad_addresses_out = Mutex::new(HashMap::<SymbolId, u64>::new());
+
     let resources = FinaliseLayoutResources {
         symbol_db: &symbol_db,
         output_sections: &output_sections,
@@ -433,6 +445,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         format_specific: &finalise_sizes_ext,
         thunk_blocks: &thunk_blocks,
         thunk_block_addresses: &thunk_block_addresses_out,
+        thunk_landing_pads: &thunk_landing_pads,
+        thunk_landing_pad_addresses: &thunk_landing_pad_addresses_out,
         script_sorted_sections: &script_sorted_sections,
     };
 
@@ -474,6 +488,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         .map(|m| m.into_inner().unwrap())
         .collect();
 
+    let thunk_landing_pad_addresses = thunk_landing_pad_addresses_out.into_inner().unwrap();
+
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     let num_sections = output_sections.num_sections();
@@ -504,6 +520,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         dynamic_symbol_definitions,
         format_specific,
         thunk_block_addresses,
+        thunk_landing_pad_addresses,
+        thunk_landing_pads,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
         script_sorted_sections,
@@ -863,6 +881,11 @@ pub struct Layout<'data, P: Platform> {
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.
     pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
+    /// Address of the landing pad for each thunk target that needs one.
+    pub(crate) thunk_landing_pad_addresses: HashMap<SymbolId, u64>,
+    /// Landing pads that thunks branch to instead of their targets, on architectures that need
+    /// them.
+    pub(crate) thunk_landing_pads: crate::thunks::LandingPadPlan,
 
     pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
     pub(crate) gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
@@ -1772,6 +1795,8 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     /// put it here and wrap each map in a mutex. Since each map is only written by its owner, each
     /// mutex should only ever get locked once during its lifetime.
     pub(crate) thunk_block_addresses: &'scope Vec<Mutex<BTreeMap<SymbolId, u64>>>,
+    pub(crate) thunk_landing_pads: &'scope crate::thunks::LandingPadPlan,
+    pub(crate) thunk_landing_pad_addresses: &'scope Mutex<HashMap<SymbolId, u64>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -4930,7 +4955,19 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let section_id_range = self.section_id_range;
         let object_part_ids = &resources.symbol_db.section_part_ids[section_id_range.as_usize()];
 
-        for (slot, &part_id) in self.sections.iter_mut().zip(object_part_ids) {
+        // Thunk landing pads go immediately before the input section containing their target.
+        let file_id = self.file_id();
+
+        for (section_index, (slot, &part_id)) in
+            self.sections.iter_mut().zip(object_part_ids).enumerate()
+        {
+            resources.thunk_landing_pads.assign_before_section(
+                file_id,
+                section_index,
+                memory_offsets,
+                resources.thunk_landing_pad_addresses,
+            );
+
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     let address = memory_offsets.get(part_id);
