@@ -4,7 +4,7 @@
 /// features. Symbol resolution and full location counter semantics (e.g. ALIGN with a non-zero
 /// current address) will be implemented in future work.
 use crate::bail;
-use crate::error::Context;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::grouping::Group;
 use crate::input_data::InputRef;

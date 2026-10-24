@@ -6,7 +6,7 @@ use crate::alignment::MACHO_PAGE_ALIGNMENT_VALUE;
 use crate::args::macho::MachOArgs;
 use crate::bail;
 use crate::ensure;
-use crate::error::Context;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::file_writer::copy_section_data;

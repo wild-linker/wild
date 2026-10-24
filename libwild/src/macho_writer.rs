@@ -4,7 +4,7 @@ use crate::bail;
 use crate::elf::get_page_mask;
 use crate::ensure;
 use crate::error;
-use crate::error::Context;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
 use crate::file_writer::split_buffers_by_alignment;

@@ -3,7 +3,7 @@
 use crate::OutputSections;
 use crate::alignment;
 use crate::arch::Architecture;
-use crate::error::Context;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::expression_eval::evaluate_const;
 use crate::glob_match::GlobPatternType;
