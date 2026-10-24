@@ -2286,8 +2286,8 @@ impl platform::Args for ElfArgs {
         self.version_script_path.as_deref()
     }
 
-    fn export_list_path(&self) -> Option<&Path> {
-        self.export_list_path.as_deref()
+    fn export_list_paths(&self) -> impl Iterator<Item = &Path> {
+        self.export_list_path.as_deref().into_iter()
     }
 
     fn defsym(&self) -> &[(String, String)] {

@@ -249,7 +249,7 @@ struct LoadedLinkerScript<'data> {
 
 pub(crate) struct AuxiliaryFiles<'data> {
     pub(crate) version_script_data: Option<ScriptData<'data>>,
-    pub(crate) export_list_data: Option<ScriptData<'data>>,
+    pub(crate) export_list_data: Vec<(PathBuf, ScriptData<'data>)>,
 }
 
 impl<'data> AuxiliaryFiles<'data> {
@@ -276,9 +276,16 @@ impl<'data> AuxiliaryFiles<'data> {
                 .map(|path| read_script_data(&resolve_script_path(path), inputs_arena, file_system))
                 .transpose()?,
             export_list_data: args
-                .export_list_path()
-                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena, file_system))
-                .transpose()?,
+                .export_list_paths()
+                .map(|path| {
+                    let path = resolve_script_path(path);
+                    let data =
+                        read_script_data(&path, inputs_arena, file_system).with_context(|| {
+                            format!("Failed to read export list `{}`", path.display())
+                        })?;
+                    Ok((path, data))
+                })
+                .collect::<Result<_>>()?,
         })
     }
 }

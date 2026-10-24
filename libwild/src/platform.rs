@@ -1712,8 +1712,8 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
-    fn export_list_path(&self) -> Option<&Path> {
-        None
+    fn export_list_paths(&self) -> impl Iterator<Item = &Path> {
+        std::iter::empty()
     }
 
     fn should_gc_sections(&self) -> bool {

@@ -20,6 +20,14 @@ pub(crate) struct ExportList<'data> {
 }
 
 impl<'data> ExportList<'data> {
+    /// Combines export policies, retaining exact Mach-O entries as required roots.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.rules.merge(other.rules);
+        self.required_symbols.extend(other.required_symbols);
+        self.required_symbols.sort_unstable();
+        self.required_symbols.dedup();
+    }
+
     pub(crate) fn parse_gnu(data: ScriptData<'data>) -> Result<Self> {
         parse_gnu_export_list
             .parse(BStr::new(data.raw))
@@ -131,6 +139,53 @@ fn parse_gnu_export_list<'input>(input: &mut &'input BStr) -> winnow::Result<Exp
 mod tests {
     use super::*;
     use crate::input_data::ScriptData;
+
+    #[test]
+    fn merge_macho_lists() {
+        let mut list = ExportList::parse_macho(ScriptData {
+            raw: b"_first\n_shared\n_prefix*\n",
+        })
+        .unwrap();
+        list.merge(
+            ExportList::parse_macho(ScriptData {
+                raw: b"_second\n_shared\n_question?\n_range[ab]\n",
+            })
+            .unwrap(),
+        );
+        list.merge(ExportList::default());
+        for name in [
+            b"_first".as_slice(),
+            b"_second",
+            b"_shared",
+            b"_prefix_tail",
+            b"_questionx",
+            b"_rangea",
+        ] {
+            assert!(list.contains(&UnversionedSymbolName::prehashed(name)));
+        }
+        assert!(!list.contains(&UnversionedSymbolName::prehashed(b"_hidden")));
+        assert_eq!(
+            list.required_symbols().collect::<Vec<_>>(),
+            [b"_first".as_slice(), b"_second", b"_shared"]
+        );
+        list.merge(ExportList::parse_macho(ScriptData { raw: b"*\n" }).unwrap());
+        assert!(list.contains(&UnversionedSymbolName::prehashed(b"_hidden")));
+        assert_eq!(list.required_symbols().count(), 3);
+    }
+
+    #[test]
+    fn merge_gnu_lists_preserves_cxx_rules_without_roots() {
+        let mut list = ExportList::default();
+        list.merge(
+            ExportList::parse_gnu(ScriptData {
+                raw: b"{ foo; extern \"C++\" { bar; }; };",
+            })
+            .unwrap(),
+        );
+        assert!(list.contains(&UnversionedSymbolName::prehashed(b"foo")));
+        assert!(list.contains(&UnversionedSymbolName::prehashed(b"bar")));
+        assert_eq!(list.required_symbols().count(), 0);
+    }
 
     #[test]
     fn parse_inline() {

@@ -1,0 +1,4 @@
+_second
+_shared
+_pattern*
+_from_archive

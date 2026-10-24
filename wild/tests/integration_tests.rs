@@ -6803,6 +6803,11 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
         return Ok(HashMap::new());
     };
 
+    // An empty export policy can produce a zero-sized trie with no root node.
+    if command.datasize.get(e) == 0 {
+        return Ok(HashMap::new());
+    }
+
     let image_base = text_vmaddr.context("Missing Mach-O __TEXT segment")?;
     let linkedit_range = linkedit_range.context("Missing Mach-O __LINKEDIT segment")?;
     let data_start = u64::from(command.dataoff.get(e));

@@ -342,10 +342,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             .transpose()?
             .unwrap_or_default();
 
-        let export_list = auxiliary
-            .export_list_data
-            .map(P::parse_export_list)
-            .transpose()?;
+        let mut export_list: Option<ExportList<'data>> = None;
+        for (path, data) in &auxiliary.export_list_data {
+            let parsed = P::parse_export_list(*data)
+                .with_context(|| format!("Failed to parse export list `{}`", path.display()))?;
+            export_list.get_or_insert_default().merge(parsed);
+        }
 
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();

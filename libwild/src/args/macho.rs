@@ -33,7 +33,7 @@ pub struct MachOArgs {
     pub(crate) dylib: bool,
     pub(crate) install_name: Option<String>,
     pub(crate) rpaths: Vec<String>,
-    pub(crate) export_list_path: Option<PathBuf>,
+    pub(crate) export_list_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,7 @@ impl Default for MachOArgs {
             dylib: false,
             install_name: None,
             rpaths: Vec::new(),
-            export_list_path: None,
+            export_list_paths: Vec::new(),
         }
     }
 }
@@ -166,8 +166,8 @@ impl platform::Args for MachOArgs {
         self.sysroot.as_deref()
     }
 
-    fn export_list_path(&self) -> Option<&Path> {
-        self.export_list_path.as_deref()
+    fn export_list_paths(&self) -> impl Iterator<Item = &Path> {
+        self.export_list_paths.iter().map(PathBuf::as_path)
     }
 
     fn should_gc_sections(&self) -> bool {
@@ -268,12 +268,8 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .long("exported_symbols_list")
         .help("Restrict exported symbols to patterns listed in a file")
         .execute(|args, _, value| {
-            // TODO: Merge the export symbol lists.
-            if args.export_list_path.is_some() {
-                bail!("Multiple export symbol lists not yet supported");
-            }
             args.common_mut().save_dir.handle_file(value);
-            args.export_list_path = Some(PathBuf::from(value));
+            args.export_list_paths.push(PathBuf::from(value));
             Ok(())
         });
 
@@ -586,6 +582,31 @@ mod tests {
         );
         assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
         assert!(args.headerpad_max_install_names);
+    }
+
+    #[test]
+    fn multiple_export_lists() {
+        let mut args = MachOArgs::new().unwrap();
+        args.parse(
+            [
+                "-exported_symbols_list",
+                "first.txt",
+                "--exported_symbols_list",
+                "second.txt",
+                "-exported_symbols_list",
+                "first.txt",
+            ]
+            .iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            args.export_list_paths().collect::<Vec<_>>(),
+            [
+                Path::new("first.txt"),
+                Path::new("second.txt"),
+                Path::new("first.txt"),
+            ]
+        );
     }
 
     #[test]

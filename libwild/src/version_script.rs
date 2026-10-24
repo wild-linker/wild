@@ -102,6 +102,14 @@ pub(crate) struct BasicMatchRules<'data> {
 }
 
 impl<'data> BasicMatchRules<'data> {
+    fn merge(&mut self, other: Self) {
+        self.exact.extend(other.exact);
+        self.escaped_exact.extend(other.escaped_exact);
+        self.star_globs.extend(other.star_globs);
+        self.nonstar_globs.extend(other.nonstar_globs);
+        self.matches_all |= other.matches_all;
+    }
+
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::MatchesAll => self.matches_all = true,
@@ -202,6 +210,11 @@ pub(crate) enum ParsedSymbolMatcher<'data> {
 }
 
 impl<'data> MatchRules<'data> {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.general.merge(other.general);
+        self.cxx.merge(other.cxx);
+    }
+
     pub(crate) fn push(&mut self, pattern: ParsedSymbolMatcher<'data>) {
         match pattern {
             ParsedSymbolMatcher::Single(single) => {
