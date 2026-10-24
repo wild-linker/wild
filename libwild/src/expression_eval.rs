@@ -787,6 +787,17 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
             Ok(result)
         }
+        Expression::Absolute(e) => {
+            let mut inner_kind = ExpressionValueKind::Number;
+            let val = eval!(e, &mut inner_kind)?;
+            let val = if let Some(sec_id) = inner_kind.section_id() {
+                val.wrapping_add(section_layouts.get(sec_id).mem_offset)
+            } else {
+                val
+            };
+            *value_kind = ExpressionValueKind::Absolute;
+            Ok(val)
+        }
     }
 }
 
@@ -844,6 +855,7 @@ pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
                 evaluate_const(if_false)
             }
         }
+        Expression::Absolute(expression) => evaluate_const(expression),
 
         _ => bail!("Expected constant expression"),
     }
