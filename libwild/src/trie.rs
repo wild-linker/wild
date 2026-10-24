@@ -9,8 +9,43 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Symbol<'data> {
     pub(crate) name: &'data [u8],
-    pub(crate) address: u64,
+    pub(crate) target: Target,
     pub(crate) flags: macho::ExportSymbolFlags,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Regular { address: u64 },
+    Reexport { dylib_ordinal: u64 },
+}
+
+impl Symbol<'_> {
+    fn export_flags(&self) -> macho::ExportSymbolFlags {
+        match self.target {
+            Target::Regular { .. } => self.flags,
+            Target::Reexport { .. } => self.flags | macho::EXPORT_SYMBOL_FLAGS_REEXPORT,
+        }
+    }
+
+    fn terminal_size(&self) -> usize {
+        uleb128_size(self.export_flags().0)
+            + match self.target {
+                Target::Regular { address } => uleb128_size(address),
+                Target::Reexport { dylib_ordinal } => uleb128_size(dylib_ordinal) + 1,
+            }
+    }
+
+    fn write_terminal(&self, out: &mut Vec<u8>) {
+        write_uleb128(out, self.export_flags().0);
+        match self.target {
+            Target::Regular { address } => write_uleb128(out, address),
+            Target::Reexport { dylib_ordinal } => {
+                write_uleb128(out, dylib_ordinal);
+                // An empty import name forwards the exported name unchanged.
+                out.push(0);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -247,7 +282,7 @@ impl<'trie, 'symbols, 'data> Layout<'trie, 'symbols, 'data> {
         let node = &self.trie.nodes[node_index];
         let terminal_size = node.symbol.map_or(0, |index| {
             let symbol = &self.symbols[index];
-            regular_export_size(symbol.flags, symbol.address)
+            symbol.terminal_size()
         });
 
         uleb128_size(terminal_size as u64)
@@ -277,12 +312,9 @@ impl<'trie, 'symbols, 'data> Layout<'trie, 'symbols, 'data> {
             if let Some(index) = node.symbol {
                 let symbol = &self.symbols[index];
 
-                write_uleb128(
-                    &mut out,
-                    regular_export_size(symbol.flags, symbol.address) as u64,
-                );
+                write_uleb128(&mut out, symbol.terminal_size() as u64);
 
-                write_regular_export(&mut out, symbol.flags, symbol.address);
+                symbol.write_terminal(&mut out);
             } else {
                 write_uleb128(&mut out, 0);
             }
@@ -301,15 +333,6 @@ impl<'trie, 'symbols, 'data> Layout<'trie, 'symbols, 'data> {
     }
 }
 
-fn regular_export_size(flags: macho::ExportSymbolFlags, address: u64) -> usize {
-    uleb128_size(flags.0) + uleb128_size(address)
-}
-
-fn write_regular_export(out: &mut Vec<u8>, flags: macho::ExportSymbolFlags, address: u64) {
-    write_uleb128(out, flags.0);
-    write_uleb128(out, address);
-}
-
 fn write_uleb128(out: &mut Vec<u8>, value: u64) {
     leb128::write::unsigned(out, value).unwrap();
 }
@@ -325,7 +348,7 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     struct ParsedSymbol {
         name: Vec<u8>,
-        address: u64,
+        target: Target,
         flags: macho::ExportSymbolFlags,
     }
 
@@ -342,8 +365,8 @@ mod tests {
                 .iter()
                 .map(|s| ParsedSymbol {
                     name: s.name.to_owned(),
-                    address: s.address,
-                    flags: s.flags,
+                    target: s.target,
+                    flags: s.export_flags(),
                 })
                 .collect_vec()
         );
@@ -366,16 +389,47 @@ mod tests {
             .unwrap()
             .map(|symbol| {
                 let symbol = symbol.unwrap();
-                let ExportData::Regular { address } = symbol.data() else {
-                    panic!("expected regular export");
+                let target = match symbol.data() {
+                    ExportData::Regular { address } => Target::Regular { address: *address },
+                    ExportData::Reexport {
+                        dylib_ordinal,
+                        import_name,
+                    } => {
+                        assert!(import_name.is_empty());
+                        Target::Reexport {
+                            dylib_ordinal: *dylib_ordinal,
+                        }
+                    }
+                    ExportData::StubAndResolver { .. } => panic!("unexpected stub and resolver"),
                 };
                 ParsedSymbol {
                     name: symbol.name().to_vec(),
-                    address: *address,
+                    target,
                     flags: symbol.flags(),
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn reexports_round_trip() {
+        check(&mut [
+            Symbol {
+                name: b"_foo",
+                flags: macho::ExportSymbolFlags(0),
+                target: Target::Regular { address: 42 },
+            },
+            Symbol {
+                name: b"_foobar",
+                flags: macho::ExportSymbolFlags(0),
+                target: Target::Reexport { dylib_ordinal: 128 },
+            },
+            Symbol {
+                name: b"_bar",
+                flags: macho::ExportSymbolFlags(0),
+                target: Target::Reexport { dylib_ordinal: 2 },
+            },
+        ]);
     }
 
     #[test]
@@ -390,7 +444,7 @@ mod tests {
     fn builds_single_symbol_trie() {
         check(&mut [Symbol {
             name: b"_main",
-            address: 0x1234,
+            target: Target::Regular { address: 0x1234 },
             flags: macho::ExportSymbolFlags(0),
         }]);
     }
@@ -399,7 +453,7 @@ mod tests {
     fn builds_absolute_symbol() {
         let mut symbols = [Symbol {
             name: b"_absolute",
-            address: 42,
+            target: Target::Regular { address: 42 },
             flags: macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE.into(),
         }];
 
@@ -410,7 +464,7 @@ mod tests {
     fn builds_weak_symbol() {
         let mut symbols = [Symbol {
             name: b"_weak",
-            address: 42,
+            target: Target::Regular { address: 42 },
             flags: macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION,
         }];
 
@@ -421,7 +475,7 @@ mod tests {
     fn builds_thread_local_symbol() {
         let mut symbols = [Symbol {
             name: b"_tls",
-            address: 42,
+            target: Target::Regular { address: 42 },
             flags: macho::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL.into(),
         }];
 
@@ -433,17 +487,17 @@ mod tests {
         check(&mut [
             Symbol {
                 name: b"_foobar",
-                address: 1,
+                target: Target::Regular { address: 1 },
                 flags: macho::ExportSymbolFlags(0),
             },
             Symbol {
                 name: b"_foo",
-                address: 2,
+                target: Target::Regular { address: 2 },
                 flags: macho::ExportSymbolFlags(0),
             },
             Symbol {
                 name: b"_fop",
-                address: 3,
+                target: Target::Regular { address: 3 },
                 flags: macho::ExportSymbolFlags(0),
             },
         ]);
@@ -457,7 +511,9 @@ mod tests {
             .enumerate()
             .map(|(address, name)| Symbol {
                 name,
-                address: address as u64,
+                target: Target::Regular {
+                    address: address as u64,
+                },
                 flags: macho::ExportSymbolFlags(0),
             })
             .collect_vec();
@@ -473,7 +529,9 @@ mod tests {
             .enumerate()
             .map(|(index, name)| Symbol {
                 name,
-                address: index as u64,
+                target: Target::Regular {
+                    address: index as u64,
+                },
                 flags: macho::ExportSymbolFlags(0),
             })
             .collect();
@@ -493,7 +551,9 @@ mod tests {
             .enumerate()
             .map(|(index, name)| Symbol {
                 name,
-                address: 1_u64 << (index % 63),
+                target: Target::Regular {
+                    address: 1_u64 << (index % 63),
+                },
                 flags: if index % 2 == 0 {
                     macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION
                 } else {
@@ -506,7 +566,7 @@ mod tests {
             .iter()
             .map(|name| Symbol {
                 name,
-                address: u64::MAX,
+                target: Target::Regular { address: u64::MAX },
                 flags: macho::ExportSymbolFlags(0),
             })
             .collect_vec();
@@ -524,8 +584,8 @@ mod tests {
                 .sorted_unstable_by_key(|symbol| symbol.name)
                 .map(|symbol| ParsedSymbol {
                     name: symbol.name.to_vec(),
-                    address: symbol.address,
-                    flags: symbol.flags,
+                    target: symbol.target,
+                    flags: symbol.export_flags(),
                 })
                 .collect_vec()
         );

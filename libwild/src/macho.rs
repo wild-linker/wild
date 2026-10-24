@@ -54,6 +54,7 @@ use crate::resolution::SectionSlot;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
+use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use itertools::Itertools;
@@ -378,6 +379,7 @@ pub(crate) struct PreludeLayoutExt {
     pub(crate) load_dylib_command_sizes: Vec<usize>,
     pub(crate) load_command_count: usize,
     pub(crate) exports_trie: Arc<crate::trie::Trie>,
+    pub(crate) reexports: Vec<Reexport>,
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
@@ -1294,53 +1296,6 @@ impl platform::Platform for MachO {
             bail!("exported symbol(s) not defined: {missing}");
         }
 
-        // Exact entries can request new imports. Wildcards only request re-exports for symbols
-        // already imported by an input object, not every matching symbol in a dependency.
-        let explicit_symbols = export_list
-            .required_symbols()
-            .filter_map(|name| symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name)));
-
-        let imported_symbols = symbol_db
-            .groups
-            .iter()
-            .filter_map(|group| match group {
-                crate::grouping::Group::Objects(objects) => Some(*objects),
-                _ => None,
-            })
-            .flatten()
-            .filter(|object| !object.is_dynamic())
-            .flat_map(|object| object.symbol_id_range.as_usize())
-            .map(SymbolId::from_usize)
-            .filter(|&symbol_id| symbol_db.is_undefined(symbol_id));
-
-        let unsupported_reexport = explicit_symbols
-            .chain(imported_symbols)
-            .filter_map(|symbol_id| {
-                let definition = symbol_db.definition(symbol_id);
-                if definition.is_undefined()
-                    || !symbol_db
-                        .file(symbol_db.file_id_for_symbol(definition))
-                        .is_dynamic()
-                {
-                    return None;
-                }
-
-                let name = symbol_db.symbol_name(definition).ok()?;
-                export_list
-                    .contains(&UnversionedSymbolName::prehashed(name.bytes()))
-                    .then_some(name.bytes())
-            })
-            .min();
-
-        if let Some(name) = unsupported_reexport {
-            // TODO: Implement re-exports
-            bail!(
-                "re-exporting symbols from dynamic libraries via -exported_symbols_list is not \
-                 yet supported (matched `{}`)",
-                String::from_utf8_lossy(name)
-            );
-        }
-
         Ok(())
     }
 
@@ -1414,9 +1369,16 @@ impl platform::Platform for MachO {
             .iter()
             .map(|symbol| crate::trie::Symbol {
                 name: symbol.name,
-                address: u64::MAX,
+                target: crate::trie::Target::Regular { address: u64::MAX },
                 flags: object::macho::ExportSymbolFlags(0),
             })
+            .chain(
+                prelude
+                    .format_specific
+                    .reexports
+                    .iter()
+                    .map(Reexport::trie_symbol),
+            )
             .collect_vec();
 
         let trie = crate::trie::Trie::new(&exports);
@@ -1663,6 +1625,9 @@ impl platform::Platform for MachO {
         'data: 'files,
         'data: 'states,
     {
+        let reexport_symbol_ids = reexported_symbols(symbol_db);
+        mark_reexport_providers_loaded(groups, symbol_db, &reexport_symbol_ids)?;
+
         let mut imported_libraries = Vec::new();
         let mut imported_symbols = Vec::new();
         let mut init_functions = Vec::new();
@@ -1670,7 +1635,7 @@ impl platform::Platform for MachO {
         let mut unwind_info_entries = Vec::new();
         let mut local_got_entries = Vec::new();
 
-        for group in groups {
+        for group in groups.iter_mut() {
             pending_fixups.append(&mut group.common.format_specific.pending_fixups);
             local_got_entries.append(&mut group.common.format_specific.local_got_entries);
             for file in &mut group.files {
@@ -1707,7 +1672,15 @@ impl platform::Platform for MachO {
         let imported_libraries = imported_libraries
             .into_iter()
             .unique_by(|&file_id| install_name(file_id, symbol_db))
-            .collect();
+            .collect_vec();
+
+        let reexports = resolve_reexports(symbol_db, &reexport_symbol_ids, &imported_libraries)?;
+
+        let layout::FileLayoutState::Prelude(prelude) = &mut groups[0].files[0] else {
+            unreachable!("first file must be the prelude");
+        };
+
+        prelude.format_specific.reexports = reexports;
 
         Ok(FinaliseSizesExt {
             imported_libraries,
@@ -3110,5 +3083,119 @@ impl SinglePartSectionId {
 
     const fn output_section_id(self) -> OutputSectionId {
         OutputSectionId::from_u32(self as u32)
+    }
+}
+
+/// A re-export can be the only use of a library, so mark libraries providing re-exported symbols as
+/// loaded.
+fn mark_reexport_providers_loaded(
+    groups: &mut [layout::GroupState<'_, MachO>],
+    symbol_db: &crate::symbol_db::SymbolDb<MachO>,
+    reexport_symbol_ids: &[SymbolId],
+) -> Result {
+    verbose_timing_phase!("Mark re-export providers");
+
+    for &symbol_id in reexport_symbol_ids {
+        let file_id = symbol_db.file_id_for_symbol(symbol_id);
+        let state = match &mut groups[file_id.group()].files[file_id.file()] {
+            layout::FileLayoutState::StubLibrary(state) => &mut state.format_specific,
+            layout::FileLayoutState::Dynamic(state) => &mut state.format_specific,
+            _ => bail!("Re-export provider is not a library"),
+        };
+        state.loaded = true;
+    }
+    Ok(())
+}
+
+/// Resolves re-exports using the final, deduplicated order of imported libraries.
+fn resolve_reexports(
+    symbol_db: &crate::symbol_db::SymbolDb<MachO>,
+    reexport_symbol_ids: &[SymbolId],
+    imported_libraries: &[FileId],
+) -> Result<Vec<Reexport>> {
+    verbose_timing_phase!("Resolve re-exports");
+
+    reexport_symbol_ids
+        .iter()
+        .map(|&id| {
+            let provider = install_name(symbol_db.file_id_for_symbol(id), symbol_db);
+
+            let ordinal = imported_libraries
+                .iter()
+                .position(|&file| install_name(file, symbol_db) == provider)
+                .context("Re-export provider missing from imported libraries")?
+                + 1;
+
+            Ok(Reexport {
+                name: symbol_db.symbol_name(id)?.bytes().to_vec(),
+                dylib_ordinal: ordinal as u64,
+            })
+        })
+        .collect()
+}
+
+/// Returns which symbols should be re-exported. Includes all exact-name exports. Symbols matched by
+/// wildcards (e.g. "foo*") are only included if they're referenced by inputs.
+fn reexported_symbols(symbol_db: &crate::symbol_db::SymbolDb<MachO>) -> Vec<SymbolId> {
+    let Some(export_list) = &symbol_db.export_list else {
+        return Vec::new();
+    };
+
+    timing_phase!("Compute re-exported symbols list");
+
+    let explicit_symbols = export_list
+        .required_symbols()
+        .filter_map(|name| symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name)));
+
+    let imported_symbols = symbol_db
+        .groups
+        .iter()
+        .filter_map(|group| match group {
+            crate::grouping::Group::Objects(objects) => Some(*objects),
+            _ => None,
+        })
+        .flatten()
+        .filter(|object| !object.is_dynamic())
+        .flat_map(|object| object.symbol_id_range.as_usize())
+        .map(SymbolId::from_usize)
+        .filter(|&symbol_id| symbol_db.is_undefined(symbol_id));
+
+    explicit_symbols
+        .chain(imported_symbols)
+        .filter_map(|symbol_id| {
+            let definition = symbol_db.definition(symbol_id);
+            if definition.is_undefined()
+                || !symbol_db
+                    .file(symbol_db.file_id_for_symbol(definition))
+                    .is_dynamic()
+            {
+                return None;
+            }
+
+            let name = symbol_db.symbol_name(definition).ok()?;
+            export_list
+                .contains(&UnversionedSymbolName::prehashed(name.bytes()))
+                .then_some(definition)
+        })
+        .unique()
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Reexport {
+    // TODO: Change this to &'data [u8].
+    pub(crate) name: Vec<u8>,
+    pub(crate) dylib_ordinal: u64,
+}
+
+impl Reexport {
+    pub(crate) fn trie_symbol(&self) -> crate::trie::Symbol<'_> {
+        crate::trie::Symbol {
+            name: &self.name,
+            flags: object::macho::ExportSymbolFlags(0),
+            target: crate::trie::Target::Reexport {
+                dylib_ordinal: self.dylib_ordinal,
+            },
+        }
     }
 }

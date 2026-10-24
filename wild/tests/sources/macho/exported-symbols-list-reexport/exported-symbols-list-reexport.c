@@ -7,9 +7,11 @@
 //#RunEnabled:false
 
 //#Config:exact:default
-//#ReferenceLinkers:
 //#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):exported-symbols-list-reexport.txt
-//#ExpectErrorWild:re-exporting symbols.*_wild_test_reexport_from_dylib
+//#ExpectDynSym:_wild_test_reexport_from_dylib reexport=1
+
+//#Config:exact-dead-strip:exact
+//#LinkArgs:-Wl,-dead_strip_dylibs
 
 //#Config:wildcard:default
 //#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):wildcard.txt
@@ -22,10 +24,20 @@
 //#NoDynSym:_wild_test_reexport_from_dylib
 
 //#Config:imported-wildcard:default
-//#ReferenceLinkers:
 //#CompArgs:-DIMPORT_SYMBOL
 //#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):wildcard.txt
-//#ExpectErrorWild:re-exporting symbols.*_wild_test_reexport_from_dylib
+//#ExpectDynSym:_wild_test_reexport_from_dylib reexport=1
+
+//#Config:stub-dead-strip:default
+//#LinkArgs:-Wl,-dead_strip_dylibs
+//#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):stub.txt
+//#ExpectDynSym:_malloc reexport=1
+
+//#Config:multiple-providers:default
+//#Shared:second.c
+//#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):multiple.txt
+//#ExpectDynSym:_wild_test_reexport_from_dylib reexport=1
+//#ExpectDynSym:_wild_test_reexport_second reexport=2
 
 // Wildcards ignore unused dependency symbols, but re-export matching imports.
 #ifdef IMPORT_SYMBOL

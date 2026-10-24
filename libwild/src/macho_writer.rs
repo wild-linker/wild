@@ -393,7 +393,7 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
     let text_segment = get_text_segment_layout(layout)?;
     let image_base = text_segment.sizes.mem_offset;
 
-    let symbols = layout
+    let mut symbols = layout
         .dynamic_symbol_definitions
         .iter()
         .map(|symbol| {
@@ -447,13 +447,22 @@ fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
 
             Ok(crate::trie::Symbol {
                 name: symbol.name,
-                address,
+                target: crate::trie::Target::Regular { address },
                 flags,
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
     let prelude = layout.prelude();
+
+    symbols.extend(
+        prelude
+            .format_specific
+            .reexports
+            .iter()
+            .map(super::macho::Reexport::trie_symbol),
+    );
+
     Ok(prelude.format_specific.exports_trie.encode(&symbols))
 }
 
