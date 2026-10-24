@@ -49,7 +49,7 @@
 //! supported for Wasm.
 //!
 //! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols. For Mach-O, checks the
-//! exports trie.
+//! exports trie. `reexport=N` checks that the export forwards the same name to dylib ordinal N.
 //!
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
 //! .dynsym. For Wasm modules, checks that the name is not present in the export section.
@@ -2181,6 +2181,8 @@ struct SymtabAssertions {
 
     #[serde(rename = "address")]
     absolute_address: Option<u64>,
+
+    reexport: Option<u64>,
 
     size: Option<u64>,
 
@@ -5541,12 +5543,15 @@ impl Assertions {
         let exports = verify_macho_exports(obj, bytes)?;
         verify_macho_export_assertions(&exports, &self.expected_dynsym_entries)?;
 
-        verify_symbol_assertions(
-            obj,
-            &self.expected_dynsym_entries,
-            obj.symbols(),
-            "Mach-O symbol table",
-        )?;
+        // Only explicitly expected re-exports may skip the nlist assertions.
+        let regular_exports = self
+            .expected_dynsym_entries
+            .iter()
+            .filter(|expected| expected.assertions.reexport.is_none())
+            .cloned()
+            .collect_vec();
+
+        verify_symbol_assertions(obj, &regular_exports, obj.symbols(), "Mach-O symbol table")?;
 
         for absent in self.no_dynsym.iter().chain(&self.no_sym) {
             ensure!(
@@ -6717,7 +6722,8 @@ fn verify_only_keep_debug(stripped_path: &Path, debug_path: &Path) -> Result {
 
 #[derive(Debug)]
 struct MachOExport {
-    address: u64,
+    address: Option<u64>,
+    reexport: Option<(u64, Vec<u8>)>,
     flags: object::macho::ExportSymbolFlags,
 }
 
@@ -6733,11 +6739,31 @@ fn verify_macho_export_assertions(
             )
         })?;
 
+        if let Some(ordinal) = expected.assertions.reexport {
+            let (actual_ordinal, import_name) = export
+                .reexport
+                .as_ref()
+                .with_context(|| format!("Expected re-export for {}", expected.name))?;
+
+            ensure!(
+                *actual_ordinal == ordinal,
+                "Incorrect re-export ordinal for {}: expected {ordinal}, got {actual_ordinal}",
+                expected.name
+            );
+
+            ensure!(
+                import_name.is_empty() || import_name == expected.name.as_bytes(),
+                "Unexpected re-export target for {}: {}",
+                expected.name,
+                String::from_utf8_lossy(import_name)
+            );
+        }
+
         if let Some(expected_address) = expected.assertions.absolute_address {
             ensure!(
-                export.address == expected_address,
+                export.address == Some(expected_address),
                 "Expected Mach-O export `{}` to have address {expected_address:#x}, but it had \
-                 {:#x}",
+                 {:?}",
                 expected.name,
                 export.address
             );
@@ -6834,26 +6860,39 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
         let export = export?;
         let name = export.name().to_vec();
 
-        let ExportData::Regular { address } = export.data() else {
-            bail!(
-                "Unsupported non-regular Mach-O export `{}`",
-                String::from_utf8_lossy(&name)
-            );
+        let flags = export.flags();
+        let (address, reexport) = match export.data() {
+            ExportData::Regular { address } => {
+                let address = if flags.kind() == object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE {
+                    *address
+                } else {
+                    image_base
+                        .checked_add(*address)
+                        .context("Mach-O export address overflow")?
+                };
+                (Some(address), None)
+            }
+            ExportData::Reexport {
+                dylib_ordinal,
+                import_name,
+            } => {
+                ensure!(*dylib_ordinal != 0, "Invalid re-export ordinal");
+                (None, Some((*dylib_ordinal, import_name.to_vec())))
+            }
+            ExportData::StubAndResolver { .. } => bail!("Unsupported Mach-O export"),
         };
 
-        let flags = export.flags();
-        let address = if flags.kind() == object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE {
-            *address
-        } else {
-            image_base
-                .checked_add(*address)
-                .context("Mach-O export address overflow")?
-        };
+        let old = exports.insert(
+            name.clone(),
+            MachOExport {
+                address,
+                reexport,
+                flags,
+            },
+        );
 
         ensure!(
-            exports
-                .insert(name.clone(), MachOExport { address, flags })
-                .is_none(),
+            old.is_none(),
             "Duplicate symbol in Mach-O exports trie: {}",
             String::from_utf8_lossy(&name)
         );
