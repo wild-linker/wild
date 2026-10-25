@@ -5,3 +5,5 @@
 //#RunEnabled:false
 //#DiffIgnore:file-header.entry
 //#DiffIgnore:section.text.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie

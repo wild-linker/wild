@@ -5,6 +5,8 @@
 //#ReferenceLinkers:bfd,lld
 //#ExpectSym:undefined_tls_address
 //#DiffIgnore:rel.R_AARCH64_TLSLE_ADD_TPREL_HI12.R_AARCH64_TLSLE_ADD_TPREL_HI12
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

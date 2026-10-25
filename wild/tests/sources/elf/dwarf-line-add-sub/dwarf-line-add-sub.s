@@ -5,6 +5,7 @@ problems that test fails to detect.
 
 //#CompArgs:-g
 //#ExpectError:the-answer:42
+//#LinkArgs:-no-pie
 */
 
 .file 1 "the-answer"

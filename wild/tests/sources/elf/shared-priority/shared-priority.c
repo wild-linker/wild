@@ -17,10 +17,12 @@
 //#Config:shared-first-archive-not-loaded:default
 //#Shared:shared-priority-1.c
 //#Archive:shared-priority-2.c
+//#LinkArgs:-no-pie
 
 //#Config:archive-first:default
 //#Archive:shared-priority-1.c
 //#Shared:shared-priority-2.c
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

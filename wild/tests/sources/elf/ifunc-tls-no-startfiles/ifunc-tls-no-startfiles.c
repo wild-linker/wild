@@ -20,9 +20,11 @@
 //#Arch:riscv64
 // LLD seems to do something wrong here.
 //#ReferenceLinkers:bfd
+//#LinkArgs:-pie
 
 //#Config:other:default
 //#SkipArch:ppc64le,riscv64
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

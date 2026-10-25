@@ -37,3 +37,5 @@ void _start(void) {
 //#ExpectSym: data section=".bss"
 //#ExpectSym: q section=".bss"
 //#ExpectSym: z section=".bss"
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie

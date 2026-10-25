@@ -7,6 +7,8 @@
 //#ExpectSym:_end
 //#ExpectSym:__init_array_start
 //#ExpectSym:__init_array_end
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#AbstractConfig:base
 //#ReferenceLinkers:

@@ -10,6 +10,7 @@
 //#ReferenceLinkers:bfd
 //#DiffEnabled:false
 //#RequiresGlibc:true
+//#CompSoArgs:-fPIE
 
 //#Config:read-only:default
 //#CompArgs:-DREAD_ONLY_CALLBACK

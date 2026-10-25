@@ -11,6 +11,9 @@
 // TODO: Wild probably should set dynamic linker here
 //#ReferenceLinkers:bfd,lld
 //#RunEnabled:false
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // Do not export symbols for static executables: #836
 //#Config:static-exe
@@ -18,6 +21,7 @@
 //#LinkArgs:-z now --export-dynamic
 //#RunEnabled:false
 //#DoesNotContain:.dynamic
+//#CompArgs:-fPIE
 
 //#Config:select-symbols
 //#LinkArgs:-z now --export-dynamic-symbol bar --export-dynamic-symbol=baz
@@ -30,6 +34,9 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#ReferenceLinkers:bfd,lld
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:select-symbols-list
 //#LinkArgs:-z now --export-dynamic-symbol-list ./export-dynamic.def
@@ -42,6 +49,9 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#ReferenceLinkers:bfd,lld
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:dynamic-symbols-list
 //#LinkArgs:-z now -shared --dynamic-list ./export-dynamic.def
@@ -55,6 +65,8 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:file-header.entry
 //#ReferenceLinkers:bfd,lld
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 void foo(void) {};
 void bar(void) {};

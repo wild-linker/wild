@@ -7,6 +7,7 @@
 //#DiffEnabled:false
 //#ExpectSectionBytes:foo=0x1122
 //#ExpectSectionBytes:.bar=0x3344
+//#CompArgs:-fPIE
 
 const unsigned char foo_a __attribute__((section("foo"), used)) = 0x11;
 const unsigned char bar_a __attribute__((section(".bar"), used)) = 0x33;

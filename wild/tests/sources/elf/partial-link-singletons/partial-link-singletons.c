@@ -2,6 +2,8 @@
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 //#Relocatable:partial-link-singletons-1.c,partial-link-singletons-2.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

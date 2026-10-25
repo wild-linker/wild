@@ -8,6 +8,7 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#ExpectDynSym:included_fn
 //#NoDynSym:excluded_fn
+//#CompArgs:-fPIE
 
 // --whole-archive should not cause us to treat an archive like it's not an archive for the purposes
 // of --exclude-libs.

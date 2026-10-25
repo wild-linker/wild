@@ -11,11 +11,17 @@
 //#Config:enabled:default
 //#LinkArgs:-z relro
 //#ExpectProgramHeader:GNU_RELRO flags=R,sections=[*]
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:disabled:default
 //#LinkArgs:-z norelro
 //#NoProgramHeader:GNU_RELRO
 //#DoesNotContain:relro_padding
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -11,9 +11,13 @@
 
 //#Config:archive:default
 //#Archive:custom_section0.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:object:default
 //#Object:custom_section0.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

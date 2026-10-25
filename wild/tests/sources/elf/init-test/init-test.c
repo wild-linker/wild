@@ -1,6 +1,8 @@
 //#Object:init.c
 //#Object:runtime.c
 //#CompArgs:-static -pie
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/init.h"
 

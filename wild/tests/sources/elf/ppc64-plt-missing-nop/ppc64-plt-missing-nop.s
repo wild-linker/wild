@@ -6,6 +6,8 @@
 //#ReferenceLinkers:bfd,lld
 //#LinkArgs:-z now
 //#ExpectError:TOC|toc
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .abiversion 2
 .text

@@ -5,6 +5,8 @@
 //#LinkArgs:-z noexecstack
 //#ReferenceLinkers:bfd,lld
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .globl _start
 _start:

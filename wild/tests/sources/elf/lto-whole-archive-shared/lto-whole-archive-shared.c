@@ -8,5 +8,6 @@
 //#RunEnabled:false
 //#ExpectDynSym:foo
 //#ExpectDynSym:bar
+//#CompArgs:-fPIE
 
 int foo(void) { return 42; }

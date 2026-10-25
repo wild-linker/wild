@@ -5,53 +5,73 @@
 //#LinkArgs:--strip-all
 //#ReferenceLinkers:bfd,lld
 //#DiffIgnore:file-header.entry
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:single-threaded:default
 //#Object:runtime.c
 //#WildExtraLinkArgs:--threads=1
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:dev_null:default
 //#Object:runtime.c
 //#LinkArgs:-o /dev/null
 //#DiffEnabled:false
 //#RunEnabled:false
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:gc-sections:default
 //#CompArgs:-g -ffunction-sections
 //#LinkArgs:--gc-sections
 //#Object:runtime.c
 //#NoSym:this_function_is_not_used
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:no-args
 //#AutoAddObjects:false
 //#ExpectError:no input files
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:no-mmap-output
 //#Object:runtime.c
 //#ReferenceLinkers:lld
 //#LinkArgs:--no-mmap-output-file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:fallocate-output
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--fallocate-output-file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:madvise-huge-pages
 //#RequiresTransparentHugePages:true
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--madvise-huge-pages --mmap-output-file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:madvise-huge-pages-no-mmap
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--madvise-huge-pages --no-mmap-output-file
 //#ExpectErrorWild:--madvise-huge-pages requires mmapped output file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:disable-output-allocation-options
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--no-fallocate-output-file --no-madvise-huge-pages
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // The later --strip-all flag should override --strip-debug.
 //#Config:strip-debug-strip-all
@@ -59,12 +79,16 @@
 //#LinkArgs:--strip-debug --strip-all
 //#DiffIgnore:file-header.entry
 //#NoSym:_start
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // The later --strip-debug flag should override --strip-all.
 //#Config:strip-all-strip-debug
 //#Object:runtime.c
 //#LinkArgs:--strip-all --strip-debug
 //#ExpectSym:_start
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:retain-symbols-file
 //#Object:runtime.c
@@ -72,6 +96,8 @@
 //#ExpectSym:_start
 //#ExpectSym:exit_syscall
 //#NoSym:runtime_init
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:sym-info
 //#ReferenceLinkers:
@@ -82,6 +108,8 @@
 //#ExpectMessage:[0-9]+: Global Func: NON_INTERPOSABLE | DIRECT
 //#ExpectMessage:this_function_is_not_used
 //#ExpectMessage:#[0-9]+ in File #256 \(1/0\) .* \(LOADED\)
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:write-gc-stats:default
 //#ReferenceLinkers:
@@ -90,11 +118,15 @@
 //#LinkArgs:--gc-sections --write-gc-stats=$OUT_DIR/gc-stats.txt
 //#NoSym:this_function_is_not_used
 //#AssertOutputFileMatches:gc-stats.txt:Discarded .* of executable code
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:unsupported-z-flag
 //#Object:runtime.c
 //#LinkArgs:-z foobar
 //#ExpectWarning:warning.*foobar
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

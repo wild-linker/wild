@@ -9,11 +9,13 @@
 //#ReferenceLinkers:bfd,lld
 //#LinkArgs:--image-base=0x10000000 --undefined=__executable_start
 //#ExpectSym:__executable_start address=0x10000000
+//#CompArgs:-fPIE
 
 //#Config:unaligned:default
 //#ReferenceLinkers:
 //#LinkArgs:--image-base=0x10000001
 //#ExpectError:--image-base: address isn't multiple of page size: 0x10000001
+//#CompArgs:-fPIE
 
 #include "../common/runtime.h"
 void _start(void) { exit_syscall(42); }

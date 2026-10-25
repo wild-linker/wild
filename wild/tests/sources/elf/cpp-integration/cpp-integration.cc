@@ -37,6 +37,7 @@
 //#DiffIgnore:rel.match_failed.R_X86_64_PLT32
 //#DiffIgnore:literal-byte-mismatch
 //#Arch: x86_64
+//#CompArgs:-fPIE
 
 //#Config:clang-pie:default
 //#CompArgs:-fpie
@@ -52,6 +53,8 @@
 //#ReferenceLinkers:bfd,lld
 // TODO: Ubuntu: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-model-large:default
 //#Compiler:clang
@@ -60,6 +63,8 @@
 //#LinkArgs:-Wl,-z,now
 //#ReferenceLinkers:bfd,lld
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-crel:default
 //#Compiler:clang
@@ -68,6 +73,8 @@
 //#RequiresCompilerFlags:-Wa,--crel,--allow-experimental-crel
 //#DiffEnabled:false
 //#ReferenceLinkers:
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #include <iostream>
 #include <string>

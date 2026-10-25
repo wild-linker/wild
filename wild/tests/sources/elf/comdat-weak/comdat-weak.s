@@ -2,6 +2,7 @@
 //#Object:other.s
 //#ReferenceLinkers:
 //#ExpectErrorWild:reference to discarded COMDAT section `.text.missing`
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

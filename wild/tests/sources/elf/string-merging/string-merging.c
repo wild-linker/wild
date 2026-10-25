@@ -9,6 +9,8 @@
 
 //#Config:merge_strings:default
 //#LinkArgs:-z noexecstack
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:export_merged_str_dyn:default
 //#Mode:dynamic
@@ -82,3 +84,6 @@ void _start(void) {
 }
 
 //#Contains:No reference to this string
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie

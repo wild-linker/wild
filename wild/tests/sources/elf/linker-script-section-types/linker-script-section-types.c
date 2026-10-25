@@ -19,6 +19,7 @@
 //#ExpectSection:.section.readonly.a flags=A
 //#ExpectSection:.section.noload.a flags=A,type=0x8
 //#ExpectSection:.section.dsect.a flags=''
+//#CompArgs:-fPIE
 
 __attribute__((section(".section.noload.wa"))) char noload_wa = 0;
 __attribute__((section(".section.readonly.wa"))) char readonly_wa = 0;

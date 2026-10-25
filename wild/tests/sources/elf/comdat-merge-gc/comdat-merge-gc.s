@@ -5,6 +5,7 @@
 //#Config:gc:base
 //#LinkArgs:--gc-sections
 //#NoSym:dead
+//#LinkArgs:-no-pie
 
 //#Config:roots:gc
 # BFD retains companions when the group's merged strings are live. For now at least, we match LLD's
@@ -23,6 +24,7 @@
 //#Config:no-gc:base
 //#LinkArgs:--no-gc-sections
 //#ExpectError:missing
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

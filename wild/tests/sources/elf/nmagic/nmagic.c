@@ -12,17 +12,22 @@
 
 //#Config:default:default-base
 //#LinkArgs:--nmagic -z relro
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:warn-max-page-size:default-base
 //#SkipArch: ppc64le
 //#LinkArgs:--nmagic -z max-page-size=65536
 //#ExpectWarningWild:-z max-page-size is incompatible with --nmagic
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:no-dynamic-linking:default
 // Re-enable ppc64le here: this config links fine, but inherits the SkipArch from `default`.
 //#Arch: x86_64,aarch64,riscv64,loongarch64,ppc64le
 //#Shared:force-dynamic-linking.c
 //#ExpectError:(?i-u)Attempted static link of dynamic object
+//#CompSoArgs:-fPIE
 
 #include "../common/runtime.h"
 

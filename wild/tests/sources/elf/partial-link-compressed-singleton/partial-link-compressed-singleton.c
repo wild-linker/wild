@@ -3,6 +3,8 @@
 //#RequiresCompilerFlags:-gz=zlib
 //#Object:runtime.c
 //#Relocatable:partial-link-compressed-singleton-input.c:-g -gz=zlib
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

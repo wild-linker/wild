@@ -7,6 +7,7 @@
 //#LinkArgs:--no-gc-sections
 //#ExpectSectionBytes:test=0xb819000000b81b000000b819000000b81b000000
 //#ExpectSectionBytes:.data=0x19000000000000001b0000000000000019000000000000001b00000000000000
+//#LinkArgs:-no-pie
 
 //#Config:shared:default
 //#LinkArgs:--no-gc-sections -shared

@@ -1,6 +1,8 @@
 //#Object:runtime.c
 //#Object:gnu-unique-1.cc
 //#Object:gnu-unique-2.cc
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

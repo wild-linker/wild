@@ -6,6 +6,8 @@
 //#ExpectSym:main
 
 //#Config:gcc:default
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-static:default
 //#SkipArch: ppc64le
@@ -14,6 +16,7 @@
 // TODO: RISC-V BFD linker keeps the symbol in .dynsym section
 //#DiffIgnore:section.rela.dyn
 //#DiffIgnore:rel.extra-got-plt-got
+//#CompArgs:-fPIE
 
 //#Config:gcc-static-pie-no-relax:default
 //#CompArgs:-fPIE
@@ -31,6 +34,7 @@
 //#DiffIgnore:rel.extra-got-plt-got
 // LoongArch GNU ld puts static IFUNC relocations in .rela.dyn instead of .rela.plt.
 //#DiffIgnore:section.rela.dyn
+//#CompArgs:-fPIE
 
 //#Config:clang-static-pie-no-relax:default
 //#Compiler:clang
@@ -43,9 +47,12 @@
 
 //#Config:clang:default
 //#Compiler: clang
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-indirect-external:default
 //#CompArgs:-fPIE -mno-direct-extern-access
 //#RequiresCompilerFlags:-mno-direct-extern-access
+//#LinkArgs:-pie
 
 int main() { return 42; }

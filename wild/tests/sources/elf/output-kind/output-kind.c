@@ -13,11 +13,13 @@
 //#Object:runtime.c
 //#Mode:dynamic
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
 
 // `-no-pie` should override `-shared`. LLD rejects this with an error.
 //#Config:no-pie-over-shared
 //#LinkArgs:-shared -z now -no-pie
 //#Object:runtime.c
+//#CompArgs:-fPIE
 
 // Loaded DSO turns static non-relocatable executable into dynamic one if
 // dynamic linker is set.
@@ -27,6 +29,9 @@
 //#Shared:empty.c
 //#Mode:dynamic
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // With GNU ld non-loaded DSO has no effect on output kind, but LLD's approach
 // simplifies code a lot.
@@ -36,6 +41,9 @@
 //#Shared:empty.c
 //#Mode:unspecified
 //#ReferenceLinkers:lld
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // Setting dynamic linker doesn't change output kind for non-PIE. LLD sets requested interpreter,
 // but GNU ld doesn't. We follow GNU ld this time.
@@ -43,6 +51,8 @@
 //#LinkArgs:-z now --dynamic-linker=/lib64/bad.so
 //#Object:runtime.c
 //#Mode:unspecified
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // GNU ld creates static PIE only when both `--no-dynamic-linker` and `-pie` are present. There are
 // three approaches we can take for this case: emit PIE with incorrect interpreter like GNU ld does
@@ -53,6 +63,7 @@
 //#Object:runtime.c
 //#ReferenceLinkers:lld
 //#Mode:unspecified
+//#CompArgs:-fPIE
 
 #include "../common/runtime.h"
 

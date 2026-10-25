@@ -9,6 +9,7 @@
 //#CompArgs:-fpie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now
+//#LinkArgs:-pie
 
 int exit_code = 2;
 

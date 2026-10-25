@@ -13,6 +13,8 @@
 //#Object:linker-plugin-lto-2.c
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib -znow
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang:default
 //#Compiler:clang
@@ -24,6 +26,8 @@
 //#DiffIgnore:section.eh_frame.type
 // RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
 //#DiffIgnore:section.text.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-thin:default
 //#Compiler:clang
@@ -34,6 +38,8 @@
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section.eh_frame.type
 //#DiffIgnore:section.text.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-link-gcc:error
 //#Compiler:clang
@@ -44,6 +50,8 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#ExpectError:(contains LLVM-IR, but the linker plugin|Wild was compiled without linker-plugin support)
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-link-clang:error
 //#Compiler:gcc
@@ -55,6 +63,8 @@
 //#Object:linker-plugin-lto-2.c
 //#ExpectError:(contains GCC-IR, but the linker plugin|Wild was compiled without linker-plugin support)
 //#Cross:false
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 // LTO, but no linker plugin was supplied by the compiler. We could try to find the plugin
 // ourselves, but we don't currently support that.
@@ -67,6 +77,8 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#ExpectError:(contains LLVM-IR, but linker plugin was not supplied|Wild was compiled without linker-plugin support)
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 // The only LTO input is in an archive and we end up not using it.
 //#Config:clang-empty-lto:default
@@ -78,6 +90,8 @@
 //#LinkerDriver:clang
 //#LinkArgs:-flto -nostdlib
 //#DiffEnabled:false
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 // The only LTO input is in an archive and we end up not using it.
 //#Config:gcc-empty-lto:default
@@ -87,6 +101,8 @@
 //#Object:linker-plugin-lto-2.c
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib -znow
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-driver-with-unclaimed-llvm-ir-archive:default
 //#Compiler:clang
@@ -96,6 +112,8 @@
 //#ReferenceLinkers:
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 // Linker message with format string.
 //#Config:clang-format-string:error
@@ -105,12 +123,16 @@
 //#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
 //#Archive:empty.c:-flto
 //#ExpectError:Error from linker plugin: Invalid parallelism level: foo
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:plugin-not-found:error
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkArgs:--plugin=/does/not/exist
 //#ExpectError:No such file or directory
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:gcc-fat-objects:default
 //#Compiler:gcc
@@ -121,6 +143,8 @@
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section-diff-failed..text
 //#DoesNotContain: foo
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-fat-objects:default
 //#Compiler:clang
@@ -132,6 +156,8 @@
 //#DiffIgnore:section-diff-failed..text
 //#DiffIgnore:section.text.alignment
 //#DoesNotContain: foo
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

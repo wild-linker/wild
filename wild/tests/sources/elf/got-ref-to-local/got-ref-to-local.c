@@ -5,6 +5,8 @@
 //#LinkArgs:-z noexecstack
 //#Object:runtime.c
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

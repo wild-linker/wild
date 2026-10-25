@@ -6,18 +6,24 @@
 //#Config:64k:default
 //#LinkArgs:-z max-page-size=65536 -z now
 //#ExpectLoadAlignment:0x10000
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:1m:default
 //#LinkArgs:-z max-page-size=0x100000 -z now
 //#ExpectLoadAlignment:0x100000
 // It seems that large page sizes are not permitted in RISC-V QEMU
 //#SkipArch: riscv64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:2m:default
 //#LinkArgs:-z max-page-size=0x200000 -z now
 //#ExpectLoadAlignment:0x200000
 // It seems that large page sizes are not permitted in RISC-V QEMU
 //#SkipArch: riscv64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

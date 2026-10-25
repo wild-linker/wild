@@ -15,6 +15,9 @@
 //#ExpectSym:foo_ptr section=".data"
 //#ExpectSym:_DYNAMIC binding=local
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:origin:default
 //#LinkArgs:-z origin

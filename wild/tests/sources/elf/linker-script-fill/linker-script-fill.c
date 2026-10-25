@@ -16,14 +16,17 @@
 //#ExpectSectionBytes:.fill5=0x110000000900000022 0..9
 //#ExpectSectionBytes:.fill6=0x90909090909090901190909090909090 0..16
 //#ExpectSectionBytes:.fill6=0x90909090909090902290909090909090 16..32
+//#CompArgs:-fPIE
 
 //#Config:overflow-u32:default
 //#LinkerScript:linker-script-fill-overflow.ld
 //#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0x9090909090
+//#CompArgs:-fPIE
 
 //#Config:negative-fill:default
 //#LinkerScript:linker-script-fill-neg.ld
 //#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0xffffffffffffffff
+//#CompArgs:-fPIE
 
 __attribute__((section(".fill1.first"), aligned(8))) char fill1_first = 0x11;
 __attribute__((section(".fill1.second"), aligned(8))) char fill1_second = 0x22;

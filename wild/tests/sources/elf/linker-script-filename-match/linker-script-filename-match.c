@@ -7,6 +7,8 @@
 //#ExpectSym:startup_code section=".text.startup"
 //#ExpectSym:app_code section=".text.app"
 //#ExpectSym:begin_here section=".text"
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

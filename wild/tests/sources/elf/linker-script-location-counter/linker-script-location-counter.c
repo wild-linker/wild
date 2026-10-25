@@ -5,18 +5,24 @@
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:phdrs
 //#LinkerScript:linker-script-location-counter-phdrs.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:single_location_counter
 //#LinkerScript:linker-script-single-location-counter.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections
@@ -26,11 +32,15 @@
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:underflow
 //#Object:runtime.c
 //#LinkerScript:linker-script-location-counter-underflow.ld
 //#ExpectError:(?i-u)cannot move location counter backwards
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:lc_after_section
 //#LinkerScript:linker-script-lc-after-section.ld
@@ -39,6 +49,8 @@
 //#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbols
 //#LinkerScript:linker-script-location-counter-symbols.ld
@@ -48,12 +60,16 @@
 //#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:earlier_section_symbol
 //#Arch:x86_64
 //#LinkerScript:linker-script-earlier-section-symbol.ld
 //#Object:runtime.c
 //#RunEnabled:false
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:object_symbol_offset
 //#LinkerScript:linker-script-object-symbol-offset.ld
@@ -64,6 +80,8 @@
 //#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:mixed_symbol_kinds
 //#Arch:x86_64
@@ -73,6 +91,8 @@
 //#RunEnabled:false
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbol_with_unrelated_sort
 //#ReferenceLinkers:bfd,lld
@@ -83,6 +103,8 @@
 //#SkipArch:riscv64
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbol_only_reference
 //#Arch:x86_64
@@ -93,6 +115,8 @@
 //#RunEnabled:false
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:cyclic_symbol
 //#LinkerScript:linker-script-location-counter-cyclic-symbol.ld
@@ -102,6 +126,8 @@
 //#SkipArch:riscv64
 // The binary created is not valid, so we can't run it.
 //#RunEnabled:false
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stddef.h>
 

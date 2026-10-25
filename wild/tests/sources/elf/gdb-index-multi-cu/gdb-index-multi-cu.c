@@ -10,6 +10,8 @@
 //#ExpectSection:.gdb_index
 // 4 CU indices expected: this file, runtime.c, multi-cu-a.c, and multi-cu-b.c.
 //#ExpectGdbIndexDistinctAddrCus:4
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

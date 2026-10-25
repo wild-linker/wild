@@ -5,6 +5,7 @@
 //#ExpectDynSym:foo
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
+//#CompArgs:-fPIE
 
 extern int foo(void);
 

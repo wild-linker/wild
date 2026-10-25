@@ -7,6 +7,7 @@
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
+//#LinkArgs:-no-pie
 
 //#Config:pic:no-pie
 // Wild currently uses an extra PLT indirection.

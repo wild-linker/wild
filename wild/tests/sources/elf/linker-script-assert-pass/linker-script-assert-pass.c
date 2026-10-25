@@ -27,6 +27,8 @@
 //#ExpectSym:sym_log_not is_abs=true,address=0x0
 //#ExpectSym:sym_bit_and is_abs=true,address=0x1000
 //#ExpectSym:sym_neg is_abs=true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

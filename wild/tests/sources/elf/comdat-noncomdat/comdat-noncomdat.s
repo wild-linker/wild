@@ -1,6 +1,7 @@
 //#Arch:x86_64
 //#Object:other.s
 //#ExpectSym:companion
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

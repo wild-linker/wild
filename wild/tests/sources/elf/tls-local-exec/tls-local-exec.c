@@ -8,6 +8,7 @@
 //#CompArgs:-fpie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now
+//#LinkArgs:-pie
 
 __thread long tvar = 1;
 __thread int tvar2 = 2;

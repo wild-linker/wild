@@ -3,6 +3,8 @@
 //#ExpectError:.*multiple-undefined-symbols.c.o.*
 //#ExpectError:(?i-u)Undefined symbol:? undefined_multi_b
 //#ExpectError:(?i-u)Undefined symbol:? undefined_multi_c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 int undefined_multi_a();
 int undefined_multi_b();

@@ -7,6 +7,8 @@
 
 //#Config:exec:default
 //#LinkArgs:-z now
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:shared:default
 //#LinkArgs:-shared -z now

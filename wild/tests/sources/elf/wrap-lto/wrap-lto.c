@@ -8,6 +8,8 @@
 
 //#Config:gcc:default
 //#LinkerDriver:gcc
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang:default
 //#Compiler:clang
@@ -16,6 +18,8 @@
 //#SkipArch:ppc64le
 // RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
 //#DiffIgnore:section.text.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-ppc64le:clang
 //#Arch:ppc64le

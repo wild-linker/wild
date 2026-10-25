@@ -9,6 +9,7 @@
 //#Archive:as(first/libfoo.a),noadd:from-archive.c
 //#Shared:as(second/libfoo.so),template(-L$OUT_DIR/first -L$OUT_DIR/second -lfoo):from-shared.c
 //#ExpectSym:selected_from_archive
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

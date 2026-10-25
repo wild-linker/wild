@@ -4,12 +4,14 @@
 
 //#Config:nop:default
 //#ExpectSectionBytes:.text=0xcccccccccccccccc 8..16
+//#LinkArgs:-no-pie
 
 //#Config:with-linkerscript:default
 //#LinkerScript:exec-section-padding.ld
 //#ExpectSectionBytes:.text=0x9090909090909090 8..16
 //#ExpectSectionBytes:.text=0x90909090909090909090909090909090 16..32
 //#RunEnabled:false
+//#LinkArgs:-no-pie
 
 .section .text.1
 .balign 16

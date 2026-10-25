@@ -9,6 +9,8 @@
 
 //#Config:merge_strings:default
 //#LinkArgs:-z noexecstack
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:export_merged_non_str_dyn:default
 //#Mode:dynamic
@@ -20,6 +22,9 @@
 //#DiffIgnore:dynsym.s1w.section
 //#DiffIgnore:segment.PT_DYNAMIC.*
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

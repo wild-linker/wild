@@ -9,6 +9,7 @@
 //#RunEnabled:false
 //#LinkArgs:--no-gc-sections
 //#ExpectInstructions:.text 0 movz x1, #0; movk x2, #0; movz x3, #0, lsl #16; movk x4, #0, lsl #16; movz x5, #0, lsl #32; movk x6, #0, lsl #32; movz x7, #0, lsl #48
+//#LinkArgs:-no-pie
 
 .weak target
 

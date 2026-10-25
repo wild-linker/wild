@@ -9,6 +9,9 @@
 //#DiffIgnore:section.got
 //#DiffIgnore:.dynamic.*
 //#ExpectProgramHeader:TLS file-size=0,mem-size=4
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

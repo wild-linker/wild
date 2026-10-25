@@ -5,6 +5,8 @@
 //#NoSym:__executable_start
 //#ReferenceLinkers:bfd,lld
 //#TestUpdateInPlace:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

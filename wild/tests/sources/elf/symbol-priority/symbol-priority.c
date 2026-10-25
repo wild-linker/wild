@@ -9,6 +9,8 @@
 //#Object:symbol-priority-s3.c
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

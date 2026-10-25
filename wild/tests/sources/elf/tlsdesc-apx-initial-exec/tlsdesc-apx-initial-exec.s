@@ -9,6 +9,7 @@
 // Check mov disp32(%rip), %r16 without the linker-dependent displacement.
 //#ExpectSectionBytes:.text=0xd5488b05 0..4
 //#ExpectInstructions:.text 8 mov %r16, %rax; xchg %ax, %ax; ret
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

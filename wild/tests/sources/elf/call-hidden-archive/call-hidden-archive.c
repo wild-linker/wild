@@ -9,6 +9,9 @@
 //#Archive:call-hidden-archive-archive.c
 //#SoSingleLinker:ld
 //#DiffIgnore:.dynamic.DT_RELA*
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

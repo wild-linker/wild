@@ -5,9 +5,11 @@
 //#DiffEnabled:false
 
 //#Config:without-fix:default
+//#LinkArgs:-no-pie
 
 //#Config:with-fix:default
 //#LinkArgs:--fix-cortex-a53-843419
+//#LinkArgs:-no-pie
 
 .text
 .global _start

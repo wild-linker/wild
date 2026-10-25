@@ -7,14 +7,17 @@
 
 //#Config:mov32:default
 //#CompArgs:-Wa,--defsym,FORM=0
+//#LinkArgs:-no-pie
 
 //#Config:mov64:default
 //#CompArgs:-Wa,--defsym,FORM=1
+//#LinkArgs:-no-pie
 
 //#Config:apx:default
 //#CompArgs:-Wa,--defsym,FORM=2
 //#RunEnabled:false
 //#ExpectSectionBytes:.text=0xd5488b05 0..4
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

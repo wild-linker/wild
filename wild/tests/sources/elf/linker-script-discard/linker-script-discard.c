@@ -11,5 +11,6 @@
 //#DoesNotContain:/DISCARD/
 //#DoesNotContain:.text
 //#NoSym:foo
+//#CompArgs:-fPIE
 
 int foo() { return 0; }

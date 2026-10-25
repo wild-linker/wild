@@ -12,28 +12,43 @@
 //#LinkArgs:--unresolved-symbols=ignore-all -z now
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:report-all:default
 //#LinkArgs:--unresolved-symbols=report-all
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:ignore-all:default
 //#LinkArgs:--unresolved-symbols=ignore-all
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:ignore-in-object-files:default
 //#LinkArgs:--unresolved-symbols=ignore-in-object-files
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:ignore-in-shared-libs:default
 //#LinkArgs:--unresolved-symbols=ignore-in-shared-libs
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:warn-unresolved-symbols:default
 //#LinkArgs:--warn-unresolved-symbols
 //#ExpectWarningWild:Undefined symbol foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:error-unresolved-symbols:default
 //#LinkArgs:--error-unresolved-symbols
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -3,6 +3,7 @@
 //#Archive:used.s
 //#NoSym:unused
 //#NoSym:losing_only
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

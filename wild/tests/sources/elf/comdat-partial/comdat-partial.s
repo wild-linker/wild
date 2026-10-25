@@ -1,6 +1,7 @@
 //#Arch:x86_64
 //#Relocatable:group.s,group.s
 //#Object:group.s
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

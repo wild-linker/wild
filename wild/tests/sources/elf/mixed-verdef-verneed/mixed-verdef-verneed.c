@@ -7,6 +7,9 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -5,6 +5,8 @@
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
 //#ExpectMinAllocAddress:0x600000
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections
@@ -15,6 +17,8 @@
 //#Object:runtime.c
 // .text is the first section in ld, so this test wouldn't work with ld.
 //#ReferenceLinkers:
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stddef.h>
 

@@ -3,6 +3,8 @@
 //#LinkArgs:-z noexecstack
 //#Object:runtime.c
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .section        .data.foo
 .p2align        4, 0x0

@@ -3,6 +3,8 @@
 //#DiffIgnore: segment.LOAD.RW.alignment
 //#ExpectSym:_start section=".text"
 //#TestUpdateInPlace:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stdint.h>
 

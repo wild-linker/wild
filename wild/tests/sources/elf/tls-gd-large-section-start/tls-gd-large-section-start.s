@@ -3,6 +3,7 @@
 // LLD 21 misidentifies the large-model sequence at section offset 0.
 //#ReferenceLinkers:bfd
 //#RunEnabled:false
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

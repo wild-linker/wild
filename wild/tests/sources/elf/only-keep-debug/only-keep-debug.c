@@ -11,6 +11,7 @@
 //#ExpectSym:_start
 //#ExpectSym:exit_syscall
 //#ExpectSection:.symtab
+//#LinkArgs:-no-pie
 
 //#Config:retain-symbols-only-keep-debug:only-keep-debug
 //#LinkArgs:--retain-symbols-file ./retain.txt --only-keep-debug
@@ -22,6 +23,7 @@
 //#DiffEnabled:false
 //#TestOnlyKeepDebug:true
 //#ExpectSym:_start
+//#LinkArgs:-no-pie
 
 //#Config:only-keep-debug-build-id:default
 //#LinkArgs:--only-keep-debug --build-id=0x123456789abcdef0
@@ -29,6 +31,7 @@
 //#DiffEnabled:false
 //#TestOnlyKeepDebug:true
 //#ExpectSym:_start
+//#LinkArgs:-no-pie
 
 //#Config:only-keep-debug-dynamic:default
 //#Mode:dynamic
@@ -39,6 +42,8 @@
 //#DiffEnabled:false
 //#TestOnlyKeepDebug:true
 //#ExpectSym:_start
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:only-keep-debug-shared:default
 //#Mode:dynamic

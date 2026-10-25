@@ -12,6 +12,7 @@
 //#ExpectSection:.text type=8
 //#ExpectSection:.tdata type=8
 //#ExpectSection:.data type=8
+//#LinkArgs:-no-pie
 */
 
 .section .note.first,"a",@note

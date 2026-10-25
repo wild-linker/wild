@@ -9,6 +9,7 @@
 //#Config:local-exec:default
 //#Object:tlsdesc-rex2-def.s
 //#ExpectInstructions:.text 0 {rex2} mov $-8, %rax; xchg %ax, %ax; {rex2} mov $-8, %r8; mov %r8, %rax; xchg %ax, %ax; mov $-8, %r16; mov %r16, %rax; xchg %ax, %ax; mov $-8, %r24; mov %r24, %rax; xchg %ax, %ax; ret
+//#LinkArgs:-no-pie
 
 //#Config:initial-exec:default
 //#Mode:dynamic
@@ -23,6 +24,7 @@
 //#ExpectInstructions:.text 18 mov %r8, %rax; xchg %ax, %ax
 //#ExpectInstructions:.text 31 mov %r16, %rax; xchg %ax, %ax
 //#ExpectInstructions:.text 45 mov %r24, %rax; xchg %ax, %ax; ret
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

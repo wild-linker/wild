@@ -18,6 +18,8 @@
 // to prove SEGMENT_START returns the default, not the actual segment address.
 //#Config:no-overrides:default
 //#Variant:0
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // Config 2: -Ttext/-Tdata/-Tbss overrides. Both Wild and GNU ld honor these
 // alongside a linker script. lld ignores -T* when a linker script is present,
@@ -25,6 +27,8 @@
 //#Config:with-T-overrides:default
 //#LinkArgs:-Ttext=0x700000 -Tdata=0x800000 -Tbss=0x900000
 //#Variant:1
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/ptr_black_box.h"
 #include "../common/runtime.h"

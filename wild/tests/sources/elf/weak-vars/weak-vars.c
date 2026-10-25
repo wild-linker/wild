@@ -66,16 +66,22 @@ void _start() {
   int expected[24] = {
       //#Config:0:default
       //#Variant: 0
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined strongly in second file, no strong refs
       64 + 32 + 4,
 
       //#Config:1:default
       //#Variant: 1
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly here then strongly in second, no strong refs
 
       64 + 8 + 32 + 4 + 16,
       //#Config:2:default
       //#Variant: 2
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly here then strongly in second, strong ref to
       // DATA
 
@@ -93,16 +99,22 @@ void _start() {
 
       //#Config:8:default
       //#Variant: 8
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly in second file, no strong refs
       64 + 32 + 4,
 
       //#Config:9:default
       //#Variant: 9
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly here and in second file, no strong refs
       2 + 8 + 32 + 1 + 16,
 
       //#Config:10:default
       //#Variant: 10
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly in second file, strong ref to DATA
       64 + 32 + 4 + 128,
 
@@ -111,6 +123,8 @@ void _start() {
 
       //#Config:12:default
       //#Variant: 12
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables defined weakly here and in second file, strong ref to BSS
       64 + 32 + 4,
 
@@ -123,11 +137,15 @@ void _start() {
 
       //#Config:16:default
       //#Variant: 16
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // No weak variables defined in either file
       0,
 
       //#Config:17:default
       //#Variant: 17
+      //#CompArgs:-fPIE
+      //#LinkArgs:-no-pie
       // Variables weakly defined in this file only.
       2 + 8 + 32 + 1 + 16,
 

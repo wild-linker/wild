@@ -11,6 +11,8 @@
 
 //#Config:eh-frame:default
 //#CompArgs:-O0 -fomit-frame-pointer
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
@@ -23,6 +25,8 @@
 // FIXME: This should be enabled with LD but requires LD 2.46 to retain the .sframe section with
 // `--gc-sections`.
 //#ReferenceLinkers:
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:discard-sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
@@ -35,6 +39,8 @@
 // FIXME: This should be enabled with LD but requires LD 2.46 to retain the .sframe section with
 // `--gc-sections`.
 //#ReferenceLinkers:
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 // Without `--wild-experimental-sframe` we should discard `.sframe` section for now.
 //#Config:discard-sframe-by-default:default
@@ -44,6 +50,8 @@
 //#ReferenceLinkers:
 //#RunEnabled:false
 //#DoesNotContain:.sframe
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #define _GNU_SOURCE
 #include <execinfo.h>

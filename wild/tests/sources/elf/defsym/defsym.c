@@ -6,6 +6,8 @@
 
 //#Config:symbol_alias:symbol_alias-base
 //#LinkArgs:--defsym=bar=foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbol_alias_lto:symbol_alias-base
 //#RequiresLinkerPlugin:true
@@ -13,32 +15,46 @@
 //#LinkerDriver:gcc
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -Wl,--defsym=bar=foo
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:address_alias:default
 //#LinkArgs:--defsym=bar=0x12345678
 //#ExpectSym:bar address=0x12345678
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:address_expr:default
 //#LinkArgs:--defsym=bar=0x1111+0x2222
 //#ExpectSym:bar address=0x3333
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbol_expr:default
 //#LinkArgs:--defsym=bar=0x1111 --defsym=baz=bar+0x2222
 //#ExpectSym:baz address=0x3333
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:symbol_expr2:default
 //#LinkArgs:--defsym=bar=0x2222 --defsym=baz=-0x1111+bar
 //#ExpectSym:baz address=0x1111
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:not_exist:default
 //#LinkArgs:--defsym=bar=notexist
 //#ReferenceLinkers:
 //#ExpectError:Symbol 'notexist' referenced by --defsym
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:repeat_defs:default
 //#LinkArgs:--defsym=bar=0x1000 --defsym=bar=bar*2 --defsym=baz=0x5000
 //#ExpectSym:bar address=0x2000
 //#ExpectSym:baz address=0x5000
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 int foo(void) { return 0; }
 

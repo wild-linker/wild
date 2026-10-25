@@ -9,6 +9,9 @@
 // necessary.
 //#DiffIgnore:section.got
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -9,11 +9,17 @@
 //#Object:undef-transitive-1.c
 //#Shared:undef-transitive-2.c
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:shlib-first:default
 //#Shared:undef-transitive-2.c
 //#Object:undef-transitive-1.c
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

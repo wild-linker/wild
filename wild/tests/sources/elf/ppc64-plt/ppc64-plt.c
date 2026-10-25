@@ -5,9 +5,11 @@
 
 //#Config:pie:default
 //#LinkArgs:-pie
+//#CompArgs:-fPIE
 
 //#Config:no-pie:default
 //#LinkArgs:-no-pie
+//#CompArgs:-fPIE
 
 #include <stdio.h>
 

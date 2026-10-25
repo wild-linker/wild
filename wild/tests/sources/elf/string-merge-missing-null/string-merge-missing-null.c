@@ -4,3 +4,5 @@
 //#ReferenceLinkers:
 //#ExpectError:String in merge-string section is not null-terminated
 //#Object:string-merge-missing-null-1.s
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie

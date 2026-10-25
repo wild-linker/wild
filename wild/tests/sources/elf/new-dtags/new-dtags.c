@@ -12,6 +12,7 @@
 //#ExpectDynamic:DT_FLAGS_1
 //#NoDynamic:DT_RPATH
 //#NoDynamic:DT_BIND_NOW
+//#CompArgs:-fPIE
 
 //#Config:old-dtags:default
 //#LinkArgs:-shared -rpath /test/path --disable-new-dtags -z now
@@ -22,6 +23,7 @@
 //#NoDynamic:DT_FLAGS
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:.dynamic.DT_RPATH
+//#CompArgs:-fPIE
 
 int foo(void);
 

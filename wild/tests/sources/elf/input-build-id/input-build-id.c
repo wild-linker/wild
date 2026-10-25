@@ -2,6 +2,8 @@
 //#Object:runtime.c
 //#Object:build-id-note.s
 //#LinkArgs:--build-id=0x6767676767676767
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:linker-script:default
 //#Arch:x86_64

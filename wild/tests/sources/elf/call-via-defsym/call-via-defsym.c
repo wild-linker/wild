@@ -2,6 +2,8 @@
 //#Object:runtime.c
 //#Object:call-via-defsym-1.c
 //#LinkArgs:-znow --defsym=foo=bar
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

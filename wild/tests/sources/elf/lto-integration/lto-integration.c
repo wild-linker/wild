@@ -9,5 +9,7 @@
 //#DiffIgnore:section.gnu.version_r.alignment
 //#DiffIgnore:section.rodata
 //#DiffIgnore:eh_frame
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 int main() { return 42; }

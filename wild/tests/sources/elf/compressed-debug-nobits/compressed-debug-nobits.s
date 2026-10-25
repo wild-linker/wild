@@ -9,9 +9,11 @@
 
 //#Config:none:default
 //#LinkArgs:--compress-debug-sections=none
+//#LinkArgs:-no-pie
 
 //#Config:zlib:default
 //#LinkArgs:--compress-debug-sections=zlib
+//#LinkArgs:-no-pie
 */
 
 .text

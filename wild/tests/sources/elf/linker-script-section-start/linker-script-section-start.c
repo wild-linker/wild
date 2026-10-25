@@ -5,6 +5,8 @@
 // linker script)
 //#SkipArch:riscv64
 //#ExpectSym:foo address=0x1000000
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

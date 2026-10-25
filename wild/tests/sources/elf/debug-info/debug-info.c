@@ -1,8 +1,10 @@
 //#Config:default
 //#CompArgs:-g
 //#Object:runtime.c
-//#ExpectSym:test_func line=9
-//#ExpectSym:_start line=11
+//#ExpectSym:test_func line=11
+//#ExpectSym:_start line=13
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -3,6 +3,7 @@
 //#Compiler:gcc
 //#CompArgs:-Wa,-mrelax-relocations=no
 //#LinkArgs:-z noexecstack
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

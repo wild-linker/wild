@@ -13,17 +13,22 @@
 
 //#Config:gcc-tls-desc:gcc-tls-desc-base
 //#CompArgs:-mtls-dialect=gnu2 -fPIC -O2
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-desc-desc:gcc-tls-desc-base
 //#CompArgs:-mtls-dialect=desc -fPIC
 //#SkipArch: x86_64,riscv64,ppc64le
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-desc-pie:gcc-tls-desc-base
 //#CompArgs:-mtls-dialect=gnu2 -fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-desc-pie-desc:gcc-tls-desc-base
 //#CompArgs:-mtls-dialect=desc
 //#SkipArch: x86_64,riscv64,ppc64le
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-desc-static:gcc-tls-desc-base
 //#CompArgs:-mtls-dialect=gnu2 -fPIC -static
@@ -31,6 +36,7 @@
 //#Shared:tlsdesc-obj.c
 //#DiffIgnore:asm.get_value
 //#Arch: x86_64
+//#LinkArgs:-pie
 
 //#AbstractConfig:gcc-tls-desc-shared-base:gcc-tls-desc-base
 //#Shared:tlsdesc-obj.c
@@ -39,11 +45,15 @@
 //#Config:gcc-tls-desc-shared:gcc-tls-desc-shared-base
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#CompSoArgs:-mtls-dialect=gnu2 -fPIC
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-desc-shared-desc:gcc-tls-desc-shared-base
 //#CompArgs:-mtls-dialect=desc
 //#CompSoArgs:-mtls-dialect=desc
 //#SkipArch: x86_64,riscv64,loongarch64,ppc64le
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-pie
 
 //#AbstractConfig:clang-tls-desc-base:gcc-tls-desc-base
 //#Compiler:clang
@@ -52,11 +62,13 @@
 //#Config:clang-tls-desc:clang-tls-desc-base
 //#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
+//#LinkArgs:-pie
 
 //#Config:clang-tls-desc-desc:clang-tls-desc-base
 //#RequiresCompilerFlags:-mtls-dialect=desc
 //#CompArgs:-mtls-dialect=desc -fPIC
 //#SkipArch: x86_64,riscv64
+//#LinkArgs:-pie
 
 //#AbstractConfig:clang-tls-desc-shared-base:clang-tls-desc-base
 //#Shared:tlsdesc-obj.c
@@ -66,6 +78,7 @@
 //#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#CompSoArgs:-mtls-dialect=gnu2 -fPIC
+//#LinkArgs:-pie
 
 //#Config:clang-tls-desc-shared-desc:clang-tls-desc-shared-base
 //#RequiresCompilerFlags:-mtls-dialect=desc
@@ -74,6 +87,7 @@
 //#SkipArch: x86_64,riscv64
 // LoongArch GNU ld aligns the empty .eh_frame terminator to 4 instead of 8.
 //#DiffIgnore:section.eh_frame.alignment
+//#LinkArgs:-pie
 
 int get_value();
 

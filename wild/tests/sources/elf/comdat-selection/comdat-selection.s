@@ -7,21 +7,26 @@
 //#NoSym:losing_only
 
 //#Config:gc:base
+//#LinkArgs:-no-pie
 
 //#Config:dead-reference:base
 //#Object:dead.s
 //#NoSection:.data.unused
+//#LinkArgs:-no-pie
 
 //#Config:single-thread:base
 //#WildExtraLinkArgs:--threads=1
 //#Env:WILD_FILES_PER_GROUP=1
+//#LinkArgs:-no-pie
 
 //#Config:multiple-threads:base
 //#WildExtraLinkArgs:--threads=4
 //#Env:WILD_FILES_PER_GROUP=2
+//#LinkArgs:-no-pie
 
 //#Config:no-gc:base
 //#LinkArgs:--no-gc-sections
+//#LinkArgs:-no-pie
 
 //#Config:partial:common
 //#Object:frame.s

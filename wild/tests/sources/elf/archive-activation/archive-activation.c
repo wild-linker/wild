@@ -8,6 +8,8 @@
 //#Archive:archive_activation1.c
 //#Archive:runtime.c
 //#Archive:empty.a
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:thin:default
 //#CompArgs:-ffunction-sections
@@ -15,6 +17,8 @@
 //#ThinArchive:archive_activation1.c
 //#ThinArchive:runtime.c
 //#ThinArchive:empty.a
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:lib:default
 //#CompArgs:-ffunction-sections
@@ -26,6 +30,8 @@
 //#Object:runtime.c
 //#Object:empty.a
 //#DiffIgnore:segment.GNU_STACK.alignment
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:bsd:default
 //#CompArgs:-ffunction-sections
@@ -35,6 +41,8 @@
 //#BsdArchive:runtime.c
 //#BsdArchive:empty.a
 //#TestUpdateInPlace:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#AbstractConfig:lto:default
 //#RequiresLinkerPlugin:true
@@ -51,6 +59,8 @@
 //#Archive:runtime.c
 //#Archive:empty.a
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:lto-clang:lto
 //#SkipArch: ppc64le
@@ -61,6 +71,8 @@
 //#Archive:archive_activation1.c
 //#Archive:runtime.c
 //#Archive:empty.a
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:lto-clang-thin:lto
 //#SkipArch: ppc64le
@@ -71,6 +83,8 @@
 //#ThinArchive:archive_activation1.c
 //#ThinArchive:runtime.c
 //#ThinArchive:empty.a
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

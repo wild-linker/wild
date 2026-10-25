@@ -4,6 +4,8 @@
 //#ExpectSym:provided address=0x1234
 //#ExpectSym:provided_base address=0x1200
 //#NoSym:unused_provided
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

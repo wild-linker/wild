@@ -25,9 +25,11 @@
 //#Config:resolved:base
 //#Relocatable:reference.s,winner.s,loser.s
 //#Object:definition.s
+//#LinkArgs:-no-pie
 
 //#Config:unresolved:base
 //#Relocatable:reference.s,winner.s,loser.s
 //#ExpectError:missing
+//#LinkArgs:-no-pie
 
 .section .note.GNU-stack,"",@progbits

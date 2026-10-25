@@ -7,12 +7,14 @@
 //#Config:none:default
 //#CompArgs:-Wa,--defsym,TEST_NONE=1
 //#ExpectSectionBytes:.debug_test=0x8877665544332211
+//#LinkArgs:-no-pie
 
 //#Config:absolute:default
 // LLD writes zeros for symbol-free absolute debug relocations.
 //#ReferenceLinkers:bfd
 //#CompArgs:-Wa,--defsym,TEST_NONE=0
 //#ExpectSectionBytes:.debug_test=0x887766554433221178563412feffffff
+//#LinkArgs:-no-pie
 */
 
 .text

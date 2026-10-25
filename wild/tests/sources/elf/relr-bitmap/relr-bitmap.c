@@ -19,22 +19,27 @@
 //#Config:x86_64:default
 //#Arch:x86_64
 //#ExpectSection:.relr.dyn max_entries=2
+//#CompArgs:-fPIE
 
 //#Config:aarch64:default
 //#Arch:aarch64
 //#ExpectSection:.relr.dyn max_entries=6
+//#CompArgs:-fPIE
 
 //#Config:loongarch64:default
 //#Arch:loongarch64
 //#ExpectSection:.relr.dyn max_entries=6
+//#CompArgs:-fPIE
 
 //#Config:riscv64:default
 //#Arch:riscv64
 //#ExpectSection:.relr.dyn max_entries=7
+//#CompArgs:-fPIE
 
 //#Config:ppc64le:default
 //#Arch:ppc64le
 //#ExpectSection:.relr.dyn max_entries=4
+//#CompArgs:-fPIE
 #include "../common/init.h"
 #include "../common/runtime.h"
 

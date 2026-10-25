@@ -2,6 +2,8 @@
 //#RunEnabled:false
 //#LinkArgs:-z noexecstack
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .section .tbss,"awT",@nobits
 .globl tls

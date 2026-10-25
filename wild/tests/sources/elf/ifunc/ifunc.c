@@ -10,9 +10,11 @@
 //#DiffIgnore:rel.extra-got-plt-got
 // This can be in any test that's x86_64 only.
 //#ExpectSym:_GLOBAL_OFFSET_TABLE_
+//#LinkArgs:-no-pie
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
+//#LinkArgs:-no-pie
 
 //#Config:got-plt-syms:default
 //#LinkArgs:--got-plt-syms
@@ -25,6 +27,8 @@
 //#ExpectSym:compute_value10$plt section=".plt.got"
 //#ExpectSym:compute_value32$plt section=".plt.got"
 //#NoSym:compute_unused$plt
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/ifunc_init.h"
 #include "../common/init.h"

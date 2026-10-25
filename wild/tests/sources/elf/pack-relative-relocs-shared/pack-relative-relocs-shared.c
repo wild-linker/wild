@@ -8,6 +8,9 @@
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 //#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-pie
 
 int foo(void);
 

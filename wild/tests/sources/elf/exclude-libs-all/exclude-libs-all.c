@@ -4,6 +4,7 @@
 //#Archive:exclude-libs-all-1.c
 // We optimise away the GOT, but GNU ld doesn't.
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
 
 // This symbol shouldn't end up in .dynsym. linker-diff checks this.
 int foo(void);

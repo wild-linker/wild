@@ -7,6 +7,8 @@
 //#Config:global-dynamic-0:default
 //#CompArgs:-ftls-model=global-dynamic
 //#Variant: 0
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:global-dynamic-1:global-dynamic-0
 //#Variant: 1
@@ -14,19 +16,26 @@
 //#Config:local-dynamic-0:default
 //#CompArgs:-ftls-model=local-dynamic -mtls-dialect=gnu
 //#Variant: 0
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:local-dynamic-1:local-dynamic-0
 //#Variant: 1
 
 //#Config:initial-exec:default
 //#CompArgs:-ftls-model=initial-exec
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:local-exec:default
 //#CompArgs:-ftls-model=local-exec
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:local-dynamic-no-plt:default
 //#CompArgs:-ftls-model=local-dynamic -mtls-dialect=gnu -Wa,-mrelax-relocations=yes -fPIC -fno-plt
 //#Variant: 1
+//#LinkArgs:-no-pie
 
 #include <stddef.h>
 #include <stdint.h>

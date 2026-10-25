@@ -3,6 +3,8 @@
 //#Object:init-order-2.c
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/init.h"
 #include "../common/runtime.h"

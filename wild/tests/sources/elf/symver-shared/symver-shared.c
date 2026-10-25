@@ -11,6 +11,9 @@
 //#DiffIgnore:section.got
 //#LinkArgs:--version-script=./symver-shared.map -znow
 //#RequiresGlibc:true
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

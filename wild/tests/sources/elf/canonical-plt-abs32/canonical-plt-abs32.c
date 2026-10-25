@@ -5,6 +5,9 @@
 //#Shared:shared.c
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stdint.h>
 

@@ -10,10 +10,14 @@
 
 //#Config:gcc:default
 //#LinkerDriver:g++
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang:default
 //#Compiler:clang
 //#LinkerDriver:clang++
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #include <iostream>
 

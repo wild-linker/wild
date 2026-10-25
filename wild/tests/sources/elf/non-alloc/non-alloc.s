@@ -3,6 +3,8 @@
 //#LinkArgs:-z noexecstack
 //#Object:runtime.c
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .section .nonloadable, "R", @progbits
     .asciz "Hello, World!"

@@ -14,6 +14,8 @@
 //#ExpectDynSym:call_bar1
 
 //#Config:default:common
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 //#Config:symbolic:common
 //#LinkArgs:-Bsymbolic
@@ -22,18 +24,26 @@
 //#DiffIgnore:section.got
 //#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PLT32
 //#ExpectDynamic:DT_FLAGS
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 //#Config:symbolic-functions:common
 //#LinkArgs:-Bsymbolic-functions
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 //#Config:nosymbolic:common
 //#LinkArgs:-Bno-symbolic
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 //#Config:symbolic-non-weak:common
 //#LinkArgs:-Bsymbolic-non-weak
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.relro_padding
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 //#Config:symbolic-non-weak-functions:common
 //#LinkArgs:-Bsymbolic-non-weak-functions
@@ -41,6 +51,8 @@
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:dynsym.baz.section
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 int bar1(void);
 int bar2(void);

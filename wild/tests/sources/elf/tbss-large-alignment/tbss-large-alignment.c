@@ -6,6 +6,7 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.gnu.version_r.alignment
+//#CompArgs:-fPIE
 
 #include "../common/ptr_black_box.h"
 

@@ -13,9 +13,13 @@
 
 //#Config:plt:default
 //#CompSoArgs:-fPIC
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:got:default
 //#CompSoArgs:-fPIC -fno-plt
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

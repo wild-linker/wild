@@ -1,6 +1,8 @@
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#DriverMode:save-dir-response
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

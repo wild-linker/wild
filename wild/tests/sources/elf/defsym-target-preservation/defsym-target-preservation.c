@@ -7,18 +7,26 @@
 //#Config:defsym-obj:default
 //#Object:obj1.c
 //#LinkArgs:--defsym=bar=foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:script-obj:default
 //#AugmentLinkerScript:script.ld
 //#Object:obj1.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:defsym-archive:default
 //#Archive:obj1.c
 //#LinkArgs:--defsym=bar=foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:script-archive:default
 //#AugmentLinkerScript:script.ld
 //#Archive:obj1.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

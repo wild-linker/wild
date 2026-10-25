@@ -25,3 +25,5 @@ void _start(void) {
 //#ExpectComment:GCC*
 //#ExpectComment:Foo
 //#ExpectComment:Bar
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie

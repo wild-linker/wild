@@ -3,6 +3,8 @@
 //#Object:runtime.c
 //#NoSection:.rodata
 //#ExpectSym:value3
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
@@ -11,6 +13,7 @@
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -znow
 //#DiffIgnore:section.got
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

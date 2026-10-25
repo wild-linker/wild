@@ -1,6 +1,8 @@
 //#Object:runtime.c
 //#Object:wrap-real-only2.c
 //#LinkArgs:--wrap=foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

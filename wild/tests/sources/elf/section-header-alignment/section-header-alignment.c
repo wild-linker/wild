@@ -1,6 +1,8 @@
 //#Arch:x86_64
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <elf.h>
 

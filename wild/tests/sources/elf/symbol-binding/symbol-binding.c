@@ -6,6 +6,9 @@
 //#Shared:symbol-binding-dyn.c
 //#Object:symbol-binding-1.c
 //#Archive:symbol-binding-2.c
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

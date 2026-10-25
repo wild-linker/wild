@@ -5,6 +5,7 @@
 //#LinkArgs:-no-pie -z now
 //#ReferenceLinkers:bfd
 //#ExpectError:ADDR32
+//#CompSoArgs:-fPIE
 
 .abiversion 2
 .text

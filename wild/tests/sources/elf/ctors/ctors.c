@@ -1,6 +1,8 @@
 //#LinkerDriver:gcc
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 static int ctors_init_val = 0;
 

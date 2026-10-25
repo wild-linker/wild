@@ -7,6 +7,7 @@
 //#ExpectDynSym:data3
 //#ExpectDynSym:get_data1
 //#ExpectDynSym:get_data5
+//#CompArgs:-fPIE
 
 // This symbol is included, but isn't exported as a dynamic symbol because of a second definition in
 // our other file that's marked as hidden.

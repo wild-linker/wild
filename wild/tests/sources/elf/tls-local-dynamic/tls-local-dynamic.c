@@ -19,6 +19,7 @@
 // TODO: For some reason, the test fails under QEMU for LoongArch64, even though it runs correctly
 // on a native Alpine Linux system.
 //#SkipArch:loongarch64
+//#LinkArgs:-pie
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
 //#CompArgs:-mtls-dialect=trad

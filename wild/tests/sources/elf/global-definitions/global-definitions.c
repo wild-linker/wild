@@ -3,6 +3,8 @@
 //#Object:runtime.c
 //#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 int global_value = 38;
 int global_values[4] = {1, 2, 3, 4};

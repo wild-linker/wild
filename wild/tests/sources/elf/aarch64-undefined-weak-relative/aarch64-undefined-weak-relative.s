@@ -10,6 +10,7 @@
 //#ExpectInstructions:.text 12 1: ldr x8, 1b
 //#ExpectSectionBytes:.data=0x00000000000000000000000000000000
 //#DiffIgnore:rel.match_failed.R_AARCH64_PREL16
+//#LinkArgs:-no-pie
 
 .weak target
 

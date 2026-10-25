@@ -11,6 +11,8 @@
 //#ExpectSym:_start section=".text"
 //#ExpectSym:w4
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

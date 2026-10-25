@@ -3,12 +3,14 @@
 
 //#AbstractConfig:default
 //#Object:runtime.c
-//#ExpectError:source-info-from-debug.*27
+//#ExpectError:source-info-from-debug.*30
 
 //#Config:non-lto:default
 //#CompArgs:-g
 // GNU ld reports incorrect line numbers.
 //#ReferenceLinkers:
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
@@ -17,6 +19,7 @@
 //#LinkArgs:-flto -nostdlib -fPIC
 // GNU ld tries to generate a PLT, then errors
 //#ReferenceLinkers:
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

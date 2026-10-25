@@ -12,9 +12,11 @@
 
 //#Config:gcc:default
 //#LinkerDriver:gcc
+//#LinkArgs:-pie
 
 //#Config:clang:default
 //#LinkerDriver:clang
+//#LinkArgs:-pie
 
 extern int foo;
 

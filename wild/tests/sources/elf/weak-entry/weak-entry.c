@@ -1,5 +1,7 @@
 //#Object:runtime.c
 //#Object:weak-entry-1.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

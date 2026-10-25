@@ -12,12 +12,14 @@
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic
 //#Object:tls-variant-3.c:-ftls-model=initial-exec
 //#Arch: x86_64
+//#LinkArgs:-pie
 
 //#Config:gcc-shared:default
 //#CompArgs:-fpic
 //#CompSoArgs:-fpic
 //#Shared:tls-variant-1.c:-mtls-dialect=gnu2,tls-variant-2.c:-ftls-model=global-dynamic,tls-variant-3.c:-ftls-model=initial-exec
 //#Arch: x86_64
+//#LinkArgs:-pie
 
 //#Config:gcc-tls-trad:default
 //#CompArgs:-fpic
@@ -25,6 +27,7 @@
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad
 //#Object:tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
 //#SkipArch: x86_64,riscv64,ppc64le
+//#LinkArgs:-pie
 
 //#Config:gcc-shared-tls-trad:default
 //#CompArgs:-fpic
@@ -34,6 +37,7 @@
 //#RequiresCompilerFlags:-mtls-dialect=trad
 // Similarly to Mold, Wild also sets STATIC_TLS flag.
 //#DiffIgnore:.dynamic.DT_FLAGS.STATIC_TLS
+//#LinkArgs:-pie
 
 int foo(void);
 int bar(void);

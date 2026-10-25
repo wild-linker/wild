@@ -7,14 +7,17 @@
 //#Config:ttext:base
 //#LinkArgs:-Ttext=0x700000 -no-pie
 //#ExpectSym:_start address=0x700000
+//#CompArgs:-fPIE
 
 //#Config:tdata:base
 //#LinkArgs:-Tdata=0x800000 -no-pie --no-gc-sections
 //#ExpectSym:data_var address=0x800000
+//#CompArgs:-fPIE
 
 //#Config:tbss:base
 //#LinkArgs:-Tbss=0x900000 -no-pie --no-gc-sections
 //#ExpectSym:bss_var address=0x900000
+//#CompArgs:-fPIE
 
 #include "../common/runtime.h"
 

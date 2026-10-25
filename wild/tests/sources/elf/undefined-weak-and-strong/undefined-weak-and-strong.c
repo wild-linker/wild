@@ -5,6 +5,8 @@
 //#LinkArgs:--gc-sections
 //#Object:undefined-weak-and-strong-1.c
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 void __attribute__((weak)) foo(void);
 

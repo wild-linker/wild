@@ -10,6 +10,9 @@
 //#Arch: x86_64
 //#RequiresGlibc:true
 //#Mode:dynamic
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

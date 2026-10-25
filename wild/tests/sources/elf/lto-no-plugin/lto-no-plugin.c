@@ -8,8 +8,12 @@
 
 //#Config:gcc:default
 //#Compiler:gcc
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:clang:default
 //#Compiler:clang
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 void _start(void) {}

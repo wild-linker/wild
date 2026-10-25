@@ -12,6 +12,7 @@
 //#ExpectSectionBytes:.debug_only=0x11111111
 //#ExpectSectionBytes:.debug_only_companion=0x22222222
 //#ExpectSectionBytes:.debug_ungrouped=0x33333333
+//#LinkArgs:-no-pie
 
 //#Config:debug-reference:gc
 # BFD retains the group when another debug section refers to its debug member.
@@ -22,6 +23,7 @@
 //#Config:no-gc:base
 //#LinkArgs:--no-gc-sections
 //#ExpectError:missing
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

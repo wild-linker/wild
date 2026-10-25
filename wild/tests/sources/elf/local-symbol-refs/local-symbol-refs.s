@@ -5,6 +5,8 @@
 //#LinkArgs:-z noexecstack
 //#ReferenceLinkers:bfd,lld
 //#Arch: x86_64
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 .section        .rodata.x,"aM",@progbits,16
 .p2align        4, 0x0

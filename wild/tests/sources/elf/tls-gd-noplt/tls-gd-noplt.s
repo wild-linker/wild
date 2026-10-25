@@ -6,6 +6,7 @@
 //#LinkArgs:-nostdlib --no-gc-sections
 //#ReferenceLinkers:lld,bfd
 //#RunEnabled:false
+//#LinkArgs:-no-pie
 .globl _start
 _start:
     .byte 0x66

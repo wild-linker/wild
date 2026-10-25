@@ -8,6 +8,8 @@
 //#Object:undefined-with-gc-refs-2.c
 //#Object:undefined-with-gc-refs-3.c
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 void ref_2(void);
 

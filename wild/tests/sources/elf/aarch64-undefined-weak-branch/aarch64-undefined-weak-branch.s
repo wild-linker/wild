@@ -9,6 +9,7 @@
 
 //#Config:static:default
 //#ExpectInstructions:.text 0 b .+4; bl .+4; b.eq .+4; tbz x1, #0, .+4; ret
+//#LinkArgs:-no-pie
 
 //#Config:shared:default
 //#Mode:dynamic

@@ -5,6 +5,9 @@
 //#RunEnabled:false
 //#Shared:hidden-undef-lib.c
 //#ExpectError:foo
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

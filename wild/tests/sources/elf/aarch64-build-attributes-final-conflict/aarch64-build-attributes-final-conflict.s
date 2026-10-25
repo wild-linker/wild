@@ -7,6 +7,7 @@
 //#RunEnabled:false
 //#DiffEnabled:false
 //#ExpectErrorWild:GNU properties and build attributes have conflicting AArch64 PAuth data
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

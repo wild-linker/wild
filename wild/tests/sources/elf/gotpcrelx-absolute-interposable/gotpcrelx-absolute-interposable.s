@@ -9,6 +9,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
+//#LinkArgs:-no-pie
 
 .globl target
 .set target, 42

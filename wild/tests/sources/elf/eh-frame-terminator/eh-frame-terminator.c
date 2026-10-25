@@ -6,6 +6,8 @@
 // terminator.
 //#ReferenceLinkers:lld
 //#DoesNotContain:SHOULD_NOT_APPEAR_IN_BINARY
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

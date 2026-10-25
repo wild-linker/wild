@@ -2,6 +2,7 @@
 //#Object:other.s
 //#ExpectError:missing
 //#RunEnabled:false
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

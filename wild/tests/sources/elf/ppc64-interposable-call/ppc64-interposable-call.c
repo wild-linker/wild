@@ -6,9 +6,13 @@
 //#CompSoArgs:-fPIC
 
 //#Config:default:common
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:symbolic:common
 //#LinkSoArgs:-Wl,-Bsymbolic
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 int caller(int x);
 int callee(int x);

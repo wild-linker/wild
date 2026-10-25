@@ -6,12 +6,15 @@
 
 //#Config:one-byte:default
 //#CompArgs:-Wa,--defsym,TRAILING_BYTES=1
+//#LinkArgs:-no-pie
 
 //#Config:two-bytes:default
 //#CompArgs:-Wa,--defsym,TRAILING_BYTES=2
+//#LinkArgs:-no-pie
 
 //#Config:three-bytes:default
 //#CompArgs:-Wa,--defsym,TRAILING_BYTES=3
+//#LinkArgs:-no-pie
 
 .text
 .p2align 2

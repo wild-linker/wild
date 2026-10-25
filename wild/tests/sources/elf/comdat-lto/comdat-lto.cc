@@ -10,6 +10,8 @@
 //#Config:gcc:base
 //#Compiler:gcc
 //#LinkerDriver:gcc
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:gcc-mixed:gcc
 //#Object:native.cc:-fno-lto
@@ -18,6 +20,8 @@
 //#Compiler:clang
 //#LinkerDriver:clang
 //#DiffIgnore:section.eh_frame.type
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:clang-mixed:clang
 //#Object:native.cc:-fno-lto

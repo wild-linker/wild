@@ -3,6 +3,8 @@
 //#Object:runtime.c
 //#Shared:shared.s
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stdint.h>
 

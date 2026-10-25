@@ -12,6 +12,7 @@
 //#ExpectSym:var1 address=0x10000000
 //#ExpectSym:var3 address=0x10000004
 //#ExpectSym:var4 address=0x10000010
+//#CompArgs:-fPIE
 
 //#Config:region-redefine:default
 // GNU ld only prints a warning.
@@ -19,18 +20,21 @@
 //#LinkerScript:linker-script-region.ld
 //#LinkerScript:linker-script-region-redefine.ld
 //#ExpectError:region 'ROM' already defined
+//#CompArgs:-fPIE
 
 //#Config:region-missing:default
 // GNU ld only prints a warning.
 //#ReferenceLinkers:lld
 //#LinkerScript:linker-script-region-missing.ld
 //#ExpectError:(?i-u)memory region 'FLASH' not declared
+//#CompArgs:-fPIE
 
 //#Config:region-overflow:default
 // lld gives a similar error, but with a different message.
 //#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-region-overflow.ld
 //#ExpectError:(?i-u)region [`']FLASH' overflowed by 1 byte
+//#CompArgs:-fPIE
 
 static int var1 __attribute__((used, section(".data.ram1"))) = 0x01;
 static int var2 __attribute__((used, section(".data.rom"))) = 0x02;

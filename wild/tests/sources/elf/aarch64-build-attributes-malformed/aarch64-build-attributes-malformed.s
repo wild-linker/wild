@@ -8,6 +8,7 @@
 //#DiffEnabled:false
 //#ExpectErrorWild:Cannot parse .ARM.attributes section
 //#ExpectErrorWild:unexpected end of data at offset 0x3f
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

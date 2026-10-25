@@ -7,6 +7,7 @@
 //#ExpectDynSym:data section=".bss",size=400
 //#ExpectSym:tvar section=".tbss",size=400,address=0
 //#ExpectDynSym:tvar section=".tbss",size=400,address=0
+//#CompArgs:-fPIE
 
 extern int data[];
 int data[10];

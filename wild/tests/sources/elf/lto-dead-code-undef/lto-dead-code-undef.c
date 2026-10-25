@@ -12,6 +12,8 @@
 //#LinkArgs:-flto -O1 -nostdlib -Wl,-z,now
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.got
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 #include "../common/runtime.h"
 

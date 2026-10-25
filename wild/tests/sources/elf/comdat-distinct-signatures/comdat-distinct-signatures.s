@@ -3,6 +3,7 @@
 //#ExpectError:foo
 //#RunEnabled:false
 //#LinkArgs:--no-gc-sections
+//#LinkArgs:-no-pie
 
 .section .text.foo,"axG",@progbits,first_signature,comdat
 .globl foo, _start

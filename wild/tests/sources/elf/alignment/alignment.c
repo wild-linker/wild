@@ -1,5 +1,7 @@
 //#Object:runtime.c
 //#TestUpdateInPlace:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

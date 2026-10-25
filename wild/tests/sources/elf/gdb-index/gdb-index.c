@@ -14,21 +14,29 @@
 //#ExpectGdbIndexSymbol:foo
 //#NoSection:.debug_gnu_pubnames
 //#NoSection:.debug_gnu_pubtypes
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:disabled:default
 //#LinkArgs:--gdb-index --no-gdb-index
 //#NoSection:.gdb_index
 //#ExpectSection:.debug_gnu_pubnames
 //#ExpectSection:.debug_gnu_pubtypes
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:with-strip-debug:default
 //#LinkArgs:--gdb-index --strip-debug
 //#NoSection:.gdb_index
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:with-strip-all:default
 //#LinkArgs:--gdb-index --strip-all
 //#DiffIgnore:file-header.entry
 //#NoSection:.gdb_index
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

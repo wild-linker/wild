@@ -4,9 +4,13 @@
 
 //#Config:mmap:default
 //#WildExtraLinkArgs:--threads=3 --mmap-output-file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:buffered:default
 //#WildExtraLinkArgs:--threads=3 --no-mmap-output-file
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -15,13 +15,16 @@
 //#ExpectDynSym:called_only address=0
 //#ExpectDynSym:called_ifunc_only address=0,type=func
 //#ExpectDynSym:imported_ifunc type=func
+//#LinkArgs:-no-pie
 
 //#Config:other:default
 //#Arch:riscv64,loongarch64
+//#LinkArgs:-no-pie
 
 //#Config:aarch64:default
 //#Arch:aarch64
 //#DiffMatchAny:true
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

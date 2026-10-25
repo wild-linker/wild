@@ -18,12 +18,18 @@
 //#Config:allow:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--allow-shlib-undefined -z now
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // This should also succeed to link because our shared object depends on another shared object that
 // we don't have loaded.
 //#Config:disallow-incomplete:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--no-allow-shlib-undefined
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 // Disallow linking against shared object with undefined symbols. In this variant, the shared object
 // (2) that we depend on has all of its dependencies (3) also loaded.
@@ -32,6 +38,9 @@
 //#Shared:shlib-undefined-3.c
 //#LinkArgs:--no-allow-shlib-undefined
 //#ExpectError:def2
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:shared:default
 //#Shared:shlib-undefined-2.c
@@ -40,6 +49,8 @@
 // TODO: GNU ld sets the entry to _start even though we're writing a shared
 // object. We probably should too.
 //#DiffIgnore:file-header.entry
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
 
 #include "../common/runtime.h"
 

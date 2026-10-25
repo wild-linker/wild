@@ -12,13 +12,17 @@
 //#ExpectSym: _start section=".text"
 //#ExpectSym: exit_syscall section=".text"
 //#ReferenceLinkers:bfd,lld
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:verdef-0:verdef
 //#TestUpdateInPlace:true
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map
+//#CompArgs:-fPIE
 
 //#Config:verdef-1:verdef
 //#LinkArgs:--shared --soname=symbol-versions.so --version-script=./symbol-versions-script.map
+//#CompArgs:-fPIE
 
 //#Config:verdef-lto:verdef
 //#RequiresLinkerPlugin:true
@@ -26,9 +30,11 @@
 //#CompArgs:-flto -znow
 //#LinkArgs:--shared -Wl,--version-script=./symbol-versions-script.map -flto
 //#DiffIgnore:eh_frame
+//#CompArgs:-fPIE
 
 //#Config:with-escaping:verdef
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
+//#CompArgs:-fPIE
 
 #include "../common/runtime.h"
 

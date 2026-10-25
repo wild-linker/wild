@@ -17,6 +17,8 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:explicit:default
 //#CompArgs:-DEXPLICIT_VERSION

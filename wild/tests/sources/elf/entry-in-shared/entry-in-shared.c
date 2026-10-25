@@ -5,6 +5,7 @@
 //#Object:runtime.c
 //#DiffIgnore:.dynamic.DT_RELA*
 //#Mode:dynamic
+//#CompArgs:-fPIE
 
 #include "../common/runtime.h"
 

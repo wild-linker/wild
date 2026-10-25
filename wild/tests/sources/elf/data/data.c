@@ -3,6 +3,8 @@
 //#ExpectSym:_start section=".text"
 //#TestUpdateInPlace:true
 //#DiffMatchAny:true
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include <stddef.h>
 

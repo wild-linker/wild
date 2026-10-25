@@ -7,6 +7,8 @@
 //#DiffMatchAny:true
 //#ExpectSym:func_kept
 //#NoSym:func_drop
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/ptr_black_box.h"
 #include "../common/runtime.h"

@@ -11,6 +11,7 @@
 //#ReferenceLinkers:lld,bfd
 //#RunEnabled:false
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
+//#LinkArgs:-no-pie
 .globl _start
 _start:
     .byte 0x66

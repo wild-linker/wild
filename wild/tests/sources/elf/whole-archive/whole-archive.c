@@ -1,6 +1,8 @@
 //#Object:runtime.c
 //#LinkArgs:--whole-archive
 //#Archive:whole_archive0.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

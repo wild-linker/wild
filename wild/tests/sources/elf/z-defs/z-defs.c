@@ -3,6 +3,7 @@
 //#Mode:dynamic
 //#RunEnabled:false
 //#ExpectError:foo
+//#CompArgs:-fPIE
 
 //#Config:z-undefs
 //#LinkArgs:-Bshareable -z now -z undefs
@@ -10,6 +11,7 @@
 //#RunEnabled:false
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
+//#CompArgs:-fPIE
 
 int foo(void);
 

@@ -12,10 +12,12 @@
 
 //#Config:protected:default
 //#CompSoArgs:-DPROTECTED=1
+//#CompArgs:-fPIE
 
 //#Config:symbolic:default
 //#LinkSoArgs:-Wl,-Bsymbolic
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
+//#CompArgs:-fPIE
 
 //#Config:protected-loongarch64:protected
 //#Arch:loongarch64

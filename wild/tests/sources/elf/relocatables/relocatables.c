@@ -3,6 +3,8 @@
 //#Relocatable:relocatable-1.c,relocatable-2.c
 //#NoSym:.text
 //#ExpectSym:add
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -6,14 +6,20 @@
 
 //#Config:zlib:default
 //#LinkArgs:--compress-debug-sections=zlib
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:zstd:default
 //#RequiresLinkerFlags:--compress-debug-sections=zstd
 //#RequiresZstdCompression:true
 //#LinkArgs:--compress-debug-sections=zstd
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:none:default
 //#LinkArgs:--compress-debug-sections=none
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:script-none:none
 //#LinkerScript:debug-line.ld

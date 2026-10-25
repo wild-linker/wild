@@ -8,6 +8,7 @@
 //#LinkArgs:--image-base=0x10000000 --no-gc-sections
 //#ExpectSectionBytes:.data=0x00000000
 //#DiffIgnore:file-header.entry
+//#LinkArgs:-no-pie
 
 .weak target
 

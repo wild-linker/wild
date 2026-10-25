@@ -9,10 +9,16 @@
 //#Config:object:default
 //#Shared:hidden-ref-1.c
 //#Object:hidden-ref-2.c
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:archive:default
 //#Shared:hidden-ref-1.c
 //#Archive:hidden-ref-2.c
+//#CompArgs:-fPIE
+//#CompSoArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

@@ -2,6 +2,8 @@
 // are generally used by libc.
 
 //#Object:runtime.c
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

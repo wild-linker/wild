@@ -2,6 +2,7 @@
 //#Arch:x86_64
 //#LinkArgs:-nostdlib --no-gc-sections -z noexecstack
 //#RunEnabled:false
+//#LinkArgs:-no-pie
 
 //#Config:malfunction-no-jmp-indirect-to-relative:default
 //#Malfunction:no-jmp-indirect-to-relative

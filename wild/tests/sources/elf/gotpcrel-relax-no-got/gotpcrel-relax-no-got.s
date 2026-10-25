@@ -3,6 +3,7 @@
 //#CompArgs:-Wa,-mrelax-relocations=no
 //#LinkArgs:-z noexecstack
 //#NoSection:.got
+//#LinkArgs:-no-pie
 
 .text
 .globl _start

@@ -42,6 +42,12 @@
 //!
 //! CompSoArgs:... Appends arguments to be passed to the compiler when building shared objects.
 //!
+//! ELF C/C++ inputs must explicitly select position dependence with `-fPIE`, `-fPIC`, `-fpie`,
+//! `-fpic`, or their negative forms, in CompArgs, CompSoArgs, or per-input arguments. ELF links
+//! must explicitly select an output mode in LinkArgs: `-pie`, `-no-pie`, `-static`, `-static-pie`,
+//! `-shared`, or `-r`. Direct links also accept the long forms and `Mode:static`. Shared and
+//! relocatable dependencies select their link mode automatically.
+//!
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
 //! For Wasm modules, this checks that the name is present in the export section. The `address`
@@ -1625,7 +1631,7 @@ enum PlatformKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DirectConfig {
-    mode: Mode,
+    mode: Option<Mode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, VariantNames)]
@@ -2907,7 +2913,7 @@ fn process_directive(
             if mode == Mode::Dynamic {
                 config.assertions.expect_dynamic = true;
             }
-            config.linker_driver.direct_mut()?.mode = mode;
+            config.linker_driver.direct_mut()?.mode = Some(mode);
         }
         "DiffIgnore" => config.diff_ignore.push(arg.to_owned()),
         "DiffEnabled" => config.should_diff = arg.parse()?,
@@ -4081,6 +4087,8 @@ fn build_obj(
 
     match compiler_kind {
         CompilerKind::C => {
+            command.arg("-O0");
+
             if let Some(v) = config.variant_num {
                 command.arg(format!("-DVARIANT={v}"));
             }
@@ -4180,6 +4188,26 @@ fn build_obj(
 
     command.args(compiler_args);
 
+    if config.platform == PlatformKind::Elf
+        && compiler_kind == CompilerKind::C
+        && src_path.extension().is_some_and(|ext| ext != "s")
+    {
+        ensure!(
+            command
+                .get_args()
+                .filter_map(|arg| arg.to_str())
+                .any(is_compilation_mode_flag),
+            "{} (configuration {}): specify an explicit compilation mode in {} or per-input arguments (e.g. -fPIE, -fPIC, or -fno-pie)",
+            src_path.display(),
+            config.config_name,
+            if input_type == InputType::SharedObject {
+                "CompSoArgs"
+            } else {
+                "CompArgs"
+            },
+        );
+    }
+
     verify_path_unique_for_args(&output_path, &command)?;
 
     match compiler_kind {
@@ -4248,6 +4276,30 @@ fn should_emit_colour() -> bool {
     std::io::stdout().is_terminal()
         || std::env::var("CARGO_TERM_COLOR").as_deref() == Ok("always")
         || std::env::var("NEXTEST").is_ok()
+}
+
+fn is_compilation_mode_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-fPIE" | "-fpie" | "-fPIC" | "-fpic" | "-fno-PIE" | "-fno-pie" | "-fno-PIC" | "-fno-pic"
+    )
+}
+
+fn is_output_mode_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-pie"
+            | "--pie"
+            | "-no-pie"
+            | "--no-pie"
+            | "-static"
+            | "-static-pie"
+            | "-shared"
+            | "--shared"
+            | "-Bshareable"
+            | "-r"
+            | "--relocatable"
+    )
 }
 
 fn cmd_path(output_path: &Path) -> PathBuf {
@@ -4857,7 +4909,7 @@ impl LinkCommand {
                                 command.arg("-m").arg(arch.emulation_name());
                             }
 
-                            match direct_config.mode {
+                            match direct_config.mode.unwrap_or_default() {
                                 Mode::Dynamic => {
                                     command
                                         .arg("-dynamic-linker")
@@ -4916,6 +4968,24 @@ impl LinkCommand {
 
             add_inputs_to_command(config, inputs, &mut command);
             command.args(&config.post_linker_args.args);
+
+            if config.platform == PlatformKind::Elf {
+                ensure!(
+                    matches!(
+                        config.linker_driver,
+                        LinkerDriver::Direct(DirectConfig {
+                            mode: Some(Mode::Static),
+                        })
+                    ) || linker_args
+                        .args
+                        .iter()
+                        .chain(&config.post_linker_args.args)
+                        .any(|arg| is_output_mode_flag(arg)),
+                    "{} (configuration {}): specify an explicit output mode in LinkArgs (e.g. -pie, -no-pie, -static, -static-pie, -shared, or -r)",
+                    config.test_name,
+                    config.config_name,
+                );
+            }
         }
 
         if linker.is_wild() {

@@ -12,6 +12,7 @@
 //#ExpectSym:val_hello_world section="helloworld"
 //#ExpectSym:val_hello_dash_world section="helloworld"
 //#ExpectSym:val_hello_baz section="other"
+//#CompArgs:-fPIE
 
 static int val_0 __attribute__((used, section(".mydata.0"))) = 0;
 static int val_1 __attribute__((used, section(".mydata.1"))) = 1;

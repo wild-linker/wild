@@ -17,6 +17,7 @@
 // Different linkers emit different corresponding sections.
 //#DiffIgnore:dynsym.sections_start.section
 //#DiffIgnore:dynsym.sections_end.section
+//#CompArgs:-fPIE
 
 static int foo1 __attribute__((used, section(".data.foo"))) = 0x01;
 

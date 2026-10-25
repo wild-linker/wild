@@ -4,8 +4,11 @@
 
 //#Config:no-pie:default
 //#LinkArgs:-no-pie -znow
+//#CompArgs:-fPIE
 
 //#Config:pie:default
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/ptr_black_box.h"
 #include "../common/runtime.h"

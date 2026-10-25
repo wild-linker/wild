@@ -9,16 +9,21 @@
 //#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:dynamic:default
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:static:default
 //#LinkArgs:-static
 // Static libgcc references R_PPC64_TOC16_DS, which is not decoded yet.
 //#SkipArch:ppc64le
+//#CompArgs:-fPIE
 
 //#Config:compress-debug:default
 //#CompArgs:-g
 //#LinkArgs:-Wl,--compress-debug-sections=zlib
 //#DiffIgnore:section.debug_*
+//#CompArgs:-fPIE
+//#LinkArgs:-pie
 
 //#Config:compress-debug-static:static
 //#CompArgs:-g

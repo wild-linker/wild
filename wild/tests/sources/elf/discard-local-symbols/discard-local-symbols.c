@@ -8,17 +8,23 @@
 //#ExpectSym:.Ltmp0 section=".text"
 //#ExpectSym:local_func section=".text"
 //#NoSym:unused
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:discard-locals:default
 //#LinkArgs:-X
 //#NoSym:.Ltmp0
 //#ExpectSym:local_func section=".text"
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 //#Config:discard-all:default
 //#LinkArgs:-x
 //#NoSym:.Ltmp0
 //#NoSym:local_func
 //#ExpectSym:_start section=".text"
+//#CompArgs:-fPIE
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

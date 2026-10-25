@@ -12,6 +12,7 @@
 //#Config:archive:default
 //#Shared:shlib-archive-activation-1.c
 //#Archive:shlib-archive-activation-2.c
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

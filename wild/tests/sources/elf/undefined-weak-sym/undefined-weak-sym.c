@@ -10,6 +10,7 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:rel.undefined-weak.dynamic.R_X86_64_GLOB_DAT
+//#LinkArgs:-no-pie
 
 #include "../common/runtime.h"
 

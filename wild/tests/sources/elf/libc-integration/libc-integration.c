@@ -28,6 +28,7 @@
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
 //#DiffIgnore:rel.extra-got-plt-got
+//#CompArgs:-fPIE
 
 //#Config:clang-static-pie:default
 //#SkipArch: ppc64le
@@ -51,6 +52,7 @@
 // Seems lld linked binary crashes under QEMU.
 //#SkipArch: loongarch64,riscv64,ppc64le
 //#DiffIgnore:rel.extra-got-plt-got
+//#CompArgs:-fPIE
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
@@ -73,6 +75,7 @@
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
 //#DiffIgnore:section.relro_padding
+//#LinkArgs:-pie
 
 //#Config:clang-global-dynamic:shared
 //#SkipArch: ppc64le
@@ -84,6 +87,7 @@
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
 //#DiffIgnore:section.relro_padding
+//#LinkArgs:-pie
 
 // In addition to testing gcc-dynamic-pie, this also checks -L with a path that does not exist. It's
 // necessary to test this on a test with a linker driver, so that we test that the savedir mechanism
@@ -96,6 +100,7 @@
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
 //#SkipArch: loongarch64, riscv64,ppc64le
+//#LinkArgs:-pie
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
@@ -109,6 +114,7 @@
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
 //#SkipArch: loongarch64, riscv64,ppc64le
+//#CompArgs:-fPIE
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
@@ -117,6 +123,7 @@
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
+//#LinkArgs:-pie
 
 //#Config:gcc-relr:shared
 //#SkipArch: ppc64le
