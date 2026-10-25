@@ -5586,6 +5586,7 @@ impl Assertions {
         verify_no_overlapping_sections(obj)?;
         verify_no_overlapping_segments(obj)?;
         verify_chained_fixups_segment_offsets(obj, bytes)?;
+        verify_macho_zerofill_offsets(obj)?;
         verify_macho_tlv_template_layout(obj)?;
 
         if linker_used.is_wild() {
@@ -7058,6 +7059,33 @@ fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&s
     }
 
     ensure!(checked, "Missing code directory");
+    Ok(())
+}
+
+fn verify_macho_zerofill_offsets(obj: &object::File) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    for section in file.sections() {
+        // Use raw header because file_range() returns None for zero-fill sections regardless of
+        // their offset field.
+        let header = section.macho_section();
+        if matches!(
+            header.flags.get(file.endianness()).typ(),
+            object::macho::S_ZEROFILL
+                | object::macho::S_GB_ZEROFILL
+                | object::macho::S_THREAD_LOCAL_ZEROFILL
+        ) {
+            let offset = header.offset.get(file.endianness());
+            ensure!(
+                offset == 0,
+                "Mach-O zero-fill section `{}` must have file offset zero, got {offset:#x}",
+                section.name()?,
+            );
+        }
+    }
+
     Ok(())
 }
 

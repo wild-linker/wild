@@ -823,7 +823,15 @@ fn write_sections(
         section.sectname[section_name.len()..].zero();
         section.addr.set(LE, size.mem_offset);
         section.size.set(LE, size.mem_size);
-        section.offset.set(LE, size.file_offset as u32);
+        // Zero-fill sections have no file contents, so their header offset must be zero even though
+        // internally we assigned them a position.
+        let file_offset = match section_flags.typ() {
+            object::macho::S_ZEROFILL
+            | object::macho::S_GB_ZEROFILL
+            | object::macho::S_THREAD_LOCAL_ZEROFILL => 0,
+            _ => size.file_offset as u32,
+        };
+        section.offset.set(LE, file_offset);
         section.align.set(LE, u32::from(size.alignment.exponent));
         section.reloff.set(LE, 0);
         section.nreloc.set(LE, 0);
