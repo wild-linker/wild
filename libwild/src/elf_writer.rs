@@ -1281,7 +1281,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         relative_address: u64,
     ) -> Result<u64> {
         if let Some(relr_writer) = &mut self.relr_dyn
-            && place.is_multiple_of(2)
+            && elf::can_encode_relr_address(place)
         {
             let entry = relr_writer
                 .split_off_first_mut()
@@ -1314,10 +1314,8 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             self.output_kind.is_position_independent(),
             "write_address_relocation called when output is not position-independent"
         );
-        // Odd offsets can't be encoded as RELR address entries (LSB used as bitmap
-        // marker), so fall back to RELA for them.
         if let Some(relr_writer) = &mut self.relr_dyn
-            && place.is_multiple_of(2)
+            && elf::can_encode_relr_address(place)
         {
             self.relr_writer.encode(place, |encoded, encoding| {
                 match encoding {

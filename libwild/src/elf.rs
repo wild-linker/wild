@@ -7115,9 +7115,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         if section_is_writable {
             require_address_sized_relocation()?;
 
-            // Odd offsets can't be encoded as RELR address entries (LSB used as
-            // bitmap marker), so fall back to RELA for them.
-            if resources.symbol_db.args.is_relr_enabled() && classified.rel_offset.is_multiple_of(2)
+            if resources.symbol_db.args.is_relr_enabled()
+                && can_encode_relr_address(classified.rel_offset)
             {
                 relr_writer.encode(classified.rel_offset, |_, encoding| {
                     if matches!(encoding, RelrEntryEncoding::New) {
@@ -7254,6 +7253,11 @@ pub(crate) fn needs_dynamic_symbol_size_relocation(
     output_kind: OutputKind,
 ) -> bool {
     flags.is_interposable() && (flags.is_dynamic() || output_kind.is_shared_object())
+}
+
+pub(crate) fn can_encode_relr_address(address: u64) -> bool {
+    // The low bit distinguishes bitmap entries from address entries.
+    address.is_multiple_of(2)
 }
 
 /// Returns true if this GOT entry should go to GOT_RELR (bitmap-packed)
