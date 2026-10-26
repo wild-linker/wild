@@ -7115,8 +7115,7 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         let next_verneed_offset = if object.format_specific.is_last_verneed {
             0
         } else {
-            (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
-                as u32
+            elf::version_need_size(verneed_info.version_count) as u32
         };
 
         ver_need.vn_version.set(e, 1);

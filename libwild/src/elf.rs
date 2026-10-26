@@ -998,11 +998,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         if let Some(v) = &state.format_specific.verneed_info
             && v.version_count > 0
         {
-            memory_offsets.increment(
-                part_id::GNU_VERSION_R,
-                size_of::<crate::elf::Verneed>() as u64
-                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
-            );
+            memory_offsets.increment(part_id::GNU_VERSION_R, version_need_size(v.version_count));
 
             let version_r_layout = resources
                 .section_layouts
@@ -3844,11 +3840,7 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
 
             if version_count > 0 {
                 mem_sizes.increment(part_id::DYNSTR, base_size);
-                mem_sizes.increment(
-                    part_id::GNU_VERSION_R,
-                    size_of::<crate::elf::Verneed>() as u64
-                        + u64::from(version_count) * size_of::<crate::elf::Vernaux>() as u64,
-                );
+                mem_sizes.increment(part_id::GNU_VERSION_R, version_need_size(version_count));
 
                 state.verneed_info = Some(VerneedInfo {
                     defs,
@@ -5811,6 +5803,10 @@ fn verneed_names_by_index<'data, C: ElfClass>(
     }
 
     Ok(version_names)
+}
+
+pub(crate) fn version_need_size(version_count: u16) -> u64 {
+    size_of::<Verneed>() as u64 + u64::from(version_count) * size_of::<Vernaux>() as u64
 }
 
 #[derive(Debug)]
