@@ -5,16 +5,21 @@
 
 //#AbstractConfig:base:common
 //#NoSym:losing_only
+
 //#Config:gc:base
+
 //#Config:dead-reference:base
 //#Object:dead.s
 //#NoSection:.data.unused
+
 //#Config:single-thread:base
 //#WildExtraLinkArgs:--threads=1
 //#Env:WILD_FILES_PER_GROUP=1
+
 //#Config:multiple-threads:base
 //#WildExtraLinkArgs:--threads=4
 //#Env:WILD_FILES_PER_GROUP=2
+
 //#Config:no-gc:base
 //#LinkArgs:--no-gc-sections
 

@@ -13,7 +13,7 @@
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
-//
+
 //#Config:x86_64:default
 //#Arch:x86_64
 //#ExpectSection:.relr.dyn max_entries=2

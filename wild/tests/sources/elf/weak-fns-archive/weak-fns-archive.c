@@ -69,14 +69,17 @@ void _start() {
       //#Variant: 0
       // Functions defined strongly in second file, no strong refs
       0,
+
       //#Config:1:default
       //#Variant: 1
       // Functions defined weakly here then strongly in second, no strong refs
       2 + 8 + 32 + 1 + 16,
+
       //#Config:2:default
       //#Variant: 2
       // Functions defined weakly here then strongly in second, strong ref
       64 + 32 + 4 + 128,
+
       // 3
       0,
       // 4
@@ -87,38 +90,47 @@ void _start() {
       0,
       // 7
       0,
+
       //#Config:8:default
       //#Variant: 8
       // Functions defined weakly in second file, no strong refs
       0,
+
       //#Config:9:default
       //#Variant: 9
       // Functions defined weakly here and in second file, no strong refs
       2 + 8 + 32 + 1 + 16,
+
       //#Config:10:default
       //#Variant: 10
       // Functions defined weakly in second file, strong ref
       64 + 32 + 4 + 128,
+
       // 11
       0,
+
       //#Config:12:default
       //#Variant: 12
       // Functions defined weakly here and in second file, strong ref
       64 + 32 + 4,
+
       // 13
       0,
       // 14
       0,
       // 15
       0,
+
       //#Config:16:default
       //#Variant: 16
       // No weak functions defined in either file
       0,
+
       //#Config:17:default
       //#Variant: 17
       // Functions weakly defined in this file only.
       2 + 8 + 32 + 1 + 16,
+      
       // 18
       0,
       // 19

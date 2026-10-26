@@ -7,6 +7,7 @@
 //#ExpectSection:.group type=17
 
 //#Config:default:base
+
 //#Config:strip-signature:base
 //#LinkArgs:-r --retain-symbols-file=./keep.txt
 

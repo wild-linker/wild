@@ -3,9 +3,11 @@
 //#Compiler:gcc
 //#CompArgs:-Wa,-mrelax-relocations=no
 //#LinkArgs:-pie --no-dynamic-linker -z noexecstack
+
 //#Config:weak:default
 //#CompArgs:-Wa,--defsym,expected=0
 //#ReferenceLinkers:bfd,lld
+
 //#Config:absolute:default
 //#CompArgs:-Wa,--defsym,expected=42
 //#LinkArgs:--defsym target=42

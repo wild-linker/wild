@@ -6,6 +6,7 @@
 //#ReferenceLinkers:lld
 //#RunEnabled:false
 //#LinkArgs:--image-base=0x10000000 --no-gc-sections
+
 //#Config:static:default
 //#ExpectInstructions:.text 0 b .+4; bl .+4; b.eq .+4; tbz x1, #0, .+4; ret
 

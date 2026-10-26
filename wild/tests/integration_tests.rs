@@ -2414,9 +2414,15 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
     let mut configs = Vec::new();
     let mut config_name_to_index = HashMap::new();
     let mut config = default_config.clone();
+    let mut blank_since_directive = true;
 
     for (i, line) in source.lines().enumerate() {
         let line = line.trim();
+
+        if line.is_empty() {
+            blank_since_directive = true;
+        }
+
         let rest = if is_wat {
             line.strip_prefix(";;#")
         } else {
@@ -2424,6 +2430,17 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
         };
 
         if let Some(rest) = rest {
+            if rest.starts_with("Config:") || rest.starts_with("AbstractConfig:") {
+                ensure!(
+                    blank_since_directive,
+                    "Expected a blank line before config at {}:{}",
+                    src_filename.display(),
+                    i + 1
+                );
+            }
+
+            blank_since_directive = false;
+
             process_directive(
                 rest,
                 &mut config,
