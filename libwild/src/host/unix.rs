@@ -133,7 +133,7 @@ pub(crate) mod process {
             let fds = &self.fds;
             unsafe {
                 libc::close(fds[0]);
-                let stream = libc::fdopen(fds[1], "w".as_ptr().cast::<c_char>());
+                let stream = libc::fdopen(fds[1], c"w".as_ptr().cast::<c_char>());
                 let bytes: [u8; 1] = *b"X";
                 libc::fwrite(bytes.as_ptr().cast::<c_void>(), 1, 1, stream);
                 libc::fclose(stream);
@@ -170,7 +170,7 @@ pub(crate) mod process {
             // close our sending end of the pipe
             libc::close(fds[1]);
             // open the other end of the pipe for reading
-            let stream = libc::fdopen(fds[0], "r".as_ptr().cast::<c_char>());
+            let stream = libc::fdopen(fds[0], c"r".as_ptr().cast::<c_char>());
 
             // Wait for child to send a byte via the pipe or for the pipe to be closed.
             let mut response: [u8; 1] = [0u8; 1];
