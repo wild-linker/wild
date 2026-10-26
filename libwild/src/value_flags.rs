@@ -225,6 +225,11 @@ impl ValueFlags {
     }
 
     #[must_use]
+    pub(crate) fn needs_dynamic_symbol_relocation(self) -> bool {
+        self.is_dynamic() || (self.needs_export_dynamic() && self.is_interposable())
+    }
+
+    #[must_use]
     pub(crate) fn needs_got(self) -> bool {
         self.contains(ValueFlags::GOT)
     }

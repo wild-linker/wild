@@ -827,10 +827,8 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             return Ok(());
         }
 
-        let has_dynamic_symbol =
-            res.flags.is_dynamic() || (flags.needs_export_dynamic() && res.flags.is_interposable());
-        let is_got_relr =
-            crate::elf::is_got_relr_eligible(res.flags, has_dynamic_symbol, args, self.output_kind);
+        let has_dynamic_symbol = flags.needs_dynamic_symbol_relocation();
+        let is_got_relr = crate::elf::is_got_relr_eligible(res.flags, args, self.output_kind);
         let got_entry = if is_got_relr {
             self.take_next_got_relr_entry()?
         } else {
@@ -916,9 +914,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if res.flags.is_dynamic()
-            || (res.flags.needs_export_dynamic() && res.flags.is_interposable())
-        {
+        if res.flags.needs_dynamic_symbol_relocation() {
             *got_entry = elf::Word::<C>::from_u64(0)?;
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }

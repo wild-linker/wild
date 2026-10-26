@@ -2096,11 +2096,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         output_kind: OutputKind,
         args: &Self::Args,
     ) {
-        let has_dynamic_symbol =
-            flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
+        let has_dynamic_symbol = flags.needs_dynamic_symbol_relocation();
 
         if flags.needs_got() && !flags.needs_tls_got() {
-            let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
+            let is_got_relr = is_got_relr_eligible(flags, args, output_kind);
             if is_got_relr {
                 mem_sizes.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
             } else {
@@ -2342,9 +2341,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             } else {
                 1
             };
-            let has_dynamic_symbol =
-                flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
-            let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
+            let is_got_relr = is_got_relr_eligible(flags, args, output_kind);
             resolution.format_specific.got_address = if is_got_relr && num_got_entries == 1 {
                 Some(allocate_got_relr::<C>(memory_offsets))
             } else {
@@ -2366,9 +2363,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             resolution.format_specific.got_address =
                 Some(allocate_got::<C>(num_got_slots, memory_offsets));
         } else if flags.needs_got() {
-            let has_dynamic_symbol =
-                flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
-            let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
+            let is_got_relr = is_got_relr_eligible(flags, args, output_kind);
             resolution.format_specific.got_address = if is_got_relr {
                 Some(allocate_got_relr::<C>(memory_offsets))
             } else {
@@ -7232,13 +7227,12 @@ pub(crate) struct SymtabShndxEntry {
 /// rather than GOT (flat RELR or RELA).
 pub(crate) fn is_got_relr_eligible(
     flags: ValueFlags,
-    has_dynamic_symbol: bool,
     args: &ElfArgs,
     output_kind: OutputKind,
 ) -> bool {
     args.is_relr_enabled()
         && !flags.is_ifunc()
-        && !has_dynamic_symbol
+        && !flags.needs_dynamic_symbol_relocation()
         && flags.has_link_time_address()
         && !flags.is_downgraded_to_local()
         && output_kind.is_position_independent()
