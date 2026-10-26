@@ -805,10 +805,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
 
         // For TLS variables, we'll generally only have one of these, but we might have all 3
         // combinations.
-        if flags.needs_got_tls_offset()
-            || flags.needs_got_tls_module()
-            || flags.needs_got_tls_descriptor()
-        {
+        if flags.needs_tls_got() {
             if flags.needs_got_tls_offset() {
                 self.process_got_tls_offset::<A>(
                     res,
