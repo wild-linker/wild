@@ -67,6 +67,11 @@ impl crate::platform::Arch for ElfX86_64 {
         object::elf::EM_X86_64
     }
 
+    fn ifunc_address_uses_plt(output_kind: OutputKind) -> bool {
+        // PC-relative IFUNC references use the PLT, so GOT and data pointers must agree.
+        output_kind.is_executable()
+    }
+
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::x86_64::relocation_from_raw(r_type).with_context(|| {

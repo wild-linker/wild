@@ -7113,7 +7113,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
-        && flags.has_link_time_address()
+        && (flags.has_link_time_address()
+            || (flags.is_ifunc() && A::ifunc_address_uses_plt(symbol_db.output_kind)))
     {
         if section_is_writable {
             // Odd offsets can't be encoded as RELR address entries (LSB used as
@@ -7154,7 +7155,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         *flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
     }
 
-    if flags.is_ifunc() && relocation_needs_got && symbol_db.output_kind.has_fixed_load_address() {
+    if flags.is_ifunc() && relocation_needs_got && A::ifunc_address_uses_plt(symbol_db.output_kind)
+    {
         *flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
     }
 

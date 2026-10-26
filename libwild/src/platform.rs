@@ -133,12 +133,19 @@ pub(crate) trait Arch: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Whether IFUNC address references use the PLT rather than the resolved implementation.
+    fn ifunc_address_uses_plt(output_kind: crate::output_kind::OutputKind) -> bool {
+        output_kind.has_fixed_load_address()
+    }
+
     /// Whether an absolute reference to an ifunc is an IRELATIVE dynamic relocation.
     fn absolute_ifunc_needs_irelative(
         output_kind: crate::output_kind::OutputKind,
         section_is_writable: bool,
     ) -> bool {
-        section_is_writable && output_kind.is_position_independent()
+        section_is_writable
+            && output_kind.is_position_independent()
+            && !Self::ifunc_address_uses_plt(output_kind)
     }
 
     /// Make architecture-specific parsing of the relocation types.

@@ -5216,7 +5216,7 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         write_sysv_hash_table(layout, epilogue, buffers)?;
         write_gnu_hash_tables(layout, epilogue, buffers)?;
 
-        write_dynamic_symbol_definitions(table_writer, layout)?;
+        write_dynamic_symbol_definitions::<C, A>(table_writer, layout)?;
     }
 
     if !layout.format_specific.gnu_property_notes.is_empty() {
@@ -5557,7 +5557,7 @@ fn write_gnu_hash_tables<C: ElfClass>(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions<C: ElfClass>(
+fn write_dynamic_symbol_definitions<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     layout: &ElfLayout<C>,
 ) -> Result {
@@ -5575,7 +5575,7 @@ fn write_dynamic_symbol_definitions<C: ElfClass>(
                 let file_layout = &layout.file_layout(file_id);
                 match file_layout {
                     FileLayout::Object(object) => {
-                        write_regular_object_dynamic_symbol_definition(
+                        write_regular_object_dynamic_symbol_definition::<C, A>(
                             sym_def,
                             object,
                             layout,
@@ -5959,7 +5959,11 @@ fn write_canonical_plt_dynamic_symbol_definition<'data, C: ElfClass>(
     Ok(())
 }
 
-fn write_regular_object_dynamic_symbol_definition<'data, C: ElfClass>(
+fn write_regular_object_dynamic_symbol_definition<
+    'data,
+    C: ElfClass,
+    A: Arch<Platform = elf::Elf<C>>,
+>(
     sym_def: &crate::layout::DynamicSymbolDefinition<elf::Elf<C>>,
     object: &ObjectLayout<'data, elf::Elf<C>>,
     layout: &ElfLayout<C>,
@@ -5992,12 +5996,9 @@ fn write_regular_object_dynamic_symbol_definition<'data, C: ElfClass>(
         )
     })?;
 
-    // For non-PIE executables, export IFUNC symbols as STT_FUNC pointing to PLT stub.
-    // For PIE executables, keep IFUNC as-is.
     if section_index.is_some()
         && resolution.flags.is_ifunc()
-        && layout.symbol_db.output_kind.is_executable()
-        && !layout.symbol_db.output_kind.is_position_independent()
+        && A::ifunc_address_uses_plt(layout.symbol_db.output_kind)
         && let Some(plt_address) = resolution.format_specific.plt_address
     {
         let plt_output_section_id = layout

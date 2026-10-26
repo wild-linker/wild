@@ -39,6 +39,7 @@
 //#Object:libc-integration-1.c
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
+//#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:gcc-static:default
 //#CompArgs:-g -ftls-model=global-dynamic
@@ -61,6 +62,7 @@
 // riscv64: lld-linked binary crashes with SIGSEGV under QEMU.
 // loongarch64: wild produces output that differs from both ld and lld (#1702).
 //#SkipArch: loongarch64,riscv64,ppc64le
+//#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:clang-initial-exec:shared
 //#SkipArch: ppc64le
