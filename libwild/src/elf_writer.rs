@@ -3934,9 +3934,10 @@ fn apply_relocation<
         )?,
         RelocationKind::SymbolSize => {
             if section_info.section_flags.is_alloc()
-                && resolution.flags.is_interposable()
-                && (resolution.flags.is_dynamic()
-                    || layout.symbol_db.output_kind.is_shared_object())
+                && elf::needs_dynamic_symbol_size_relocation(
+                    resolution.flags,
+                    layout.symbol_db.output_kind,
+                )
             {
                 table_writer.write_rela_dyn_general(
                     place,

@@ -7042,8 +7042,7 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
                 .store(true, atomic::Ordering::Relaxed);
         }
     } else if rel_kind == RelocationKind::SymbolSize
-        && flags.is_interposable()
-        && (flags.is_dynamic() || symbol_db.output_kind.is_shared_object())
+        && needs_dynamic_symbol_size_relocation(flags, symbol_db.output_kind)
     {
         if !section_is_writable {
             bail!(
@@ -7248,6 +7247,13 @@ pub(crate) fn got_relocation_kind(flags: ValueFlags, output_kind: OutputKind) ->
 
 pub(crate) fn needs_tls_module_relocation(flags: ValueFlags, output_kind: OutputKind) -> bool {
     !output_kind.is_executable() || flags.is_dynamic()
+}
+
+pub(crate) fn needs_dynamic_symbol_size_relocation(
+    flags: ValueFlags,
+    output_kind: OutputKind,
+) -> bool {
+    flags.is_interposable() && (flags.is_dynamic() || output_kind.is_shared_object())
 }
 
 /// Returns true if this GOT entry should go to GOT_RELR (bitmap-packed)
