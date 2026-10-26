@@ -956,9 +956,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if self.output_kind.is_executable() && !res.flags.is_dynamic() {
-            *got_entry = elf::Word::<C>::from_u64(elf::CURRENT_EXE_TLS_MOD)?;
-        } else {
+        if elf::needs_tls_module_relocation(res.flags, self.output_kind) {
             *got_entry = elf::Word::<C>::from_u64(0)?;
             let dynamic_symbol_index = res
                 .dynamic_symbol_index
@@ -972,6 +970,8 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
                 res.flags
             );
             self.write_dtpmod_relocation::<A>(got_address, dynamic_symbol_index)?;
+        } else {
+            *got_entry = elf::Word::<C>::from_u64(elf::CURRENT_EXE_TLS_MOD)?;
         }
         let offset_entry = self.take_next_got_entry()?;
         if let Some(dynamic_symbol_index) = res.dynamic_symbol_index

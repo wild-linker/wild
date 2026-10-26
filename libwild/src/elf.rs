@@ -2152,9 +2152,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         if flags.needs_got_tls_module() {
             mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
-            // For executables, the TLS module ID is known at link time. For shared objects, we need
-            // a runtime relocation to fill it in.
-            if !output_kind.is_executable() || flags.is_dynamic() {
+            if needs_tls_module_relocation(flags, output_kind) {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             }
             if has_dynamic_symbol {
@@ -7246,6 +7244,10 @@ pub(crate) fn got_relocation_kind(flags: ValueFlags, output_kind: OutputKind) ->
     } else {
         GotRelocationKind::None
     }
+}
+
+pub(crate) fn needs_tls_module_relocation(flags: ValueFlags, output_kind: OutputKind) -> bool {
+    !output_kind.is_executable() || flags.is_dynamic()
 }
 
 /// Returns true if this GOT entry should go to GOT_RELR (bitmap-packed)
