@@ -121,6 +121,7 @@
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
 //!   or 1 if sh_entsize is 0).
+//!   entsize=N: Asserts the ELF section entry size.
 //!   flags=WAX: Asserts the section has the specified section flags.
 //!   type=int: Asserts the section has the specified section type.
 //!   address=int: Asserts the section has the specified address.
@@ -2154,6 +2155,8 @@ struct MemoryImportAssertions {
 #[serde(deny_unknown_fields)]
 struct SectionAssertions {
     max_entries: Option<u64>,
+
+    entsize: Option<u64>,
 
     #[serde(deserialize_with = "SectionFlags::deserialize", default)]
     flags: Option<SectionFlags>,
@@ -5602,7 +5605,7 @@ impl Assertions {
                 Self::verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
                 Self::verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_program_headers(&elf_obj)?;
-                self.verify_section_max_entries(&elf_obj)?;
+                self.verify_section_entry_sizes(&elf_obj)?;
             }
             _ => bail!("Unsupported object file format"),
         }
@@ -6172,30 +6175,44 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_section_max_entries(
+    fn verify_section_entry_sizes(
         &self,
         obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
     ) -> Result {
         for expected in &self.expected_sections {
-            let Some(max_entries) = expected.assertions.max_entries else {
+            if expected.assertions.max_entries.is_none() && expected.assertions.entsize.is_none() {
                 continue;
-            };
+            }
+
             let section = obj
                 .section_by_name(&expected.section_name)
                 .with_context(|| format!("Section `{}` not found", expected.section_name))?;
-            let size = section.size();
             let entry_size = section.elf_section_header().sh_entsize.get(obj.endian());
-            let entry_size = if entry_size == 0 { 1 } else { entry_size };
-            let actual_entries = size / entry_size;
-            ensure!(
-                actual_entries <= max_entries,
-                "Section `{}` has {} entries, expected at most {}. \
-                Bitmap packing may not be working correctly.",
-                expected.section_name,
-                actual_entries,
-                max_entries,
-            );
+
+            if let Some(expected_entsize) = expected.assertions.entsize {
+                ensure!(
+                    entry_size == expected_entsize,
+                    "Section `{}` entry size mismatch: expected {}, got {}",
+                    expected.section_name,
+                    expected_entsize,
+                    entry_size,
+                );
+            }
+
+            if let Some(max_entries) = expected.assertions.max_entries {
+                let entry_size = if entry_size == 0 { 1 } else { entry_size };
+                let actual_entries = section.size() / entry_size;
+                ensure!(
+                    actual_entries <= max_entries,
+                    "Section `{}` has {} entries, expected at most {}. \
+                    Bitmap packing may not be working correctly.",
+                    expected.section_name,
+                    actual_entries,
+                    max_entries,
+                );
+            }
         }
+
         Ok(())
     }
 

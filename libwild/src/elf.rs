@@ -871,6 +871,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             flags: header.sh_flags(LittleEndian),
             ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize(LittleEndian).into(),
+            has_input_sections: true,
             overrides: Default::default(),
             class: PhantomData,
         }
@@ -1564,6 +1565,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     flags: d.section_flags,
                     ty: d.ty,
                     entsize: d.element_size,
+                    has_input_sections: false,
                     overrides: Default::default(),
                     class: PhantomData,
                 },
@@ -5591,6 +5593,7 @@ pub(crate) struct SectionAttributes<C: ElfClass> {
     pub(crate) flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) entsize: u64,
+    has_input_sections: bool,
     pub(crate) overrides: LinkerScriptOverrides,
     class: PhantomData<C>,
 }
@@ -5610,7 +5613,16 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
     type Platform = Elf<C>;
 
     fn merge(&mut self, rhs: Self) {
-        self.flags |= rhs.flags;
+        let intersected_flags = shf::MERGE | shf::STRINGS;
+
+        let common_flags = if self.has_input_sections {
+            self.flags & rhs.flags
+        } else {
+            rhs.flags
+        };
+
+        self.flags = (self.flags | rhs.flags).without(intersected_flags)
+            | (common_flags & intersected_flags);
 
         // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
         // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
@@ -5618,23 +5630,33 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
 
         // If all input sections specify the same entsize, then we use that. If there's any
         // inconsistency, then we set entsize to 0.
-        if self.entsize != rhs.entsize {
+        if !self.has_input_sections {
+            self.entsize = rhs.entsize;
+        } else if self.entsize != rhs.entsize {
             self.entsize = 0;
+        }
+
+        self.has_input_sections = true;
+
+        if self.entsize == 0 {
+            self.flags = self.flags.without(intersected_flags);
         }
     }
 
     fn apply(&self, output_sections: &mut OutputSections<Elf<C>>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
-        info.section_attributes.flags |= self.flags.without(
+        let mut attributes = *self;
+
+        attributes.flags = attributes.flags.without(
             SECTION_FLAGS_PROPAGATION_MASK | info.section_attributes.overrides.avoid_progpogation,
         );
 
-        info.section_attributes.entsize = self.entsize;
-
-        if !info.section_attributes.overrides.has_fixed_type {
-            info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
+        if info.section_attributes.overrides.has_fixed_type {
+            attributes.ty = info.section_attributes.ty;
         }
+
+        info.section_attributes.merge(attributes);
 
         if let SectionKind::Secondary(primary_id) = info.kind
             && info.location_info.is_some()
