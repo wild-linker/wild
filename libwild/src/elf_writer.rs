@@ -827,46 +827,48 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             return Ok(());
         }
 
-        let has_dynamic_symbol = flags.needs_dynamic_symbol_relocation();
         let is_got_relr = crate::elf::is_got_relr_eligible(res.flags, args, self.output_kind);
         let got_entry = if is_got_relr {
             self.take_next_got_relr_entry()?
         } else {
             self.take_next_got_entry()?
         };
-        if res.flags.needs_canonical_plt() {
-            *got_entry = elf::Word::<C>::from_u64(0)?;
-            self.write_jump_slot_relocation::<A>(got_address, res.dynamic_symbol_index()?)?;
-        } else if has_dynamic_symbol {
-            *got_entry = elf::Word::<C>::from_u64(0)?;
-            debug_assert_bail!(
-                compute_allocations::<elf::Elf<C>>(res, self.output_kind, args)
-                    .get(part_id::RELA_DYN_GENERAL)
-                    > 0,
-                "Tried to write glob-dat with no allocation. {}",
-                res.flags
-            );
-            self.write_dynamic_symbol_relocation::<A>(
-                got_address,
-                0,
-                res.dynamic_symbol_index()?,
-                DynamicRelocationKind::GotEntry,
-            )?;
-        } else if res.flags.is_ifunc() {
-            *got_entry = elf::Word::<C>::from_u64(0)?;
-            self.write_ifunc_relocation::<A>(res)?;
-        } else {
-            let value = if is_got_relr {
-                // GOT_RELR entries are bitmap-packed by write_got_relr_bitmap — just store value.
-                res.raw_value
-            } else if res.flags.has_link_time_address()
-                && self.output_kind.is_position_independent()
-            {
-                self.write_relr_entry_flat::<A>(got_address, res.raw_value)?
-            } else {
-                res.raw_value
-            };
-            *got_entry = elf::Word::<C>::from_u64(value)?;
+        match elf::got_relocation_kind(flags, self.output_kind) {
+            elf::GotRelocationKind::JumpSlot => {
+                *got_entry = elf::Word::<C>::from_u64(0)?;
+                self.write_jump_slot_relocation::<A>(got_address, res.dynamic_symbol_index()?)?;
+            }
+            elf::GotRelocationKind::DynamicSymbol => {
+                *got_entry = elf::Word::<C>::from_u64(0)?;
+                debug_assert_bail!(
+                    compute_allocations::<elf::Elf<C>>(res, self.output_kind, args)
+                        .get(part_id::RELA_DYN_GENERAL)
+                        > 0,
+                    "Tried to write glob-dat with no allocation. {}",
+                    res.flags
+                );
+                self.write_dynamic_symbol_relocation::<A>(
+                    got_address,
+                    0,
+                    res.dynamic_symbol_index()?,
+                    DynamicRelocationKind::GotEntry,
+                )?;
+            }
+            elf::GotRelocationKind::Ifunc => {
+                *got_entry = elf::Word::<C>::from_u64(0)?;
+                self.write_ifunc_relocation::<A>(res)?;
+            }
+            elf::GotRelocationKind::Relative => {
+                let value = if is_got_relr {
+                    res.raw_value
+                } else {
+                    self.write_relr_entry_flat::<A>(got_address, res.raw_value)?
+                };
+                *got_entry = elf::Word::<C>::from_u64(value)?;
+            }
+            elf::GotRelocationKind::None => {
+                *got_entry = elf::Word::<C>::from_u64(res.raw_value)?;
+            }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
             // `.TOC.` is the start of the GOT. The allocation check calls this without a layout;

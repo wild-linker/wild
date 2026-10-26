@@ -2108,20 +2108,22 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             if flags.needs_plt() {
                 mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
             }
-            if flags.needs_canonical_plt() {
-                mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
-            } else if has_dynamic_symbol {
-                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-            } else if flags.is_ifunc() {
-                mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
-            } else if flags.has_link_time_address() && output_kind.is_position_independent() {
-                if args.is_relr_enabled() && !is_got_relr {
-                    // Flat RELR for section boundary symbols (not bitmap-packed)
-                    mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
-                } else if !args.is_relr_enabled() {
-                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
+            match got_relocation_kind(flags, output_kind) {
+                GotRelocationKind::JumpSlot | GotRelocationKind::Ifunc => {
+                    mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
                 }
-                // is_got_relr=true: RELR entries counted by post_compute_sizes
+                GotRelocationKind::DynamicSymbol => {
+                    mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+                }
+                GotRelocationKind::Relative => {
+                    if args.is_relr_enabled() && !is_got_relr {
+                        mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
+                    } else if !args.is_relr_enabled() {
+                        mem_sizes.increment(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
+                    }
+                    // Bitmap-packed GOT relocations are counted by post_compute_sizes.
+                }
+                GotRelocationKind::None => {}
             }
 
             if flags.needs_canonical_plt_got_for_address() {
@@ -7221,6 +7223,29 @@ pub(crate) struct ResolutionExt {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SymtabShndxEntry {
     pub(crate) _shndx: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GotRelocationKind {
+    None,
+    JumpSlot,
+    DynamicSymbol,
+    Ifunc,
+    Relative,
+}
+
+pub(crate) fn got_relocation_kind(flags: ValueFlags, output_kind: OutputKind) -> GotRelocationKind {
+    if flags.needs_canonical_plt() {
+        GotRelocationKind::JumpSlot
+    } else if flags.needs_dynamic_symbol_relocation() {
+        GotRelocationKind::DynamicSymbol
+    } else if flags.is_ifunc() {
+        GotRelocationKind::Ifunc
+    } else if flags.has_link_time_address() && output_kind.is_position_independent() {
+        GotRelocationKind::Relative
+    } else {
+        GotRelocationKind::None
+    }
 }
 
 /// Returns true if this GOT entry should go to GOT_RELR (bitmap-packed)
