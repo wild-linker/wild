@@ -7014,6 +7014,18 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     let flags_to_add = &mut classified.flags_to_add;
     let rel_kind = classified.rel_kind;
 
+    let require_address_sized_relocation = || -> Result {
+        ensure!(
+            classified.rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as u8),
+            "Relocation {} against symbol `{}` cannot use a runtime address relocation: \
+             a full {}-byte address field is required",
+            A::rel_type_to_string(r_type),
+            symbol_db.symbol_name_for_display(symbol_id),
+            C::ADDRESS_SIZE,
+        );
+        Ok(())
+    };
+
     if !section_flags.is_alloc() {
         // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
     } else if rel_kind.is_tls() {
@@ -7063,13 +7075,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         let is_narrow_absolute = rel_kind == RelocationKind::Absolute
             && classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8);
 
-        if is_narrow_absolute && symbol_db.output_kind.is_position_independent() {
-            bail!(
-                "relocation {} cannot be used against symbol `{}` in position-independent output; \
-                recompile with -fPIC",
-                A::rel_type_to_string(r_type),
-                symbol_db.symbol_name_for_display(symbol_id),
-            );
+        if rel_kind == RelocationKind::Absolute && symbol_db.output_kind.is_position_independent() {
+            require_address_sized_relocation()?;
         }
 
         let needs_plt_for_call = classified.rel_size.is_ppc64_branch() && !flags.is_ifunc();
@@ -7100,13 +7107,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         && rel_kind == RelocationKind::Absolute
         && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
     {
-        if classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8) {
-            bail!(
-                "Relocation {} against ifunc `{}` is narrower than an address",
-                A::rel_type_to_string(r_type),
-                resources.symbol_db.symbol_name_for_display(symbol_id),
-            );
-        }
+        require_address_sized_relocation()?;
+
         if !section_is_writable {
             resources.has_textrel.store(true, atomic::Ordering::Relaxed);
         }
@@ -7116,6 +7118,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         && flags.has_link_time_address()
     {
         if section_is_writable {
+            require_address_sized_relocation()?;
+
             // Odd offsets can't be encoded as RELR address entries (LSB used as
             // bitmap marker), so fall back to RELA for them.
             if resources.symbol_db.args.is_relr_enabled() && classified.rel_offset.is_multiple_of(2)

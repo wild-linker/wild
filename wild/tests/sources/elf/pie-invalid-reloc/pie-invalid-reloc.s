@@ -5,7 +5,7 @@
 //#Shared:pie-invalid-reloc-dso.s
 //#LinkArgs:-pie --no-gc-sections
 //#ExpectError:R_X86_64_32
-//#ExpectErrorWild:R_X86_64_32.*cannot be used.*recompile with -fPIC
+//#ExpectErrorWild:R_X86_64_32.*cannot use a runtime address relocation.*full 8-byte address field
 .globl _start
 _start:
   ret

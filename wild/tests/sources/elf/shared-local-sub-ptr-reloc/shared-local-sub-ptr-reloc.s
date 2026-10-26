@@ -2,7 +2,7 @@
 //#Mode:dynamic
 //#LinkArgs:-shared --no-gc-sections
 //#ExpectError:R_X86_64_8
-//#ExpectErrorWild:R_X86_64_8.*cannot be used when making a shared object
+//#ExpectErrorWild:R_X86_64_8.*cannot use a runtime address relocation.*full 8-byte address field
 
 .data
 local_byte:
