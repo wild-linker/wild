@@ -55,10 +55,11 @@ to edit the `run-with` script to change / delete these flags. This will make com
 linkers fairer, since some of these unsupported flags may involve other linkers doing significant
 amounts of extra work.
 
-### Run benchmark with hyperfine
+### Run benchmarks with hyperfine
 
 Let's benchmark the linking stage between `ld`, `mold` and `wild`, discarding the first two runs of
-each to reduce the effects of cache warmup. We also enable all available metrics (introduced in hyperfine 2.0):
+each linker to reduce the effects of cache warmup. We also enable all available metrics (introduced
+in hyperfine 2.0):
 
 ```shell
 hyperfine --warmup 2 --conclude 'sleep 0.1' --metrics=all './ripgrep.release/run-with wild' './ripgrep.release/run-with ld' './ripgrep.release/run-with mold'
@@ -109,8 +110,8 @@ Benchmark 3: ./ripgrep.release/run-with mold (17 runs)
 
 NOTE: Both `mold` and `wild` fork a child process and perform linking in it. Thus, the values for
 `Memory`, `User time` and `System time` are for the parent process only, and hence are not representative of
-real use by the linker. To avoid this problem, pass `--no-fork` to mold and wild. That's why we selected
-the `--conclude` for ensuring there's no overlapping run of either `wild` or `mold`.
+real use by the linker. To avoid this problem, pass `--no-fork` to mold and wild. We use `--conclude 'sleep 0.1'`
+to reduce the risk of successive runs overlapping.
 
 ### Comparisons
 
