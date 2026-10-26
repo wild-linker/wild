@@ -58,89 +58,59 @@ amounts of extra work.
 ### Run benchmark with hyperfine
 
 Let's benchmark the linking stage between `ld`, `mold` and `wild`, discarding the first two runs of
-each to reduce the effects of cache warmup
+each to reduce the effects of cache warmup. We also enable all available metrics (introduced in hyperfine 2.0):
 
 ```shell
-hyperfine --warmup 2 '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with wild'
+hyperfine --warmup 2 --conclude 'sleep 0.1' --metrics=all './ripgrep.release/run-with wild' './ripgrep.release/run-with ld' './ripgrep.release/run-with mold'
 ```
 
 That should produce output similar to this (with different values):
 
 ```text
-Benchmark 1: /tmp/wild/ripgrep/6/run-with ld
-  Time (mean ± σ):     954.1 ms ±  13.6 ms    [User: 683.4 ms, System: 268.8 ms]
-  Range (min … max):   920.6 ms … 970.7 ms    10 runs
- 
-Benchmark 2: /tmp/wild/ripgrep/6/run-with mold
-  Time (mean ± σ):     146.1 ms ±   3.6 ms    [User: 52.0 ms, System: 2.4 ms]
-  Range (min … max):   139.1 ms … 154.7 ms    19 runs
- 
-Benchmark 3: /tmp/wild/ripgrep/6/run-with wild
-  Time (mean ± σ):      87.7 ms ±   2.8 ms    [User: 2.4 ms, System: 2.0 ms]
-  Range (min … max):    81.5 ms …  92.5 ms    34 runs
- 
-Summary
-  /tmp/wild/ripgrep/6/run-with wild ran
-    1.67 ± 0.07 times faster than /tmp/wild/ripgrep/6/run-with mold
-   10.88 ± 0.38 times faster than /tmp/wild/ripgrep/6/run-with ld
-```
+Benchmark 1: ./ripgrep.release/run-with wild (22 runs)
+                       mean     ±       σ          min     …     max
+  Wall Time            30.7 ms  ±     3.5 ms      22.5 ms  …    36.1 ms
+  CPU time              4.1 ms  ±     0.2 ms       3.5 ms  …     4.4 ms
+  User time             2.0 ms  ±     0.7 ms       0.6 ms  …     3.3 ms
+  System time           2.1 ms  ±     0.8 ms       0.7 ms  …     3.6 ms
+  Memory                5.1 MiB ±     0.1 MiB      4.9 MiB …     5.3 MiB
+  CPU cycles          574.2 M   ±    94.5 M      437.4 M   …   860.7 M
+  Instructions        596.8 M   ±    11.0 M      576.6 M   …   617.8 M
+  Cache references     18.6 M   ±     0.5 M       17.5 M   …    19.4 M
+  Cache misses          3.2 M   ±     0.2 M        2.7 M   …     3.4 M
+  Branch misses         1.6 M   ±     0.0 M        1.5 M   …     1.6 M
 
-### Run benchmark with poop
+Benchmark 2: ./ripgrep.release/run-with ld (10 runs)
+                       mean     ±       σ          min     …     max
+  Wall Time           377.8 ms  ±     3.4 ms     373.2 ms  …   384.1 ms         +1130.2%  (12.3x slower)
+  CPU time            375.9 ms  ±     3.5 ms     371.7 ms  …   382.4 ms         +9085.8%  (91.9x slower)
+  User time           219.4 ms  ±     7.3 ms     212.2 ms  …   233.9 ms        +11095.2%  (112.0x slower)
+  System time         156.5 ms  ±     5.5 ms     148.5 ms  …   165.9 ms         +7239.3%  (73.4x slower)
+  Memory              102.0 MiB ±     0.2 MiB    101.9 MiB …   102.4 MiB        +1896.9%  (20.0x more)
+  CPU cycles          896.1 M   ±     8.5 M      885.6 M   …   914.7 M            +56.1%  (1.6x more)
+  Instructions       1593.1 M   ±     0.0 M     1593.1 M   …  1593.1 M           +166.9%  (2.7x more)
+  Cache references     69.4 M   ±     0.4 M       68.6 M   …    70.0 M           +272.2%  (3.7x more)
+  Cache misses          6.8 M   ±     0.0 M        6.7 M   …     6.8 M           +111.2%  (2.1x more)
+  Branch misses         5.9 M   ±     0.0 M        5.9 M   …     5.9 M           +271.0%  (3.7x more)
 
-An alternative tool to hyperfine, that reports some additional metrics is [
-`poop`](https://github.com/andrewrk/poop).
-
-Like hyperfine it takes a number of commands and runs each a number of times and gathers statistics
-about each tune.
-
-```shell
-poop '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with wild'
-```
-
-It should produce output similar to this (with different numbers!):
-
-```text
-Benchmark 1 (5 runs): /tmp/wild/ripgrep/6/run-with ld
-  measurement          mean ± σ            min … max           outliers         delta
-  wall_time          1.18s  ±  335ms     926ms … 1.68s           0 ( 0%)        0%
-  peak_rss            288MB ±  276KB     287MB …  288MB          1 (20%)        0%
-  cpu_cycles         2.51G  ±  341M     2.28G  … 3.06G           0 ( 0%)        0%
-  instructions       3.93G  ± 9.54K     3.93G  … 3.93G           0 ( 0%)        0%
-  cache_references   98.7M  ± 2.59M     96.4M  …  102M           0 ( 0%)        0%
-  cache_misses       41.9M  ± 2.52M     40.3M  … 46.3M           0 ( 0%)        0%
-  branch_misses      9.77M  ±  223K     9.62M  … 10.2M           0 ( 0%)        0%
-
-Benchmark 2 (31 runs): /tmp/wild/ripgrep/6/run-with mold
-  measurement          mean ± σ            min … max           outliers         delta
-  wall_time           165ms ± 27.2ms     149ms …  280ms          2 ( 6%)        ⚡- 86.0% ±  9.9%
-  peak_rss           7.84MB ± 96.3KB    7.60MB … 8.00MB         11 (35%)        ⚡- 97.3% ±  0.0%
-  cpu_cycles         2.01G  ± 38.6M     1.97G  … 2.16G           2 ( 6%)        ⚡- 19.9% ±  4.8%
-  instructions       1.99G  ± 3.12M     1.98G  … 1.99G           3 (10%)        ⚡- 49.3% ±  0.1%
-  cache_references   44.8M  ±  250K     44.4M  … 45.6M           1 ( 3%)        ⚡- 54.6% ±  0.9%
-  cache_misses       21.6M  ±  461K     21.3M  … 23.6M           3 (10%)        ⚡- 48.4% ±  2.3%
-  branch_misses      7.17M  ± 37.7K     7.07M  … 7.25M           1 ( 3%)        ⚡- 26.6% ±  0.8%
-
-Benchmark 3 (56 runs): /tmp/wild/ripgrep/6/run-with wild
-  measurement          mean ± σ            min … max           outliers         delta
-  wall_time          89.1ms ± 3.14ms    83.0ms … 96.6ms          0 ( 0%)        ⚡- 92.4% ±  7.0%
-  peak_rss           3.82MB ± 50.7KB    3.80MB … 3.93MB         10 (18%)        ⚡- 98.7% ±  0.0%
-  cpu_cycles         1.26G  ± 15.1M     1.21G  … 1.31G           7 (13%)        ⚡- 49.6% ±  3.4%
-  instructions       1.21G  ±  529K     1.21G  … 1.22G           5 ( 9%)        ⚡- 69.1% ±  0.0%
-  cache_references   33.9M  ±  467K     32.9M  … 34.9M           0 ( 0%)        ⚡- 65.7% ±  0.8%
-  cache_misses       14.4M  ±  187K     14.1M  … 14.9M           0 ( 0%)        ⚡- 65.6% ±  1.5%
-  branch_misses      3.49M  ± 7.86K     3.47M  … 3.51M           0 ( 0%)        ⚡- 64.2% ±  0.6%
+Benchmark 3: ./ripgrep.release/run-with mold (17 runs)
+                       mean     ±       σ          min     …     max
+  Wall Time            67.0 ms  ±     1.9 ms      61.8 ms  …    70.0 ms          +118.1%  (2.2x slower)
+  CPU time              4.8 ms  ±     0.2 ms       4.5 ms  …     5.1 ms           +16.8%
+  User time             1.9 ms  ±     0.7 ms       0.9 ms  …     3.0 ms            -4.1%
+  System time           2.9 ms  ±     0.8 ms       1.7 ms  …     4.2 ms           +36.1%  (1.4x slower)
+  Memory                9.5 MiB ±     0.1 MiB      9.3 MiB …     9.6 MiB          +85.1%  (1.9x more)
+  CPU cycles          970.2 M   ±    91.5 M      775.3 M   …  1084.2 M            +69.0%  (1.7x more)
+  Instructions        638.4 M   ±    14.1 M      613.6 M   …   658.5 M             +7.0%
+  Cache references     29.2 M   ±     0.9 M       27.4 M   …    31.7 M            +56.9%  (1.6x more)
+  Cache misses          5.4 M   ±     0.3 M        4.9 M   …     5.7 M            +69.5%  (1.7x more)
+  Branch misses         2.1 M   ±     0.1 M        2.0 M   …     2.1 M            +29.0%
 ```
 
 NOTE: Both `mold` and `wild` fork a child process and perform linking in it. Thus, the values for
-`peak_rss`, `User` and `System` are for the parent process only, and hence are not representative of
-real use by the linker. To avoid this problem, pass `--no-fork` to mold and wild.
-
-NOTE: `poop` uses the first command as the reference the others are compared against, so if focusing
-on wild, you might want to re-order the commands and invoke `poop` thus:
-
-```text
-poop '/tmp/wild/ripgrep/6/run-with wild' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with ld'
-```
+`Memory`, `User time` and `System time` are for the parent process only, and hence are not representative of
+real use by the linker. To avoid this problem, pass `--no-fork` to mold and wild. That's why we selected
+the `--conclude` for ensuring there's no overlapping run of either `wild` or `mold`.
 
 ### Comparisons
 
@@ -243,12 +213,6 @@ You should now have a few subdirectories under `/tmp/rustc-link`. You can identi
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
 If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to link.
-
-### Other tools
-
-* [poop](https://github.com/andrewrk/poop) - gives a lot of measurements other than just time. Note
-  that the `peak_rss` measurement won't be accurate for wild and mold unless you include the
-  `--no-fork` argument to the linker.
 
 ## Profiling
 
