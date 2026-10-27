@@ -26,10 +26,10 @@ use winnow::token::take_until;
 use winnow::token::take_while;
 
 /// Checks if we need to prefix `input_path` with the sysroot. If we do, then returns the resulting
-/// path. Otherwise, returns `None`. `linker_script_path` and `sysroot` should be canonical,
-/// absolute paths, otherwise we might not apply the sysroot when we actually should.
+/// path. Otherwise, returns `None`. `script_is_in_sysroot` indicates whether the physical
+/// script path is inside the sysroot; `sysroot` supplies the prefix for logical input paths.
 pub(crate) fn maybe_apply_sysroot(
-    linker_script_path: &Path,
+    script_is_in_sysroot: bool,
     input_path: &Path,
     sysroot: Option<&Path>,
 ) -> Option<Box<Path>> {
@@ -37,9 +37,7 @@ pub(crate) fn maybe_apply_sysroot(
         return Some(forced);
     }
     let sysroot = sysroot?;
-    debug_assert!(linker_script_path.is_absolute());
-    debug_assert!(sysroot.is_absolute());
-    if linker_script_path.starts_with(sysroot) {
+    if script_is_in_sysroot {
         Some(Box::from(sysroot.join(input_path.strip_prefix("/").ok()?)))
     } else {
         None
@@ -1650,99 +1648,59 @@ mod tests {
         let sysroot = Path::new("/usr/aarch64-linux-gnu");
         // Linker script is located in the sysroot
         assert_equal(
-            maybe_apply_sysroot(
-                &sysroot.join("lib/libc.so"),
-                Path::new("/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(true, Path::new("/lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Linker script is not located in the sysroot
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(false, Path::new("/lib/libc.so.6"), Some(sysroot)),
             None,
         );
         // Sysroot enforced by `=/` when script is in sysroot
         assert_equal(
-            maybe_apply_sysroot(
-                &sysroot.join("lib/libc.so"),
-                Path::new("=/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(true, Path::new("=/lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `$SYSROOT` when script is in sysroot
         assert_equal(
-            maybe_apply_sysroot(
-                &sysroot.join("lib/libc.so"),
-                Path::new("$SYSROOT/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(true, Path::new("$SYSROOT/lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `=/` when script is not in sysroot
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("=/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(false, Path::new("=/lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `=`
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("=lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(false, Path::new("=lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `$SYSROOT`
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("$SYSROOT/lib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(false, Path::new("$SYSROOT/lib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `$SYSROOT`
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("$SYSROOTlib/libc.so.6"),
-                Some(sysroot),
-            ),
+            maybe_apply_sysroot(false, Path::new("$SYSROOTlib/libc.so.6"), Some(sysroot)),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Forced sysroot without sysroot configured (default empty sysroot)
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("=/lib/libc.so.6"),
-                None,
-            ),
+            maybe_apply_sysroot(false, Path::new("=/lib/libc.so.6"), None),
             Some(Box::from(Path::new("/lib/libc.so.6"))),
         );
         assert_equal(
-            maybe_apply_sysroot(Path::new("/lib/libc.so"), Path::new("=lib/libc.so.6"), None),
+            maybe_apply_sysroot(false, Path::new("=lib/libc.so.6"), None),
             Some(Box::from(Path::new("lib/libc.so.6"))),
         );
         assert_equal(
-            maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
-                Path::new("$SYSROOT/lib/libc.so.6"),
-                None,
-            ),
+            maybe_apply_sysroot(false, Path::new("$SYSROOT/lib/libc.so.6"), None),
             Some(Box::from(Path::new("/lib/libc.so.6"))),
         );
         assert_equal(
-            maybe_apply_sysroot(Path::new("/lib/libc.so"), Path::new("/lib/libc.so.6"), None),
+            maybe_apply_sysroot(false, Path::new("/lib/libc.so.6"), None),
             None,
         );
     }
