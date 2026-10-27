@@ -694,7 +694,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_input(value);
             args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
@@ -1048,6 +1048,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_output(value);
             args.common.output = Arc::from(Path::new(value));
             Ok(())
         });
@@ -1606,7 +1607,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 );
                 return Ok(());
             }
-            args.common_mut().save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_input(value);
             args.common_mut().add_script(value);
             Ok(())
         });
@@ -1625,6 +1626,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("export-dynamic-symbol-list")
         .help("Export dynamic symbol list")
         .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_file(value);
             args.export_list_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1635,6 +1637,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Read the dynamic symbol list from a file")
         .execute(|args, _modifier_stack, value| {
             args.b_symbolic = BSymbolicKind::All;
+            args.common_mut().save_dir.handle_file(value);
             args.export_list_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1809,6 +1812,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             One symbol per line.",
         )
         .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_file(value);
             args.strip = Strip::Retain(PathBuf::from(value));
             Ok(())
         });
