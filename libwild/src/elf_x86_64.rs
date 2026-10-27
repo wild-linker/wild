@@ -37,8 +37,8 @@ pub(crate) struct ElfX86_64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
-    0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
-    0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
+    0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // jmp *{relative GOT address}(%rip)
+    0x66, 0x0f, 0x1f, 0x44, 0x0, 0x0, // nopw 0x0(%rax,%rax,1)
 ];
 
 const _ASSERTS: () = {
@@ -117,10 +117,10 @@ impl crate::platform::Arch for ElfX86_64 {
         plt_address: u64,
     ) -> crate::error::Result {
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        let offset: i32 = (got_address.wrapping_sub(plt_address + 0xb) as i64)
+        let offset: i32 = (got_address.wrapping_sub(plt_address + 10) as i64)
             .try_into()
             .context("PLT is more than 2GiB away from GOT")?;
-        plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
+        plt_entry[6..10].copy_from_slice(&offset.to_le_bytes());
         Ok(())
     }
 
