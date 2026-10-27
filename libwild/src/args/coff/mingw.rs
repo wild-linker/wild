@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::arch::Architecture;
 use crate::args::ArgumentParser;
 use crate::args::Input;
