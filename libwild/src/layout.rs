@@ -236,6 +236,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .flatten()
         .collect();
 
+    P::adjust_empty_linker_script_section_flags(
+        &linker_scripts,
+        &mut output_sections,
+        &gc_outputs.must_keep_sections,
+    );
+
     let mut location_counters = Vec::new();
     for script in &linker_scripts {
         location_counters.extend(script.parsed.location_counters.iter().cloned());
