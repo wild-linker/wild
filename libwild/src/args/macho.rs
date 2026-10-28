@@ -1,3 +1,4 @@
+use crate::FileSystem;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
@@ -25,6 +26,7 @@ pub struct MachOArgs {
     pub(crate) platform_version: Option<PlatformVersion>,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
+    /// Explicit -F paths, before sysroot resolution and platform defaults.
     pub(crate) framework_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
@@ -150,8 +152,28 @@ impl platform::Args for MachOArgs {
         &self.lib_search_path
     }
 
-    fn framework_search_path(&self) -> &[Box<Path>] {
-        &self.framework_search_path
+    fn resolve_framework_search_path(&self, file_system: &impl FileSystem) -> Vec<Box<Path>> {
+        let mut paths = self.framework_search_path.clone();
+        if let Some(sysroot) = self.sysroot.as_deref() {
+            for path in &mut paths {
+                if let Ok(relative) = path.strip_prefix("/") {
+                    let rooted = sysroot.join(relative);
+                    // Match other linkers - an existing SDK directory replaces the host directory,
+                    // even when it doesn't contain the requested framework.
+                    if file_system.is_dir(&rooted) {
+                        *path = rooted.into_boxed_path();
+                    }
+                }
+            }
+        }
+
+        // Standard paths always use the sysroot, without falling back to host directories.
+        let root = self.sysroot.as_deref().unwrap_or(Path::new("/"));
+        paths.extend(
+            ["Library/Frameworks", "System/Library/Frameworks"]
+                .map(|path| root.join(path).into_boxed_path()),
+        );
+        paths
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
@@ -214,26 +236,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
-
-    if let Some(sysroot) = args.sysroot.as_deref() {
-        for path in &mut args.framework_search_path {
-            if let Ok(relative) = path.strip_prefix("/") {
-                let rooted = sysroot.join(relative);
-                if rooted.is_dir() {
-                    *path = rooted.into_boxed_path();
-                }
-            }
-        }
-    }
-
-    let standard_framework_paths = ["Library/Frameworks", "System/Library/Frameworks"];
-    args.framework_search_path
-        .extend(standard_framework_paths.map(|path| {
-            args.sysroot.as_deref().map_or_else(
-                || PathBuf::from("/").join(path).into_boxed_path(),
-                |sysroot| sysroot.join(path).into_boxed_path(),
-            )
-        }));
 
     args.common.report_unrecognized()?;
 
@@ -568,12 +570,7 @@ mod tests {
                 .iter()
                 .map(|path| path.as_ref())
                 .collect::<Vec<_>>(),
-            [
-                Path::new("/foo/frameworks"),
-                Path::new("/bar/frameworks"),
-                Path::new("/foo/bar/Library/Frameworks"),
-                Path::new("/foo/bar/System/Library/Frameworks"),
-            ]
+            [Path::new("/foo/frameworks"), Path::new("/bar/frameworks")]
         );
         assert!(
             args.lib_search_path

@@ -291,6 +291,10 @@ pub trait FileSystem: Send + Sync + 'static {
         prepopulate_maps: bool,
     ) -> Result<(Self::Input, Option<Arc<File>>)>;
 
+    fn is_dir(&self, path: &Path) -> bool {
+        self.file_type(path).is_ok_and(|t| t == FileType::Directory)
+    }
+
     /// Returns the type of the file at `path`.
     fn file_type(&self, path: &Path) -> Result<FileType>;
 

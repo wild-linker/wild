@@ -63,7 +63,11 @@ impl SaveDir {
                     .iter()
                     .map(|file| file.filename.clone()),
             );
-            state.finish(files_to_copy.iter(), parsed_args)?;
+            state.finish(
+                files_to_copy.iter(),
+                parsed_args,
+                &input_data.resolved_framework_search_path,
+            )?;
         }
         Ok(())
     }
@@ -139,17 +143,18 @@ impl SaveDirState {
         &self,
         filenames: I,
         parsed_args: &impl platform::Args,
+        framework_search_path: &[Box<Path>],
     ) -> Result {
         for filename in filenames {
             self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
         }
 
-        for path in parsed_args.framework_search_path() {
+        for path in framework_search_path {
             self.copy_file(&std::path::absolute(path)?, parsed_args)?;
         }
 
         let run_with_file = self.dir.join("run-with");
-        self.write_args_file(&run_with_file, parsed_args)
+        self.write_args_file(&run_with_file, parsed_args, framework_search_path)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
 
         if env::var(SKIP_LINKING_ENV).is_ok() {
@@ -158,7 +163,12 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn write_args_file(&self, run_file: &Path, args: &impl platform::Args) -> Result {
+    fn write_args_file(
+        &self,
+        run_file: &Path,
+        args: &impl platform::Args,
+        framework_search_path: &[Box<Path>],
+    ) -> Result {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
@@ -173,13 +183,14 @@ impl SaveDirState {
         let original_output_file = self.write_args(
             &self.args,
             args,
+            framework_search_path,
             &mut args_buf,
             &mut setup_buf,
             &mut at_file_counter,
             false,
         )?;
 
-        for path in args.framework_search_path() {
+        for path in framework_search_path {
             let path = std::path::absolute(path)?;
             if self.output_path(&path).is_dir() {
                 write_script_arg_separator(&mut args_buf)?;
@@ -213,6 +224,7 @@ impl SaveDirState {
         &self,
         args: &[String],
         parsed_args: &impl platform::Args,
+        framework_search_path: &[Box<Path>],
         out: &mut dyn Write,
         setup_out: &mut dyn Write,
         at_file_counter: &mut usize,
@@ -237,6 +249,7 @@ impl SaveDirState {
                     self.write_args(
                         &args_from_file,
                         parsed_args,
+                        framework_search_path,
                         out,
                         setup_out,
                         at_file_counter,
@@ -257,6 +270,7 @@ impl SaveDirState {
                         self.write_args(
                             &args_from_file,
                             parsed_args,
+                            framework_search_path,
                             &mut at_out,
                             &mut noop_setup,
                             at_file_counter,
@@ -282,7 +296,8 @@ impl SaveDirState {
                 continue;
             }
 
-            if !parsed_args.framework_search_path().is_empty()
+            // Explicit -F options are replaced by the resolved paths in the main script.
+            if !framework_search_path.is_empty()
                 && let Some(dir) = arg.strip_prefix("-F")
             {
                 if dir.is_empty() {
@@ -743,12 +758,10 @@ mod tests {
 
         // Substitute a temporary default directory without recording -F or -syslibroot.
         // A real SDK would already be relocated through the saved -syslibroot argument.
-        let parsed = MachOArgs {
-            framework_search_path: vec![search.into_boxed_path()],
-            ..Default::default()
-        };
+        let parsed = MachOArgs::default();
+        let framework_search_path = vec![search.into_boxed_path()];
         let state = SaveDirState::new(saved.clone(), vec!["-framework".into(), "Foo".into()]);
-        state.finish([&framework].into_iter(), &parsed)?;
+        state.finish([&framework].into_iter(), &parsed, &framework_search_path)?;
         std::fs::remove_dir_all(source)?;
 
         let output = Command::new("bash")

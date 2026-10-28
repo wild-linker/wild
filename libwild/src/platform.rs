@@ -1737,8 +1737,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn lib_search_path(&self) -> &[Box<Path>];
 
-    fn framework_search_path(&self) -> &[Box<Path>] {
-        &[]
+    /// Resolve framework search directories before loading a batch of inputs, including platform
+    /// defaults.
+    fn resolve_framework_search_path(&self, _file_system: &impl FileSystem) -> Vec<Box<Path>> {
+        Vec::new()
     }
 
     fn output(&self) -> &Arc<Path> {

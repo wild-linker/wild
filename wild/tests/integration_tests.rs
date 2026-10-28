@@ -24,8 +24,8 @@
 //! with the path to the test's build directory. `$WASI_SYSROOT` will be replaced with the wasi-libc
 //! sysroot (see RequiresWasiLibc). These arguments are passed before input objects.
 //!
-//! Copy:{source}:{dest} Copies a file. Source path is relative to the test source directory or
-//! can use `$OUT_DIR`. Destinations must be relative to `$OUT_DIR`.
+//! Copy:{source}:{dest} Copies a file. Source path is relative to the test source directory.
+//! Both paths can use `$OUT_DIR`. After expansion, destinations must be relative to `$OUT_DIR`.
 //!
 //! LinkerWorkingDirectory:{path} Sets the linker working directory. Supports `$OUT_DIR`.
 //!
@@ -3789,7 +3789,11 @@ fn build_inputs(
                 source,
                 destination,
             } => {
-                copy_to_build_dir(&config.source_path(source), destination, config)?;
+                let destination = parse_output_path(&expand_test_arg_placeholders(
+                    destination.to_str().context("Non-UTF-8 copy destination")?,
+                    config,
+                ))?;
+                copy_to_build_dir(&config.source_path(source), &destination, config)?;
             }
         }
     }
