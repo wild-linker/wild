@@ -27,7 +27,7 @@ SECTIONS {
         ASSERT(data_start == ADDR(.data), "data_start must be ADDR(.data)");
         ASSERT(data_start + 0x10000 == LOADADDR(.data), "data_start + 0x10000 must be LOADADDR(.data)");
     }
-    .bss  : { *(.bss*)  }
+    .bss : AT(ADDR(.bss) + 0x10000) { *(.bss*) }
 }
 
 /* A trivially true assertion - should always pass */

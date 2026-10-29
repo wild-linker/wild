@@ -160,7 +160,6 @@
 //#LinkArgs:-no-pie
 
 //#AbstractConfig:no-orphans:common
-//#CompArgs:-Wa,-mx86-used-note=no
 // Some other architectures emit platform specific sections which might not be handled by wild, such
 // as .ARM.attributes on AArch64.
 //#Arch:x86_64

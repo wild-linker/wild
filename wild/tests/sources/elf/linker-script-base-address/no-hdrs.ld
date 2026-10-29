@@ -12,10 +12,6 @@ SECTIONS {
         KEEP(*(.text.second))
         *(.text*)
     } :text
-
-    /DISCARD/ : {
-        *(.note.gnu.property)
-    }
 }
 
 ASSERT((((symbol1) | symbol2) -

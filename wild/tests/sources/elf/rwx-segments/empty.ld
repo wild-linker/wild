@@ -12,5 +12,4 @@ SECTIONS {
     .data : { *(.data) } :data
     .bss : { *(.bss) }
     .empty : { *(.empty) } :empty
-    /DISCARD/ : { *(.note.gnu.property) }
 }

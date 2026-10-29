@@ -4194,6 +4194,15 @@ fn build_obj(
 
             add_cross_args(&mut command, &compiler_args, cross_arch, config.platform);
 
+            if config.platform == PlatformKind::Elf
+                && config.arch == Architecture::X86_64
+                && matches!(config.compiler.as_str(), "gcc" | "g++")
+            {
+                // A few distros set this to yes by default. Make "no" explicit to minimise
+                // differences between what we test on different distros.
+                command.arg("-Wa,-mx86-used-note=no");
+            }
+
             command.arg("-c");
 
             command.arg("-MF");

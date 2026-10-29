@@ -11,5 +11,4 @@ SECTIONS {
     .data : { *(.data) } :data
     . = ALIGN(0x1000);
     .bss : { *(.bss) } :bss
-    /DISCARD/ : { *(.note.gnu.property) }
 }
