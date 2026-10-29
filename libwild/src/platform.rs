@@ -538,6 +538,10 @@ pub(crate) trait Platform:
         Ok(())
     }
 
+    fn validate_layout(_layout: &Layout<Self>) -> Result {
+        Ok(())
+    }
+
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &Layout<'data, Self>,

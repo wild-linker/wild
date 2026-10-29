@@ -74,6 +74,7 @@
 //#Config:no-hdrs:default
 //#LinkerScript:no-hdrs.ld
 //#ReferenceLinkers:bfd
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
@@ -97,6 +98,7 @@
 //#RunEnabled:false
 //#ExpectSym:_start address=0x10
 //#ExpectProgramHeader:LOAD flags=RWX,sections=[.text,.data,*],vaddr=0x10
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
@@ -113,6 +115,7 @@
 //#Config:below_default_base_x86:default
 //#Arch:x86_64
 //#LinkerScript:below-default-base.ld
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 //#ExpectSection:.text address=0x3fe800
 //#ExpectProgramHeader:LOAD vaddr=0x3fe000,sections=[.text,*]
 //#CompArgs:-fPIE
@@ -121,6 +124,7 @@
 //#Config:below_default_base_aarch64:default
 //#Arch:aarch64
 //#LinkerScript:below-default-base.ld
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 //#ExpectSection:.text address=0x3fe800
 //#ExpectProgramHeader:LOAD vaddr=0x3f0000,sections=[.text,*]
 //#CompArgs:-fPIE
@@ -129,6 +133,7 @@
 //#AbstractConfig:zero_base:default
 //#CompArgs: -fPIC
 //#LinkerScript:zero-base.ld
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 //#ExpectSection:.text address=0x1000
 //#ExpectProgramHeader:LOAD vaddr=0,sections=[.text,*]
 //#RunEnabled:false

@@ -120,6 +120,7 @@ pub struct ElfArgs {
     pub(crate) execstack: bool,
     pub(crate) warn_execstack: WarnExecstack,
     pub(crate) error_execstack: bool,
+    pub(crate) rwx_segment_report: RwxSegmentReport,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -234,6 +235,13 @@ pub(crate) enum WarnExecstack {
     Always,
     #[default]
     Objects,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RwxSegmentReport {
+    Off,
+    Warn,
+    Error,
 }
 
 impl ExcludeLibs {
@@ -380,6 +388,7 @@ impl Default for ElfArgs {
             execstack: false,
             warn_execstack: WarnExecstack::Objects,
             error_execstack: true,
+            rwx_segment_report: RwxSegmentReport::Warn,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             should_write_linker_identity: true,
@@ -2012,6 +2021,44 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Keep executable-stack reports as warnings")
         .execute(|args, _modifier_stack| {
             args.error_execstack = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-rwx-segments")
+        .help("Report RWX LOAD segments and executable TLS segments as warnings (default)")
+        .execute(|args, _modifier_stack| {
+            args.rwx_segment_report = RwxSegmentReport::Warn;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-warn-rwx-segments")
+        .help("Disable diagnostics for RWX LOAD segments and executable TLS segments")
+        .execute(|args, _modifier_stack| {
+            args.rwx_segment_report = RwxSegmentReport::Off;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("error-rwx-segments")
+        .help("Report RWX LOAD segments and executable TLS segments as errors")
+        .execute(|args, _modifier_stack| {
+            args.rwx_segment_report = RwxSegmentReport::Error;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-error-rwx-segments")
+        .help("Downgrade RWX-segment errors to warnings without enabling disabled diagnostics")
+        .execute(|args, _modifier_stack| {
+            if args.rwx_segment_report == RwxSegmentReport::Error {
+                args.rwx_segment_report = RwxSegmentReport::Warn;
+            }
             Ok(())
         });
 

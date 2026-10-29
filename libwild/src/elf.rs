@@ -7,6 +7,7 @@ use crate::args::RelocationModel;
 use crate::args::elf::BuildIdOption;
 use crate::args::elf::CetReport;
 use crate::args::elf::ElfArgs;
+use crate::args::elf::RwxSegmentReport;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf_writer;
@@ -783,6 +784,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
     type SectionIdentityExt = ();
     type GcUnit = SectionGcUnit;
+
+    fn validate_layout(layout: &layout::Layout<Self>) -> Result {
+        check_segment_permissions(layout)
+    }
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -3175,6 +3180,47 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
         output_attributes
     }
+}
+
+fn check_segment_permissions<C: ElfClass>(layout: &layout::Layout<Elf<C>>) -> Result {
+    verbose_timing_phase!("Check segment permissions");
+
+    let args = layout.args();
+
+    if args.rwx_segment_report == RwxSegmentReport::Off || args.should_output_partial_object() {
+        return Ok(());
+    }
+
+    let mut errors = MultiErrorBuilder::new();
+    for segment_layout in &layout.segment_layouts.segments {
+        if segment_layout.sizes.mem_size == 0 {
+            continue;
+        }
+
+        let segment = layout.program_segments.segment_def(segment_layout.id);
+        let description = match segment.segment_type {
+            pt::LOAD
+                if segment
+                    .segment_flags
+                    .contains(pf::READABLE | pf::WRITABLE | pf::EXECUTABLE) =>
+            {
+                "a LOAD segment with RWX permissions"
+            }
+            pt::TLS if segment.segment_flags.contains(pf::EXECUTABLE) => {
+                "a TLS segment with execute permission"
+            }
+            _ => continue,
+        };
+
+        let message = format!("{} has {description}", args.output().display());
+        if args.rwx_segment_report == RwxSegmentReport::Error {
+            errors.add_error(error!("{message}"));
+        } else {
+            args.warning(message);
+        }
+    }
+
+    errors.emit_errors_if_any()
 }
 
 /// Marks the symbol version associated with the dynamic symbol `GLIBC_ABI_DT_RELR` as needed.

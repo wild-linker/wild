@@ -31,6 +31,7 @@
 //#Config:single-load:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load.ld
 //#ExpectProgramHeader:LOAD flags=RWX,sections=[.text,.rodata,.dynamic,*]
+//#ExpectWarningWild:has a LOAD segment with RWX permissions
 
 //#Config:single-load-with-flag:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load-with-flag.ld
