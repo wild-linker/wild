@@ -3358,13 +3358,13 @@ fn write_eh_frame_relocations<
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
     eh_frame_section: &elf::SectionHeader<C>,
-    relocations: impl Iterator<Item = R>,
+    relocations: impl Iterator<Item = R> + Clone,
 ) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let section_flags = eh_frame_section.sh_flags(LittleEndian);
-    let mut relocations = relocations.peekable();
+    let mut relocations = elf::ordered_eh_frame_relocations(relocations).peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
