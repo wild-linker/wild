@@ -262,6 +262,9 @@
 //! TestHardLinks:{bool} Relink Wild's output after changing some bytes and creating a hard link.
 //! Verify that the hard linked alias isn't changed and the output is replaced.
 //!
+//! TestOutputToDevNull:{bool} Output via a temporary symlink to /dev/null and verify that the
+//! symlink is preserved.
+//!
 //! TestOnlyKeepDebug:{bool} Whether to perform additional testing of the --only-keep-debug flag.
 //! When true, re-links the same inputs with --strip-debug instead of --only-keep-debug and
 //! compares the two outputs: symbol addresses and section addresses must match, allocatable
@@ -1562,6 +1565,7 @@ struct Config {
     requires_linker_plugin: bool,
     test_update_in_place: bool,
     test_hard_links: bool,
+    test_output_to_dev_null: bool,
     test_relink_after_run: bool,
     test_only_keep_debug: bool,
     test_config: TestConfig,
@@ -1981,6 +1985,7 @@ impl Config {
             && self.linker_working_directory.is_none()
             && !self.test_update_in_place
             && !self.test_hard_links
+            && !self.test_output_to_dev_null
             && !self.test_only_keep_debug
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
@@ -2404,6 +2409,7 @@ impl Config {
             requires_rust_musl: false,
             test_update_in_place: false,
             test_hard_links: false,
+            test_output_to_dev_null: false,
             test_relink_after_run: false,
             test_only_keep_debug: false,
             test_config: test_config.clone(),
@@ -3187,6 +3193,9 @@ fn process_directive(
         "TestHardLinks" => {
             config.test_hard_links = arg.parse()?;
         }
+        "TestOutputToDevNull" => {
+            config.test_output_to_dev_null = arg.parse()?;
+        }
         "TestOnlyKeepDebug" => {
             config.test_only_keep_debug = arg.parse()?;
         }
@@ -3249,6 +3258,23 @@ impl ProgramInputs {
 
         let link_output =
             linker.link_with_output_reuse(self.name(), &inputs, config, cross_arch)?;
+
+        if config.test_output_to_dev_null {
+            let temp_dir = tempfile::tempdir()?;
+            let output = temp_dir.path().join("null");
+            create_symlink(Path::new("/dev/null"), &output)?;
+
+            let mut command = link_output.command.clone();
+            command.command.arg("-o").arg(&output);
+            command.output_path = output.clone();
+            command.run(config)?;
+
+            ensure!(
+                std::fs::symlink_metadata(&output)?.file_type().is_symlink(),
+                "Linking to {} replaced the symlink to /dev/null",
+                output.display()
+            );
+        }
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
