@@ -1553,6 +1553,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) target_feature_inputs: Vec<WasmInputTargetFeature<'data>>,
     pub(crate) debug_sections: Vec<DebugSectionInput<'data>>,
     pub(crate) extra_features: &'data [String],
+    pub(crate) features: Option<&'data [String]>,
     pub(crate) check_features: bool,
     /// A live function contains `memory.init` or `data.drop`.
     pub(crate) code_references_data_segment: bool,
@@ -1668,6 +1669,18 @@ fn collect_target_feature_sets<'data>(
     Ok((used, disallowed))
 }
 
+pub(crate) fn apply_explicit_features<'a>(
+    used: &mut HashSet<&'a str>,
+    extra_features: &'a [String],
+    explicit_features: Option<&'a [String]>,
+) {
+    if let Some(explicit) = explicit_features {
+        used.clear();
+        used.extend(explicit.iter().map(String::as_str));
+    }
+    used.extend(extra_features.iter().map(String::as_str));
+}
+
 /// Shared memory requires `atomics` and `bulk-memory`.
 fn validate_shared_memory_features(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
@@ -1684,8 +1697,11 @@ fn validate_shared_memory_features(
         );
     }
 
-    used.extend(symbol_db.args.extra_features.iter().map(|s| s.as_str()));
-
+    apply_explicit_features(
+        &mut used,
+        &symbol_db.args.extra_features,
+        symbol_db.args.features.as_deref(),
+    );
     for feature in ["atomics", "bulk-memory"] {
         if !used.contains(feature) {
             bail!("'{feature}' feature must be used in order to use shared memory");
@@ -6181,13 +6197,17 @@ fn collect_dynamic_exports<'data>(
     if !symbol_db.args.export_dynamic {
         return Ok(exports);
     }
-    let (used_features, _) = collect_target_feature_sets(layout_inputs)?;
-    exports.stack_pointer = used_features.contains("mutable-globals")
-        || symbol_db
-            .args
-            .extra_features
-            .iter()
-            .any(|feature| feature == "mutable-globals");
+    let mut used_features = if symbol_db.args.features.is_none() {
+        collect_target_feature_sets(layout_inputs)?.0
+    } else {
+        HashSet::new()
+    };
+    apply_explicit_features(
+        &mut used_features,
+        &symbol_db.args.extra_features,
+        symbol_db.args.features.as_deref(),
+    );
+    exports.stack_pointer = used_features.contains("mutable-globals");
     for (object_index, input) in layout_inputs.iter().enumerate() {
         for (symbol_offset, sym) in input.symbols.iter().enumerate() {
             let symbol_id = input.symbol_id_range.offset_to_id(symbol_offset);
@@ -6871,6 +6891,7 @@ where
         })
         .collect();
     layout.extra_features = &symbol_db.args.extra_features;
+    layout.features = symbol_db.args.features.as_deref();
     if !symbol_db.args.should_strip_debug() {
         layout.debug_sections = layout_inputs
             .iter()
@@ -8859,7 +8880,7 @@ mod tests {
         }];
         let mut records = target_feature_records(1, &features_a);
         records.extend(target_feature_records(2, &features_b));
-        let section = crate::wasm_writer::build_target_features_section(&records, &[], true)
+        let section = crate::wasm_writer::build_target_features_section(&records, &[], None, true)
             .unwrap()
             .expect("expected target_features section");
         assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
@@ -8877,8 +8898,8 @@ mod tests {
         }];
         let mut records = target_feature_records(1, &used);
         records.extend(target_feature_records(2, &disallowed));
-        let err =
-            crate::wasm_writer::build_target_features_section(&records, &[], true).unwrap_err();
+        let err = crate::wasm_writer::build_target_features_section(&records, &[], None, true)
+            .unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("atomics") && msg.contains("disallowed"),

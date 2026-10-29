@@ -950,6 +950,7 @@ pub(crate) fn encode_metadata_sections(
         let target_features = build_target_features_section(
             &layout.target_feature_inputs,
             layout.extra_features,
+            layout.features,
             layout.check_features,
         )?;
         if emit_target_features && let Some(target_features) = target_features {
@@ -1357,50 +1358,59 @@ fn fill_name_entries(dest: &mut [u8], entries: NameEntries<'_>) {
 pub(crate) fn build_target_features_section<'a>(
     features: &[WasmInputTargetFeature<'a>],
     extra_features: &'a [String],
+    explicit_features: Option<&'a [String]>,
     check_features: bool,
 ) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
     let mut used: HashSet<&'a str> = HashSet::new();
     let mut disallowed: HashMap<&'a str, crate::input_data::FileId> = HashMap::new();
-
-    for entry in features {
-        match entry.feature.prefix {
-            TARGET_FEATURE_PREFIX_USED => {
-                used.insert(entry.feature.name);
-            }
-            TARGET_FEATURE_PREFIX_DISALLOWED => {
-                disallowed
-                    .entry(entry.feature.name)
-                    .or_insert(entry.file_id);
-            }
-            other => {
-                bail!(
-                    "unrecognized target_features prefix 0x{other:02x} for feature `{}`",
-                    entry.feature.name
-                );
+    // `--no-check-features` with `--features` keeps only the explicit names.
+    if explicit_features.is_none() || check_features {
+        for entry in features {
+            match entry.feature.prefix {
+                TARGET_FEATURE_PREFIX_USED => {
+                    used.insert(entry.feature.name);
+                }
+                TARGET_FEATURE_PREFIX_DISALLOWED => {
+                    disallowed
+                        .entry(entry.feature.name)
+                        .or_insert(entry.file_id);
+                }
+                other => {
+                    bail!(
+                        "unrecognized target_features prefix 0x{other:02x} for feature `{}`",
+                        entry.feature.name
+                    );
+                }
             }
         }
     }
 
     if check_features {
-        for name in &used {
+        let mut object_used: Vec<&str> = used.iter().copied().collect();
+        object_used.sort_unstable();
+        for name in object_used {
             if let Some(&file_id) = disallowed.get(name) {
                 bail!(
                     "target feature `{name}` is used by linked objects but disallowed by input file \
                      {file_id}"
                 );
             }
+            if let Some(explicit) = explicit_features
+                && !explicit.iter().any(|feature| feature == name)
+                && !extra_features.iter().any(|feature| feature == name)
+            {
+                bail!("Target feature '{name}' used by linked objects is not allowed.");
+            }
         }
     }
 
-    used.extend(extra_features.iter().map(|s| s.as_str()));
-
+    crate::wasm::apply_explicit_features(&mut used, extra_features, explicit_features);
     if used.is_empty() {
         return Ok(None);
     }
 
-    let mut feature_names: Vec<&'a str> = used.into_iter().collect();
+    let mut feature_names: Vec<&str> = used.into_iter().collect();
     feature_names.sort_unstable();
-
     let mut payload = Vec::new();
     leb128::write::unsigned(&mut payload, feature_names.len() as u64).unwrap();
     for name in feature_names {

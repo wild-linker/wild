@@ -44,6 +44,7 @@ pub struct WasmArgs {
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
     pub(crate) extra_features: Vec<String>,
+    pub(crate) features: Option<Vec<String>>,
     pub(crate) check_features: bool,
     pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
@@ -106,6 +107,7 @@ impl Default for WasmArgs {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
             extra_features: Vec::new(),
+            features: None,
             check_features: true,
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
@@ -364,6 +366,21 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
                 .filter(|feature| !feature.is_empty())
                 .map(str::to_owned)
                 .collect();
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("features")
+        .help("Comma-separated used features, inferred from input objects by default")
+        .execute(|args, _modifier_stack, value| {
+            args.features = Some(
+                value
+                    .split(',')
+                    .filter(|feature| !feature.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            );
             Ok(())
         });
 

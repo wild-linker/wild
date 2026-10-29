@@ -6,6 +6,11 @@
 //#RunEnabled:false
 //#ExpectSharedMemory:true
 
+// An explicit used set does not override an input `-shared-mem` entry.
+//#Config:features
+//#LinkArgs: --shared-memory --max-memory=131072 --no-entry --features=atomics,bulk-memory
+//#ExpectError: --shared-memory is disallowed
+
   .globl _start
 _start:
   .functype _start () -> ()

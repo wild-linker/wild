@@ -17,6 +17,10 @@
 //#LinkArgs: --shared-memory
 //#ExpectError: 'atomics' feature must be used in order to use shared memory
 
+//#Config:features-partial
+//#LinkArgs: --shared-memory --max-memory=131072 --features=atomics,bulk-memory
+//#ExpectError:not allowed
+
 //#Config:unaligned
 //#LinkArgs: --shared-memory --max-memory=100000
 //#CompArgs: -matomics
