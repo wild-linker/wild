@@ -1,8 +1,7 @@
-mod mingw;
-mod ms_link;
-
 use crate::args::CommonArgs;
 use crate::args::Modifiers;
+use crate::args::mingw;
+use crate::args::msvc;
 use crate::error;
 use crate::error::Error;
 use crate::error::Result;
@@ -58,7 +57,7 @@ impl CoffArgs {
         Ok(args)
     }
 
-    fn set_emulation_str(&mut self, value: &str, source: &'static str) {
+    pub(crate) fn set_emulation_str(&mut self, value: &str, source: &'static str) {
         match value.parse() {
             Ok(emulation) => self.set_emulation(emulation),
             Err(_) => {
@@ -69,7 +68,7 @@ impl CoffArgs {
         }
     }
 
-    fn set_emulation(&mut self, emulation: mingw::Emulation) {
+    pub(crate) fn set_emulation(&mut self, emulation: mingw::Emulation) {
         self.emulation = emulation;
         self.emulation_error = None;
     }
@@ -161,7 +160,7 @@ impl platform::Args for CoffArgs {
         if self.is_mingw {
             mingw::is_ignored_flag(flag)
         } else {
-            ms_link::is_ignored_flag(flag)
+            msvc::is_ignored_flag(flag)
         }
     }
 }
@@ -177,7 +176,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     let arg_parser = if args.is_mingw {
         mingw::setup_argument_parser()
     } else {
-        ms_link::setup_argument_parser()
+        msvc::setup_argument_parser()
     };
 
     while let Some(arg) = input.next() {

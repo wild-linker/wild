@@ -39,6 +39,8 @@ use std::sync::Arc;
 pub mod coff;
 pub mod elf;
 pub mod macho;
+pub mod mingw;
+pub mod msvc;
 pub mod wasm;
 
 use crate::error::Warning;

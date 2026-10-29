@@ -5,6 +5,7 @@ use crate::args::ArgumentParser;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::coff::CoffArgs;
+use crate::args::msvc;
 use crate::platform::Args;
 use itertools::Itertools;
 use std::path::Path;
@@ -32,7 +33,7 @@ fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
 }
 
 #[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
-pub(super) enum Emulation {
+pub(crate) enum Emulation {
     #[strum(serialize = "i386pep", message = "x86-64 PE target")]
     I386Pep,
     // TODO: add arm mess
@@ -261,14 +262,14 @@ pub(super) fn setup_argument_parser() -> ArgumentParser<CoffArgs> {
 }
 
 fn add_silently_ignored_flags(parser: &mut ArgumentParser<CoffArgs>) {
-    for flag in crate::args::coff::ms_link::SILENTLY_IGNORED_FLAGS {
+    for flag in msvc::SILENTLY_IGNORED_FLAGS {
         parser
             .declare_with_optional_param()
             .long(flag)
             .execute(|_args, _modifier_stack, _value| Ok(()));
     }
 
-    for flag in crate::args::coff::ms_link::IGNORED_NO_VALUE_FLAGS {
+    for flag in msvc::IGNORED_NO_VALUE_FLAGS {
         parser
             .declare()
             .long(flag)
