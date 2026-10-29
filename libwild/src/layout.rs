@@ -5093,6 +5093,20 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         resolutions_out.write(resolution)
     }
 
+    fn symbol_output_offset(
+        &self,
+        symbol: &P::SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        let input_offset = self
+            .object
+            .symbol_offset_in_section(symbol, section_index)?;
+        Ok(opt_input_to_output(
+            self.section_relax_deltas.get(section_index.0),
+            input_offset,
+        ))
+    }
+
     fn create_symbol_resolution<'scope>(
         &self,
         resources: &FinaliseLayoutResources<'scope, 'data, P>,
@@ -5114,14 +5128,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = self
-                    .object
-                    .symbol_offset_in_section(local_symbol, section_index)?;
-                let output_offset = opt_input_to_output(
-                    self.section_relax_deltas.get(section_index.0),
-                    input_offset,
-                );
-                output_offset + section_address
+                self.symbol_output_offset(local_symbol, section_index)? + section_address
             } else if let Some(x) = get_merged_string_output_address::<P>(
                 local_symbol_index,
                 0,
@@ -5727,9 +5734,7 @@ fn canonical_symbol_output_address<P: Platform>(
     match obj.object.symbol_section(sym, local) {
         Ok(Some(section)) => {
             let sec_addr = positions.get(section.0).copied().flatten()?;
-            let input_offset = obj.object.symbol_offset_in_section(sym, section).ok()?;
-            let output_offset =
-                opt_input_to_output(obj.section_relax_deltas.get(section.0), input_offset);
+            let output_offset = obj.symbol_output_offset(sym, section).ok()?;
             Some(sec_addr.address + output_offset)
         }
         Ok(None) if sym.is_absolute() => Some(sym.value()),
@@ -5932,9 +5937,7 @@ pub(crate) fn resolve_early_object_symbol<'data, P: Platform>(
         );
     };
 
-    let input_offset = obj.object.symbol_offset_in_section(symbol, section_index)?;
-    let output_offset =
-        opt_input_to_output(obj.section_relax_deltas.get(section_index.0), input_offset);
+    let output_offset = obj.symbol_output_offset(symbol, section_index)?;
     Ok(SymbolValue::PartRelative {
         part_id: section_position.part_id,
         offset: section_position.address + output_offset,
