@@ -233,7 +233,6 @@ tests = [
   "discard-section.sh",
   "dynamic-linker.sh",
   "glibc-2.22-bug.sh",
-  "initfirst.sh",
   "mergeable-strings.sh",
   "missing-error.sh",
   "no-allow-shlib-undefined-circular.sh",

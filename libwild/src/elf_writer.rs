@@ -6501,6 +6501,10 @@ impl DynamicEntryInputs<'_> {
                 flags |= object::elf::DF_1_NODELETE;
             }
 
+            if self.args.z_initfirst {
+                flags |= object::elf::DF_1_INITFIRST;
+            }
+
             if self.args.z_interpose {
                 flags |= object::elf::DF_1_INTERPOSE;
             }

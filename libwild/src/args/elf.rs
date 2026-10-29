@@ -129,6 +129,7 @@ pub struct ElfArgs {
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definitions: bool,
+    pub(crate) z_initfirst: bool,
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
     pub(crate) force_ibt: bool,
@@ -417,6 +418,7 @@ impl Default for ElfArgs {
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
+            z_initfirst: false,
             z_interpose: false,
             z_stack_size: None,
             z_isa: None,
@@ -843,6 +845,14 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         })
         .sub_option("lazy", "Use lazy binding (default)", |_, _| Ok(()))
+        .sub_option(
+            "initfirst",
+            "Mark shared object to be initialized first at runtime",
+            |args, _| {
+                args.z_initfirst = true;
+                Ok(())
+            },
+        )
         .sub_option(
             "interpose",
             "Mark object to interpose all DSOs but executable",
