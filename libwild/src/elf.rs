@@ -1047,32 +1047,22 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 continue;
             }
 
-            let address;
-            let dynamic_symbol_index;
-
-            if flags.needs_copy_relocation() || flags.needs_canonical_plt() {
-                address = if flags.needs_copy_relocation() {
-                    let input_address = local_symbol.value();
-                    *copy_relocation_addresses
-                        .get(&input_address)
-                        .context("Internal error: Missing copy relocation address")?
-                } else {
-                    0
-                };
-
-                // Since this is a definition, the dynamic symbol index will be determined by the
-                // epilogue and set by `update_dynamic_symbol_resolutions`.
-                dynamic_symbol_index = None;
-            } else {
-                address = 0;
-                let symbol_index =
-                    Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
-
-                dynamic_symbol_index = Some(
-                    NonZeroU32::new(symbol_index)
-                        .context("Tried to create dynamic symbol index 0")?,
-                );
-            }
+            let (address, dynamic_symbol_index) = match imported_symbol_kind(flags, true) {
+                ImportedSymbolKind::CopyRelocation => {
+                    let address = *copy_relocation_addresses
+                        .get(&local_symbol.value())
+                        .context("Internal error: Missing copy relocation address")?;
+                    (address, None)
+                }
+                ImportedSymbolKind::CanonicalPlt => (0, None),
+                ImportedSymbolKind::Undefined => {
+                    let symbol_index =
+                        Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+                    let index = NonZeroU32::new(symbol_index)
+                        .context("Tried to create dynamic symbol index 0")?;
+                    (0, Some(index))
+                }
+            };
 
             let resolution = Self::create_resolution(
                 flags,
@@ -2066,14 +2056,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             let owned_by_dynamic_object = symbol_db
                 .file(symbol_db.file_id_for_symbol(symbol_id))
                 .is_dynamic();
-            if flags.needs_copy_relocation() {
-                // The dynamic symbol is a definition, so is handled by the epilogue. We only
-                // need to deal with the symtab entry here.
-                common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
-                common.allocate(part_id::STRTAB, name.len() as u64 + 1);
-            } else if !flags.needs_canonical_plt() || !owned_by_dynamic_object {
-                common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
-                common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
+            match imported_symbol_kind(flags, owned_by_dynamic_object) {
+                ImportedSymbolKind::CopyRelocation => {
+                    // The epilogue owns the dynamic definition; only the symtab entry goes here.
+                    common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
+                    common.allocate(part_id::STRTAB, name.len() as u64 + 1);
+                }
+                ImportedSymbolKind::Undefined => {
+                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+                    common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
+                }
+                ImportedSymbolKind::CanonicalPlt => {}
             }
         }
 
@@ -7338,6 +7331,25 @@ pub(crate) struct ResolutionExt {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SymtabShndxEntry {
     pub(crate) _shndx: u32,
+}
+
+pub(crate) enum ImportedSymbolKind {
+    Undefined,
+    CopyRelocation,
+    CanonicalPlt,
+}
+
+pub(crate) fn imported_symbol_kind(
+    flags: ValueFlags,
+    owned_by_dynamic_object: bool,
+) -> ImportedSymbolKind {
+    if flags.needs_copy_relocation() {
+        ImportedSymbolKind::CopyRelocation
+    } else if flags.needs_canonical_plt() && owned_by_dynamic_object {
+        ImportedSymbolKind::CanonicalPlt
+    } else {
+        ImportedSymbolKind::Undefined
+    }
 }
 
 #[derive(Clone, Copy)]
