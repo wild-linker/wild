@@ -120,6 +120,7 @@ pub struct ElfArgs {
     pub(crate) warn_execstack: WarnExecstack,
     pub(crate) error_execstack: bool,
     pub(crate) rwx_segment_report: RwxSegmentReport,
+    pub(crate) text_relocation_mode: TextRelocationMode,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -240,6 +241,13 @@ pub(crate) enum WarnExecstack {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RwxSegmentReport {
     Off,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextRelocationMode {
+    Ignore,
     Warn,
     Error,
 }
@@ -389,6 +397,7 @@ impl Default for ElfArgs {
             warn_execstack: WarnExecstack::Objects,
             error_execstack: true,
             rwx_segment_report: RwxSegmentReport::Warn,
+            text_relocation_mode: TextRelocationMode::Ignore,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             should_write_linker_identity: true,
@@ -787,7 +796,20 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.relro = false;
             Ok(())
         })
-        .sub_option("notext", "Do not report DT_TEXTREL as an error", |_, _| {
+        .sub_option("text", "Report text relocations as an error", |args, _| {
+            args.text_relocation_mode = TextRelocationMode::Error;
+            Ok(())
+        })
+        .sub_option(
+            "notext",
+            "Do not warn or error about supported text relocations",
+            |args, _| {
+                args.text_relocation_mode = TextRelocationMode::Ignore;
+                Ok(())
+            },
+        )
+        .sub_option("textoff", "Alias for -z notext", |args, _| {
+            args.text_relocation_mode = TextRelocationMode::Ignore;
             Ok(())
         })
         .sub_option("nostart-stop-gc", "Disable start/stop symbol GC", |_, _| {
@@ -1967,6 +1989,15 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Disallow undefined symbol references in shared libraries")
         .execute(|args, _modifier_stack| {
             args.allow_shlib_undefined = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-textrel")
+        .help("Warn if the output contains dynamic relocations in read-only sections")
+        .execute(|args, _modifier_stack| {
+            args.text_relocation_mode = TextRelocationMode::Warn;
             Ok(())
         });
 

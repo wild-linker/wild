@@ -9,7 +9,6 @@ dynamic relocation is produced.
 //#LinkArgs:-shared -z now -z text
 //#RunEnabled:false
 //#DiffIgnore:section.got
-//#ExpectWarningWild:-z text is not yet supported
 */
 
 	.text
