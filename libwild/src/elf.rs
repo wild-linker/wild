@@ -3500,7 +3500,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     let avoid_propagation = info.section_attributes.overrides.avoid_progpogation;
                     let allowed_flags = (shf::ALLOC | shf::WRITE).without(avoid_propagation);
                     info.section_attributes.flags = current_flags & allowed_flags;
-                    info.section_attributes.ty = sht::PROGBITS;
+                    if info.section_attributes.ty == sht::NULL {
+                        info.section_attributes.ty = sht::PROGBITS;
+                    }
                 }
             }
         }

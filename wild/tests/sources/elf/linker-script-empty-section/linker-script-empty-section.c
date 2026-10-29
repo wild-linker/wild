@@ -8,15 +8,15 @@
 //#ExpectSection:.empty_1 type=1,flags=A
 //#ExpectSection:.empty_2 type=1,flags=WA
 //#ExpectSection:.empty_3 type=1,flags=W
-//#NoSection:.empty_6
-//#SkipArch:riscv64
+//#ExpectSection:.empty_4 type=8,flags=WA
+//#NoSection:.empty_7
 //#SkipArch:riscv64,x86_64
 
 //#Config:x86:default
 //#Arch:x86_64
 //#CompArgs:-DX86
-//#ExpectSection:.empty_4 type=1,flags=''
-//#ExpectSection:.empty_5 type=1,flags=W
+//#ExpectSection:.empty_5 type=1,flags=''
+//#ExpectSection:.empty_6 type=1,flags=W
 
 #include "../common/runtime.h"
 

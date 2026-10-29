@@ -33,23 +33,28 @@ SECTIONS {
         *(.empty_3)
     } :NONE
 
-    .exec_only_sec : {
-        KEEP(*(.exec_only_sec))
-    }
-    .empty_4 : {
+    .empty_4 (NOLOAD) : {
         empty_4_start = .;
         *(.empty_4)
     }
 
-    .write_only_sec : {
-        KEEP(*(.write_only_sec))
+    .exec_only_sec : {
+        KEEP(*(.exec_only_sec))
     }
     .empty_5 : {
         empty_5_start = .;
         *(.empty_5)
     }
 
+    .write_only_sec : {
+        KEEP(*(.write_only_sec))
+    }
     .empty_6 : {
+        empty_6_start = .;
         *(.empty_6)
+    }
+
+    .empty_7 : {
+        *(.empty_7)
     }
 }
