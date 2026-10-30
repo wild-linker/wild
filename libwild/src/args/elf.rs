@@ -577,20 +577,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
-    for path in &mut args.lib_search_path {
-        if let Some(new_path) = maybe_forced_sysroot(path, args.sysroot.as_deref()) {
-            *path = new_path;
-        }
-    }
-
-    for input in &mut args.common.inputs {
-        if let InputSpec::File(path) = &mut input.spec
-            && let Some(new_path) = maybe_forced_sysroot(path, args.sysroot.as_deref())
-        {
-            *path = new_path;
-        }
-    }
-
     if let Some(error) = args.emulation_error.take() {
         return Err(error);
     }
@@ -1827,8 +1813,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
             args.common_mut().save_dir.handle_file(value);
-            let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
-            args.sysroot = Some(Box::from(sysroot.as_path()));
+            args.sysroot = Some(Path::new(value).into());
             Ok(())
         });
 
@@ -2283,6 +2268,10 @@ impl platform::Args for ElfArgs {
 
     fn lib_search_path(&self) -> &[Box<Path>] {
         &self.lib_search_path
+    }
+
+    fn resolve_sysroot_path(&self, path: &Path, sysroot: Option<&Path>) -> Option<Box<Path>> {
+        maybe_forced_sysroot(path, sysroot)
     }
 
     fn sysroot(&self) -> Option<&Path> {

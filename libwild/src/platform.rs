@@ -1739,6 +1739,11 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn lib_search_path(&self) -> &[Box<Path>];
 
+    /// Expand explicitly sysroot-relative input and library search paths using the resolved root.
+    fn resolve_sysroot_path(&self, _path: &Path, _sysroot: Option<&Path>) -> Option<Box<Path>> {
+        None
+    }
+
     /// Resolve framework search directories before loading a batch of inputs, including platform
     /// defaults.
     fn resolve_framework_search_path(&self, _file_system: &impl FileSystem) -> Vec<Box<Path>> {

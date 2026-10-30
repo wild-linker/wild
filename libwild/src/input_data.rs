@@ -52,6 +52,10 @@ pub(crate) struct FileLoader<'data, F: FileSystem> {
     /// Effective framework directories, shared by input lookup and reproducer generation.
     pub(crate) resolved_framework_search_path: Vec<Box<Path>>,
 
+    pub(crate) resolved_sysroot: Option<PathBuf>,
+
+    pub(crate) resolved_lib_search_path: Vec<Box<Path>>,
+
     inputs_arena: &'data Arena<InputFile<F::Input>>,
 
     // File system used for reading and writing of the data.
@@ -174,7 +178,9 @@ pub(crate) struct InputLinkerScript<'data> {
 
 struct TemporaryState<'data, 'paths, P: Platform, F: FileSystem> {
     args: &'data P::Args,
+    lib_search_path: &'paths [Box<Path>],
     framework_search_path: &'paths [Box<Path>],
+    sysroot: Option<&'paths Path>,
     has_plugin: bool,
 
     inputs_by_path: Mutex<HashMap<PathBuf, InputLoadInfo>>,
@@ -261,15 +267,14 @@ pub(crate) struct AuxiliaryFiles<'data> {
 impl<'data> AuxiliaryFiles<'data> {
     pub(crate) fn new<F: FileSystem>(
         args: &'data impl platform::Args,
+        lib_search_path: &[Box<Path>],
         inputs_arena: &'data Arena<InputFile<F::Input>>,
         file_system: &F,
     ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if file_system.file_type(path).is_ok() {
                 path.to_owned()
-            } else if let Some(found) =
-                search_for_file(file_system, args.lib_search_path(), None, path)
-            {
+            } else if let Some(found) = search_for_file(file_system, lib_search_path, None, path) {
                 found
             } else {
                 path.to_owned()
@@ -314,7 +319,17 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             file_system,
             has_dynamic: false,
             resolved_framework_search_path: Vec::new(),
+            resolved_sysroot: None,
+            resolved_lib_search_path: Vec::new(),
         }
+    }
+
+    pub(crate) fn is_in_sysroot(&self, path: &Path) -> bool {
+        self.resolved_sysroot.as_ref().is_some_and(|sysroot| {
+            self.file_system
+                .canonicalize(path)
+                .is_ok_and(|path| path.starts_with(sysroot))
+        })
     }
 
     pub(crate) fn load_inputs<P: Platform>(
@@ -325,6 +340,21 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
+        self.resolved_sysroot = args.sysroot().map(|path| {
+            self.file_system
+                .canonicalize(path)
+                .unwrap_or_else(|_| path.to_owned())
+        });
+
+        self.resolved_lib_search_path = args
+            .lib_search_path()
+            .iter()
+            .map(|path| {
+                args.resolve_sysroot_path(path, self.resolved_sysroot.as_deref())
+                    .unwrap_or_else(|| path.clone())
+            })
+            .collect();
+
         self.resolved_framework_search_path =
             args.resolve_framework_search_path(self.file_system.as_ref());
 
@@ -332,8 +362,19 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
         let mut initial_work = Vec::with_capacity(inputs.len());
         for input in inputs {
+            let resolved_input = match &input.spec {
+                InputSpec::File(path) => args
+                    .resolve_sysroot_path(path, self.resolved_sysroot.as_deref())
+                    .map(|path| Input {
+                        spec: InputSpec::File(path),
+                        search_first: input.search_first.clone(),
+                        modifiers: input.modifiers,
+                    }),
+                _ => None,
+            };
+            let input = resolved_input.as_ref().unwrap_or(input);
             let path = input.path(
-                args.lib_search_path(),
+                &self.resolved_lib_search_path,
                 &self.resolved_framework_search_path,
                 self.file_system.as_ref(),
             )?;
@@ -359,7 +400,9 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
         let temporary_state = TemporaryState {
             args,
+            lib_search_path: &self.resolved_lib_search_path,
             framework_search_path: &self.resolved_framework_search_path,
+            sysroot: self.resolved_sysroot.as_deref(),
             has_plugin: plugin.is_some(),
             inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
@@ -510,7 +553,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
 
 fn process_linker_script<'data, I: InputFileData>(
     input_file: &'data InputFile<I>,
-    args: &impl platform::Args,
+    sysroot: Option<&Path>,
     file_system: &impl FileSystem,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
@@ -526,7 +569,7 @@ fn process_linker_script<'data, I: InputFileData>(
 
         if let InputSpec::File(file) = &mut input.spec
             && let Some(new_file) =
-                crate::linker_script::maybe_apply_sysroot(&script_path, file, args.sysroot())
+                crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
         {
             *file = new_file;
         }
@@ -749,7 +792,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
                     "Unsupported input file type (text): {input_ref}"
                 );
                 let script =
-                    process_linker_script(input_file, self.args, self.file_system.as_ref())?;
+                    process_linker_script(input_file, self.sysroot, self.file_system.as_ref())?;
 
                 let file_indexes = script
                     .extra_inputs
@@ -801,7 +844,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
         let paths = input.path(
-            self.args.lib_search_path(),
+            self.lib_search_path,
             self.framework_search_path,
             self.file_system.as_ref(),
         )?;
@@ -1250,8 +1293,8 @@ mod tests {
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
         }
 
-        fn canonicalize(&self, _path: &Path) -> Result<PathBuf> {
-            unreachable!()
+        fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+            Ok(path.to_owned())
         }
 
         fn remove_file(&self, _path: &Path) -> Result<()> {
