@@ -1,0 +1,1 @@
+INPUT(/lib/libvalue.a)
