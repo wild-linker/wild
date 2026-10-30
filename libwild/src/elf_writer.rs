@@ -3903,8 +3903,7 @@ fn apply_relocation<
 
     let symbol_id = layout.symbol_db.definition(local_symbol_id);
     let is_linker_script_symbol = layout.symbol_db.is_linker_script_symbol(symbol_id);
-    let can_relax =
-        !(is_linker_script_symbol && output_kind.is_position_independent() && !flags.is_absolute());
+    let can_relax = elf::can_relax_symbol(flags, output_kind, is_linker_script_symbol);
 
     let relaxation = if can_relax {
         A::new_relaxation(
@@ -3929,7 +3928,7 @@ fn apply_relocation<
                     addend: r.addend(),
                 }),
         )
-        .filter(|relaxation| layout.args().relax || relaxation.is_mandatory())
+        .filter(|relaxation| elf::should_apply_relaxation(layout.args(), relaxation))
     } else {
         None
     };

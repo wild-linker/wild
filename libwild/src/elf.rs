@@ -7029,6 +7029,21 @@ struct ClassifiedSymbolRelocation {
     section_is_writable: bool,
 }
 
+pub(crate) fn can_relax_symbol(
+    flags: ValueFlags,
+    output_kind: OutputKind,
+    is_linker_script_symbol: bool,
+) -> bool {
+    !(is_linker_script_symbol && output_kind.is_position_independent() && !flags.is_absolute())
+}
+
+pub(crate) fn should_apply_relaxation(
+    args: &ElfArgs,
+    relaxation: &impl platform::Relaxation,
+) -> bool {
+    args.should_relax() || relaxation.is_mandatory()
+}
+
 /// Resolve the relocated symbol and determine the effective relocation kind / initial flags.
 #[inline(always)]
 fn classify_symbol_relocation<
@@ -7056,9 +7071,7 @@ fn classify_symbol_relocation<
     let mut next_modifier = RelocationModifier::Normal;
     let mut flags_to_add = ValueFlags::empty();
     let is_linker_script_symbol = resources.symbol_db.is_linker_script_symbol(symbol_id);
-    let can_relax = !(is_linker_script_symbol
-        && symbol_db.output_kind.is_position_independent()
-        && !flags.is_absolute());
+    let can_relax = can_relax_symbol(flags, symbol_db.output_kind, is_linker_script_symbol);
 
     let relaxation = if can_relax {
         A::new_relaxation(
@@ -7074,7 +7087,7 @@ fn classify_symbol_relocation<
             rel.addend(),
             None,
         )
-        .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
+        .filter(|relaxation| should_apply_relaxation(args, relaxation))
     } else {
         None
     };
