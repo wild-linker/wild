@@ -3209,6 +3209,30 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
         output_attributes
     }
+
+    fn adjust_empty_linker_script_section_flags<'data>(
+        linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        output_sections: &mut OutputSections<'data, Self>,
+        must_keep_sections: &OutputSectionMap<bool>,
+    ) {
+        let mut current_flags = SectionFlags::default();
+
+        for script in linker_scripts {
+            for &section_id in &script.parsed.ordered_sections {
+                let info = output_sections.section_infos.get_mut(section_id);
+                if !section_id.is_custom::<Self>() || info.section_attributes.has_input_sections {
+                    current_flags = info.section_attributes.flags;
+                } else if *must_keep_sections.get(section_id) {
+                    let avoid_propagation = info.section_attributes.overrides.avoid_progpogation;
+                    let allowed_flags = (shf::ALLOC | shf::WRITE).without(avoid_propagation);
+                    info.section_attributes.flags = current_flags & allowed_flags;
+                    if info.section_attributes.ty == sht::NULL {
+                        info.section_attributes.ty = sht::PROGBITS;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn check_segment_permissions<C: ElfClass>(layout: &layout::Layout<Elf<C>>) -> Result {

@@ -1252,6 +1252,13 @@ pub(crate) trait Platform:
         output_attributes
     }
 
+    fn adjust_empty_linker_script_section_flags<'data>(
+        _linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        _output_sections: &mut OutputSections<'data, Self>,
+        _must_keep_sections: &OutputSectionMap<bool>,
+    ) {
+    }
+
     fn finalise_output_section_alignments(
         _sizes: &OutputSectionPartMap<u64>,
         _output_sections: &mut OutputSections<'_, Self>,
