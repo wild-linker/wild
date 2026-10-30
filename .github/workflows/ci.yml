@@ -191,7 +191,7 @@ jobs:
         id: rust-cache
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         with:
           tool: wasm-tools
@@ -260,7 +260,7 @@ jobs:
       - run: rm rust-toolchain.toml
       - uses: dtolnay/rust-toolchain@1.99.1
         id: rust-toolchain
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
