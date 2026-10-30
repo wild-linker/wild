@@ -201,7 +201,9 @@ impl<F: FileSystem> Output<F> {
                 wait_for_sized_output(sized_output_recv)?
             }
             FileCreator::Regular { file_size } => {
-                delete_old_output(self.file_system.as_ref(), &self.path);
+                if self.config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace {
+                    delete_old_output(self.file_system.as_ref(), &self.path);
+                }
                 let file_size = file_size.context("set_size was never called")?;
                 self.create_file_non_lazily(file_size)?
             }
@@ -231,16 +233,16 @@ fn default_file_replacement_mode<P: Platform>(
     output_kind: OutputKind,
     file_system: &impl FileSystem,
 ) -> FileReplacementMode {
-    if output_kind.is_shared_object() {
-        return FileReplacementMode::UnlinkAndReplace;
-    }
-
     let Ok(file_type) = file_system.file_type(args.output()) else {
         return FileReplacementMode::UnlinkAndReplace;
     };
 
     if file_type != FileType::File {
         return FileReplacementMode::UpdateInPlaceWithFallback;
+    }
+
+    if output_kind.is_shared_object() {
+        return FileReplacementMode::UnlinkAndReplace;
     }
 
     P::DEFAULT_FILE_REPLACEMENT_MODE
