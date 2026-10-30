@@ -63,11 +63,7 @@ impl SaveDir {
                     .iter()
                     .map(|file| file.filename.clone()),
             );
-            state.finish(
-                files_to_copy.iter(),
-                parsed_args,
-                &input_data.resolved_framework_search_path,
-            )?;
+            state.finish(files_to_copy.iter(), parsed_args, input_data)?;
         }
         Ok(())
     }
@@ -143,18 +139,18 @@ impl SaveDirState {
         &self,
         filenames: I,
         parsed_args: &impl platform::Args,
-        framework_search_path: &[Box<Path>],
+        input_data: &FileLoader<'_, impl FileSystem>,
     ) -> Result {
         for filename in filenames {
-            self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
+            self.copy_file(&std::path::absolute(filename)?, input_data)?;
         }
 
-        for path in framework_search_path {
-            self.copy_file(&std::path::absolute(path)?, parsed_args)?;
+        for path in &input_data.resolved_framework_search_path {
+            self.copy_file(&std::path::absolute(path)?, input_data)?;
         }
 
         let run_with_file = self.dir.join("run-with");
-        self.write_args_file(&run_with_file, parsed_args, framework_search_path)
+        self.write_args_file(&run_with_file, parsed_args, input_data)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
 
         if env::var(SKIP_LINKING_ENV).is_ok() {
@@ -167,8 +163,9 @@ impl SaveDirState {
         &self,
         run_file: &Path,
         args: &impl platform::Args,
-        framework_search_path: &[Box<Path>],
+        input_data: &FileLoader<'_, impl FileSystem>,
     ) -> Result {
+        let framework_search_path = &input_data.resolved_framework_search_path;
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
@@ -182,7 +179,7 @@ impl SaveDirState {
         let mut at_file_counter = 0usize;
         let original_output_file = self.write_args(
             &self.args,
-            args,
+            input_data.resolved_sysroot.as_deref(),
             framework_search_path,
             &mut args_buf,
             &mut setup_buf,
@@ -223,7 +220,7 @@ impl SaveDirState {
     fn write_args(
         &self,
         args: &[String],
-        parsed_args: &impl platform::Args,
+        sysroot: Option<&Path>,
         framework_search_path: &[Box<Path>],
         out: &mut dyn Write,
         setup_out: &mut dyn Write,
@@ -248,7 +245,7 @@ impl SaveDirState {
                     // Expand nested response files inline into the current file.
                     self.write_args(
                         &args_from_file,
-                        parsed_args,
+                        sysroot,
                         framework_search_path,
                         out,
                         setup_out,
@@ -269,7 +266,7 @@ impl SaveDirState {
                         let mut noop_setup: Vec<u8> = Vec::new();
                         self.write_args(
                             &args_from_file,
-                            parsed_args,
+                            sysroot,
                             framework_search_path,
                             &mut at_out,
                             &mut noop_setup,
@@ -319,16 +316,13 @@ impl SaveDirState {
                     dir = args.next().map_or_default(|s| s.as_str());
                 }
 
-                let dir = crate::linker_script::maybe_forced_sysroot(
-                    Path::new(dir),
-                    parsed_args.sysroot(),
-                )
-                .unwrap_or_else(|| Box::from(Path::new(dir)));
+                let dir = crate::linker_script::maybe_forced_sysroot(Path::new(dir), sysroot)
+                    .unwrap_or_else(|| Box::from(Path::new(dir)));
                 let dir = std::path::absolute(dir)?;
                 out.write_all(b"-L")?;
                 write_copied_file_arg(out, &dir)?;
             } else if let Some(forced_path) =
-                crate::linker_script::maybe_forced_sysroot(Path::new(arg), parsed_args.sysroot())
+                crate::linker_script::maybe_forced_sysroot(Path::new(arg), sysroot)
             {
                 let path = std::path::absolute(&forced_path)?;
                 if self.output_path(&path).exists() {
@@ -384,7 +378,11 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path, parsed_args: &impl platform::Args) -> Result {
+    fn copy_file(
+        &self,
+        source_path: &Path,
+        input_data: &FileLoader<'_, impl FileSystem>,
+    ) -> Result {
         let dest_path = self.output_path(source_path);
 
         if dest_path.exists() || !source_path.exists() {
@@ -394,7 +392,7 @@ impl SaveDirState {
         // The parent directory might be an actual directory or it might be a symlink. Either way,
         // we want to copy it before we copy our file.
         if let Some(parent) = source_path.parent() {
-            self.copy_file(parent, parsed_args)?;
+            self.copy_file(parent, input_data)?;
         }
 
         // We need to check again if `dest_path` exists because paths containing ".." mean that
@@ -415,7 +413,7 @@ impl SaveDirState {
                 .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
 
             if target.is_absolute() {
-                self.copy_file(&target, parsed_args)?;
+                self.copy_file(&target, input_data)?;
                 target = make_relative_path(&target, directory).with_context(|| {
                     format!(
                         "Failed to make path `{}` relative to `{}` while copying symlink",
@@ -425,7 +423,7 @@ impl SaveDirState {
                 })?;
             } else {
                 let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target, parsed_args)?;
+                self.copy_file(&absolute_target, input_data)?;
             }
 
             if let Err(error) = create_symlink(&target, &dest_path) {
@@ -439,16 +437,10 @@ impl SaveDirState {
             if let Ok(data) = std::fs::read(source_path) {
                 match FileKind::identify_bytes(&data, false) {
                     Ok(FileKind::ThinArchive) => {
-                        self.handle_thin_archive(source_path, parsed_args)?;
+                        self.handle_thin_archive(source_path, input_data)?;
                     }
                     Ok(FileKind::Text) => {
-                        let is_in_sysroot =
-                            match (normalize_abs_path(source_path), parsed_args.sysroot()) {
-                                (Some(source_path), Some(sysroot)) => {
-                                    source_path.starts_with(sysroot)
-                                }
-                                _ => false,
-                            };
+                        let is_in_sysroot = input_data.is_in_sysroot(source_path);
 
                         // We make paths in linker scripts relative, but only if they're not inside
                         // of the sysroot. If they're inside the sysroot, then they need to remain
@@ -460,7 +452,7 @@ impl SaveDirState {
                             if let Ok(updated_bytes) = make_linker_script_relative(
                                 &data,
                                 source_path,
-                                parsed_args.sysroot(),
+                                input_data.resolved_sysroot.as_deref(),
                             ) {
                                 std::fs::write(dest_path, updated_bytes)?;
                                 return Ok(());
@@ -488,7 +480,11 @@ impl SaveDirState {
     }
 
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path, parsed_args: &impl platform::Args) -> Result {
+    fn handle_thin_archive(
+        &self,
+        path: &Path,
+        input_data: &FileLoader<'_, impl FileSystem>,
+    ) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
 
@@ -505,7 +501,7 @@ impl SaveDirState {
                     }
                     let absolute_entry_path = parent_path.join(entry_path);
 
-                    self.copy_file(&absolute_entry_path, parsed_args)?;
+                    self.copy_file(&absolute_entry_path, input_data)?;
                 }
                 ArchiveEntry::Regular(_) => {}
             }
@@ -761,7 +757,10 @@ mod tests {
         let parsed = MachOArgs::default();
         let framework_search_path = vec![search.into_boxed_path()];
         let state = SaveDirState::new(saved.clone(), vec!["-framework".into(), "Foo".into()]);
-        state.finish([&framework].into_iter(), &parsed, &framework_search_path)?;
+        let arena = colosseum::sync::Arena::new();
+        let mut input_data = FileLoader::new(&arena, std::sync::Arc::new(crate::fs::OsFileSystem));
+        input_data.resolved_framework_search_path = framework_search_path;
+        state.finish([&framework].into_iter(), &parsed, &input_data)?;
         std::fs::remove_dir_all(source)?;
 
         let output = Command::new("bash")

@@ -7057,7 +7057,8 @@ fn test_no_disallowed_overlaps() {
     let output_kind =
         crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let arena = colosseum::sync::Arena::new();
-    let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
+    let auxiliary =
+        crate::input_data::AuxiliaryFiles::new(&args, &[], &arena, &OsFileSystem).unwrap();
     let herd = Default::default();
     let symbol_db =
         crate::symbol_db::SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();

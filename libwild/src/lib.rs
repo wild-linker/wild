@@ -352,8 +352,12 @@ impl<F: FileSystem> Linker<F> {
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
-        let auxiliary =
-            input_data::AuxiliaryFiles::new(args, &self.inputs_arena, self.file_system.as_ref())?;
+        let auxiliary = input_data::AuxiliaryFiles::new(
+            args,
+            &file_loader.resolved_lib_search_path,
+            &self.inputs_arena,
+            self.file_system.as_ref(),
+        )?;
 
         let mut symbol_db = symbol_db::SymbolDb::new(args, output_kind, &auxiliary, &self.herd)?;
         let mut per_symbol_flags = PerSymbolFlags::new();

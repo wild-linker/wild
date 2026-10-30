@@ -1125,7 +1125,7 @@ mod tests {
         let output_kind = crate::output_kind::OutputKind::PartialLink;
         let arena = Arena::new();
         let auxiliary =
-            crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
+            crate::input_data::AuxiliaryFiles::new(&args, &[], &arena, &OsFileSystem).unwrap();
         let herd = Default::default();
         let mut symbol_db = SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();
         f(&layouts, &sections, &mut symbol_db)
