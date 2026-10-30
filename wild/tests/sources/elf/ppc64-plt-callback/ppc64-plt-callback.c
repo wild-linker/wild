@@ -17,6 +17,45 @@
 //#Object:pointer.s
 //#ExpectSym:callback section=".rodata"
 
+//#Config:warn-textrel:read-only
+//#SoSingleLinker:ld
+//#LinkArgs:--warn-textrel
+//#ExpectWarning:output contains dynamic relocations in read-only sections|creating.*DT_TEXTREL
+
+//#Config:error-textrel:read-only
+//#LinkArgs:-z notext -z text
+//#ExpectError:output contains dynamic relocations in read-only sections \(-z text\)|read-only segment has dynamic relocations
+
+//#Config:error-warn-textrel:warn-textrel
+//#LinkArgs:-z text --warn-textrel
+
+//#Config:warn-error-textrel:error-textrel
+//#SoSingleLinker:ld
+//#LinkArgs:--warn-textrel -z text
+
+//#Config:allow-textrel:read-only
+//#LinkArgs:-z text -z notext
+//#ExpectWarningWild:^$
+
+//#Config:warn-allowed-textrel:read-only
+//#SoSingleLinker:ld
+//#LinkArgs:--warn-textrel -z notext
+//#ExpectWarningWild:^$
+
+//#Config:textoff:read-only
+//#SoSingleLinker:ld
+//#LinkArgs:-z text --warn-textrel -z textoff
+//#ExpectWarningWild:^$
+
+//#Config:warn-textrel-old-dtags:warn-textrel
+//#LinkArgs:--disable-new-dtags
+//#ExpectDynamic:DT_TEXTREL
+
+//#Config:no-textrel:default
+//#SoSingleLinker:ld
+//#LinkArgs:-z text --warn-textrel
+//#ExpectWarning:^$
+
 #include "../common/runtime.h"
 
 typedef int (*Callback)(void);

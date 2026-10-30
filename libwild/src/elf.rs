@@ -8,6 +8,7 @@ use crate::args::elf::BuildIdOption;
 use crate::args::elf::CetReport;
 use crate::args::elf::ElfArgs;
 use crate::args::elf::RwxSegmentReport;
+use crate::args::elf::TextRelocationMode;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf_writer;
@@ -807,6 +808,18 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         output: &crate::file_writer::Output<F>,
         layout: &layout::Layout<'data, Self>,
     ) -> Result {
+        if layout.has_textrel {
+            let args = layout.args();
+            match args.text_relocation_mode {
+                TextRelocationMode::Ignore => {}
+                TextRelocationMode::Warn => {
+                    args.warning("output contains dynamic relocations in read-only sections");
+                }
+                TextRelocationMode::Error => {
+                    bail!("output contains dynamic relocations in read-only sections (-z text)");
+                }
+            }
+        }
         output.write(layout, elf_writer::write::<C, A>)
     }
 
@@ -7229,8 +7242,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
                     *flags_to_add |= ValueFlags::COPY_RELOCATION;
                 }
                 crate::args::CopyRelocations::Disallowed(reason) => {
-                    // We don't at present support text relocations, so if we can't apply a copy
-                    // relocation, we error instead.
+                    // Text relocations against interposable symbols are not supported, so if we
+                    // can't apply a copy relocation, we error instead.
                     bail!(
                         "Direct relocation ({}) to dynamic symbol requires a copy relocation, \
                         but copy relocations are disabled because {reason}. {}",
