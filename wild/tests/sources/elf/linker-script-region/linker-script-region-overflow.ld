@@ -25,10 +25,6 @@ SECTIONS {
         KEEP(*(.data.ram3))
     } > RAM
 
-    .note.gnu.property : {
-        *(.note.gnu.property)
-    } > ROM
-
     .text : {
         *(.text)
     } > ROM
