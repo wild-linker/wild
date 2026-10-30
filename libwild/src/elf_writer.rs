@@ -7132,39 +7132,43 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         if let Some(res) = resolution {
             let name = object.object.symbol_name(symbol)?;
 
-            if res.flags.needs_copy_relocation() {
-                // Symbol needs a copy relocation, which means that the dynamic symbol will be
-                // written by the epilogue not by us. However, we do need to write a regular
-                // symtab entry.
-                table_writer.debug_symbol_writer.copy_symbol(
-                    symbol,
-                    name,
-                    output_section_id::BSS,
-                    res.value(),
-                    ValueFlags::empty(),
-                )?;
-            } else if !res.flags.needs_canonical_plt() && !only_keep_debug {
-                // Writes to allocatable .dynsym/.dynstr and version tables.
-                let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
-
-                let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
-                    // An undefined reference to an IFUNC needs to be emitted as type FUNC.
-                    object::elf::STT_FUNC
-                } else {
-                    symbol.st_type()
-                };
-
-                // Note, for undefined symbols, we always use default visibility.
-                entry.set_binding_and_type(symbol.st_bind(), symbol_type);
-
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    copy_symbol_version(
-                        object.object.symbol_versions(),
-                        object.symbol_id_range.id_to_offset(symbol_id),
-                        &object.format_specific.version_mapping,
-                        versym,
+            match elf::imported_symbol_kind(res.flags, true) {
+                elf::ImportedSymbolKind::CopyRelocation => {
+                    // Symbol needs a copy relocation, which means that the dynamic symbol will be
+                    // written by the epilogue not by us. However, we do need to write a regular
+                    // symtab entry.
+                    table_writer.debug_symbol_writer.copy_symbol(
+                        symbol,
+                        name,
+                        output_section_id::BSS,
+                        res.value(),
+                        ValueFlags::empty(),
                     )?;
                 }
+                elf::ImportedSymbolKind::Undefined if !only_keep_debug => {
+                    // Writes to allocatable .dynsym/.dynstr and version tables.
+                    let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
+
+                    let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
+                        // An undefined reference to an IFUNC needs to be emitted as type FUNC.
+                        object::elf::STT_FUNC
+                    } else {
+                        symbol.st_type()
+                    };
+
+                    // Note, for undefined symbols, we always use default visibility.
+                    entry.set_binding_and_type(symbol.st_bind(), symbol_type);
+
+                    if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                        copy_symbol_version(
+                            object.object.symbol_versions(),
+                            object.symbol_id_range.id_to_offset(symbol_id),
+                            &object.format_specific.version_mapping,
+                            versym,
+                        )?;
+                    }
+                }
+                _ => {}
             }
 
             table_writer
