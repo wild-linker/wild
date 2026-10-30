@@ -351,10 +351,10 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
             args.common_mut().save_dir.handle_file(value);
-            let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
+            let sysroot = Path::new(value);
             // TODO: handle properly
             args.lib_search_path = vec![sysroot.join("usr/lib").into_boxed_path()];
-            args.sysroot = Some(Box::from(sysroot.as_path()));
+            args.sysroot = Some(sysroot.into());
             Ok(())
         });
     parser

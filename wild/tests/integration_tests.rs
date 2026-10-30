@@ -27,6 +27,8 @@
 //! Copy:{source}:{dest} Copies a file. Source path is relative to the test source directory.
 //! Both paths can use `$OUT_DIR`. After expansion, destinations must be relative to `$OUT_DIR`.
 //!
+//! Symlink:{target}:{link} Creates a symbolic link. Both paths are relative to `$OUT_DIR`.
+//!
 //! LinkerWorkingDirectory:{path} Sets the linker working directory. Supports `$OUT_DIR`.
 //!
 //! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
@@ -2058,6 +2060,10 @@ enum BuildStep {
         source: String,
         destination: PathBuf,
     },
+    Symlink {
+        target: PathBuf,
+        link: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3055,6 +3061,15 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = arg.parse()?,
+        "Symlink" => {
+            let (target, link) = arg
+                .split_once(':')
+                .context("Symlink requires target:link")?;
+            config.build_steps.push(BuildStep::Symlink {
+                target: parse_output_path(target)?,
+                link: parse_output_path(link)?,
+            });
+        }
         "Copy" => {
             let (source, destination) = arg
                 .split_once(':')
@@ -3794,6 +3809,20 @@ fn build_inputs(
                     config,
                 ))?;
                 copy_to_build_dir(&config.source_path(source), &destination, config)?;
+            }
+            BuildStep::Symlink { target, link } => {
+                let target = config.build_dir().join(target);
+                let link = config.build_dir().join(link);
+                if let Ok(existing) = std::fs::read_link(&link) {
+                    ensure!(
+                        existing == target,
+                        "Unexpected symlink target at {}",
+                        link.display()
+                    );
+                } else {
+                    std::fs::create_dir_all(link.parent().unwrap())?;
+                    create_symlink(&target, &link)?;
+                }
             }
         }
     }
@@ -5414,7 +5443,9 @@ fn find_replay_inputs(dir: &Path, save_dir: &Path, out: &mut Vec<PathBuf>) {
             // Intermediate outputs may themselves live inside a framework bundle. Don't hide
             // an ancestor of the save directory currently being replayed.
             out.push(path);
-        } else if path.is_dir() {
+        } else if path.is_dir() && !path.is_symlink() {
+            // Visit the target through its original path so aliases don't hide the same input
+            // twice.
             find_replay_inputs(&path, save_dir, out);
         } else if path.extension().is_some_and(|e| e == "a") {
             out.push(path);
@@ -8436,7 +8467,11 @@ fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(target, dest_path)
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, dest_path)
+    } else {
+        std::os::windows::fs::symlink_file(target, dest_path)
+    }
 }
 
 fn find_bin(names: &[&str]) -> Result<PathBuf> {
