@@ -144,6 +144,7 @@ pub struct ElfArgs {
     pub(crate) cet_report: CetReport,
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) z_pack_relative_relocs: bool,
+    pub(crate) z_unique: bool,
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
     pack_dyn_relocs: PackDynRelocs,
@@ -447,6 +448,7 @@ impl Default for ElfArgs {
             force_bti: false,
             cet_report: CetReport::None,
             z_pack_relative_relocs: false,
+            z_unique: false,
             max_page_size: None,
             auxiliary: Vec::new(),
             rpath_set: Default::default(),
@@ -967,6 +969,22 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.z_ibtplt = true;
             Ok(())
         })
+        .sub_option(
+            "unique",
+            "Mark output as loadable at most once",
+            |args, _| {
+                args.z_unique = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "nounique",
+            "Do not mark output as loadable at most once",
+            |args, _| {
+                args.z_unique = false;
+                Ok(())
+            },
+        )
         .sub_option_with_value(
             "cet-report=",
             "Report missing CET properties",

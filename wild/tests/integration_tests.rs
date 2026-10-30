@@ -7806,6 +7806,8 @@ fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
         DT_VERDEFNUM => "DT_VERDEFNUM",
         DT_VERNEED => "DT_VERNEED",
         DT_VERNEEDNUM => "DT_VERNEEDNUM",
+        // TODO: DT_GNU_FLAGS_1 once added to `object`
+        object::elf::DynamicTag(0x6ffffdf4) => "DT_GNU_FLAGS_1",
         _ => return None,
     })
 }

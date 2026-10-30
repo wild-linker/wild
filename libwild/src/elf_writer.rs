@@ -6458,6 +6458,11 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.dt_flags_1().0,
     ),
     DynamicEntryWriter::optional(
+        object::elf::DynamicTag(0x6fff_fdf4),
+        |inputs| inputs.dt_gnu_flags_1() != 0,
+        |inputs| inputs.dt_gnu_flags_1(),
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_BIND_NOW,
         |inputs| {
             !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_BIND_NOW)
@@ -6567,6 +6572,17 @@ impl DynamicEntryInputs<'_> {
             if self.args.z_interpose {
                 flags |= object::elf::DF_1_INTERPOSE;
             }
+        }
+
+        flags
+    }
+
+    // TODO: not yet available in object
+    fn dt_gnu_flags_1(&self) -> u64 {
+        let mut flags = 0;
+
+        if self.output_kind.needs_dynamic() && self.args.z_unique {
+            flags |= 0x0000_0001;
         }
 
         flags
