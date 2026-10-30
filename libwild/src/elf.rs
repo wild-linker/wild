@@ -617,6 +617,20 @@ impl<'data, C: ElfClass> platform::RelocationList<'data> for RelocationList<'dat
     }
 }
 
+/// Most inputs are ordered already, but partial links can reorder frame entries without
+/// reordering their relocations. Preserve the order of relocations at the same offset.
+pub(crate) fn ordered_eh_frame_relocations<R: Relocation, I: Iterator<Item = R> + Clone>(
+    relocations: I,
+) -> itertools::Either<I, std::vec::IntoIter<R>> {
+    if relocations.clone().is_sorted_by_key(|rel| rel.offset()) {
+        itertools::Either::Left(relocations)
+    } else {
+        let mut relocations: Vec<_> = relocations.collect();
+        relocations.sort_by_key(Relocation::offset);
+        itertools::Either::Right(relocations.into_iter())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct RelaSequence<'data, C: ElfClass>(&'data [Rela<C>]);
 
@@ -1618,6 +1632,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let frame_index_offset = object.format_specific.exception_frames.len();
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
+                let relocations = match ordered_eh_frame_relocations(
+                    relocations.iter().copied().map(ElfRela::<C>::new),
+                ) {
+                    itertools::Either::Left(_) => relocations,
+                    itertools::Either::Right(ordered) => resources
+                        .symbol_db
+                        .herd
+                        .get()
+                        .alloc_slice_fill_iter(ordered.map(|rel| rel.raw)),
+                };
                 ExceptionFrames::Rela(process_eh_frame_relocations::<C, A, ElfRela<C>>(
                     object,
                     common,
@@ -1632,6 +1656,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 )?)
             }
             RelocationList::Crel(crel_iterator) => {
+                let mut relocations = crel_iterator
+                    .map(|raw| raw.map(ElfCrel::<C>::new))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !relocations.is_sorted_by_key(Relocation::offset) {
+                    relocations.sort_by_key(Relocation::offset);
+                }
                 ExceptionFrames::Crel(process_eh_frame_relocations::<C, A, ElfCrel<C>>(
                     object,
                     common,
@@ -1641,14 +1671,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     eh_frame_section_index,
                     frame_index_offset,
                     data,
-                    &crel_iterator
-                        .map(|raw| {
-                            raw.map(|raw| ElfCrel {
-                                raw,
-                                class: PhantomData,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
+                    &relocations,
                     scope,
                 )?)
             }
