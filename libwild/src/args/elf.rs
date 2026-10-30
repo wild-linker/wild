@@ -82,6 +82,7 @@ pub struct ElfArgs {
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
+    pub(crate) combreloc: bool,
     pub(crate) entry: Option<String>,
     pub(crate) export_all_dynamic_symbols: bool,
     pub(crate) export_list: Vec<String>,
@@ -409,6 +410,9 @@ impl Default for ElfArgs {
             dependency_file: None,
             undefined: Vec::new(),
             relro: true,
+            // Note, other linkers default to true. For Wild, we always combine relocations sections
+            // and this flag only controls sorting.
+            combreloc: false,
             entry: None,
             b_symbolic: BSymbolicKind::None,
             export_all_dynamic_symbols: false,
@@ -782,6 +786,18 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.relro = false;
             Ok(())
         })
+        .sub_option("combreloc", "Sort dynamic relocations", |args, _| {
+            args.combreloc = true;
+            Ok(())
+        })
+        .sub_option(
+            "nocombreloc",
+            "Do not sort dynamic relocations",
+            |args, _| {
+                args.combreloc = false;
+                Ok(())
+            },
+        )
         .sub_option("text", "Report text relocations as an error", |args, _| {
             args.text_relocation_mode = TextRelocationMode::Error;
             Ok(())
