@@ -4,15 +4,21 @@
 //#LinkArgs:-no-pie
 //#Object:runtime.c
 //#LinkerScript:linker-script-empty-section.ld
+//#ReferenceLinkers:bfd,lld
+//#ExpectSym:empty_1_start address=0x408000
+//#ExpectSym:empty_2_start address=0x418000
+//#NoSection:.empty_7
+//#SkipArch:riscv64
+
+//#Config:flags:default
 //#ReferenceLinkers:lld
 //#ExpectSection:.empty_1 type=1,flags=A
 //#ExpectSection:.empty_2 type=1,flags=WA
 //#ExpectSection:.empty_3 type=1,flags=W
 //#ExpectSection:.empty_4 type=8,flags=WA
-//#NoSection:.empty_7
 //#SkipArch:riscv64,x86_64
 
-//#Config:x86:default
+//#Config:x86:flags
 //#Arch:x86_64
 //#CompArgs:-DX86
 //#ExpectSection:.empty_5 type=1,flags=''

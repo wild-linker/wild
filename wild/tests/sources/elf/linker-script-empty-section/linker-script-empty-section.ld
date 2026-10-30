@@ -10,7 +10,7 @@ SECTIONS {
     .text : {
         *(.text)
     } :text
-    .empty_1 : {
+    .empty_1 0x408000 : {
         empty_1_start = .;
         *(.empty_1)
     }
@@ -23,7 +23,7 @@ SECTIONS {
     .data : {
         KEEP(*(.data))
     } :data
-    .empty_2 : {
+    .empty_2 0x418000 : {
         empty_2_start = .;
         *(.empty_2)
     }
