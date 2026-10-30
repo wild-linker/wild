@@ -58,6 +58,7 @@ pub struct WasmArgs {
     // page-aligned). `None` means size is derived from data / stack layout and the initial heap.
     pub(crate) initial_memory: Option<u64>,
     pub(crate) max_memory: Option<u64>,
+    pub(crate) no_growable_memory: bool,
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
@@ -117,6 +118,7 @@ impl Default for WasmArgs {
             initial_heap: 0,
             initial_memory: None,
             max_memory: None,
+            no_growable_memory: false,
             shared_memory: false,
             import_memory: None,
             export_memory: None,
@@ -528,6 +530,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Maximum size of the linear memory in bytes")
         .execute(|args, _modifier_stack, value| {
             args.max_memory = Some(parse_number(value)?);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-growable-memory")
+        .help("Set maximum size of the linear memory to its initial size")
+        .execute(|args, _modifier_stack| {
+            args.no_growable_memory = true;
             Ok(())
         });
 

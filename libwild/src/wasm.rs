@@ -5555,8 +5555,13 @@ fn ensure_memory_covers(
     initial_heap: u64,
     initial_memory: Option<u64>,
     max_memory: Option<u64>,
+    no_growable_memory: bool,
     shared_memory: bool,
 ) -> Result<u64> {
+    if no_growable_memory && max_memory.is_some_and(|max| max != 0) {
+        bail!("--max-memory is incompatible with --no-growable-memory");
+    }
+
     let page = wasm_page_size();
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
     if !stack_first && stack_size > 0 {
@@ -5605,7 +5610,11 @@ fn ensure_memory_covers(
     let initial_pages = layout.memories.iter().map(|m| m.initial).max().unwrap_or(0);
     let initial_bytes = initial_pages.saturating_mul(page);
 
-    if let Some(requested) = max_memory {
+    if no_growable_memory {
+        for memory in &mut layout.memories {
+            memory.maximum = Some(memory.initial);
+        }
+    } else if let Some(requested) = max_memory {
         ensure!(
             requested.is_multiple_of(page),
             "maximum memory must be aligned to the page size ({page} bytes)"
@@ -6480,6 +6489,7 @@ where
     let initial_heap = symbol_db.args.initial_heap;
     let initial_memory = symbol_db.args.initial_memory;
     let max_memory = symbol_db.args.max_memory;
+    let no_growable_memory = symbol_db.args.no_growable_memory;
     let shared_memory = symbol_db.args.shared_memory;
     let import_memory = symbol_db.args.memory_import();
     let export_memory = &symbol_db.args.export_memory;
@@ -6708,6 +6718,7 @@ where
             initial_heap,
             initial_memory,
             max_memory,
+            no_growable_memory,
             shared_memory,
         )?;
         // wasm-ld only defines `__heap_end` when linear memory exists (end of `memory.initial`).
@@ -9086,17 +9097,33 @@ mod tests {
             ..Default::default()
         };
 
-        let pages =
-            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true, 0, None, None, false)
-                .unwrap();
+        let pages = ensure_memory_covers(
+            &mut layout,
+            DEFAULT_STACK_SIZE,
+            true,
+            0,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(pages, 1);
         assert_eq!(layout.memories[0].initial, 1);
         assert_eq!(layout.memories[0].maximum, None);
         assert!(!layout.memories[0].shared);
 
-        let pages =
-            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false, 0, None, None, false)
-                .unwrap();
+        let pages = ensure_memory_covers(
+            &mut layout,
+            DEFAULT_STACK_SIZE,
+            false,
+            0,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         let expected_pages = (u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE))
             .div_ceil(wasm_page_size())
             .max(1);
