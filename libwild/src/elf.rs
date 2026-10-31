@@ -4092,6 +4092,13 @@ fn process_eh_frame_relocations<
             while let Some((rel_index, rel)) = rel_iter.peek() {
                 let rel_offset = rel.offset();
                 if rel_offset < next_offset as u64 {
+                    if rel_offset < (offset + FDE_PC_BEGIN_OFFSET) as u64 {
+                        bail!(
+                            "Unsupported .eh_frame relocation {} at {rel_offset:#x} before FDE pc-begin in {}",
+                            A::rel_type_to_string(rel.raw_type()),
+                            object.input,
+                        );
+                    }
                     let is_pc_begin = (rel_offset as usize - offset) == FDE_PC_BEGIN_OFFSET;
 
                     if is_pc_begin && let Some(index) = rel.symbol() {
