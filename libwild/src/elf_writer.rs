@@ -136,6 +136,7 @@ use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
+use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator;
@@ -197,6 +198,11 @@ pub(crate) fn write<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
+    if layout.args().combreloc {
+        sort_relative_dynamic_relocations::<C, A>(&mut section_buffers);
+        sort_dynamic_relocations::<C, A>(&mut section_buffers);
+    }
+
     if layout.args().should_write_eh_frame_hdr
         && !layout.args().only_keep_debug()
         && layout
@@ -212,6 +218,34 @@ pub(crate) fn write<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
     Ok(())
+}
+
+fn sort_relative_dynamic_relocations<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    section_buffers: &mut OutputSectionMap<&mut [u8]>,
+) {
+    timing_phase!("Sort dynamic relocations (relative)");
+
+    let relative: &mut [elf::Rela<C>] =
+        slice_from_all_bytes_mut(section_buffers.get_mut(output_section_id::RELA_DYN_RELATIVE));
+    relative.par_sort_unstable_by_key(|rel| rel.r_offset(LittleEndian).into());
+}
+
+fn sort_dynamic_relocations<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    section_buffers: &mut OutputSectionMap<&mut [u8]>,
+) {
+    timing_phase!("Sort dynamic relocations (general)");
+
+    let general: &mut [elf::Rela<C>] =
+        slice_from_all_bytes_mut(section_buffers.get_mut(output_section_id::RELA_DYN_GENERAL));
+    let irelative = A::get_dynamic_relocation_type(DynamicRelocationKind::Irelative);
+    general.sort_unstable_by_key(|rel| {
+        // Run IFUNC resolvers after the other dynamic relocations have been applied.
+        (
+            rel.r_type(LittleEndian, false) == irelative,
+            rel.r_sym(LittleEndian, false),
+            Into::<u64>::into(rel.r_offset(LittleEndian)),
+        )
+    });
 }
 
 fn write_gnu_build_id_note<C: ElfClass>(
