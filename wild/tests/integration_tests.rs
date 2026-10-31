@@ -1080,6 +1080,8 @@ fn run_wasm_with_wasmtime(
 /// for running all tests.
 const FULL_PLATFORM_REQUIRED_VAR: &str = "WILD_VERIFY_PLATFORM_REQUIREMENTS";
 
+const TEST_TIMEOUT_VAR: &str = "WILD_TEST_TIMEOUT";
+
 type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 
@@ -1579,7 +1581,7 @@ struct Config {
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
-#[derive(serde::Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TestConfig {
     #[serde(default)]
@@ -1607,6 +1609,9 @@ struct TestConfig {
 
     #[serde(default = "default_llvm_tools_dir")]
     llvm_tools_dir: PathBuf,
+
+    #[serde(default = "default_test_binary_timeout")]
+    test_binary_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -3604,10 +3609,15 @@ impl Debug for SectionDiff {
     }
 }
 
-/// How long test binaries are allowed to run for. Generally these should only take a few
-/// milliseconds, however when running lots of testing parallel there can be quite a bit of load on
-/// the system, which can mean that the test binaries take longer to start, so we need to be
-/// somewhat generous here to avoid flakes.
+#[allow(clippy::unnecessary_wraps)]
+fn default_test_binary_timeout() -> Option<Duration> {
+    // How long test binaries are allowed to run for by default. Generally these should only take a
+    // few milliseconds, however when running lots of testing parallel there can be quite a bit of
+    // load on the system, which can mean that the test binaries take longer to start, so we need to
+    // be somewhat generous here to avoid flakes.
+    Some(TEST_BINARY_TIMEOUT)
+}
+
 const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_secs(10);
 const EXIT_SUCCESS: i32 = 42;
 
@@ -3666,11 +3676,16 @@ impl LinkOutput {
                 let _ = recv.read_to_end(&mut output);
             });
 
-            if let Some(s) = child.wait_timeout(TEST_BINARY_TIMEOUT)? {
-                Ok(s)
+            if let Some(timeout) = self.command.config.test_config.test_binary_timeout {
+                if let Some(s) = child.wait_timeout(timeout)? {
+                    Ok(s)
+                } else {
+                    child.kill()?;
+                    child.wait()?;
+                    bail!("Binary ran for too long");
+                }
             } else {
-                child.kill()?;
-                bail!("Binary ran for too long");
+                Ok(child.wait()?)
             }
         })?;
 
@@ -9365,7 +9380,7 @@ fn read_test_config() -> Result<TestConfig> {
         toml::from_str(&config_content)
             .with_context(|| format!("Unable to load config from `{}`", config_path.display()))?
     } else if config_path == config_default_path {
-        TestConfig::default()
+        toml::from_str::<TestConfig>("")?
     } else {
         bail!(
             "WILD_TEST_CONFIG file not found at `{}`",
@@ -9376,6 +9391,16 @@ fn read_test_config() -> Result<TestConfig> {
     // The environment variable `WILD_TEST_CROSS` can override the config file setting.
     if let Some(qemu_arch_from_env) = get_wild_test_cross()? {
         config.qemu_arch = qemu_arch_from_env;
+    }
+
+    if let Ok(value) = std::env::var(TEST_TIMEOUT_VAR) {
+        config.test_binary_timeout = if value == "none" {
+            None
+        } else {
+            Some(Duration::from_secs(value.parse().with_context(|| {
+                format!("{TEST_TIMEOUT_VAR}='{value}': expected seconds or `none`")
+            })?))
+        };
     }
 
     Ok(config)
