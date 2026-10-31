@@ -38,6 +38,8 @@ use std::sync::Arc;
 pub mod coff;
 pub mod elf;
 pub mod macho;
+pub mod mingw;
+pub mod msvc;
 pub mod wasm;
 
 use crate::error::Warning;
@@ -137,7 +139,11 @@ impl Args {
 
         let mut has_flavor = false;
 
-        let platform = if input.next().is_some_and(|arg| arg.as_ref() == "-flavor") {
+        let next_arg = input.next();
+        let mut platform = if next_arg
+            .as_ref()
+            .is_some_and(|arg| arg.as_ref() == "-flavor")
+        {
             has_flavor = true;
 
             let flavor = input
@@ -151,8 +157,28 @@ impl Args {
             PlatformKind::host()
         };
 
+        // TODO: this very crude, need to think about a better way to do this. Perhaps move
+        // emulation parsing here?
+        let is_mingw = if matches!(platform, PlatformKind::Elf) {
+            let mut has_emulation = !has_flavor && next_arg.is_some_and(|arg| arg.as_ref() == "-m");
+            if !has_emulation {
+                has_emulation = input.find(|arg| arg.as_ref() == "-m").is_some();
+            }
+            has_emulation
+                && input.next().is_some_and(|arg| match arg.as_ref() {
+                    "i386pe" => panic!("i686 is unsupported"),
+                    "i386pep" => {
+                        platform = PlatformKind::Coff;
+                        true
+                    }
+                    _ => false,
+                })
+        } else {
+            false
+        };
+
         let mut args = match platform {
-            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new()?),
+            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new(is_mingw)?),
             PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
             PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
