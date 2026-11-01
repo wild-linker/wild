@@ -12,7 +12,6 @@
 //#LinkArgs:--no-gc-sections
 
 //#Config:check_start
-//#LinkerScript:linker-script-executable.ld
 //#LinkerScript:linker-script-check-start.ld
 //#Object:runtime.c
 // .text is the first section in ld, so this test wouldn't work with ld.
@@ -38,7 +37,7 @@ void begin_here(void) {
     exit_syscall(11);
   }
 
-  if ((size_t)&start_of_512 & 511 != 0) {
+  if (((size_t)&start_of_512 & 511) != 0) {
     exit_syscall(12);
   }
 
