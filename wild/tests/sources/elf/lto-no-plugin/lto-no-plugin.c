@@ -2,17 +2,19 @@
 
 //#AbstractConfig:default
 //#ReferenceLinkers:
-//#ExpectError:linker plugin was not supplied
 //#CompArgs:-flto
-//#RequiresLinkerPlugin:true
+//#RequiresCompilerFlags:-flto
 
 //#Config:gcc:default
 //#Compiler:gcc
+//#CompArgs:-fno-fat-lto-objects
+//#ExpectError:(GCC slim LTO input .* was not processed by a linker plugin|Wild was compiled without linker-plugin support)
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
 //#Config:clang:default
 //#Compiler:clang
+//#ExpectError:(linker plugin was not supplied|Wild was compiled without linker-plugin support)
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
