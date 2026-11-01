@@ -90,6 +90,7 @@ end lists the features required to link the Linux kernel.
 | `SIZEOF_HEADERS` | ✅ | |
 | `SEGMENT_START(segment, default)` | ✅ | Supports `"text"`, `"data"`, `"bss"`, `"rodata"`; returns `-Ttext`/`-Tdata`/`-Tbss` override if provided, otherwise `default`; unknown segment names always return `default` |
 | `ABSOLUTE(expr)` | ✅ | |
+|`DATA_SEGMENT_ALIGN(maxpagesize, commonpagesize)`/`DATA_SEGMENT_END(exp)`/`DATA_SEGMENT_RELRO_END(offset, exp)` | 📅 | |
 
 ## MEMORY Command
 
