@@ -123,6 +123,7 @@ pub(crate) struct OutputOrder<'data> {
     events: Vec<OrderEvent<'data>>,
     num_location_counters: usize,
     has_custom_phdrs: bool,
+    has_custom_layout: bool,
     custom_phdrs_include_headers: bool,
     first_section: Option<OutputSectionId>,
 }
@@ -148,6 +149,7 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     output_kind: OutputKind,
     has_custom_phdrs: bool,
+    has_custom_layout: bool,
     custom_phdrs_include_headers: bool,
     location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
     last_location_counter: Option<LocationCounterIndex>,
@@ -174,6 +176,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             secondary,
             output_kind,
             has_custom_phdrs,
+            has_custom_layout: has_custom_phdrs,
             custom_phdrs_include_headers: false,
             location_counters,
             last_location_counter: location_counters.last().map(|_| 0),
@@ -437,6 +440,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         self.custom_phdrs_include_headers = has_custom_headers;
     }
 
+    pub(crate) fn set_has_custom_layout(&mut self, has_custom_layout: bool) {
+        self.has_custom_layout = has_custom_layout;
+    }
+
     pub(crate) fn build(mut self) -> (OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>) {
         if let Some(lc) = self.last_location_counter {
             self.emit_location_counters(lc, self.location_counters.len());
@@ -459,6 +466,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 events: self.events,
                 num_location_counters: self.location_counters.len(),
                 has_custom_phdrs: self.has_custom_phdrs,
+                has_custom_layout: self.has_custom_layout,
                 custom_phdrs_include_headers: self.custom_phdrs_include_headers,
                 first_section: self.first_section,
             },
@@ -512,7 +520,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns the ID of the primary output section for the supplied section ID.
     pub(crate) fn primary_output_section(&self, section_id: OutputSectionId) -> OutputSectionId {
-        self.merge_target(section_id).unwrap_or(section_id)
+        let id = self.merge_target(section_id).unwrap_or(section_id);
+        if !id.is_custom::<P>()
+            && let Some(identity) = self.identity(id)
+            && let Some(custom_id) = self.custom_identity_to_id(identity)
+        {
+            custom_id
+        } else {
+            id
+        }
     }
 
     /// Returns the ID of the section that the specified section should be merged into, if any, or
@@ -816,7 +832,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     ) -> OutputSectionId {
         let mut resolved_id = None;
         if !self.output_kind.is_partial_link()
-            && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
+            && let Some(builtin_id) = (0..num_built_in_sections::<P>())
                 .map(OutputSectionId::from_usize)
                 .find(|&bid| self.identity(bid) == Some(identity))
         {
@@ -941,9 +957,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
         timing_phase!("Compute output order");
 
-        let has_custom_phdrs = linker_scripts
-            .iter()
-            .any(|s| !s.parsed.program_headers.is_empty());
+        let mut has_custom_phdrs = false;
+        let mut has_section_table = false;
+        for script in linker_scripts {
+            has_custom_phdrs |= !script.parsed.program_headers.is_empty();
+            has_section_table |= !script.parsed.ordered_sections.is_empty();
+            if has_custom_phdrs && has_section_table {
+                break;
+            }
+        }
+        let has_custom_layout = has_custom_phdrs || has_section_table;
 
         let mut custom = CustomSectionIds::default();
 
@@ -959,16 +982,20 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 return;
             }
 
-            if has_custom_phdrs {
-                if !info.phdrs.is_empty() {
+            if has_custom_layout {
+                if (has_custom_phdrs && !info.phdrs.is_empty()) || info.location_info.is_some() {
                     return;
                 }
 
-                if id == FILE_HEADER || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id) {
+                if id == FILE_HEADER
+                    || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id)
+                    || Some(id) == P::RELRO_PADDING_SECTION_ID
+                {
                     return;
                 } else if id.as_usize() < num_built_in_sections::<P>()
                     && let Some(identity) = self.identity(id)
-                    && self.custom_identity_to_id(identity).is_some()
+                    && let Some(custom_id) = self.custom_identity_to_id(identity)
+                    && custom_id != id
                 {
                     return;
                 }
@@ -999,7 +1026,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         });
 
         if has_custom_phdrs {
-            P::build_custom_output_order_and_program_segments(
+            P::build_output_order_with_phdrs_table(
+                &custom,
+                output_kind,
+                self,
+                &secondary,
+                linker_scripts,
+                location_counters,
+            )
+        } else if has_section_table {
+            P::build_output_order_with_section_table(
                 &custom,
                 output_kind,
                 self,
@@ -1208,6 +1244,10 @@ impl<'data> OutputOrder<'data> {
 
     pub(crate) fn has_custom_phdrs(&self) -> bool {
         self.has_custom_phdrs
+    }
+
+    pub(crate) fn has_custom_layout(&self) -> bool {
+        self.has_custom_layout
     }
 
     pub(crate) fn custom_phdrs_include_headers(&self) -> bool {
