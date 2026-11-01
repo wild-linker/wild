@@ -328,8 +328,8 @@ enum SinglePartSectionId {
     GotRelr,
     PltGot,
     RelaPlt,
-    EhFrame,
     EhFrameHdr,
+    EhFrame,
     Sframe,
     Dynamic,
     SysvHash,
@@ -2688,7 +2688,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.build()
     }
 
-    fn build_custom_output_order_and_program_segments<'data>(
+    fn build_output_order_with_phdrs_table<'data>(
         custom: &CustomSectionIds,
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
@@ -2973,6 +2973,125 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.push_event(OrderEvent::SegmentEnd(riscv_segment));
 
+        builder.add_section(output_section_id::SECTION_HEADERS);
+
+        Ok(builder.build())
+    }
+
+    fn build_output_order_with_section_table<'data>(
+        custom: &CustomSectionIds,
+        output_kind: OutputKind,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
+    ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
+        let mut builder = OutputOrderBuilder::<Self>::new(
+            Self::program_segment_defs().to_vec(),
+            output_kind,
+            output_sections,
+            secondary,
+            false,
+            location_counters,
+        );
+        builder.set_has_custom_layout(true);
+
+        let mut ordered_sections = Vec::new();
+        let mut last_ro = None;
+        let mut last_exec = None;
+        let mut last_rw = None;
+
+        for script in linker_scripts {
+            for &id in &script.parsed.ordered_sections {
+                let pos = ordered_sections.len();
+                let attr = output_sections.section_infos.get(id).section_attributes;
+                if attr.is_alloc() && !attr.is_writable() && !attr.is_executable() {
+                    last_ro = Some(pos);
+                }
+                if attr.is_executable() {
+                    last_exec = Some(pos);
+                }
+                if attr.is_writable() {
+                    last_rw = Some(pos);
+                }
+                ordered_sections.push(id);
+            }
+        }
+
+        #[derive(Copy, Clone, PartialEq, Eq)]
+        enum Anchor {
+            BeforeStart,
+            After(usize),
+            AfterEnd,
+        }
+
+        let ro_anchor = if let Some(pos) = last_ro {
+            Anchor::After(pos)
+        } else if let Some(pos) = last_exec {
+            Anchor::After(pos)
+        } else {
+            Anchor::BeforeStart
+        };
+        let exec_anchor = if let Some(pos) = last_exec {
+            Anchor::After(pos)
+        } else if let Some(pos) = last_ro {
+            Anchor::After(pos)
+        } else {
+            Anchor::BeforeStart
+        };
+        let rw_anchor = if let Some(pos) = last_rw {
+            Anchor::After(pos)
+        } else {
+            Anchor::AfterEnd
+        };
+
+        builder.add_section(crate::output_section_id::FILE_HEADER);
+        builder.add_section(output_section_id::PROGRAM_HEADERS);
+
+        if ro_anchor == Anchor::BeforeStart {
+            builder.add_sections(&custom.ro);
+        }
+        if exec_anchor == Anchor::BeforeStart {
+            builder.add_sections(&custom.exec);
+        }
+
+        for (pos, &section_id) in ordered_sections.iter().enumerate() {
+            let sec_info = output_sections.output_info(section_id);
+            if let Some(ref loc_info) = sec_info.location_info {
+                let (_, lc_stop) = loc_info.location_counters;
+                builder.emit_location_counters_up_to(lc_stop);
+            }
+
+            builder.add_section(section_id);
+
+            if exec_anchor == Anchor::After(pos) {
+                builder.add_sections(&custom.exec);
+            }
+            if ro_anchor == Anchor::After(pos) {
+                builder.add_sections(&custom.ro);
+            }
+            if rw_anchor == Anchor::After(pos) {
+                builder.add_sections(&custom.tdata);
+                builder.add_sections(&custom.tbss);
+                builder.add_sections(&custom.data);
+                builder.add_sections(&custom.bss);
+            }
+        }
+
+        if rw_anchor == Anchor::AfterEnd {
+            builder.add_sections(&custom.tdata);
+            builder.add_sections(&custom.tbss);
+            builder.add_sections(&custom.data);
+            builder.add_sections(&custom.bss);
+        }
+
+        for &id in &custom.nonalloc {
+            if id != output_section_id::RISCV_ATTRIBUTES {
+                builder.add_section(id);
+            }
+        }
+
+        builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SECTION_HEADERS);
 
         Ok(builder.build())

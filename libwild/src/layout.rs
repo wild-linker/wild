@@ -3814,6 +3814,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
+        if output_order.has_custom_layout()
+            && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID
+        {
+            *keep_sections.get_mut(relro_padding_id) = false;
+        }
+
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
             .raw_range(self.symbol_id_range())
@@ -6351,11 +6357,25 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut tls_memsave: Option<u64> = None;
     let mut in_tls = false;
     let mut has_reset_base_address =
-        output_order.has_custom_phdrs() || !output_sections.has_custom_base_address();
+        output_order.has_custom_layout() || !output_sections.has_custom_base_address();
     let mut deferred_nonalloc = Vec::new();
     let mut has_seen_alloc_section = false;
+    let last_alloc_idx = if output_order.has_custom_layout() {
+        output_order.into_iter().rposition(|event| {
+            if let OrderEvent::Section(section_id) = event {
+                let is_regular = section_id != crate::output_section_id::FILE_HEADER
+                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
+                let merge_target = output_sections.primary_output_section(section_id);
+                is_regular && output_sections.section_flags(merge_target).is_alloc()
+            } else {
+                false
+            }
+        })
+    } else {
+        None
+    };
 
-    for event in output_order {
+    for (event_idx, event) in output_order.into_iter().enumerate() {
         match event {
             OrderEvent::SetLocation(expr, mut loc, idx) => {
                 if matches!(loc, SymbolLoc::SectionEnd(_)) {
@@ -6439,10 +6459,13 @@ fn compute_layout_sections<'data, P: Platform>(
             }
             OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
-                let is_alloc = output_sections.section_flags(section_id).is_alloc();
+                let merge_target = output_sections.primary_output_section(section_id);
+                let is_alloc = output_sections.section_flags(merge_target).is_alloc();
                 let is_regular_section = section_id != crate::output_section_id::FILE_HEADER
                     && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let is_deferred = is_regular_section && !is_alloc && !has_seen_alloc_section;
+                let is_deferred = is_regular_section
+                    && !is_alloc
+                    && last_alloc_idx.map_or(!has_seen_alloc_section, |last| event_idx < last);
 
                 if is_regular_section {
                     if is_alloc {
