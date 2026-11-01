@@ -7007,6 +7007,7 @@ fn process_relocation<
     materialize_relocation_requirements::<C, A>(
         common,
         section,
+        section_part_id,
         resources,
         is_debug_section,
         relr_writer,
@@ -7150,6 +7151,7 @@ fn classify_symbol_relocation<
 fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     common: &mut CommonGroupState<'data, Elf<C>>,
     section: &<A::Platform as Platform>::SectionHeader,
+    section_part_id: PartId,
     resources: &layout::GraphResources<'data, '_, Elf<C>>,
     is_debug_section: bool,
     relr_writer: &mut RelrEncoder<C>,
@@ -7164,6 +7166,28 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     let section_is_writable = classified.section_is_writable;
     let flags_to_add = &mut classified.flags_to_add;
     let rel_kind = classified.rel_kind;
+
+    let allocate_relative = |common: &mut CommonGroupState<'data, Elf<C>>,
+                             relr_writer: &mut RelrEncoder<C>| {
+        // The .eh_frame writer always emits RELA because it can move individual entries.
+        if args.is_relr_enabled()
+            && section_part_id != part_id::EH_FRAME
+            && can_pack_relative_relocation(
+                section.sh_addralign(LittleEndian).into(),
+                classified.rel_offset,
+            )
+        {
+            relr_writer.encode(classified.rel_offset, |_, encoding| {
+                if matches!(encoding, RelrEntryEncoding::New) {
+                    common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
+                }
+                Ok(())
+            })
+        } else {
+            common.allocate(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
+            Ok(())
+        }
+    };
 
     let require_address_sized_relocation = || -> Result {
         ensure!(
@@ -7253,6 +7277,15 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
                 }
             }
         }
+
+        if rel_kind == RelocationKind::Absolute
+            && symbol_db.output_kind.is_position_independent()
+            && !section_is_writable
+            && !flags.is_absolute()
+        {
+            resources.has_textrel.store(true, atomic::Ordering::Relaxed);
+            allocate_relative(common, relr_writer)?;
+        }
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
         && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
@@ -7273,20 +7306,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
 
             if resources.symbol_db.is_linker_script_symbol(symbol_id) {
                 common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-            } else if resources.symbol_db.args.is_relr_enabled()
-                && can_pack_relative_relocation(
-                    section.sh_addralign(LittleEndian).into(),
-                    classified.rel_offset,
-                )
-            {
-                relr_writer.encode(classified.rel_offset, |_, encoding| {
-                    if matches!(encoding, RelrEntryEncoding::New) {
-                        common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
-                    }
-                    Ok(())
-                })?;
             } else {
-                common.allocate(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
+                allocate_relative(common, relr_writer)?;
             }
         } else if !is_debug_section {
             bail!(
