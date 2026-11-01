@@ -10,6 +10,7 @@
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.data,*],paddr=0x300000,vaddr=0x200000
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
+//#ExpectMinAllocAddress:0x100000
 
 #include "../common/runtime.h"
 

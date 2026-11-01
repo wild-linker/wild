@@ -6557,7 +6557,9 @@ fn compute_layout_sections<'data, P: Platform>(
                     }
                 }
                 in_tls = is_tls;
-                lma_offset = mem_offset;
+                if section_offset.is_some() {
+                    lma_offset = mem_offset;
+                }
 
                 let mut part_sizes = sizes
                     .in_range(part_id_range.clone())
