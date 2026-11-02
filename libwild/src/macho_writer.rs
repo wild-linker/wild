@@ -285,7 +285,14 @@ fn write_prelude<'data>(
             .split_off_mut(..command_size)
             .context("Insufficient LOAD_COMMANDS allocation")?;
         let command = take_mut(&mut command_buffer)?;
-        write_dylib_command(command, command_buffer, path, macho::LC_ID_DYLIB);
+        write_dylib_command(
+            command,
+            command_buffer,
+            path,
+            macho::LC_ID_DYLIB,
+            layout.args().current_version.get(),
+            layout.args().compatibility_version.get(),
+        );
     }
 
     for (&file_id, &command_size) in prelude
@@ -298,7 +305,15 @@ fn write_prelude<'data>(
         let dylib_command = take_mut(&mut command_buffer)?;
         let path = crate::macho::install_name(file_id, &layout.symbol_db);
 
-        write_dylib_command(dylib_command, command_buffer, path, LC_LOAD_DYLIB);
+        // TODO: Read versions from the imported library.
+        write_dylib_command(
+            dylib_command,
+            command_buffer,
+            path,
+            LC_LOAD_DYLIB,
+            macho::Version(1356 << 16),
+            macho::Version(1 << 16),
+        );
     }
 
     for rpath in &layout.args().rpaths {
@@ -1239,6 +1254,8 @@ fn write_dylib_command(
     path_buffer: &mut [u8],
     path: &[u8],
     kind: macho::LoadCommandType,
+    current_version: macho::Version,
+    compatibility_version: macho::Version,
 ) {
     command.cmd.set(LE, kind);
     command
@@ -1251,19 +1268,12 @@ fn write_dylib_command(
         .set(LE, size_of::<DylibCommand>() as u32);
 
     let timestamp;
-    let current_version;
-    let compatibility_version;
     if kind == macho::LC_ID_DYLIB {
         // Apparently the requirement for timestamp is just that we use a different value for
         // LC_ID_DYLIB and LC_LOAD_DYLIB. We match the values used by Apple's linker.
         timestamp = 1;
-        current_version = macho::Version(0);
-        compatibility_version = macho::Version(0);
     } else {
         timestamp = 2;
-        // TODO: Read versions from the imported library.
-        current_version = macho::Version(1356 << 16);
-        compatibility_version = macho::Version(1 << 16);
     }
 
     command.dylib.timestamp.set(LE, timestamp);
