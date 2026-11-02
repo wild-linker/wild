@@ -57,7 +57,6 @@ use crate::layout::compute_allocations;
 use crate::linker_script::Expression;
 use crate::malfunction;
 use crate::output_section_id::OrderEvent;
-use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionIdentity;
@@ -160,7 +159,6 @@ use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 use uuid::Uuid;
 use zerocopy::FromBytes;
-use zerocopy::transmute_mut;
 
 type ElfLayout<'data, C> = Layout<'data, elf::Elf<C>>;
 
@@ -823,7 +821,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
     #[inline(always)]
     fn process_resolution<'data, A: Arch<Platform = elf::Elf<C>>>(
         &mut self,
-        layout: Option<&ElfLayout<'data, C>>,
+        layout: &ElfLayout<'data, C>,
         args: &ElfArgs,
         res: &Resolution<elf::Elf<C>>,
         is_linker_script_symbol: bool,
@@ -842,11 +840,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         // combinations.
         if flags.needs_tls_got() {
             if flags.needs_got_tls_offset() {
-                self.process_got_tls_offset::<A>(
-                    res,
-                    layout.context("Layout must be present")?,
-                    got_address,
-                )?;
+                self.process_got_tls_offset::<A>(res, layout, got_address)?;
                 got_address += C::GOT_ENTRY_SIZE;
             }
             if flags.needs_got_tls_module() {
@@ -923,10 +917,9 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
-            // `.TOC.` is the start of the GOT. The allocation check calls this without a layout;
-            // a zero displacement still consumes the PLT slot.
-            let toc_base = layout.map_or(got_address, |layout| layout.got_base());
-            let bti_enabled = layout.is_some_and(|layout| layout.format_specific.has_aarch64_bti());
+            // `.TOC.` is the start of the GOT.
+            let toc_base = layout.got_base();
+            let bti_enabled = layout.format_specific.has_aarch64_bti();
             self.write_plt_entry::<A>(
                 got_address,
                 plt_address.get(),
@@ -2026,7 +2019,7 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
         if let Some(res) = resolution {
             table_writer
-                .process_resolution::<A>(Some(layout), layout.args(), res, false)
+                .process_resolution::<A>(layout, layout.args(), res, false)
                 .with_context(|| {
                     format!(
                         "Failed to process `{}` with resolution {res:?}",
@@ -4995,7 +4988,7 @@ fn write_plt_got_entries<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
         if layout.symbol_db.output_kind.is_executable() {
             table_writer.process_resolution::<A>(
-                Some(layout),
+                layout,
                 layout.args(),
                 &Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
@@ -5016,7 +5009,7 @@ fn write_plt_got_entries<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
 
         table_writer.process_resolution::<A>(
-            Some(layout),
+            layout,
             layout.args(),
             &Resolution {
                 raw_value,
@@ -7133,7 +7126,7 @@ fn write_internal_symbols_plt_got_entries<'data, C: ElfClass, A: Arch<Platform =
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
             table_writer
                 .process_resolution::<A>(
-                    Some(layout),
+                    layout,
                     layout.args(),
                     res,
                     layout.symbol_db.is_linker_script_symbol(symbol_id),
@@ -7230,7 +7223,7 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             }
 
             table_writer
-                .process_resolution::<A>(Some(layout), layout.args(), res, false)
+                .process_resolution::<A>(layout, layout.args(), res, false)
                 .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
         }
     }
@@ -7443,56 +7436,6 @@ fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
 
 fn has_android_relr_tags(inputs: &DynamicEntryInputs) -> bool {
     inputs.args.use_android_relr_tags
-}
-
-pub(crate) fn verify_resolution_allocation<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
-    output_sections: &OutputSections<elf::Elf<C>>,
-    output_order: &OutputOrder,
-    output_kind: OutputKind,
-    mem_sizes: &OutputSectionPartMap<u64>,
-    resolution: &Resolution<elf::Elf<C>>,
-    args: &ElfArgs,
-) -> Result {
-    // Allocate however much space was requested.
-
-    let mut total_bytes_allocated = 0;
-    mem_sizes.output_order_map(
-        output_order,
-        output_sections,
-        |_part_id, alignment, &size| {
-            total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
-        },
-    );
-    total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
-    let mut all_mem = vec![0_u64; total_bytes_allocated as usize / size_of::<u64>()];
-    let mut all_mem: &mut [u8] = transmute_mut!(all_mem.as_mut_slice());
-    let mut offset = 0;
-    let mut buffers = mem_sizes.output_order_map(
-        output_order,
-        output_sections,
-        |_part_id, alignment, &size| {
-            let aligned_offset = alignment.align_up(offset);
-            all_mem
-                .split_off_mut(..(aligned_offset - offset) as usize)
-                .unwrap();
-            offset = aligned_offset + size;
-            all_mem.split_off_mut(..size as usize).unwrap()
-        },
-    );
-
-    let dynsym_writer = SymbolTableWriter::<C>::new_dynamic(0, &mut buffers, output_sections);
-    let debug_symbol_writer = SymbolTableWriter::<C>::new(0, &mut buffers, output_sections);
-    let mut table_writer = TableWriter::<C>::new(
-        output_kind,
-        0..100,
-        &mut buffers,
-        dynsym_writer,
-        debug_symbol_writer,
-        0,
-        args.is_relr_enabled(),
-    );
-    table_writer.process_resolution::<A>(None, args, resolution, false)?;
-    table_writer.validate_empty(mem_sizes)
 }
 
 impl<R> Default for RelocationCache<R> {

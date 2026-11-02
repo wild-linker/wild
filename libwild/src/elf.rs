@@ -694,7 +694,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::SYMTAB_GLOBAL);
     const GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT);
-    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::PLT_GOT);
     const SYMTAB_LOCAL_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::SYMTAB_LOCAL);
     const SYMTAB_SHNDX_LOCAL_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::SYMTAB_SHNDX_LOCAL);
@@ -1346,24 +1345,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         Ok(())
-    }
-
-    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
-        output_sections: &OutputSections<Elf<C>>,
-        output_order: &OutputOrder,
-        output_kind: OutputKind,
-        mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution<Elf<C>>,
-        args: &ElfArgs,
-    ) -> Result {
-        crate::elf_writer::verify_resolution_allocation::<C, A>(
-            output_sections,
-            output_order,
-            output_kind,
-            mem_sizes,
-            resolution,
-            args,
-        )
     }
 
     fn update_segment_keep_list(

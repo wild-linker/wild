@@ -1203,7 +1203,6 @@ impl platform::Platform for MachO {
     const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::SYMTAB_GLOBAL);
     const GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT);
-    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::PLT_GOT);
 
     const VERIFY_IGNORE_ALIGNMENT_SECTION_IDS: &'static [OutputSectionId] =
         &[output_section_id::CODE_SIGNATURE, output_section_id::STRTAB];

@@ -54,13 +54,6 @@ pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 pub const EXPERIMENTAL_PLATFORMS: &str = "WILD_EXPERIMENTAL_PLATFORMS";
 
-/// Set this environment variable if you get a failure during writing due to too much or too little
-/// space being allocated to some section. When set, each time we allocate during layout, we'll
-/// check that what we're doing is consistent with writing and fail in a more easy to debug way. i.e
-/// we'll report the particular combination of value flags, resolution flags etc that triggered the
-/// inconsistency.
-pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
-
 /// Maximum number of threads we'll run with unless an explicit --threads is specified. Benchmarks
 /// run on an AMD EPYC 8534P with Ubuntu 26.04 (Linux 7.0) show no gain from about 32 threads and
 /// worsening performance beyond about 40 threads. This seems to be largely due to a per-inode
@@ -92,7 +85,6 @@ pub struct CommonArgs {
     pub(crate) should_fork: bool,
     pub(crate) demangle: bool,
     pub(crate) validate_output: bool,
-    pub(crate) verify_allocation_consistency: bool,
     pub(crate) write_layout: bool,
     pub(crate) write_trace: bool,
     pub(crate) experimental_platforms: bool,
@@ -352,8 +344,6 @@ impl Default for CommonArgs {
             verbose: false,
             version_info: None,
             validate_output: env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
-            verify_allocation_consistency: env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
-                .is_ok_and(|v| v == "1"),
             write_layout: env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
             write_trace: env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
             print_allocations: env::var("WILD_PRINT_ALLOCATIONS")

@@ -2,8 +2,6 @@ use crate::FileSystem;
 use crate::OutputFileData;
 use crate::OutputKind;
 use crate::OutputOptions;
-use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
-use crate::env;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -291,10 +289,7 @@ impl<O: OutputFileData> SizedOutput<O> {
 }
 
 pub(crate) fn insufficient_allocation(section_name: &str) -> crate::error::Error {
-    error!(
-        "Insufficient {section_name} allocation. {}",
-        verify_allocations_message()
-    )
+    error!("Insufficient {section_name} allocation.")
 }
 
 pub(crate) fn excessive_allocation(
@@ -302,20 +297,7 @@ pub(crate) fn excessive_allocation(
     remaining: u64,
     allocated: u64,
 ) -> crate::error::Error {
-    error!(
-        "Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain. {}",
-        verify_allocations_message()
-    )
-}
-
-/// Returns a message suggesting to set an environment variable to help debug a failure, but only if
-/// it's not already set, since that would be confusing.
-pub(crate) fn verify_allocations_message() -> String {
-    if env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
-        String::new()
-    } else {
-        format!("Setting {WRITE_VERIFY_ALLOCATIONS_ENV}=1 might give more info")
-    }
+    error!("Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain.")
 }
 
 pub(crate) fn split_output_by_group<'layout, 'data, 'out, P: Platform>(
