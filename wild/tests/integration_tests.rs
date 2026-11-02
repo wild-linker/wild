@@ -241,10 +241,10 @@
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
-//! RequiresLinkerPlugin:{bool} Requires the linker driver to have linker-plugin support. This
-//! checks that a simple C program can be compiled with `-flto` and skips the test if that fails.
-//! This can be used for both C and Rust tests. In the case of Rust tests, the clang compiler will
-//! be checked. Also checks that wild was not statically linked.
+//! RequiresLinkerPlugin:{bool} Requires Wild to have linker-plugin support. When using a compiler
+//! linker driver, checks that a simple C program can be linked with `-flto` and skips the test if
+//! that fails. This can be used for both C and Rust tests. In the case of Rust tests, the clang
+//! compiler will be checked. Also checks that wild was not statically linked.
 //!
 //! RequiresWasiLibc:{bool} Defaults to false. Set to true to skip this test when wasi-libc is not
 //! available. When set, `$WASI_SYSROOT` in LinkArgs, PostLinkArgs, CompArgs and input templates is
@@ -9226,8 +9226,8 @@ fn verify_linker_plugin_requirements(
     let (compiler, compiler_kind) = compiler_for_file(src, cross_arch, config)?
         .with_context(|| format!("Config in {} does not use a linker driver", src.display()))?;
 
-    match compiler_kind {
-        CompilerKind::Rust => {
+    match (compiler_kind, config.linker_driver) {
+        (CompilerKind::Rust, _) => {
             let verifier_path = src_path("framework/lto-verifier.rs");
             assert!(
                 verifier_path.exists(),
@@ -9254,13 +9254,10 @@ fn verify_linker_plugin_requirements(
                 Check that clang --version matches LLVM version reported by `rustc -vV`.",
             )?;
         }
-        CompilerKind::C => {
+        (CompilerKind::C, LinkerDriver::Compiler(linker_driver)) => {
             // Verify that the linker-driver can use a linker plugin with the default linker. This
             // helps us to skip for example clang on openSUSE which doesn't bundle the linker
             // plugin.
-            let LinkerDriver::Compiler(linker_driver) = config.linker_driver else {
-                bail!("A linker driver is required for LTO");
-            };
             let linker_driver_string =
                 get_c_compiler(linker_driver.name(), linker_driver.c_language(), cross_arch)?;
 
@@ -9305,6 +9302,7 @@ fn verify_linker_plugin_requirements(
                 );
             }
         }
+        (CompilerKind::C, LinkerDriver::Direct(_)) => {}
     }
 
     // Check that we're not statically linked. Plugins can't be loaded if we're statically linked.

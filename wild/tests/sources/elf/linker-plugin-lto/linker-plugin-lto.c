@@ -69,6 +69,8 @@
 // LTO, but no linker plugin was supplied by the compiler. We could try to find the plugin
 // ourselves, but we don't currently support that.
 //#Config:clang-no-plugin:error
+//#RequiresLinkerPlugin:false
+//#RequiresCompilerFlags:-flto
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkerDriver:clang
