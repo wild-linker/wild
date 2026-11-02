@@ -478,24 +478,9 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     timing_phase!("Update file offsets post-compression");
 
-    let last_alloc_idx = if layout.output_order.has_custom_layout() {
-        layout.output_order.into_iter().rposition(|event| {
-            if let OrderEvent::Section(section_id) = event {
-                let is_regular = section_id != crate::output_section_id::FILE_HEADER
-                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let merge_target = layout.output_sections.primary_output_section(section_id);
-                is_regular
-                    && layout
-                        .output_sections
-                        .section_flags(merge_target)
-                        .is_alloc()
-            } else {
-                false
-            }
-        })
-    } else {
-        None
-    };
+    let last_alloc_idx = layout
+        .output_order
+        .custom_layout_last_alloc_index(&layout.output_sections);
 
     let mut deferred_nonalloc = Vec::new();
     let mut section_ids = Vec::new();

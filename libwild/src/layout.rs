@@ -6352,20 +6352,7 @@ fn compute_layout_sections<'data, P: Platform>(
         output_order.has_custom_layout() || !output_sections.has_custom_base_address();
     let mut deferred_nonalloc = Vec::new();
     let mut has_seen_alloc_section = false;
-    let last_alloc_idx = if output_order.has_custom_layout() {
-        output_order.into_iter().rposition(|event| {
-            if let OrderEvent::Section(section_id) = event {
-                let is_regular = section_id != crate::output_section_id::FILE_HEADER
-                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let merge_target = output_sections.primary_output_section(section_id);
-                is_regular && output_sections.section_flags(merge_target).is_alloc()
-            } else {
-                false
-            }
-        })
-    } else {
-        None
-    };
+    let last_alloc_idx = output_order.custom_layout_last_alloc_index(output_sections);
 
     for (event_idx, event) in output_order.into_iter().enumerate() {
         match event {
@@ -6557,7 +6544,7 @@ fn compute_layout_sections<'data, P: Platform>(
                     }
                 }
                 in_tls = is_tls;
-                if section_offset.is_some() {
+                if section_offset.is_some() || region.is_some() {
                     lma_offset = mem_offset;
                 }
 
