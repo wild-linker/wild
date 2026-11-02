@@ -561,6 +561,7 @@ fn process_linker_script<'data, I: InputFileData>(
 
     let script_path = file_system.canonicalize(&input_file.filename)?;
     let directory = script_path.parent().expect("expected an absolute path");
+    let script_is_in_sysroot = sysroot.is_some_and(|sysroot| script_path.starts_with(sysroot));
 
     let mut extra_inputs = Vec::new();
 
@@ -569,7 +570,7 @@ fn process_linker_script<'data, I: InputFileData>(
 
         if let InputSpec::File(file) = &mut input.spec
             && let Some(new_file) =
-                crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
+                crate::linker_script::maybe_apply_sysroot(script_is_in_sysroot, file, sysroot)
         {
             *file = new_file;
         }
