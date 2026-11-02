@@ -172,7 +172,7 @@ impl Args {
         let _thread_guard = crate::timing::enter_linker_thread();
         timing_phase!("Parse args");
 
-        self.common_mut().save_dir = SaveDir::new(input())?;
+        self.common_mut().save_dir = SaveDir::new()?;
 
         let mut input = input();
 
@@ -180,8 +180,11 @@ impl Args {
         input.next();
 
         if self.common().has_flavor {
-            input.next();
-            input.next();
+            let flag = input.next().unwrap();
+            let flavor = input.next().unwrap();
+            self.common_mut()
+                .save_dir
+                .record_argument(vec![flag.as_ref().to_owned(), flavor.as_ref().to_owned()]);
         }
 
         match self {
@@ -832,13 +835,32 @@ impl<T: platform::Args> ArgumentParser<T> {
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
             let file_args = read_args_from_file(Path::new(path))?;
+            let start = args.common().save_dir.start_response_file();
             let mut file_arg_iter = file_args.iter();
             while let Some(file_arg) = file_arg_iter.next() {
                 self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
             }
+            args.common_mut().save_dir.finish_response_file(start);
             return Ok(());
         }
 
+        if !args.common().save_dir.is_enabled() {
+            return self.handle_argument_inner(args, modifier_stack, arg, input);
+        }
+        let mut tokens = vec![arg.to_owned()];
+        let mut recording_input = input.inspect(|value| tokens.push(value.as_ref().to_owned()));
+        self.handle_argument_inner(args, modifier_stack, arg, &mut recording_input)?;
+        args.common_mut().save_dir.record_argument(tokens);
+        Ok(())
+    }
+
+    fn handle_argument_inner<S: AsRef<str>, I: Iterator<Item = S>>(
+        &self,
+        args: &mut T,
+        modifier_stack: &mut Vec<Modifiers>,
+        arg: &str,
+        input: &mut I,
+    ) -> Result<()> {
         if let Some(stripped) = self.syntax.strip_prefix(arg) {
             // Check for an option that carries its value attached, e.g. `--foo=bar` or `/FOO:bar`.
             if let Some(sep_pos) = stripped.find(self.syntax.value_separator) {
@@ -964,7 +986,7 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
 
         let common = args.common_mut();
-        common.save_dir.handle_file(arg);
+        common.save_dir.handle_input(arg);
         common.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,

@@ -378,7 +378,9 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .prefix("F")
         .help("Add directory to framework search path")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().save_dir.handle_file(value);
+            // Resolved framework paths are emitted separately.
+            args.common_mut().save_dir.omit_argument();
+
             args.framework_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
@@ -399,7 +401,7 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_input(value);
             args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
@@ -473,6 +475,7 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .short("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_output(value);
             args.common_mut().output = Arc::from(Path::new(value));
             Ok(())
         });

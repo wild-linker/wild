@@ -239,6 +239,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .short("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_output(value);
             args.common.output = Arc::from(Path::new(value));
             Ok(())
         });
@@ -248,7 +249,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
-            args.common.save_dir.handle_file(value);
+            args.common.save_dir.handle_input(value);
             args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });

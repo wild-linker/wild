@@ -31,23 +31,41 @@ const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 #[derive(Debug)]
 struct SaveDirState {
     dir: PathBuf,
-    args: Vec<String>,
-    files_to_copy: HashSet<PathBuf>,
+    args: Vec<SavedArg>,
+    pending_arg: Option<PendingArg>,
+}
+
+#[derive(Debug)]
+enum SavedArg {
+    Literal(String),
+    Path {
+        prefix: String,
+        value: String,
+        kind: PathKind,
+    },
+    ResponseFile(Vec<SavedArg>),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PathKind {
+    Input,
+    File,
+    Output,
+}
+
+#[derive(Debug)]
+enum PendingArg {
+    Path(PathKind, String),
+    Omit,
 }
 
 impl SaveDir {
-    pub(crate) fn new<S: AsRef<str>, I: Iterator<Item = S>>(mut args: I) -> Result<Self> {
-        let Some(dir) = save_dir_from_env()? else {
-            return Ok(Self(None));
-        };
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self(save_dir_from_env()?.map(SaveDirState::new)))
+    }
 
-        // Skip program name.
-        args.next();
-
-        Ok(Self(Some(SaveDirState::new(
-            dir,
-            args.map(|s| s.as_ref().to_owned()).collect(),
-        ))))
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.0.is_some()
     }
 
     pub(crate) fn finish(
@@ -56,7 +74,12 @@ impl SaveDir {
         parsed_args: &impl platform::Args,
     ) -> Result {
         if let Some(state) = self.0.as_ref() {
-            let mut files_to_copy = state.files_to_copy.clone();
+            let mut files_to_copy = HashSet::default();
+            collect_input_paths(
+                &state.args,
+                input_data.resolved_sysroot.as_deref(),
+                &mut files_to_copy,
+            )?;
             files_to_copy.extend(
                 input_data
                     .loaded_files
@@ -68,11 +91,98 @@ impl SaveDir {
         Ok(())
     }
 
-    pub(crate) fn handle_file(&mut self, arg: &str) {
+    pub(crate) fn handle_file(&mut self, value: &str) {
+        self.handle_path(value, PathKind::File);
+    }
+
+    /// Like `handle_file`, but applies forced-sysroot expansion (e.g. `=/lib/foo.o`). This also
+    /// works with directories.
+    pub(crate) fn handle_input(&mut self, value: &str) {
+        self.handle_path(value, PathKind::Input);
+    }
+
+    pub(crate) fn handle_output(&mut self, value: &str) {
+        self.handle_path(value, PathKind::Output);
+    }
+
+    fn handle_path(&mut self, value: &str, kind: PathKind) {
         if let Some(state) = self.0.as_mut() {
-            state.files_to_copy.insert(Path::new(arg).to_path_buf());
+            state.pending_arg = Some(PendingArg::Path(kind, value.to_owned()));
         }
     }
+
+    pub(crate) fn omit_argument(&mut self) {
+        if let Some(state) = self.0.as_mut() {
+            state.pending_arg = Some(PendingArg::Omit);
+        }
+    }
+
+    pub(crate) fn record_argument(&mut self, mut tokens: Vec<String>) {
+        let Some(state) = self.0.as_mut() else {
+            return;
+        };
+        match state.pending_arg.take() {
+            None => state.args.extend(tokens.into_iter().map(SavedArg::Literal)),
+            Some(PendingArg::Omit) => {}
+            Some(PendingArg::Path(kind, value)) => {
+                let last = tokens.pop().expect("an argument has at least one token");
+                let prefix = last
+                    .strip_suffix(&value)
+                    .expect("the parser's path value ends the argument")
+                    .to_owned();
+                state.args.extend(tokens.into_iter().map(SavedArg::Literal));
+                state.args.push(SavedArg::Path {
+                    prefix,
+                    value,
+                    kind,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn start_response_file(&self) -> usize {
+        self.0.as_ref().map_or(0, |state| state.args.len())
+    }
+
+    pub(crate) fn finish_response_file(&mut self, start: usize) {
+        if let Some(state) = self.0.as_mut() {
+            let args = state.args.split_off(start);
+            state.args.push(SavedArg::ResponseFile(args));
+        }
+    }
+}
+
+fn resolve_saved_path(value: &str, kind: PathKind, sysroot: Option<&Path>) -> Result<PathBuf> {
+    let path = Path::new(value);
+    let path = if matches!(kind, PathKind::Input) {
+        crate::linker_script::maybe_forced_sysroot(path, sysroot)
+            .map(|path| Cow::Owned(path.into_path_buf()))
+            .unwrap_or(Cow::Borrowed(path))
+    } else {
+        Cow::Borrowed(path)
+    };
+    Ok(std::path::absolute(&path)?)
+}
+
+fn collect_input_paths(
+    args: &[SavedArg],
+    sysroot: Option<&Path>,
+    paths: &mut HashSet<PathBuf>,
+) -> Result {
+    for arg in args {
+        match arg {
+            SavedArg::Path {
+                value,
+                kind: kind @ (PathKind::File | PathKind::Input),
+                ..
+            } => {
+                paths.insert(resolve_saved_path(value, *kind, sysroot)?);
+            }
+            SavedArg::ResponseFile(args) => collect_input_paths(args, sysroot, paths)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn save_dir_from_env() -> Result<Option<PathBuf>> {
@@ -124,11 +234,11 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
 }
 
 impl SaveDirState {
-    fn new(dir: PathBuf, args: Vec<String>) -> Self {
-        SaveDirState {
+    fn new(dir: PathBuf) -> Self {
+        Self {
             dir,
-            args,
-            files_to_copy: Default::default(),
+            args: Vec::new(),
+            pending_arg: None,
         }
     }
 
@@ -177,10 +287,9 @@ impl SaveDirState {
         let mut setup_buf: Vec<u8> = Vec::new();
         let mut args_buf: Vec<u8> = Vec::new();
         let mut at_file_counter = 0usize;
-        let original_output_file = self.write_args(
+        self.write_args(
             &self.args,
             input_data.resolved_sysroot.as_deref(),
-            framework_search_path,
             &mut args_buf,
             &mut setup_buf,
             &mut at_file_counter,
@@ -191,8 +300,7 @@ impl SaveDirState {
             let path = std::path::absolute(path)?;
             if self.output_path(&path).is_dir() {
                 write_script_arg_separator(&mut args_buf)?;
-                args_buf.write_all(b"-F")?;
-                write_copied_file_arg(&mut args_buf, &path)?;
+                write_saved_path_arg(&mut args_buf, "-F", &path, false)?;
             }
         }
 
@@ -201,10 +309,7 @@ impl SaveDirState {
         out.write_all(&args_buf)?;
         out.write_all(b"\\\n  \"$@\"")?;
 
-        if let Some(orig) = original_output_file {
-            out.write_all(b"\n# Original output file: ")?;
-            out.write_all(orig.as_bytes())?;
-        }
+        write!(out, "\n# Original output file: {}", args.output().display())?;
 
         drop(out);
         make_executable(&file)?;
@@ -219,34 +324,20 @@ impl SaveDirState {
     /// content stays self-contained.
     fn write_args(
         &self,
-        args: &[String],
+        args: &[SavedArg],
         sysroot: Option<&Path>,
-        framework_search_path: &[Box<Path>],
         out: &mut dyn Write,
         setup_out: &mut dyn Write,
         at_file_counter: &mut usize,
         is_rsp_file: bool,
-    ) -> Result<Option<String>> {
-        let mut args = args.iter();
-        let mut original_output_file = None;
-
-        // TODO: This code is shared between different linker flavors, but includes flavor-specific
-        // flags. We should address this.
-
-        while let Some(arg) = args.next() {
-            // Response files were already read when the arguments were parsed, so an `@` argument
-            // that isn't a file is an option value, e.g. `-rpath @loader_path/../lib`.
-            if let Some(args_path) = arg.strip_prefix("@")
-                && Path::new(args_path).is_file()
-            {
-                let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
-
+    ) -> Result {
+        for arg in args {
+            if let SavedArg::ResponseFile(args_from_file) = arg {
                 if is_rsp_file {
                     // Expand nested response files inline into the current file.
                     self.write_args(
-                        &args_from_file,
+                        args_from_file,
                         sysroot,
-                        framework_search_path,
                         out,
                         setup_out,
                         at_file_counter,
@@ -265,9 +356,8 @@ impl SaveDirState {
                         let mut at_out = BufWriter::new(&mut at_file);
                         let mut noop_setup: Vec<u8> = Vec::new();
                         self.write_args(
-                            &args_from_file,
+                            args_from_file,
                             sysroot,
-                            framework_search_path,
                             &mut at_out,
                             &mut noop_setup,
                             at_file_counter,
@@ -293,84 +383,30 @@ impl SaveDirState {
                 continue;
             }
 
-            // Explicit -F options are replaced by the resolved paths in the main script.
-            if !framework_search_path.is_empty()
-                && let Some(dir) = arg.strip_prefix("-F")
-            {
-                if dir.is_empty() {
-                    args.next();
-                }
-                continue;
-            }
-
             write_arg_separator(out, is_rsp_file)?;
-
-            if let Some(mut path) = arg.strip_prefix("-o") {
-                if path.is_empty() {
-                    path = args.next().map_or_default(|s| s.as_str());
-                }
-                out.write_all(b"-o $OUT")?;
-                original_output_file = Some(path.to_owned());
-            } else if let Some(mut dir) = arg.strip_prefix("-L") {
-                if dir.is_empty() {
-                    dir = args.next().map_or_default(|s| s.as_str());
-                }
-
-                let dir = crate::linker_script::maybe_forced_sysroot(Path::new(dir), sysroot)
-                    .unwrap_or_else(|| Box::from(Path::new(dir)));
-                let dir = std::path::absolute(dir)?;
-                out.write_all(b"-L")?;
-                write_copied_file_arg(out, &dir)?;
-            } else if let Some(forced_path) =
-                crate::linker_script::maybe_forced_sysroot(Path::new(arg), sysroot)
-            {
-                let path = std::path::absolute(&forced_path)?;
-                if self.output_path(&path).exists() {
-                    write_copied_file_arg(out, &path)?;
-                } else if is_rsp_file {
-                    out.write_all(arg.as_bytes())?;
-                } else {
-                    for b in arg.bytes() {
-                        if b" $\\".contains(&b) {
-                            out.write_all(b"\\")?;
-                        }
-                        out.write_all(&[b])?;
-                    }
-                }
-            } else {
-                // If the arg contains '=', then check to see if what's after the '=' is a filename
-                // that exists. If it does, use that.
-                let maybe_path = if let Some(eq_index) = arg.find('=') {
-                    let after_equals = &arg[eq_index + 1..];
-                    if Path::new(after_equals).exists() {
-                        out.write_all(&arg.as_bytes()[..=eq_index])?;
-                        after_equals
+            match arg {
+                SavedArg::Literal(value) => write_literal_arg(out, value, is_rsp_file)?,
+                SavedArg::Path {
+                    prefix,
+                    value,
+                    kind,
+                } => {
+                    if matches!(kind, PathKind::Output) {
+                        write_relocated_arg(out, prefix, "OUT", "", is_rsp_file)?;
                     } else {
-                        arg.as_str()
-                    }
-                } else {
-                    arg.as_str()
-                };
-
-                let path = std::path::absolute(maybe_path)?;
-                if self.output_path(&path).exists() {
-                    write_copied_file_arg(out, &path)?;
-                } else if is_rsp_file {
-                    // At-file content is consumed directly by the linker, not by a shell, so no
-                    // shell escaping is needed.
-                    out.write_all(maybe_path.as_bytes())?;
-                } else {
-                    for b in maybe_path.bytes() {
-                        if b" $\\".contains(&b) {
-                            out.write_all(b"\\")?;
+                        let path = resolve_saved_path(value, *kind, sysroot)?;
+                        if self.output_path(&path).exists() {
+                            write_saved_path_arg(out, prefix, &path, is_rsp_file)?;
+                        } else {
+                            write_literal_arg(out, &format!("{prefix}{value}"), is_rsp_file)?;
                         }
-                        out.write_all(&[b])?;
                     }
                 }
+                SavedArg::ResponseFile(_) => unreachable!(),
             }
         }
 
-        Ok(original_output_file)
+        Ok(())
     }
 
     fn output_path(&self, path: &Path) -> PathBuf {
@@ -680,10 +716,48 @@ fn write_arg_separator(out: &mut dyn Write, is_at_file: bool) -> Result {
     Ok(())
 }
 
-fn write_copied_file_arg(out: &mut dyn Write, path: &Path) -> Result {
-    out.write_all(b"$D/")?;
-    out.write_all(to_output_relative_path(path).as_os_str().as_encoded_bytes())?;
+fn write_saved_path_arg(
+    out: &mut dyn Write,
+    prefix: &str,
+    path: &Path,
+    is_rsp_file: bool,
+) -> Result {
+    let path = to_output_relative_path(path);
+    let path = path.to_str().context("Saved path isn't UTF-8")?;
+    write_relocated_arg(out, prefix, "D", &format!("/{path}"), is_rsp_file)
+}
+
+fn write_literal_arg(out: &mut dyn Write, value: &str, is_rsp_file: bool) -> Result {
+    if is_rsp_file {
+        out.write_all(b"\"")?;
+        for byte in value.bytes() {
+            if matches!(byte, b'\\' | b'"') {
+                out.write_all(b"\\")?;
+            }
+            out.write_all(&[byte])?;
+        }
+        out.write_all(b"\"")?;
+    } else {
+        out.write_all(b"'")?;
+        out.write_all(value.replace('\'', "'\\''").as_bytes())?;
+        out.write_all(b"'")?;
+    }
     Ok(())
+}
+
+fn write_relocated_arg(
+    out: &mut dyn Write,
+    prefix: &str,
+    variable: &str,
+    suffix: &str,
+    is_rsp_file: bool,
+) -> Result {
+    if is_rsp_file {
+        return write_literal_arg(out, &format!("{prefix}${variable}{suffix}"), true);
+    }
+    write_literal_arg(out, prefix, false)?;
+    write!(out, "\"${variable}\"")?;
+    write_literal_arg(out, suffix, false)
 }
 
 /// Returns where we should copy `path` to when we put it in our output directory.
@@ -732,6 +806,63 @@ fn shell_escape_string(value: &'_ str) -> Cow<'_, str> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn replay_preserves_option_values() -> Result {
+        use crate::args::elf::ElfArgs;
+        use crate::platform::Args as _;
+        use std::process::Command;
+
+        if crate::host::os::SANDBOXED {
+            return Ok(());
+        }
+
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source)?;
+        let input = source.join("input with spaces.o");
+        std::fs::write(&input, b"")?;
+        let response = source.join("flags.rsp");
+        std::fs::write(&response, b"--invalid-option")?;
+        let saved = temp.path().join("saved");
+        std::fs::create_dir(&saved)?;
+
+        let mut args = ElfArgs::default();
+        args.common.save_dir = SaveDir(Some(SaveDirState::new(saved.clone())));
+        let mut tokens = vec![
+            format!("--soname={}", input.display()),
+            "-rpath".into(),
+            "--chroot".into(),
+            "-rpath".into(),
+            "-output-name".into(),
+            "-rpath".into(),
+            format!("@{}", response.display()),
+            "-rpath".into(),
+            "$ORIGIN/space dir".into(),
+            "--output=original-output".into(),
+            input.display().to_string(),
+        ];
+        args.parse(tokens.iter())?;
+        let state = args.common.save_dir.0.as_ref().unwrap();
+        let arena = colosseum::sync::Arena::new();
+        let input_data = FileLoader::new(&arena, std::sync::Arc::new(crate::fs::OsFileSystem));
+        state.finish([&input].into_iter(), &args, &input_data)?;
+        std::fs::remove_dir_all(source)?;
+
+        let output = Command::new("bash")
+            .arg(saved.join("run-with"))
+            .args(["printf", "%s\\0"])
+            .env("OUT", "replacement output")
+            .output()?;
+        assert!(output.status.success(), "{output:?}");
+        tokens[9] = "--output=replacement output".into();
+        tokens[10] = state.output_path(&input).display().to_string();
+        let replayed = std::str::from_utf8(&output.stdout)?
+            .split_terminator('\0')
+            .collect::<Vec<_>>();
+        assert_eq!(replayed, tokens);
+        Ok(())
+    }
+
     #[cfg(feature = "macho")]
     #[test]
     fn save_implicit_framework_search_path() -> Result {
@@ -756,7 +887,11 @@ mod tests {
         // A real SDK would already be relocated through the saved -syslibroot argument.
         let parsed = MachOArgs::default();
         let framework_search_path = vec![search.into_boxed_path()];
-        let state = SaveDirState::new(saved.clone(), vec!["-framework".into(), "Foo".into()]);
+        let mut state = SaveDirState::new(saved.clone());
+        state.args = vec![
+            SavedArg::Literal("-framework".into()),
+            SavedArg::Literal("Foo".into()),
+        ];
         let arena = colosseum::sync::Arena::new();
         let mut input_data = FileLoader::new(&arena, std::sync::Arc::new(crate::fs::OsFileSystem));
         input_data.resolved_framework_search_path = framework_search_path;
