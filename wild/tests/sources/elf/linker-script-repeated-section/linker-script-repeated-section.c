@@ -3,7 +3,7 @@
 //#RunEnabled:false
 //#CompArgs:-fPIE -fno-asynchronous-unwind-tables
 //#LinkArgs:-no-pie --no-gc-sections
-// Wild merges the .text fragments into one RX segment. LLD uses two and BFD uses RWX.
+// Wild emits two .text sections and two RX segments, matching LLD. BFD uses RWX.
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#ExpectSym:_start section=.text
 //#ExpectSym:second section=.text
