@@ -1725,6 +1725,16 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn entry_point<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> EntryPoint<'a>;
 
+    /// The symbol named by `-init`, whose address `DT_INIT` should hold, if any.
+    fn init_symbol(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// The symbol named by `-fini`, whose address `DT_FINI` should hold, if any.
+    fn fini_symbol(&self) -> Option<&[u8]> {
+        None
+    }
+
     fn version_script_path(&self) -> Option<&Path> {
         None
     }
