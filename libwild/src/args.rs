@@ -162,6 +162,7 @@ impl Args {
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         &mut self,
         input: F,
+        file_system: &impl FileSystem,
     ) -> Result {
         let _thread_guard = crate::timing::enter_linker_thread();
         timing_phase!("Parse args");
@@ -182,10 +183,10 @@ impl Args {
         }
 
         match self {
-            Args::Coff(args) => args.parse(input),
-            Args::Elf(args) => args.parse(input),
-            Args::MachO(args) => args.parse(input),
-            Args::Wasm(args) => args.parse(input),
+            Args::Coff(args) => args.parse(input, file_system),
+            Args::Elf(args) => args.parse(input, file_system),
+            Args::MachO(args) => args.parse(input, file_system),
+            Args::Wasm(args) => args.parse(input, file_system),
         }
     }
 
@@ -859,15 +860,22 @@ impl<T: platform::Args> ArgumentParser<T> {
         modifier_stack: &mut Vec<Modifiers>,
         arg: &str,
         input: &mut I,
+        file_system: &impl FileSystem,
     ) -> Result<()> {
         // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
-            let file_args = read_args_from_file(Path::new(path))?;
+            let file_args = read_args_from_file(Path::new(path), file_system)?;
             let start = args.common().save_dir.start_response_file();
             let mut file_arg_iter = file_args.iter();
             while let Some(file_arg) = file_arg_iter.next() {
-                self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
+                self.handle_argument(
+                    args,
+                    modifier_stack,
+                    file_arg,
+                    &mut file_arg_iter,
+                    file_system,
+                )?;
             }
             args.common_mut().save_dir.finish_response_file(start);
             return Ok(());
@@ -1496,10 +1504,12 @@ pub(crate) fn parse_number(s: &str) -> Result<u64> {
         .with_context(|| format!("Invalid number: {s}"))
 }
 
-pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
-    let contents = std::fs::read_to_string(path)
+fn read_args_from_file(path: &Path, file_system: &impl FileSystem) -> Result<Vec<String>> {
+    let contents = file_system
+        .read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
     arguments_from_string(&contents)
+        .with_context(|| format!("Failed to parse arguments from file `{}`", path.display()))
 }
 
 /// Parses arguments from a string, handling quoting, escapes etc.
@@ -1777,8 +1787,11 @@ mod tests {
 
         let mut args = Args::new(|| ["wild", "-flavor", "gnu"].into_iter()).unwrap();
         assert_matches!(args, Args::Elf(_));
-        args.parse(|| ["wild", "-flavor", "gnu"].into_iter())
-            .unwrap();
+        args.parse(
+            || ["wild", "-flavor", "gnu"].into_iter(),
+            &crate::fs::OsFileSystem,
+        )
+        .unwrap();
         assert_eq!(args.common().inputs, []);
 
         let args = Args::new(|| ["wild", "-flavor", "darwin"].into_iter()).unwrap();

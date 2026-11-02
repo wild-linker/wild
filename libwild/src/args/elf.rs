@@ -25,6 +25,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
+use crate::fs::FileSystem;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::output_kind::OutputKind;
 use crate::output_section_id::SectionName;
@@ -582,6 +583,7 @@ impl ElfArgs {
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut ElfArgs,
     mut input: I,
+    file_system: &impl FileSystem,
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
@@ -589,7 +591,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input, file_system)?;
     }
 
     if let Some(error) = args.emulation_error.take() {
@@ -2278,12 +2280,12 @@ fn add_default_flags(parser: &mut ArgumentParser<ElfArgs>) {
 }
 
 impl platform::Args for ElfArgs {
-    fn parse<S, I>(&mut self, input: I) -> Result
+    fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input)
+        parse(self, input, file_system)
     }
 
     fn gc_stats_output_file(&self) -> Option<&Path> {
@@ -2732,7 +2734,7 @@ mod tests {
     #[test]
     fn test_parse_inline_only_options() {
         let mut args = ElfArgs::new().unwrap();
-        args.parse(INPUT1.iter()).unwrap();
+        args.parse(INPUT1.iter(), &crate::fs::OsFileSystem).unwrap();
         input1_assertions(&args);
     }
 
@@ -2749,7 +2751,8 @@ mod tests {
         // pass the name of the file where options are as the only inline option "@filename"
         let inline_options = [format!("@{}", file.path().to_str().unwrap())];
         let mut args = ElfArgs::new().unwrap();
-        args.parse(inline_options.iter()).unwrap();
+        args.parse(inline_options.iter(), &crate::fs::OsFileSystem)
+            .unwrap();
         input1_assertions(&args);
     }
 
@@ -2772,7 +2775,8 @@ mod tests {
 
         // confirm that this works and the resulting set of options is correct
         let mut args = ElfArgs::new().unwrap();
-        args.parse(inline_options.iter()).unwrap();
+        args.parse(inline_options.iter(), &crate::fs::OsFileSystem)
+            .unwrap();
         inline_and_file_options_assertions(&args);
     }
 
@@ -2798,7 +2802,8 @@ mod tests {
 
         // confirm that this works and the resulting set of options is correct
         let mut args = ElfArgs::new().unwrap();
-        args.parse(inline_options.iter()).unwrap();
+        args.parse(inline_options.iter(), &crate::fs::OsFileSystem)
+            .unwrap();
         inline_and_file_options_assertions(&args);
     }
 
@@ -2820,7 +2825,7 @@ mod tests {
 
         // confirm that this works and the resulting set of options is correct
         let mut args = ElfArgs::new().unwrap();
-        args.parse(inline_options.iter())
+        args.parse(inline_options.iter(), &crate::fs::OsFileSystem)
             .expect("Recursive @file options should parse correctly but be ignored");
         input1_assertions(&args);
     }
@@ -2874,14 +2879,18 @@ mod tests {
     // Helper: parse a small set of args and return the resulting ElfArgs.
     fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> ElfArgs {
         let mut elf_args = ElfArgs::new().unwrap();
-        elf_args.parse(args.into_iter()).unwrap();
+        elf_args
+            .parse(args.into_iter(), &crate::fs::OsFileSystem)
+            .unwrap();
         elf_args
     }
 
     // Helper: parse args and expect a parse error.
     fn parse_args_err<'a>(args: impl IntoIterator<Item = &'a str>) -> crate::error::Error {
         let mut elf_args = ElfArgs::new().unwrap();
-        elf_args.parse(args.into_iter()).unwrap_err()
+        elf_args
+            .parse(args.into_iter(), &crate::fs::OsFileSystem)
+            .unwrap_err()
     }
 
     #[test]

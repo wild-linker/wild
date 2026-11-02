@@ -9,6 +9,7 @@ use crate::args::parse_number;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::fs::FileSystem;
 use crate::platform;
 use crate::platform::Args as _;
 use std::path::Path;
@@ -138,12 +139,12 @@ impl Default for WasmArgs {
 }
 
 impl platform::Args for WasmArgs {
-    fn parse<S, I>(&mut self, input: I) -> Result
+    fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input)
+        parse(self, input, file_system)
     }
 
     fn should_strip_debug(&self) -> bool {
@@ -223,6 +224,7 @@ impl platform::Args for WasmArgs {
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut WasmArgs,
     mut input: I,
+    file_system: &impl FileSystem,
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
@@ -230,7 +232,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input, file_system)?;
     }
 
     args.common.report_unrecognized()?;
@@ -700,7 +702,7 @@ mod tests {
 
     fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> WasmArgs {
         let mut wasm_args = WasmArgs::new().unwrap();
-        Args::parse(&mut wasm_args, args.into_iter()).unwrap();
+        Args::parse(&mut wasm_args, args.into_iter(), &crate::fs::OsFileSystem).unwrap();
         wasm_args
     }
 

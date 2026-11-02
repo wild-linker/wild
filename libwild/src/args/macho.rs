@@ -125,12 +125,12 @@ impl Default for MachOArgs {
 }
 
 impl platform::Args for MachOArgs {
-    fn parse<S, I>(&mut self, input: I) -> Result
+    fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input)
+        parse(self, input, file_system)
     }
 
     fn should_strip_debug(&self) -> bool {
@@ -231,6 +231,7 @@ impl platform::Args for MachOArgs {
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut MachOArgs,
     mut input: I,
+    file_system: &impl FileSystem,
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
@@ -238,7 +239,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input, file_system)?;
     }
 
     args.common.report_unrecognized()?;
@@ -623,7 +624,8 @@ mod tests {
         ] {
             for option in ["-current_version", "-compatibility_version"] {
                 let mut args = MachOArgs::default();
-                args.parse(["-dylib", option, value].iter()).unwrap();
+                args.parse(["-dylib", option, value].iter(), &crate::fs::OsFileSystem)
+                    .unwrap();
                 if option == "-current_version" {
                     assert_eq!(args.current_version.get(), expected);
                     assert_eq!(args.compatibility_version.get(), Version(0));
@@ -642,7 +644,9 @@ mod tests {
                 "", "abc", "-1", "1.", "1..2", "1.2.3.4", "65536", "1.256", "1.2.256",
             ] {
                 let mut args = MachOArgs::default();
-                let error = args.parse(["-dylib", option, value].iter()).unwrap_err();
+                let error = args
+                    .parse(["-dylib", option, value].iter(), &crate::fs::OsFileSystem)
+                    .unwrap_err();
                 assert!(
                     error
                         .to_string()
@@ -651,7 +655,10 @@ mod tests {
                 );
             }
             let mut args = MachOArgs::default();
-            assert!(args.parse(["-dylib", option].iter()).is_err());
+            assert!(
+                args.parse(["-dylib", option].iter(), &crate::fs::OsFileSystem)
+                    .is_err()
+            );
         }
     }
 
@@ -668,6 +675,7 @@ mod tests {
                 "first.txt",
             ]
             .iter(),
+            &crate::fs::OsFileSystem,
         )
         .unwrap();
         assert_eq!(
@@ -691,7 +699,7 @@ mod tests {
                 .unwrap()
                 .push(warning.warning().to_owned());
         });
-        args.parse(INPUT1.iter()).unwrap();
+        args.parse(INPUT1.iter(), &crate::fs::OsFileSystem).unwrap();
         input1_assertions(&args);
         assert!(warnings.lock().unwrap().is_empty());
     }
