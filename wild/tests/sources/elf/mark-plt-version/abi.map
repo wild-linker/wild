@@ -1,0 +1,3 @@
+GLIBC_2.2.5 { global: foo; };
+GLIBC_2.36 { } GLIBC_2.2.5;
+GLIBC_ABI_DT_X86_64_PLT { } GLIBC_2.2.5;

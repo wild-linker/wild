@@ -17,6 +17,17 @@
 //#ExpectDynSym:imported_ifunc type=func
 //#LinkArgs:-no-pie
 
+//#Config:mark-plt:x86_64
+//#RequiresGlibcVersion:2.36
+//#RequiresLinkerFlags:-z mark-plt
+//#ReferenceLinkers:bfd
+//#LinkArgs:-z mark-plt
+//#ExpectDynamic:DT_X86_64_PLT
+//#ExpectDynamic:DT_X86_64_PLTSZ
+//#ExpectDynamic:DT_X86_64_PLTENT
+//#DiffIgnore:.dynamic.DT_X86_64_PLT
+//#DiffIgnore:.dynamic.DT_X86_64_PLTSZ
+
 //#Config:other:default
 //#Arch:riscv64,loongarch64
 //#LinkArgs:-no-pie

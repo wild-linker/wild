@@ -149,6 +149,7 @@ pub struct ElfArgs {
     pub(crate) cet_report: CetReport,
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) z_pack_relative_relocs: bool,
+    pub(crate) z_mark_plt: bool,
     pub(crate) z_unique: bool,
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
@@ -458,6 +459,7 @@ impl Default for ElfArgs {
             force_bti: false,
             cet_report: CetReport::None,
             z_pack_relative_relocs: false,
+            z_mark_plt: false,
             z_unique: false,
             max_page_size: None,
             auxiliary: Vec::new(),
@@ -546,6 +548,10 @@ impl ElfArgs {
         self.emulation.architecture()
     }
 
+    pub(crate) fn is_plt_marking_enabled(&self) -> bool {
+        self.z_mark_plt && self.architecture() == Architecture::X86_64
+    }
+
     /// Report that `object` requested an executable stack via `.note.GNU-stack`.
     ///
     /// Unlike GNU ld, we never enable an executable stack from input objects. `-z execstack` is
@@ -630,6 +636,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     args.common.report_unrecognized()?;
+
+    if args.z_mark_plt && args.architecture() != Architecture::X86_64 {
+        args.warning("-z mark-plt ignored");
+    }
 
     if !args.auxiliary.is_empty() && args.should_output_executable {
         bail!("-f may not be used without -shared");
@@ -875,6 +885,22 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         })
         .sub_option("lazy", "Use lazy binding (default)", |_, _| Ok(()))
+        .sub_option(
+            "mark-plt",
+            "Mark x86-64 PLT entries for runtime rewriting",
+            |args, _| {
+                args.z_mark_plt = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "nomark-plt",
+            "Do not mark PLT entries (default)",
+            |args, _| {
+                args.z_mark_plt = false;
+                Ok(())
+            },
+        )
         .sub_option(
             "initfirst",
             "Mark shared object to be initialized first at runtime",

@@ -1,0 +1,2 @@
+GLIBC_2.2.5 { global: foo; };
+GLIBC_2.36 { } GLIBC_2.2.5;
