@@ -8,9 +8,7 @@ use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
-use object::ObjectSymbolTable;
 use object::SymbolIndex;
-use object::SymbolTable;
 
 type GnuHashHeader = object::elf::GnuHashHeader<Endianness>;
 
@@ -74,11 +72,6 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         )
     })?;
 
-    let dynsym = obj
-        .file
-        .dynamic_symbol_table()
-        .context("Missing dynamic symbol table")?;
-
     for sym in obj.file.dynamic_symbols() {
         if !sym.is_definition() {
             // It's somewhat tempting to verify that the symbol index is >= symbol_base. However
@@ -89,13 +82,13 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         }
         let name = sym.name()?;
         let name_bytes = sym.name_bytes()?;
-        let symbol_index = lookup_symbol(
+        check_symbol(
             name_bytes,
+            sym.index(),
             header,
             bloom_values,
             buckets,
             chains,
-            &dynsym,
             e,
         )
         .with_context(|| {
@@ -108,27 +101,20 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
                         chains={chains:x?}"
             )
         })?;
-        if symbol_index != sym.index().0 {
-            bail!(
-                "Dynamic symbol `{}` hash lookup found {symbol_index}, expected {}",
-                sym.name()?,
-                sym.index().0
-            );
-        }
     }
 
     Ok(())
 }
 
-fn lookup_symbol(
+fn check_symbol(
     sym_name: &[u8],
+    expected_index: SymbolIndex,
     header: &object::elf::GnuHashHeader<Endianness>,
     bloom_values: &[u64],
     buckets: &[u32],
     chains: &[u32],
-    dynsym: &SymbolTable,
     e: Endianness,
-) -> Result<usize> {
+) -> Result {
     let symbol_base = header.symbol_base.get(e) as usize;
     let hash = object::elf::gnu_hash(sym_name);
     let elf_class_bits = size_of::<u64>() as u32 * 8;
@@ -148,17 +134,43 @@ fn lookup_symbol(
     }
     loop {
         let chain_value = chains[symbol_index - symbol_base];
-        if chain_value & !1 == hash & !1
-            && dynsym
-                .symbol_by_index(SymbolIndex(symbol_index))
-                .and_then(|sym| sym.name_bytes())
-                .is_ok_and(|n| n == sym_name)
-        {
-            return Ok(symbol_index);
+        // Multiple versions can share a name. Each must be reachable through the chain.
+        if symbol_index == expected_index.0 && chain_value & !1 == hash & !1 {
+            return Ok(());
         }
         if chain_value & 1 == 1 {
             bail!("Symbol not found");
         }
         symbol_index += 1;
     }
+}
+
+#[test]
+fn repeated_symbol_names() {
+    let e = Endianness::Little;
+    let header = GnuHashHeader {
+        bucket_count: object::endian::U32::new(e, 1),
+        symbol_base: object::endian::U32::new(e, 1),
+        bloom_count: object::endian::U32::new(e, 1),
+        bloom_shift: object::endian::U32::new(e, 5),
+    };
+    let hash = object::elf::gnu_hash(b"foo");
+    let check = |index, chains: &[u32]| {
+        check_symbol(
+            b"foo",
+            SymbolIndex(index),
+            &header,
+            &[u64::MAX],
+            &[1],
+            chains,
+            e,
+        )
+    };
+
+    let chains = [hash & !1, hash | 1];
+    assert!(check(1, &chains).is_ok());
+    assert!(check(2, &chains).is_ok());
+    // Finding an earlier version does not prove that the later version is reachable.
+    assert!(check(2, &[hash | 1, hash | 1]).is_err());
+    assert!(check(2, &[hash & !1, (hash ^ 2) | 1]).is_err());
 }
