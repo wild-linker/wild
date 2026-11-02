@@ -8,9 +8,7 @@ use linker_utils::elf::secnames::HASH_SECTION_NAME_STR;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
-use object::ObjectSymbolTable;
 use object::SymbolIndex;
-use object::SymbolTable;
 use std::convert::TryInto;
 
 pub(crate) fn check_object(obj: &Binary) -> Result {
@@ -24,11 +22,6 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
     if num_symbols <= 1 {
         return Ok(());
     }
-
-    let dynsym = obj
-        .file
-        .dynamic_symbol_table()
-        .context("Missing dynamic symbol table")?;
 
     let hash_section = obj
         .file
@@ -86,27 +79,19 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
 
         let name = sym.name()?;
         let name_bytes = sym.name_bytes()?;
-        let symbol_index = lookup_symbol(name_bytes, &buckets, &chains, &dynsym)
+        check_symbol(name_bytes, sym.index(), &buckets, &chains)
             .with_context(|| format!("Hash lookup of symbol `{name}` failed"))?;
-        if symbol_index != sym.index().0 {
-            bail!(
-                "Dynamic symbol `{}` hash lookup found {}, expected {}",
-                sym.name()?,
-                symbol_index,
-                sym.index().0
-            );
-        }
     }
 
     Ok(())
 }
 
-fn lookup_symbol(
+fn check_symbol(
     sym_name: &[u8],
+    expected_index: SymbolIndex,
     buckets: &[u32],
     chains: &[u32],
-    dynsym: &SymbolTable,
-) -> Result<usize> {
+) -> Result {
     if buckets.is_empty() {
         bail!("Empty .hash bucket table");
     }
@@ -120,14 +105,9 @@ fn lookup_symbol(
 
     loop {
         ensure!(index < chains.len(), "Chain index {index} out of range");
-        let dynsym_entry = dynsym
-            .symbol_by_index(SymbolIndex(index))
-            .context("Invalid symbol index in .hash")?;
-        if dynsym_entry
-            .name_bytes()
-            .is_ok_and(|bytes| bytes == sym_name)
-        {
-            return Ok(index);
+        // Multiple versions can share a name. Each must be reachable through the chain.
+        if index == expected_index.0 {
+            return Ok(());
         }
         let next = chains[index] as usize;
         if next == 0 {
@@ -135,4 +115,13 @@ fn lookup_symbol(
         }
         index = next;
     }
+}
+
+#[test]
+fn repeated_symbol_names() {
+    let chains = [0, 2, 0];
+    assert!(check_symbol(b"foo", SymbolIndex(1), &[1], &chains).is_ok());
+    assert!(check_symbol(b"foo", SymbolIndex(2), &[1], &chains).is_ok());
+    // Finding an earlier version does not prove that the later version is reachable.
+    assert!(check_symbol(b"foo", SymbolIndex(2), &[1], &[0, 0, 0]).is_err());
 }
