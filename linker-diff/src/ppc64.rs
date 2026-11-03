@@ -87,8 +87,8 @@ impl Arch for Ppc64 {
         _plt_base: u64,
         _plt_offset: u64,
     ) -> Option<crate::arch::PltEntry> {
-        // The stub is `ld r12, disp(r2)`. The GOT address is disp bytes from the TOC, which this
-        // decoder does not have, so the entry cannot be turned back into an address.
+        // The stub addresses the GOT from the TOC (`r2`) with `addis`/`ld`. This decoder does not
+        // have the TOC base, so the entry cannot be turned back into an address.
         None
     }
 

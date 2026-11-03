@@ -927,7 +927,13 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             // a zero displacement still consumes the PLT slot.
             let toc_base = layout.map_or(got_address, |layout| layout.got_base());
             let bti_enabled = layout.is_some_and(|layout| layout.format_specific.has_aarch64_bti());
-            self.write_plt_entry::<A>(got_address, plt_address.get(), toc_base, bti_enabled)?;
+            self.write_plt_entry::<A>(
+                got_address,
+                plt_address.get(),
+                toc_base,
+                bti_enabled,
+                elf::plt_entry_size(args.architecture()) as usize,
+            )?;
         }
 
         // For ifunc symbols with GOT-relative references, write the PLT stub
@@ -1085,19 +1091,17 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         plt_address: u64,
         toc_base: u64,
         bti_enabled: bool,
+        entry_size: usize,
     ) -> Result {
-        let plt_entry = self.take_plt_got_entry()?;
+        let plt_entry = self.take_plt_got_entry(entry_size)?;
         A::write_plt_entry_with_bti(plt_entry, got_address, plt_address, toc_base, bti_enabled)
     }
 
-    fn take_plt_got_entry(&mut self) -> Result<&'out mut [u8]> {
-        if self.plt_got.len() < elf::PLT_ENTRY_SIZE as usize {
+    fn take_plt_got_entry(&mut self, entry_size: usize) -> Result<&'out mut [u8]> {
+        if self.plt_got.len() < entry_size {
             bail!("Didn't allocate enough space in .plt.got");
         }
-        Ok(self
-            .plt_got
-            .split_off_mut(..elf::PLT_ENTRY_SIZE as usize)
-            .unwrap())
+        Ok(self.plt_got.split_off_mut(..entry_size).unwrap())
     }
 
     fn take_next_got_entry(&mut self) -> Result<&'out mut elf::Word<C>> {
@@ -6721,6 +6725,7 @@ fn write_section_headers<C: ElfClass>(
     let info_values = compute_info_values(layout);
 
     let mut order = layout.output_order.into_iter().peekable();
+    let plt_entry_size = elf::plt_entry_size(layout.args().architecture());
 
     while let Some(event) = order.next() {
         let OrderEvent::Section(section_id) = event else {
@@ -6738,11 +6743,14 @@ fn write_section_headers<C: ElfClass>(
             continue;
         }
 
-        let entsize = output_info.section_attributes.entsize.max(
+        let mut entsize = output_info.section_attributes.entsize.max(
             section_id
                 .opt_built_in_details::<elf::Elf<C>>()
                 .map_or(0, |details| details.element_size),
         );
+        if section_id == output_section_id::PLT_GOT && plt_entry_size != elf::PLT_ENTRY_SIZE {
+            entsize = plt_entry_size;
+        }
 
         let size;
         let alignment;

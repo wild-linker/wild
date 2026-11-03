@@ -2140,7 +2140,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             }
             if flags.needs_plt() {
-                mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::PLT_GOT, plt_entry_size(args.architecture()));
             }
             match got_relocation_kind(flags, output_kind, is_linker_script_symbol) {
                 GotRelocationKind::JumpSlot | GotRelocationKind::Ifunc => {
@@ -2364,7 +2364,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         };
 
         if flags.needs_plt() {
-            let plt_address = allocate_plt(memory_offsets);
+            let plt_address = allocate_plt(memory_offsets, plt_entry_size(args.architecture()));
             resolution.format_specific.plt_address = Some(plt_address);
             if flags.is_dynamic() {
                 resolution.raw_value = plt_address.get();
@@ -4525,6 +4525,13 @@ pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 // TODO: Right now, both x86_64 and AArch64 have 16 byte long entries, but
 // the size should be generic over A: Arch.
 pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
+
+pub(crate) fn plt_entry_size(arch: Architecture) -> u64 {
+    match arch {
+        Architecture::Ppc64 => 0x20,
+        _ => PLT_ENTRY_SIZE,
+    }
+}
 
 pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = size_of::<SymtabShndxEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
@@ -7545,9 +7552,9 @@ fn allocate_got_relr<C: ElfClass>(memory_offsets: &mut OutputSectionPartMap<u64>
     got_address
 }
 
-fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>, entry_size: u64) -> NonZeroU64 {
     let plt_address = NonZeroU64::new(memory_offsets.get(part_id::PLT_GOT)).unwrap();
-    memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
+    memory_offsets.increment(part_id::PLT_GOT, entry_size);
     plt_address
 }
 
