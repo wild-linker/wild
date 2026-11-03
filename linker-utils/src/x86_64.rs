@@ -22,6 +22,13 @@ pub enum RelaxationKind {
     // Transforms an indirect add to an absolute add.
     RexAddIndirectToAbsolute(u8),
 
+    /// Transforms an indirect add into a lea that uses the destination register as the base:
+    /// `add x(%rip), reg` -> `lea x(reg), reg`. This is how GNU ld relaxes initial-exec TLS
+    /// accesses. Wild doesn't apply it; it exists so that linker-diff can recognise GNU ld's
+    /// output. Only the 3-byte REX form is supported. GNU ld doesn't use it when the destination
+    /// is %rsp or %r12, since they can't be a base register here; it uses an absolute add instead.
+    RexAddIndirectToLea(u8),
+
     // Transforms an indirect sub to an absolute sub.
     RexSubIndirectToAbsolute(u8),
 
@@ -115,6 +122,18 @@ impl RelaxationKind {
                 section_bytes[offset - 2] = 0x81;
                 let mod_rm = &mut section_bytes[offset - 1];
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
+                *addend = 0;
+            }
+            RelaxationKind::RexAddIndirectToLea(inst_offset) => {
+                debug_assert_eq!(inst_offset, 3);
+                // The destination register becomes the base as well, so it's now in both
+                // ModRM.reg and ModRM.rm. Copy REX.R into REX.B for %r8-%r15.
+                let rex = section_bytes[offset - 3];
+                section_bytes[offset - 3] = rex | ((rex & 4) >> 2);
+                section_bytes[offset - 2] = 0x8d;
+                let mod_rm = &mut section_bytes[offset - 1];
+                let reg = (*mod_rm >> 3) & 0x7;
+                *mod_rm = 0x80 | (reg << 3) | reg;
                 *addend = 0;
             }
             RelaxationKind::RexSubIndirectToAbsolute(inst_offset) => {
@@ -232,6 +251,7 @@ impl RelaxationKind {
             | RelaxationKind::MovIndirectToAbsolute
             | RelaxationKind::RexMovIndirectToAbsolute(_)
             | RelaxationKind::RexAddIndirectToAbsolute(_)
+            | RelaxationKind::RexAddIndirectToLea(_)
             | RelaxationKind::RexSubIndirectToAbsolute(_)
             | RelaxationKind::RexCmpIndirectToAbsolute(_)
             | RelaxationKind::CallIndirectToRelative
