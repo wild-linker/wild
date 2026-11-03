@@ -47,6 +47,7 @@ pub struct WasmArgs {
     pub(crate) features: Option<Vec<String>>,
     pub(crate) check_features: bool,
     pub(crate) export_memory: Option<String>,
+    pub(crate) export_table: bool,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
     pub(crate) stack_first: bool,
@@ -122,6 +123,7 @@ impl Default for WasmArgs {
             shared_memory: false,
             import_memory: None,
             export_memory: None,
+            export_table: false,
             export_dynamic: false,
             gc_sections: true,
             allow_undefined: false,
@@ -337,6 +339,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Export the module's memory (default name \"memory\")")
         .execute(|args, _modifier_stack, value| {
             args.export_memory = Some(value.unwrap_or(DEFAULT_MEMORY_EXPORT_NAME).to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("export-table")
+        .help("Export the indirect function table as \"__indirect_function_table\"")
+        .execute(|args, _modifier_stack| {
+            args.export_table = true;
             Ok(())
         });
 
