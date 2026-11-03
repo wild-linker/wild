@@ -42,6 +42,7 @@ impl Arch for X86_64 {
             Self::RelaxationKind::RexMovIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::RexAddIndirectToAbsolute(6) => RelaxationByteRange::new(6, 10),
             Self::RelaxationKind::RexAddIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexAddIndirectToLea(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::RexSubIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::RexCmpIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::CallIndirectToRelative => RelaxationByteRange::new(2, 6),
@@ -160,6 +161,10 @@ impl Arch for X86_64 {
                 );
                 relax(
                     Self::RelaxationKind::RexAddIndirectToAbsolute(3),
+                    object::elf::R_X86_64_TPOFF32,
+                );
+                relax(
+                    Self::RelaxationKind::RexAddIndirectToLea(3),
                     object::elf::R_X86_64_TPOFF32,
                 );
             }
