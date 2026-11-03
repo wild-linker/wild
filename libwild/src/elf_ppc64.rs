@@ -65,19 +65,32 @@ impl crate::platform::Arch for ElfPpc64 {
         toc_base: u64,
     ) -> crate::error::Result {
         let offset = (got_address as i64).wrapping_sub(toc_base as i64);
+        let Some(ha) = offset
+            .checked_add(0x8000)
+            .and_then(|adjusted| i16::try_from(adjusted >> 16).ok())
+        else {
+            bail!(
+                "ppc64 PLT stub GOT displacement {offset:#x} from TOC {toc_base:#x} does not fit in a signed 32-bit TOC-relative immediate"
+            );
+        };
         ensure!(
-            (-0x8000..0x8000).contains(&offset) && (offset & 3) == 0,
-            "ppc64 PLT stub GOT displacement {offset:#x} from TOC {toc_base:#x} does not fit in a signed 16-bit DS immediate"
+            (offset & 3) == 0,
+            "ppc64 PLT stub GOT displacement {offset:#x} from TOC {toc_base:#x} is not 4-byte aligned"
         );
-        let disp = (offset as u32) & 0xfffc;
+        let ha = u32::from(ha as u16);
+        let lo = (offset as u32) & 0xfffc;
         let insns = [
-            0xf841_0018u32,     // std r2, 24(r1)
-            0xe982_0000 | disp, // ld r12, disp(r2)
-            0x7d89_03a6,        // mtctr r12
-            0x4e80_0420,        // bctr
+            0xf841_0018u32,   // std r2, 24(r1)
+            0x3d82_0000 | ha, // addis r12, r2, offset@ha
+            0xe98c_0000 | lo, // ld r12, offset@l(r12)
+            0x7d89_03a6,      // mtctr r12
+            0x4e80_0420,      // bctr
+            0x6000_0000,      // nop
+            0x6000_0000,      // nop
+            0x6000_0000,      // nop
         ];
         let (slots, _) = plt_entry.as_chunks_mut::<4>();
-        ensure!(slots.len() >= insns.len(), "ppc64 PLT entry is 16 bytes");
+        ensure!(slots.len() >= insns.len(), "ppc64 PLT entry is 32 bytes");
         for (dest, insn) in slots.iter_mut().zip(insns) {
             *dest = insn.to_le_bytes();
         }
