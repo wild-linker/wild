@@ -64,6 +64,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools as _;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::BitMask;
@@ -89,6 +90,7 @@ use object::read::elf::Dyn as _;
 use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
+use object::read::elf::RelrIterator;
 use object::read::elf::SectionHeader as _;
 use std::fmt::Display;
 use std::fmt::Write as _;
@@ -2226,12 +2228,20 @@ impl<'data> RelaxationTester<'data> {
         let last_match = relaxations_matches.last().unwrap();
 
         for relaxation_match in relaxations_matches {
+            let address = self.section_address + relaxation_match.start;
+            if self.bin.address_index.relr_addresses.contains(&address) {
+                let value = read_word_at(self.bin.file, address)
+                    .with_context(|| format!("Invalid RELR relocation address 0x{address:x}"))?;
+                merged_value = merged_value.wrapping_add(value);
+                addend = relaxation_match.addend;
+                all_none = false;
+                value_kind = ValueKind::OptionalPlt;
+                continue;
+            }
+
             // If we get any runtime relocation, then use that. We should generally only see these
             // in data sections (provided text relocations are disabled).
-            if let Some(runtime_relocation) = self
-                .bin
-                .address_index
-                .relocation_at_address(self.section_address + relaxation_match.start)
+            if let Some(runtime_relocation) = self.bin.address_index.relocation_at_address(address)
             {
                 let r_type = get_r_type(runtime_relocation);
 
@@ -3328,6 +3338,7 @@ pub(crate) struct AddressIndex<'data> {
     versym_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
     dynamic_relocations_by_address: HashMap<u64, object::Relocation>,
+    relr_addresses: HashSet<u64>,
     dynamic_relocations_by_symbol_index: HashMap<object::SymbolIndex, Vec<object::Relocation>>,
     tls_tp_offset: u64,
     aarch64_tls_offset_bias: u64,
@@ -3434,6 +3445,7 @@ impl<'data> AddressIndex<'data> {
             dynamic_symbols: Default::default(),
             jmprel_got_addresses: Vec::new(),
             dynamic_relocations_by_address: Default::default(),
+            relr_addresses: Default::default(),
             bin_attributes: BinAttributes {
                 // These may be overridden in `index_dynamic`.
                 output_kind: if file.kind() == ObjectKind::Executable {
@@ -3461,7 +3473,7 @@ impl<'data> AddressIndex<'data> {
             self.verneed = Self::index_verneed(elf_file)?;
             self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
             self.index_got_tables(elf_file).unwrap();
-            self.index_relocations(elf_file);
+            self.index_relocations(elf_file)?;
             self.index_plt_sections(elf_file)?;
         }
         Ok(())
@@ -3626,7 +3638,7 @@ impl<'data> AddressIndex<'data> {
         Ok(dynamic_symbol_names)
     }
 
-    fn index_relocations(&mut self, elf_file: &ElfFile64<'data>) {
+    fn index_relocations(&mut self, elf_file: &ElfFile64<'data>) -> Result {
         if let Some(dynamic_relocations) = elf_file.dynamic_relocations() {
             for (_, rel) in dynamic_relocations {
                 if let RelocationTarget::Symbol(symbol_index) = rel.target() {
@@ -3646,7 +3658,21 @@ impl<'data> AddressIndex<'data> {
         for section in elf_file.sections() {
             self.dynamic_relocations_by_address
                 .extend(section.relocations());
+            let header = section.elf_section_header();
+            let e = elf_file.endian();
+            if matches!(
+                header.sh_type(e),
+                object::elf::SHT_RELR | object::elf::SHT_ANDROID_RELR
+            ) {
+                self.relr_addresses.extend(
+                    RelrIterator::<object::elf::FileHeader64<Endianness>>::new(
+                        e,
+                        header.data_as_array(e, elf_file.data())?,
+                    ),
+                );
+            }
         }
+        Ok(())
     }
 
     fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
@@ -4024,11 +4050,18 @@ impl<'data> GotIndex<'data> {
                 }
             }
         } else {
-            // No dynamic relocation, just read from the original file data.
+            // Entries without an explicit addend use the original file data.
             let raw_value = *self
                 .entries
                 .get((offset / entry_size) as usize)
                 .context("got_address past end of index range")?;
+
+            if index.relr_addresses.contains(&got_address) {
+                return Ok(Referent::UnmatchedAddress(UnmatchedAddress {
+                    address: raw_value,
+                    ..Default::default()
+                }));
+            }
 
             match relocation_kind {
                 RelocationKind::GotTpOff

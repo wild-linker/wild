@@ -36,9 +36,6 @@
 //#Config:pie-mixed-relr:pie-mixed-data
 //#LinkArgs:-z pack-relative-relocs
 //#ExpectDynamic:DT_RELR
-// linker-diff does not resolve RELR-backed IFUNC PLT pointers.
-//#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
-//#DiffIgnore:rel.R_X86_64_64.R_X86_64_64
 
 //#Config:pie-mixed-no-relax:pie-mixed
 //#LinkArgs:--no-relax
