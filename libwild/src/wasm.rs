@@ -6871,6 +6871,7 @@ where
             &reloc_scan.table_index_symbol_indices,
             reloc_scan.needs_table,
             &weak_undef_funcs,
+            symbol_db.args.growable_table,
         )?;
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
@@ -6937,6 +6938,7 @@ fn finalize_indirect_function_table(
     table_index_symbol_indices: &[Vec<usize>],
     needs_table: bool,
     weak_undef_funcs: &HashSet<u32>,
+    growable_table: bool,
 ) -> Result {
     if !needs_table {
         return Ok(());
@@ -7013,7 +7015,7 @@ fn finalize_indirect_function_table(
     layout.tables = vec![wasmparser::TableType {
         element_type: wasmparser::RefType::FUNCREF,
         initial,
-        maximum: Some(initial),
+        maximum: (!growable_table).then_some(initial),
         shared: false,
         table64: false,
     }];

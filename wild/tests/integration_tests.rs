@@ -123,6 +123,9 @@
 //!   shared=true|false: Asserts the memory is shared.
 //!
 //! ExpectFuncTypeCount:{count} (Wasm) Asserts the type section has exactly {count} function types.
+//!
+//! ExpectTable:max=initial|max=none (Wasm) Asserts the output has one defined funcref table.
+//! max=initial requires its maximum to equal its initial size. max=none requires no maximum.
 
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
@@ -629,6 +632,7 @@ struct WasmModuleInfo {
     export_global_indices: HashMap<String, u32>,
     memories: Vec<wasmparser::MemoryType>,
     memory_imports: Vec<(String, String, wasmparser::MemoryType)>,
+    tables: Vec<wasmparser::TableType>,
 }
 
 fn i32_const_from_expr(expr: &wasmparser::ConstExpr<'_>) -> Option<i32> {
@@ -656,6 +660,7 @@ impl WasmModuleInfo {
         let mut export_global_indices = HashMap::new();
         let mut memories = Vec::new();
         let mut memory_imports = Vec::new();
+        let mut tables = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -704,8 +709,17 @@ impl WasmModuleInfo {
                 Payload::FunctionSection(_) => {
                     section_names.insert("Function".to_owned());
                 }
-                Payload::TableSection(_) => {
+                Payload::TableSection(section) => {
                     section_names.insert("Table".to_owned());
+                    for table in section {
+                        tables.push(
+                            table
+                                .with_context(|| {
+                                    format!("Invalid table entry in {}", path.display())
+                                })?
+                                .ty,
+                        );
+                    }
                 }
                 Payload::MemorySection(section) => {
                     section_names.insert("Memory".to_owned());
@@ -770,6 +784,7 @@ impl WasmModuleInfo {
             export_global_indices,
             memories,
             memory_imports,
+            tables,
         })
     }
 
@@ -1018,6 +1033,37 @@ impl WasmModuleInfo {
                 self.path.display()
             );
         }
+        Ok(())
+    }
+
+    fn ensure_table(&self, expected: Option<ExpectedTableMaximum>, linker_name: &str) -> Result {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let table = self.tables.iter().exactly_one().map_err(|tables| {
+            error!(
+                "Expected exactly one table in {linker_name} output ({}), found {}",
+                self.path.display(),
+                tables.count()
+            )
+        })?;
+        ensure!(
+            table.element_type.is_func_ref() && !table.shared && !table.table64,
+            "Expected one funcref table in {linker_name} output ({}), found {table:?}",
+            self.path.display()
+        );
+        let expected_maximum = match expected {
+            ExpectedTableMaximum::Initial => Some(table.initial),
+            ExpectedTableMaximum::None => None,
+        };
+        ensure!(
+            table.maximum == expected_maximum,
+            "Expected table maximum {expected_maximum:?} in {linker_name} output ({}), \
+             found {:?} (initial {})",
+            self.path.display(),
+            table.maximum,
+            table.initial
+        );
         Ok(())
     }
 }
@@ -2130,6 +2176,8 @@ struct Assertions {
     expected_memory_import: Option<ExpectedMemoryImport>,
     /// Wasm: total number of function types in the type section.
     expected_func_type_count: Option<usize>,
+    /// Wasm: required maximum of the single defined funcref table.
+    expected_table_maximum: Option<ExpectedTableMaximum>,
 
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
@@ -2161,6 +2209,14 @@ struct ExpectedSectionBytes {
     section_name: String,
     expected_bytes: Vec<u8>,
     match_range: Option<Range<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedTableMaximum {
+    // `maximum` equals `initial`.
+    Initial,
+    // The table has no maximum.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2830,6 +2886,18 @@ fn process_directive(
                     .parse()
                     .with_context(|| format!("Invalid ExpectFuncTypeCount: `{arg}`"))?,
             );
+        }
+        "ExpectTable" => {
+            let maximum = match arg.trim() {
+                "max=initial" => ExpectedTableMaximum::Initial,
+                "max=none" => ExpectedTableMaximum::None,
+                _ => bail!("ExpectTable requires max=initial or max=none, got `{arg}`"),
+            };
+            ensure!(
+                config.assertions.expected_table_maximum.is_none(),
+                "Duplicate ExpectTable"
+            );
+            config.assertions.expected_table_maximum = Some(maximum);
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -5880,6 +5948,7 @@ impl Assertions {
             expect_shared_memory: self.expect_shared_memory,
             expected_memory_import: self.expected_memory_import.clone(),
             expected_func_type_count: self.expected_func_type_count,
+            expected_table_maximum: self.expected_table_maximum,
             ..Default::default()
         };
         ensure!(
@@ -5914,6 +5983,7 @@ impl Assertions {
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
         info.ensure_memory_import(self.expected_memory_import.as_ref(), linker_name)?;
+        info.ensure_table(self.expected_table_maximum, linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
