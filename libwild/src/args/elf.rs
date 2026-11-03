@@ -2402,14 +2402,6 @@ impl platform::Args for ElfArgs {
         platform::EntryPoint::Symbol(linker_script_entry.unwrap_or(b"_start"))
     }
 
-    fn init_symbol(&self) -> Option<&[u8]> {
-        self.init.as_deref().map(str::as_bytes)
-    }
-
-    fn fini_symbol(&self) -> Option<&[u8]> {
-        self.fini.as_deref().map(str::as_bytes)
-    }
-
     fn start_address_for_section(&self, section_name: SectionName) -> Option<u64> {
         // --section-start takes precedence over -Ttext/-Tdata/-Tbss.
         if let Some(&addr) = self.section_start.get(section_name.bytes()) {

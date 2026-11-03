@@ -84,6 +84,7 @@ use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::thunks::ThunkBlockId;
@@ -5214,8 +5215,8 @@ fn write_epilogue_dynamic_entries<C: ElfClass>(
         has_textrel: layout.has_textrel,
         has_variant_pcs: layout.has_variant_pcs,
         bti_plt,
-        init_symbol_address: layout.init_symbol_address(),
-        fini_symbol_address: layout.fini_symbol_address(),
+        init_symbol_address: init_fini_symbol_address(layout, layout.args().init.as_deref()),
+        fini_symbol_address: init_fini_symbol_address(layout, layout.args().fini.as_deref()),
         section_layouts: &layout.merged_section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
@@ -6544,6 +6545,19 @@ struct DynamicEntryWriter {
     tag: object::elf::DynamicTag,
     is_present_cb: fn(&DynamicEntryInputs) -> bool,
     cb: fn(&DynamicEntryInputs) -> u64,
+}
+
+/// The address of the symbol named by `-init` or `-fini`, if it's defined in the output itself
+/// rather than missing or coming from a shared object.
+fn init_fini_symbol_address<C: ElfClass>(layout: &ElfLayout<C>, name: Option<&str>) -> Option<u64> {
+    let symbol_db = &layout.symbol_db;
+    let symbol_id =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name?.as_bytes()))?;
+    let resolution = layout.merged_symbol_resolution(symbol_db.definition(symbol_id))?;
+    if resolution.flags.is_dynamic() || !resolution.flags.has_link_time_address() {
+        return None;
+    }
+    Some(resolution.raw_value)
 }
 
 struct DynamicEntryInputs<'layout> {

@@ -1159,8 +1159,6 @@ pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols<'data, P>,
     entry_symbol_id: Option<SymbolId>,
-    init_symbol_id: Option<SymbolId>,
-    fini_symbol_id: Option<SymbolId>,
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
@@ -1242,8 +1240,6 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) struct PreludeLayout<'data, P: Platform> {
     pub(crate) entry_symbol_id: Option<SymbolId>,
-    pub(crate) init_symbol_id: Option<SymbolId>,
-    pub(crate) fini_symbol_id: Option<SymbolId>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
@@ -1943,26 +1939,6 @@ impl<'data, P: Platform> Layout<'data, P> {
         }
 
         Ok(Some(resolution.value()))
-    }
-
-    /// The address of the `-init` symbol, if it's defined in the output itself.
-    pub(crate) fn init_symbol_address(&self) -> Option<u64> {
-        self.address_if_defined_in_output(self.prelude().init_symbol_id)
-    }
-
-    /// The address of the `-fini` symbol, if it's defined in the output itself.
-    pub(crate) fn fini_symbol_address(&self) -> Option<u64> {
-        self.address_if_defined_in_output(self.prelude().fini_symbol_id)
-    }
-
-    /// The address of `symbol_id`, unless it's defined in a shared object or has no address.
-    fn address_if_defined_in_output(&self, symbol_id: Option<SymbolId>) -> Option<u64> {
-        let resolution = self.local_symbol_resolution(symbol_id?)?;
-        let flags = resolution.flags();
-        if flags.is_dynamic() || !flags.has_link_time_address() {
-            return None;
-        }
-        Some(resolution.value())
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
@@ -3539,8 +3515,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 start_symbol_id: SymbolId::zero(),
             },
             entry_symbol_id: None,
-            init_symbol_id: None,
-            fini_symbol_id: None,
             identity: format!("Linker: {}\0", args.common().linker_identity()),
             header_info: None,
             dynamic_linker: None,
@@ -3566,7 +3540,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         self.load_entry_point::<A>(resources, queue, scope);
-        self.load_init_fini_symbols::<A>(resources, queue, scope);
+        P::load_prelude_symbols::<A>(resources, queue, scope);
 
         P::allocate_prelude(common, resources.symbol_db);
 
@@ -3648,25 +3622,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.entry_symbol_id = Some(symbol_id);
         load_redirect_referenced_symbol::<A>(resources, queue, scope, symbol_id);
-    }
-
-    /// Loads the symbols named by `-init` and `-fini`, so that `DT_INIT` and `DT_FINI` can point at
-    /// them. As with the entry point, a name that isn't found is ignored.
-    fn load_init_fini_symbols<'scope, A: Arch<Platform = P>>(
-        &mut self,
-        resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue<P>,
-        scope: &Scope<'scope>,
-    ) {
-        let symbol_db = resources.symbol_db;
-        let mut load = |name: Option<&[u8]>| {
-            let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name?))?;
-            let symbol_id = symbol_db.definition(symbol_id);
-            load_redirect_referenced_symbol::<A>(resources, queue, scope, symbol_id);
-            Some(symbol_id)
-        };
-        self.init_symbol_id = load(symbol_db.args.init_symbol());
-        self.fini_symbol_id = load(symbol_db.args.fini_symbol());
     }
 
     fn finalise_sizes(
@@ -4049,8 +4004,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         Ok(PreludeLayout {
             internal_symbols: self.internal_symbols,
             entry_symbol_id: self.entry_symbol_id,
-            init_symbol_id: self.init_symbol_id,
-            fini_symbol_id: self.fini_symbol_id,
             identity: self.identity,
             dynamic_linker: self.dynamic_linker,
             header_info: self
@@ -4061,7 +4014,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 }
 
-fn load_redirect_referenced_symbol<'data, 'scope, A: Arch>(
+pub(crate) fn load_redirect_referenced_symbol<'data, 'scope, A: Arch>(
     resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
     queue: &mut LocalWorkQueue<A::Platform>,
     scope: &Scope<'scope>,
