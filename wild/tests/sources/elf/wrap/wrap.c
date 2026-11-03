@@ -6,8 +6,7 @@
 //#ExpectSym:__wrap_bar section=".text"
 //#TestUpdateInPlace:true
 // linker-diff doesn't currently understand wrapped symbols.
-//#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PC32
-//#DiffIgnore:rel.R_AARCH64_CALL26.R_AARCH64_CALL26
+//#DiffIgnore:rel.referent-mismatch
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 

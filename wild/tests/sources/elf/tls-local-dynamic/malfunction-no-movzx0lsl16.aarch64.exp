@@ -1,6 +1,6 @@
 wild: elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.wild
 ld: elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.ld
-rel.R_AARCH64_NONE.R_AARCH64_TLSLE_MOVW_TPREL_G1
+rel.referent-mismatch
 `elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.o` .text.startup main
 R_AARCH64_TLSDESC_ADR_PAGE21
 R_AARCH64_TLSDESC_LD64_LO12

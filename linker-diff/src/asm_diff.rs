@@ -962,6 +962,8 @@ enum ReferentDifference<'data, R: RType> {
     MissingGotDynamic,
     ExtraCopyRelocation,
     MissingCopyRelocation,
+    /// Differences in representation introduced by relaxation.
+    Relaxation,
     Other,
 }
 
@@ -1070,6 +1072,10 @@ impl<A: Arch> ResolutionDifference<'_, A> {
             return key.to_owned();
         }
 
+        if matches!(self.reference.referent, Some(ReferentDifference::Other)) {
+            return "rel.referent-mismatch".to_owned();
+        }
+
         let input_index = self
             .relaxation
             .as_ref()
@@ -1078,7 +1084,7 @@ impl<A: Arch> ResolutionDifference<'_, A> {
             return "missing-original".to_owned();
         };
 
-        // TODO: A relaxation key can hide a simultaneous referent difference when ignored.
+        // TODO: Report simultaneous copy-relocation and relaxation differences separately.
         match self.relaxation.as_ref().map(|diff| &diff.kind) {
             Some(RelaxationDifferenceKind::MissingOptimization(kind)) => format!(
                 "rel.missing-opt.{}.{kind:?}.{}",
@@ -1773,6 +1779,23 @@ impl<'data, R: RType> Reference<'data, R> {
             }
             (ours, theirs) if !ours.is_copy_relocation() && theirs.is_copy_relocation() => {
                 ReferentDifference::MissingCopyRelocation
+            }
+            (Referent::Undefined(_), Referent::NoRelocation)
+            | (Referent::NoRelocation, Referent::Undefined(_)) => ReferentDifference::Relaxation,
+            (Referent::Absolute(value), Referent::Undefined(unmatched))
+            | (Referent::Undefined(unmatched), Referent::Absolute(value))
+                if value == unmatched.address =>
+            {
+                ReferentDifference::Relaxation
+            }
+            (Referent::TlsGd(symbol), Referent::DynamicRelocation(dynamic))
+            | (Referent::DynamicRelocation(dynamic), Referent::TlsGd(symbol))
+                if symbol == dynamic.entry
+                    && dynamic.addend == 0
+                    && dynamic.r_type.dynamic_relocation_kind()
+                        == Some(DynamicRelocationKind::TpOff) =>
+            {
+                ReferentDifference::Relaxation
             }
             _ => ReferentDifference::Other,
         });
