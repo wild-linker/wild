@@ -7,7 +7,8 @@
 //#RunDynSym:check_relocations
 //#ReferenceLinkers:bfd,lld
 //#DiffIgnore:.dynamic.DT_RELA*
-//#DiffIgnore:rel.R_X86_64_64.R_X86_64_64
+// LLD uses a PLT entry for the ifunc pointer; BFD and Wild use IRELATIVE directly.
+//#DiffIgnore:rel.missing-plt-got
 
 //#Config:enabled:base
 //#CompArgs:-DSORTED=1
