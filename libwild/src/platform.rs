@@ -441,7 +441,6 @@ pub(crate) trait Platform:
     const DYNSTR_SECTION_ID: Option<OutputSectionId> = None;
     const DYNSYM_SECTION_ID: Option<OutputSectionId> = None;
     const GOT_SECTION_ID: Option<OutputSectionId> = None;
-    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = None;
     const EH_FRAME_SECTION_ID: Option<OutputSectionId> = None;
     const NOTE_GNU_PROPERTY_SECTION_ID: Option<OutputSectionId> = None;
     const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> = None;
@@ -788,19 +787,6 @@ pub(crate) trait Platform:
         _merge_target: OutputSectionId,
         _output_sections: &OutputSections<'data, Self>,
         _section_id: OutputSectionId,
-    ) -> Result {
-        Ok(())
-    }
-
-    /// Called when we detect an internal error with allocation in order to try and help determine
-    /// what we did wrong. Can optionally return a more helpful error.
-    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
-        _output_sections: &OutputSections<Self>,
-        _output_order: &OutputOrder<'_>,
-        _output_kind: OutputKind,
-        _mem_sizes: &OutputSectionPartMap<u64>,
-        _resolution: &layout::Resolution<Self>,
-        _args: &Self::Args,
     ) -> Result {
         Ok(())
     }

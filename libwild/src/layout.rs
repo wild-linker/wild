@@ -205,7 +205,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         script_sorted_sections: &script_sorted_sections,
     };
 
-    finalise_all_sizes::<P, A>(
+    finalise_all_sizes::<P>(
         &mut group_states,
         &atomic_per_symbol_flags,
         &finalise_sizes_resources,
@@ -734,7 +734,7 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
     }
 }
 
-fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
+fn finalise_all_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
@@ -743,7 +743,7 @@ fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes::<A>(per_symbol_flags, resources)
+        state.finalise_sizes(per_symbol_flags, resources)
     })
 }
 
@@ -1275,7 +1275,7 @@ pub(crate) trait HandlerData {
 }
 
 trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData {
-    fn finalise_symbol_sizes<A: Arch<Platform = P>>(
+    fn finalise_symbol_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         symbol_flags: &AtomicPerSymbolFlags,
@@ -1302,14 +1302,6 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
                 symbol_db.args,
                 symbol_db.is_linker_script_symbol(symbol_id),
             );
-
-            if symbol_db.args.common().verify_allocation_consistency {
-                verify_consistent_allocation_handling::<P, A>(
-                    flags,
-                    symbol_db.output_kind,
-                    symbol_db.args,
-                )?;
-            }
         }
 
         Ok(())
@@ -2870,13 +2862,13 @@ impl<'data, P: Platform> GroupState<'data, P> {
         }
     }
 
-    fn finalise_sizes<A: Arch<Platform = P>>(
+    fn finalise_sizes(
         &mut self,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         for file_state in &mut self.files {
-            file_state.finalise_sizes::<A>(&mut self.common, per_symbol_flags, resources)?;
+            file_state.finalise_sizes(&mut self.common, per_symbol_flags, resources)?;
         }
 
         self.common.validate_sizes()?;
@@ -3088,7 +3080,7 @@ impl<'data, P: Platform> GraphResources<'data, '_, P> {
 }
 
 impl<'data, P: Platform> FileLayoutState<'data, P> {
-    fn finalise_sizes<A: Arch<Platform = P>>(
+    fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
@@ -3097,11 +3089,11 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
         match self {
             FileLayoutState::Object(s) => {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
                 s.finalise_sizes(common)?;
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Prelude(s) => {
                 PreludeLayoutState::finalise_sizes(common, resources.merged_strings);
@@ -3110,21 +3102,21 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                     &mut common.mem_sizes,
                     resources.dynamic_symbol_definitions,
                 )?;
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::SyntheticSymbols(s) => {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Epilogue(s) => {
                 s.finalise_sizes(common, resources)?;
             }
             FileLayoutState::LinkerScript(s) => {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::StubLibrary(s) => {
-                s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::NotLoaded(_) => {}
         }
@@ -7166,63 +7158,6 @@ fn test_no_disallowed_overlaps() {
         last_mem = seg_layout.sizes.mem_offset + seg_layout.sizes.mem_size;
         last_file = seg_layout.sizes.file_offset + seg_layout.sizes.file_size;
     }
-}
-
-/// Verifies that we allocate and use consistent amounts of various output sections for the supplied
-/// combination of flags and output kind. If this function returns an error, then we would have
-/// failed during writing anyway. By failing now, we can report the particular combination of inputs
-/// that caused the failure.
-fn verify_consistent_allocation_handling<P: Platform, A: Arch<Platform = P>>(
-    flags: ValueFlags,
-    output_kind: OutputKind,
-    args: &P::Args,
-) -> Result {
-    let output_sections = OutputSections::with_base_address(0, output_kind);
-    let (output_order, _program_segments) = output_sections.output_order(output_kind, &[], &[])?;
-    let mut mem_sizes = output_sections.new_part_map();
-    P::allocate_resolution(flags, &mut mem_sizes, output_kind, args, false);
-    let mut memory_offsets = output_sections.new_part_map();
-    if let Some(section_id) = P::GOT_SECTION_ID {
-        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
-    }
-    if let Some(section_id) = P::GOT_RELR_SECTION_ID {
-        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
-    }
-    if let Some(section_id) = P::PLT_GOT_SECTION_ID {
-        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
-    }
-    let has_dynamic_symbol =
-        flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
-    let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
-
-    let resolution = P::create_resolution(
-        flags,
-        0,
-        dynamic_symbol_index,
-        &mut memory_offsets,
-        args,
-        output_kind,
-        false,
-    );
-
-    P::verify_resolution_allocation::<A>(
-        &output_sections,
-        &output_order,
-        output_kind,
-        &mem_sizes,
-        &resolution,
-        args,
-    )
-    .with_context(|| {
-        format!(
-            "Inconsistent allocation detected. \
-             output_kind={output_kind:?} \
-             flags={flags} \
-             has_dynamic_symbol={has_dynamic_symbol:?}"
-        )
-    })?;
-
-    Ok(())
 }
 
 impl<'scope, 'data, P: Platform> FinaliseLayoutResources<'scope, 'data, P> {
