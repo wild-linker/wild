@@ -165,6 +165,10 @@ impl platform::Args for WasmArgs {
         &self.export_symbols
     }
 
+    fn export_archive_root_names(&self) -> &[String] {
+        &self.export_symbols
+    }
+
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
         &self.lib_search_path
     }
@@ -705,6 +709,10 @@ mod tests {
 
         assert_eq!(args.export_symbols, ["foo", "bar", "baz"]);
         assert_eq!(args.required_export_symbols, ["bar"]);
+        assert_eq!(
+            Args::export_archive_root_names(&args),
+            ["foo", "bar", "baz"]
+        );
         assert_eq!(
             Args::force_export_symbol_names(&args),
             ["foo", "bar", "baz"]

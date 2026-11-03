@@ -1270,6 +1270,16 @@ fn load_prelude<'scope, 'data, P: Platform>(
         load_symbol_named(resources, &mut SymbolId::undefined(), name, scope);
     }
 
+    // Wasm `--export` and `--export-if-defined` names are archive roots.
+    for name in resources.symbol_db.args.export_archive_root_names() {
+        load_symbol_named(
+            resources,
+            &mut SymbolId::undefined(),
+            name.as_bytes(),
+            scope,
+        );
+    }
+
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
