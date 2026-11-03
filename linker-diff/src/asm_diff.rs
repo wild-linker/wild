@@ -243,26 +243,23 @@ fn compare_sections<A: Arch>(
         if let Some(first) = resolutions.first() {
             let mut trace = TraceOutput::default();
 
-            let has_match = crate::diagnostics::trace_scope(&mut trace, || {
-                if report.config.match_any {
-                    resolutions[1..].iter().any(|other| first.matches(other))
-                } else {
-                    resolutions[1..].iter().all(|other| first.matches(other))
-                }
+            let comparisons = crate::diagnostics::trace_scope(&mut trace, || {
+                resolutions[1..]
+                    .iter()
+                    .map(|other| first.compare(other))
+                    .collect_vec()
             });
 
-            // Ideally we'd successfully match all binaries, however GNU ld when it has PLT
-            // relocation for an undefined symbol emits a PLT entry that points to an invalid GOT
-            // address. We don't have any good way to match something like that.
-            let first_has_match_failure = first.relaxations.is_none() || first.has_error();
-
-            if !has_match || first_has_match_failure {
-                // Check if the diff key would be ignored
+            if let Some((reference_index, comparison)) =
+                select_comparison(&comparisons, report.config.match_any)
+            {
                 let start_offset = group.start_offset();
                 let original_annotations = group.into_original_annotations();
-                let bin_attributes = testers[1].bin.address_index.bin_attributes;
-                let diff_key =
-                    diff_key_for_res_mismatch(&resolutions, &original_annotations, bin_attributes);
+                let bin_attributes = testers[reference_index + 1]
+                    .bin
+                    .address_index
+                    .bin_attributes;
+                let diff_key = comparison.diff_key(&original_annotations, bin_attributes);
 
                 if !report.should_ignore(&diff_key) {
                     let diff = resolution_diff_exec(
@@ -453,11 +450,57 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
             .ok()
     }
 
-    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<'data, A>> {
+    fn compare(&self, other: &Self) -> Option<RelaxationDifference<A>> {
+        let mut ours = self.matches_skipping_nops();
+        let mut theirs = other.matches_skipping_nops();
+        loop {
+            let (mut ours, mut theirs) = (ours.next(), theirs.next());
+            match (ours, theirs) {
+                (None, None) => return None,
+                (Some((_, a)), Some((_, b))) if a == b => continue,
+                _ => {}
+            }
+
+            // NOPs do not affect equality, but an omitted NOP can explain a difference at the
+            // corresponding input relocation instead of comparing two different input positions.
+            if let Some((index, _)) = ours
+                && theirs.is_none_or(|(other_index, _)| index < other_index)
+                && let Some(nop) = other.nop_at(index)
+            {
+                theirs = Some((index, nop));
+            } else if let Some((index, _)) = theirs
+                && ours.is_none_or(|(other_index, _)| index < other_index)
+                && let Some(nop) = self.nop_at(index)
+            {
+                ours = Some((index, nop));
+            }
+            return Some(RelaxationDifference::new(ours, theirs));
+        }
+    }
+
+    fn nop_at(&self, index: usize) -> Option<Relaxation<A>> {
+        match self.match_results.get(index)? {
+            RelaxationMatchResult::Matched(m)
+                if m.relaxation.relaxation_kind.is_replace_with_no_op() =>
+            {
+                Some(m.relaxation)
+            }
+            _ => None,
+        }
+    }
+
+    fn matches_skipping_nops(&self) -> impl Iterator<Item = (usize, Relaxation<A>)> {
         self.match_results
             .iter()
-            .filter(|result| !matches!(result, RelaxationMatchResult::Matched(m) if m.relaxation.relaxation_kind.is_replace_with_no_op()))
-            .collect()
+            .enumerate()
+            .filter_map(|(index, result)| match result {
+                RelaxationMatchResult::Matched(m)
+                    if !m.relaxation.relaxation_kind.is_replace_with_no_op() =>
+                {
+                    Some((index, m.relaxation))
+                }
+                _ => None,
+            })
     }
 }
 
@@ -612,14 +655,10 @@ fn diff_literal_bytes<'data, A: Arch>(
             })
             .collect_vec();
 
-        let key = diff_key_for_res_mismatch(
-            &resolutions,
-            &[],
-            testers[1].bin.address_index.bin_attributes,
-        );
-        if !report.should_ignore(&key) {
+        let key = "literal-byte-mismatch";
+        if !report.should_ignore(key) {
             report.add_diff(resolution_diff_exec(
-                &key,
+                key,
                 end,
                 vec![],
                 &resolutions,
@@ -834,157 +873,258 @@ fn get_original_referent<'data, R: RType>(
     Ok(Referent::Unknown)
 }
 
-fn diff_key_for_res_mismatch<A: Arch>(
-    resolutions: &[ResolvedGroup<A>],
-    original_annotations: &[OriginalAnnotation<A>],
-    bin_attributes: BinAttributes,
-) -> String {
-    if resolutions.len() < 2 {
-        return "missing-resolutions".to_owned();
+#[derive(Debug)]
+enum ResolutionComparison<'data, A: Arch> {
+    Equivalent,
+    Different(ResolutionDifference<'data, A>),
+    Unresolved(ResolutionFailure<A::RType>),
+}
+
+#[derive(Debug)]
+struct ResolutionDifference<'data, A: Arch> {
+    relaxation: Option<RelaxationDifference<A>>,
+    reference: ReferenceDifferences<'data, A::RType>,
+    relocation_types: [A::RType; 2],
+}
+
+#[derive(Debug)]
+struct RelaxationDifference<A: Arch> {
+    input_indexes: [Option<usize>; 2],
+    kind: RelaxationDifferenceKind<A>,
+}
+
+#[derive(Debug)]
+enum RelaxationDifferenceKind<A: Arch> {
+    MissingOptimization(A::RelaxationKind),
+    ExtraOptimization(A::RelaxationKind),
+    DifferentOptimizations([Relaxation<A>; 2]),
+    RelocationTypes([A::RType; 2]),
+    MissingRelocation,
+    ExtraRelocation,
+}
+
+impl<A: Arch> RelaxationDifference<A> {
+    fn new(
+        ours: Option<(usize, Relaxation<A>)>,
+        reference: Option<(usize, Relaxation<A>)>,
+    ) -> Self {
+        let kind = match (ours, reference) {
+            (Some((_, ours)), Some((_, reference))) => match (
+                ours.relaxation_kind.is_no_op(),
+                reference.relaxation_kind.is_no_op(),
+            ) {
+                (true, false) => {
+                    RelaxationDifferenceKind::MissingOptimization(reference.relaxation_kind)
+                }
+                (false, true) => RelaxationDifferenceKind::ExtraOptimization(ours.relaxation_kind),
+                _ if ours.relaxation_kind != reference.relaxation_kind => {
+                    RelaxationDifferenceKind::DifferentOptimizations([ours, reference])
+                }
+                _ => RelaxationDifferenceKind::RelocationTypes([
+                    ours.new_r_type,
+                    reference.new_r_type,
+                ]),
+            },
+            (Some(_), None) => RelaxationDifferenceKind::ExtraRelocation,
+            (None, Some(_)) => RelaxationDifferenceKind::MissingRelocation,
+            (None, None) => unreachable!("A difference needs at least one relocation"),
+        };
+        Self {
+            input_indexes: [
+                ours.map(|(index, _)| index),
+                reference.map(|(index, _)| index),
+            ],
+            kind,
+        }
     }
 
-    if let Some(failure) = resolutions
+    fn input_index(&self) -> usize {
+        if matches!(self.kind, RelaxationDifferenceKind::MissingOptimization(_)) {
+            self.input_indexes[1].unwrap()
+        } else {
+            self.input_indexes[0].or(self.input_indexes[1]).unwrap()
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReferenceDifferences<'data, R: RType> {
+    referent: Option<ReferentDifference<'data, R>>,
+    indirection: Option<IndirectionDifference>,
+}
+
+#[derive(Debug)]
+enum ReferentDifference<'data, R: RType> {
+    UndefinedWeakDynamic(R),
+    ExtraSymbol(SymbolName<'data>),
+    MissingGotDynamic,
+    ExtraCopyRelocation,
+    MissingCopyRelocation,
+    Other,
+}
+
+#[derive(Debug)]
+enum IndirectionDifference {
+    DynamicPltBypass,
+    MissingGotPltGot,
+    ExtraGotPltGot,
+    MissingPltGot,
+    ExtraPltGot,
+    ExtraThunk,
+    AbsentThunk,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResolutionFailure<R: RType> {
+    Unknown,
+    LiteralByteMismatch,
+    Ambiguous,
+    MatchFailed(R),
+    Reference(R),
+}
+
+impl<R: RType> ResolutionFailure<R> {
+    fn diff_key(&self) -> String {
+        match self {
+            Self::Unknown => "rel.unknown_failure".to_owned(),
+            Self::LiteralByteMismatch => "literal-byte-mismatch".to_owned(),
+            Self::Ambiguous => "rel.multiple_matches".to_owned(),
+            Self::MatchFailed(r_type) => format!("rel.match_failed.{r_type}"),
+            Self::Reference(r_type) => format!("rel.reference_failed.{r_type}"),
+        }
+    }
+}
+
+fn select_comparison<'a, 'data, A: Arch>(
+    comparisons: &'a [ResolutionComparison<'data, A>],
+    match_any: bool,
+) -> Option<(usize, &'a ResolutionComparison<'data, A>)> {
+    if match_any
+        && comparisons
+            .iter()
+            .any(|c| matches!(c, ResolutionComparison::Equivalent))
+    {
+        return None;
+    }
+
+    // TODO: Report distinct failures against multiple reference linkers instead of selecting one.
+    comparisons
         .iter()
-        .find_map(|resolution| resolution.failure.as_ref())
-    {
-        return failure.diff_key();
-    }
+        .enumerate()
+        .find(|(_, c)| matches!(c, ResolutionComparison::Unresolved(_)))
+        .or_else(|| {
+            comparisons
+                .iter()
+                .enumerate()
+                .find(|(_, c)| !matches!(c, ResolutionComparison::Equivalent))
+        })
+}
 
-    match (
-        &resolutions[0].reference.referent,
-        &resolutions[1].reference.referent,
-    ) {
-        (Referent::DynamicRelocation(d), Referent::Undefined(unmatched))
-            if d.entry.is_weak && unmatched.address == 0 =>
-        {
-            // The reference linker emitted a null and we emitted a dynamic
-            // relocation for a weak symbol.
-            return format!("rel.undefined-weak.dynamic.{}", d.r_type);
+impl<A: Arch> ResolutionComparison<'_, A> {
+    fn diff_key(
+        &self,
+        original_annotations: &[OriginalAnnotation<A>],
+        bin_attributes: BinAttributes,
+    ) -> String {
+        match self {
+            Self::Equivalent => unreachable!("Equivalent resolutions have no diff key"),
+            Self::Unresolved(failure) => failure.diff_key(),
+            Self::Different(diff) => diff.diff_key(original_annotations, bin_attributes),
         }
-        (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs))
-            if !resolutions[0].reference.indirection.is_via_plt()
-                && resolutions[1].reference.indirection.is_via_plt()
-                && ours.addend == 0
-                && theirs.addend == 0
-                && ours.entry == theirs.entry =>
-        {
-            // We used an in-place relocation where the reference linker emitted the address of
-            // a PLT entry for the same symbol.
-            return "rel.dynamic-plt-bypass".to_owned();
-        }
-        (Referent::Named(ours, _), Referent::Undefined(_)) => {
-            // We defined a symbol that the reference linker didn't.
-            return format!("rel.extra-symbol.{ours}");
-        }
-        (Referent::Named(_, _), Referent::DynamicRelocation(_))
-            if resolutions[0].reference.indirection == Indirection::Got
-                && resolutions[1].reference.indirection == Indirection::Got =>
-        {
-            return format!("rel.missing-got-dynamic.{}", bin_attributes.output_kind);
-        }
-        _ => {}
     }
+}
 
-    if resolutions[0]
-        .reference
-        .referent
-        .matches(resolutions[1].reference.referent)
-    {
-        match (
-            resolutions[0].reference.indirection,
-            resolutions[1].reference.indirection,
-        ) {
-            (Indirection::Got, Indirection::GotPltGot) => {
-                return "rel.missing-got-plt-got".to_owned();
+impl<A: Arch> ResolutionDifference<'_, A> {
+    fn diff_key(
+        &self,
+        original_annotations: &[OriginalAnnotation<A>],
+        bin_attributes: BinAttributes,
+    ) -> String {
+        match &self.reference.referent {
+            Some(ReferentDifference::UndefinedWeakDynamic(r_type)) => {
+                return format!("rel.undefined-weak.dynamic.{r_type}");
             }
-            (Indirection::GotPltGot, Indirection::Got) => {
-                return "rel.extra-got-plt-got".to_owned();
+            Some(ReferentDifference::ExtraSymbol(symbol)) => {
+                return format!("rel.extra-symbol.{symbol}");
             }
-            (Indirection::Direct, Indirection::PltGot) => {
-                return "rel.missing-plt-got".to_owned();
-            }
-            (Indirection::PltGot, Indirection::Direct) => {
-                return "rel.extra-plt-got".to_owned();
-            }
-            (Indirection::ThunkPltGot, Indirection::PltGot) => {
-                return "rel.plt.extra-thunk".to_owned();
-            }
-            (Indirection::PltGot, Indirection::ThunkPltGot) => {
-                return "rel.plt.absent-thunk".to_owned();
+            Some(ReferentDifference::MissingGotDynamic) => {
+                return format!("rel.missing-got-dynamic.{}", bin_attributes.output_kind);
             }
             _ => {}
         }
-    }
 
-    // We might have failed to match one of the reference linker outputs, so find the first
-    // reference linker output that we successfully matched.
-    let reference = resolutions
-        .iter()
-        .skip(1)
-        .find_map(|r| r.relaxations.as_ref().and_then(|r| r.first_if_matched()));
+        let indirection_key = match self.reference.indirection {
+            Some(IndirectionDifference::DynamicPltBypass) => Some("rel.dynamic-plt-bypass"),
+            Some(IndirectionDifference::MissingGotPltGot) => Some("rel.missing-got-plt-got"),
+            Some(IndirectionDifference::ExtraGotPltGot) => Some("rel.extra-got-plt-got"),
+            Some(IndirectionDifference::MissingPltGot) => Some("rel.missing-plt-got"),
+            Some(IndirectionDifference::ExtraPltGot) => Some("rel.extra-plt-got"),
+            Some(IndirectionDifference::ExtraThunk) => Some("rel.plt.extra-thunk"),
+            Some(IndirectionDifference::AbsentThunk) => Some("rel.plt.absent-thunk"),
+            _ => None,
+        };
+        if let Some(key) = indirection_key {
+            return key.to_owned();
+        }
 
-    let ours = resolutions[0]
-        .relaxations
-        .as_ref()
-        .and_then(|r| r.first_if_matched());
-
-    if let (Some(r1), Some(r2)) = (ours, reference) {
-        let Some(orig) = original_annotations.first() else {
+        let input_index = self
+            .relaxation
+            .as_ref()
+            .map_or(0, RelaxationDifference::input_index);
+        let Some(orig) = original_annotations.get(input_index) else {
             return "missing-original".to_owned();
         };
 
-        match (
-            r1.relaxation.relaxation_kind.is_no_op(),
-            r2.relaxation.relaxation_kind.is_no_op(),
-        ) {
-            (true, false) => {
-                format!(
-                    "rel.missing-opt.{}.{:?}.{}",
-                    orig.success.r_type,
-                    r2.relaxation.relaxation_kind,
-                    bin_attributes.type_name()
-                )
+        // TODO: A relaxation key can hide a simultaneous referent difference when ignored.
+        match self.relaxation.as_ref().map(|diff| &diff.kind) {
+            Some(RelaxationDifferenceKind::MissingOptimization(kind)) => format!(
+                "rel.missing-opt.{}.{kind:?}.{}",
+                orig.success.r_type,
+                bin_attributes.type_name()
+            ),
+            Some(RelaxationDifferenceKind::ExtraOptimization(kind)) => format!(
+                "rel.extra-opt.{}.{kind:?}.{}",
+                orig.success.r_type,
+                bin_attributes.type_name()
+            ),
+            Some(RelaxationDifferenceKind::MissingRelocation) => {
+                format!("rel.missing-relocation.{}", orig.success.r_type)
             }
-            (false, true) => {
-                format!(
-                    "rel.extra-opt.{}.{:?}.{}",
-                    orig.success.r_type,
-                    r1.relaxation.relaxation_kind,
-                    bin_attributes.type_name()
-                )
+            Some(RelaxationDifferenceKind::ExtraRelocation) => {
+                format!("rel.extra-relocation.{}", orig.success.r_type)
             }
-            _ => {
-                let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
-                let any_others_copy = resolutions[1..]
-                    .iter()
-                    .any(|r| r.reference.referent.is_copy_relocation());
-
-                if ours_is_copy && !any_others_copy {
+            kind => match self.reference.referent {
+                Some(ReferentDifference::ExtraCopyRelocation) => {
                     format!("rel.extra-copy-relocation.{}", orig.success.r_type)
-                } else if !ours_is_copy && any_others_copy {
-                    format!("rel.missing-copy-relocation.{}", orig.success.r_type)
-                } else if r1.relaxation.relaxation_kind != r2.relaxation.relaxation_kind
-                    && resolutions[0].reference.matches(resolutions[1].reference)
-                {
-                    // Both linkers relaxed the same reference to the same target, but chose
-                    // different instructions to do so.
-                    format!(
-                        "rel.different-opt.{}.{:?}.{:?}.{}",
-                        orig.success.r_type,
-                        r1.relaxation.relaxation_kind,
-                        r2.relaxation.relaxation_kind,
-                        bin_attributes.type_name()
-                    )
-                } else {
-                    format!(
-                        "rel.{}.{}",
-                        r1.relaxation.new_r_type, r2.relaxation.new_r_type
-                    )
                 }
-            }
+                Some(ReferentDifference::MissingCopyRelocation) => {
+                    format!("rel.missing-copy-relocation.{}", orig.success.r_type)
+                }
+                _ => {
+                    let types = match kind {
+                        Some(RelaxationDifferenceKind::DifferentOptimizations(relaxations))
+                            if self.reference.referent.is_none()
+                                && self.reference.indirection.is_none() =>
+                        {
+                            return format!(
+                                "rel.different-opt.{}.{:?}.{:?}.{}",
+                                orig.success.r_type,
+                                relaxations[0].relaxation_kind,
+                                relaxations[1].relaxation_kind,
+                                bin_attributes.type_name()
+                            );
+                        }
+                        Some(RelaxationDifferenceKind::DifferentOptimizations(relaxations)) => {
+                            relaxations.map(|relaxation| relaxation.new_r_type)
+                        }
+                        Some(RelaxationDifferenceKind::RelocationTypes(types)) => *types,
+                        _ => self.relocation_types,
+                    };
+                    format!("rel.{}.{}", types[0], types[1])
+                }
+            },
         }
-    } else {
-        "rel.unknown_failure".to_owned()
     }
 }
 
@@ -1106,15 +1246,6 @@ impl<'data, A: Arch> RelaxationMatchResult<'data, A> {
                 offset_in_section: matches.first().unwrap().offset,
                 kind: AnnotationKind::Ambiguous(matches.clone()),
             }],
-        }
-    }
-
-    fn matches(&self, b: &RelaxationMatchResult<'_, A>) -> bool {
-        match (self, b) {
-            (RelaxationMatchResult::Matched(a_match), RelaxationMatchResult::Matched(b_match)) => {
-                a_match.relaxation == b_match.relaxation
-            }
-            _ => false,
         }
     }
 
@@ -1453,25 +1584,6 @@ impl ColumnWidths {
     }
 }
 
-#[derive(Clone, Debug)]
-enum ResolutionFailure<R: RType> {
-    LiteralByteMismatch,
-    Ambiguous,
-    MatchFailed(R),
-    Reference(R),
-}
-
-impl<R: RType> ResolutionFailure<R> {
-    fn diff_key(&self) -> String {
-        match self {
-            Self::LiteralByteMismatch => "literal-byte-mismatch".to_owned(),
-            Self::Ambiguous => "rel.multiple_matches".to_owned(),
-            Self::MatchFailed(r_type) => format!("rel.match_failed.{r_type}"),
-            Self::Reference(r_type) => format!("rel.reference_failed.{r_type}"),
-        }
-    }
-}
-
 #[derive(Debug)]
 struct ResolvedGroup<'data, A: Arch> {
     /// The chosen relaxation if we successfully matched to exactly one.
@@ -1494,41 +1606,34 @@ struct ResolvedGroup<'data, A: Arch> {
     trace: TraceOutput,
 }
 
-impl<A: Arch> ResolvedGroup<'_, A> {
-    /// Returns whether two resolutions from different objects files match. Like equality, but only
-    /// looks at the parts of the resolution that are expected to match.
-    fn matches(&self, other: &ResolvedGroup<A>) -> bool {
-        relaxations_match(self.relaxations.as_ref(), other.relaxations.as_ref())
-            && self.reference.matches(other.reference)
-    }
-
-    fn has_error(&self) -> bool {
-        matches!(self.failure, Some(ResolutionFailure::Reference(_)))
-    }
-}
-
-fn relaxations_match<A: Arch>(
-    group1: Option<&RelaxationGroup<'_, A>>,
-    group2: Option<&RelaxationGroup<'_, A>>,
-) -> bool {
-    match (group1, group2) {
-        (None, None) => true,
-        (Some(_), None) => false,
-        (None, Some(_)) => false,
-        (Some(a), Some(b)) => {
-            // Ignore replace with NOP relaxations.
-            let a_match_results = a.matches_skipping_nops();
-            let b_match_results = b.matches_skipping_nops();
-
-            if a_match_results.len() != b_match_results.len() {
-                return false;
-            }
-
-            a_match_results
-                .iter()
-                .zip(&b_match_results)
-                .all(|(a, b)| a.matches(b))
+impl<'data, A: Arch> ResolvedGroup<'data, A> {
+    fn compare(&self, other: &Self) -> ResolutionComparison<'data, A> {
+        if let Some(failure) = self.failure.or(other.failure) {
+            return ResolutionComparison::Unresolved(failure);
         }
+        let (Some(ours), Some(theirs)) = (&self.relaxations, &other.relaxations) else {
+            return ResolutionComparison::Unresolved(ResolutionFailure::Unknown);
+        };
+        let (Some(first_ours), Some(first_theirs)) =
+            (ours.first_if_matched(), theirs.first_if_matched())
+        else {
+            return ResolutionComparison::Unresolved(ResolutionFailure::Unknown);
+        };
+
+        let relaxation = ours.compare(theirs);
+        let reference = self.reference.compare(other.reference);
+        if relaxation.is_none() && reference.referent.is_none() && reference.indirection.is_none() {
+            return ResolutionComparison::Equivalent;
+        }
+
+        ResolutionComparison::Different(ResolutionDifference {
+            relaxation,
+            reference,
+            relocation_types: [
+                first_ours.relaxation.new_r_type,
+                first_theirs.relaxation.new_r_type,
+            ],
+        })
     }
 }
 
@@ -1644,8 +1749,68 @@ impl<'data, R: RType> Reference<'data, R> {
         Ok(())
     }
 
-    fn matches(self, other: Reference<'_, R>) -> bool {
-        self.indirection == other.indirection && self.referent.matches(other.referent)
+    fn compare(self, other: Reference<'data, R>) -> ReferenceDifferences<'data, R> {
+        let referents_match = self.referent.matches(other.referent);
+        let referent = (!referents_match).then(|| match (self.referent, other.referent) {
+            (Referent::DynamicRelocation(d), Referent::Undefined(unmatched))
+                if d.entry.is_weak && unmatched.address == 0 =>
+            {
+                ReferentDifference::UndefinedWeakDynamic(d.r_type)
+            }
+            (Referent::Named(ours, _), Referent::Undefined(_)) => {
+                ReferentDifference::ExtraSymbol(ours)
+            }
+            (Referent::Named(_, _), Referent::DynamicRelocation(_))
+                if self.indirection == Indirection::Got
+                    && other.indirection == Indirection::Got =>
+            {
+                ReferentDifference::MissingGotDynamic
+            }
+            (ours, theirs) if ours.is_copy_relocation() && !theirs.is_copy_relocation() => {
+                ReferentDifference::ExtraCopyRelocation
+            }
+            (ours, theirs) if !ours.is_copy_relocation() && theirs.is_copy_relocation() => {
+                ReferentDifference::MissingCopyRelocation
+            }
+            _ => ReferentDifference::Other,
+        });
+
+        let indirection = (self.indirection != other.indirection).then(|| {
+            if let (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs)) =
+                (self.referent, other.referent)
+                && !self.indirection.is_via_plt()
+                && other.indirection.is_via_plt()
+                && ours.addend == 0
+                && theirs.addend == 0
+                && ours.entry == theirs.entry
+            {
+                return IndirectionDifference::DynamicPltBypass;
+            }
+
+            if !referents_match {
+                return IndirectionDifference::Other;
+            }
+            match (self.indirection, other.indirection) {
+                (Indirection::Got, Indirection::GotPltGot) => {
+                    IndirectionDifference::MissingGotPltGot
+                }
+                (Indirection::GotPltGot, Indirection::Got) => IndirectionDifference::ExtraGotPltGot,
+                (Indirection::Direct, Indirection::PltGot) => IndirectionDifference::MissingPltGot,
+                (Indirection::PltGot, Indirection::Direct) => IndirectionDifference::ExtraPltGot,
+                (Indirection::ThunkPltGot, Indirection::PltGot) => {
+                    IndirectionDifference::ExtraThunk
+                }
+                (Indirection::PltGot, Indirection::ThunkPltGot) => {
+                    IndirectionDifference::AbsentThunk
+                }
+                _ => IndirectionDifference::Other,
+            }
+        });
+
+        ReferenceDifferences {
+            referent,
+            indirection,
+        }
     }
 
     fn verify_consistent_with_r_type(&self, new_r_type: R) -> Result<()> {

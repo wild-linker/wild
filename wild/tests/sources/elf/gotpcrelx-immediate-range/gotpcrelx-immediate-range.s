@@ -22,7 +22,7 @@
 
 //#Config:negative:default
 // LLD keeps the GOT load; BFD and Wild use a signed immediate.
-//#DiffIgnore:rel.R_X86_64_32S.R_X86_64_32S
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
 //#CompArgs:-Wa,--defsym,OP=0
 //#LinkArgs:--defsym=target=0xffffffffffffffff
 //#LinkArgs:-no-pie
@@ -53,7 +53,7 @@
 
 //#Config:high-address:default
 // LLD uses a PC-relative LEA; BFD and Wild retain the GOT load.
-//#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
+//#DiffIgnore:rel.missing-opt.R_X86_64_REX_GOTPCRELX.MovIndirectToLea.static-non-pie
 //#CompArgs:-Wa,--defsym,OP=0,--defsym,DEFINED_TARGET=1
 //#LinkArgs:-Ttext=0x80000000
 //#LinkArgs:-no-pie
