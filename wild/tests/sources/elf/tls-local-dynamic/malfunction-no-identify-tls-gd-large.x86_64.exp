@@ -1,6 +1,6 @@
 wild: elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.wild
 ld: elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.ld
-rel.missing-opt.R_X86_64_TLSGD.TlsGdToLocalExecLarge.dynamic-pie
+rel.reference_failed.R_X86_64_TLSGD
 `elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.o` .text.startup main
 R_X86_64_TLSGD
 ORIG foo -4

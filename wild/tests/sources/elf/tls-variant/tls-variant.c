@@ -22,6 +22,8 @@
 //#LinkArgs:-pie
 
 //#Config:gcc-tls-trad:default
+// TODO: Support local TLSGD GOT entries without dynamic relocations in linker-diff.
+//#DiffIgnore:rel.reference_failed.R_AARCH64_TLSGD_ADR_PAGE21
 //#CompArgs:-fpic
 //#Object:tls-variant-1.c
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad
