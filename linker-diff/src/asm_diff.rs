@@ -963,6 +963,18 @@ fn diff_key_for_res_mismatch<A: Arch>(
                     format!("rel.extra-copy-relocation.{}", orig.success.r_type)
                 } else if !ours_is_copy && any_others_copy {
                     format!("rel.missing-copy-relocation.{}", orig.success.r_type)
+                } else if r1.relaxation.relaxation_kind != r2.relaxation.relaxation_kind
+                    && resolutions[0].reference.matches(resolutions[1].reference)
+                {
+                    // Both linkers relaxed the same reference to the same target, but chose
+                    // different instructions to do so.
+                    format!(
+                        "rel.different-opt.{}.{:?}.{:?}.{}",
+                        orig.success.r_type,
+                        r1.relaxation.relaxation_kind,
+                        r2.relaxation.relaxation_kind,
+                        bin_attributes.type_name()
+                    )
                 } else {
                     format!(
                         "rel.{}.{}",

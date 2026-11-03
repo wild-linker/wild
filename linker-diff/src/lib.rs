@@ -208,6 +208,9 @@ impl Config {
                 "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
                 "rel.match_failed.R_X86_64_CODE_4_GOTPC32_TLSDESC",
                 "rel.missing-opt.R_X86_64_TLSDESC_CALL.SkipTlsDescCall.*",
+                // For `add x@gottpoff(%rip), %reg`, wild relaxes to `add $x@tpoff, %reg` whereas
+                // GNU ld uses `lea x@tpoff(%reg), %reg`. Both compute the same address.
+                "rel.different-opt.R_X86_64_GOTTPOFF.RexAddIndirectToAbsolute(3).RexAddIndirectToLea(3).*",
                 // Wild eliminates GOTPCRELX in statically linked executables even for undefined
                 // symbols, whereas other linkers don't. This is a valid optimisation that other
                 // linkers don't currently do.
