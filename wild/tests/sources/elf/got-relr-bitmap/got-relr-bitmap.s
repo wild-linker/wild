@@ -3,20 +3,24 @@
 // Four local symbols accessed via GOT produce consecutive GOT entries.
 // With bitmap packing, they share one address entry and one bitmap entry
 // instead of four individual RELR address entries.
+// An absolute symbol's GOT entry must still be treated as a constant.
 //
 // Note: --no-relax is needed to prevent the linker from optimizing away
 // the GOT references (REX_GOTPCRELX relaxation).
 //#AbstractConfig:default
 //#LinkArgs:-shared -z pack-relative-relocs --no-relax
+//#LinkArgs:--defsym absolute=42
 //#RunEnabled:false
 //#ReferenceLinkers:lld
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:section.got.plt.entsize
-//#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
 
 //#Config:x86_64:default
 //#Arch:x86_64
 //#ExpectSection:.relr.dyn max_entries=2
+
+//#Config:android:x86_64
+//#LinkArgs:--use-android-relr-tags
 
     .section .data,"aw",@progbits
     .type a, @object
@@ -51,4 +55,11 @@ get_c:
     .type get_d, @function
 get_d:
     mov d@GOTPCREL(%rip), %rax
+    ret
+
+    .globl get_absolute
+    .type get_absolute, @function
+    .hidden absolute
+get_absolute:
+    mov absolute@GOTPCREL(%rip), %rax
     ret
