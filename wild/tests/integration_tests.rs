@@ -86,7 +86,10 @@
 //!
 //! ExpectLoadDylib:{install-name} Checks for exactly one Mach-O LC_LOAD_DYLIB with this name.
 //!
-//! ExpectIdDylib:{install-name} Checks the Mach-O dylib identity and install name.
+//! ExpectIdDylib:{install-name} [properties] Checks the Mach-O dylib identity and install name.
+//! Optional comma-separated properties are `current_version` and `compatibility_version`, each
+//! using the full major.minor.patch form. For example:
+//! `ExpectIdDylib:@rpath/libfoo.dylib current_version=3.2.1,compatibility_version=1.0.0`.
 //!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
@@ -2152,7 +2155,7 @@ struct Assertions {
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
     expected_load_dylibs: Vec<String>,
-    expected_id_dylib: Option<String>,
+    expected_id_dylib: Option<ExpectedDylib>,
     expected_load_command_sizes: Vec<(String, Vec<u32>)>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
@@ -2262,6 +2265,59 @@ struct SectionAssertions {
 struct OutputFileMatch {
     filename: String,
     pattern: regex::Regex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedDylib {
+    name: String,
+    assertions: DylibAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct DylibAssertions {
+    current_version: Option<String>,
+    compatibility_version: Option<String>,
+}
+
+impl ExpectedDylib {
+    fn parse(s: &str) -> Result<Self> {
+        let (name, assertions) = if let Some((name, properties)) = s.split_once(' ') {
+            (name, serde_keyvalue::from_key_values(properties.trim())?)
+        } else {
+            (s, DylibAssertions::default())
+        };
+        ensure!(!name.is_empty(), "Expected a dylib install name");
+        Ok(Self {
+            name: name.to_owned(),
+            assertions,
+        })
+    }
+
+    fn verify_versions(
+        &self,
+        command: &str,
+        current: object::macho::Version,
+        compatibility: object::macho::Version,
+    ) -> Result {
+        for (property, expected, actual) in [
+            ("current_version", &self.assertions.current_version, current),
+            (
+                "compatibility_version",
+                &self.assertions.compatibility_version,
+                compatibility,
+            ),
+        ] {
+            if let Some(expected) = expected {
+                ensure!(
+                    actual.to_string() == *expected,
+                    "Expected {command} `{}` {property} {expected}, got {actual}",
+                    self.name
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2811,7 +2867,7 @@ fn process_directive(
             .expected_dynsym_entries
             .push(ExpectedSymtabEntry::parse(arg)?),
         "ExpectLoadDylib" => config.assertions.expected_load_dylibs.push(arg.to_owned()),
-        "ExpectIdDylib" => config.assertions.expected_id_dylib = Some(arg.to_owned()),
+        "ExpectIdDylib" => config.assertions.expected_id_dylib = Some(ExpectedDylib::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectLoadCommandSize" => {
             let (command, sizes) = arg.trim().split_once(' ').context(
@@ -5913,7 +5969,7 @@ impl Assertions {
         self.verify_macho_entry(obj)?;
         self.verify_macho_load_command_sizes(obj)?;
         self.verify_macho_load_dylibs(obj)?;
-        verify_macho_dylib(obj, bytes, self.expected_id_dylib.as_deref())?;
+        verify_macho_dylib(obj, bytes, self.expected_id_dylib.as_ref())?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
@@ -7316,7 +7372,11 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     Ok(exports)
 }
 
-fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&str>) -> Result {
+fn verify_macho_dylib(
+    obj: &object::File,
+    bytes: &[u8],
+    expected: Option<&ExpectedDylib>,
+) -> Result {
     use object::macho;
     let object::File::MachO64(file) = obj else {
         return Ok(());
@@ -7326,10 +7386,7 @@ fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&s
     let header = file.macho_header();
 
     if header.filetype.get(e) != macho::MH_DYLIB {
-        ensure!(
-            expected_name.is_none(),
-            "ExpectIdDylib requires MH_DYLIB output"
-        );
+        ensure!(expected.is_none(), "ExpectIdDylib requires MH_DYLIB output");
         return Ok(());
     }
 
@@ -7356,6 +7413,14 @@ fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&s
                         .is_none(),
                     "Duplicate LC_ID_DYLIB"
                 );
+
+                if let Some(expected) = expected {
+                    expected.verify_versions(
+                        "LC_ID_DYLIB",
+                        dylib.dylib.current_version.get(e),
+                        dylib.dylib.compatibility_version.get(e),
+                    )?;
+                }
             }
             LoadCommandVariant::Segment64(segment, _) => {
                 ensure!(segment.name() != b"__PAGEZERO", "Dylib contains __PAGEZERO");
@@ -7377,9 +7442,9 @@ fn verify_macho_dylib(obj: &object::File, bytes: &[u8], expected_name: Option<&s
 
     ensure!(!name.is_empty(), "Empty dylib install name");
 
-    if let Some(expected) = expected_name {
+    if let Some(expected) = expected {
         ensure!(
-            name == expected.as_bytes(),
+            name == expected.name.as_bytes(),
             "Unexpected dylib install name: {}",
             String::from_utf8_lossy(name)
         );

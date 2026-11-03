@@ -34,6 +34,8 @@ pub struct MachOArgs {
     pub(crate) entry: String,
     pub(crate) dylib: bool,
     pub(crate) install_name: Option<String>,
+    pub(crate) current_version: SemanticVersion,
+    pub(crate) compatibility_version: SemanticVersion,
     pub(crate) rpaths: Vec<String>,
     pub(crate) export_list_paths: Vec<PathBuf>,
 }
@@ -114,6 +116,8 @@ impl Default for MachOArgs {
             entry: "_main".to_owned(),
             dylib: false,
             install_name: None,
+            current_version: SemanticVersion(Version(0)),
+            compatibility_version: SemanticVersion(Version(0)),
             rpaths: Vec::new(),
             export_list_paths: Vec::new(),
         }
@@ -262,6 +266,26 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .help("Set the dynamic library install name")
         .execute(|args, _, value| {
             args.install_name = Some(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("current_version")
+        .help("Set the dynamic library current version (default: 0.0.0)")
+        .execute(|args, _, value| {
+            args.current_version = SemanticVersion::try_from(value)
+                .with_context(|| format!("Invalid -current_version: {value}"))?;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("compatibility_version")
+        .help("Set the dynamic library compatibility version (default: 0.0.0)")
+        .execute(|args, _, value| {
+            args.compatibility_version = SemanticVersion::try_from(value)
+                .with_context(|| format!("Invalid -compatibility_version: {value}"))?;
             Ok(())
         });
 
@@ -582,6 +606,53 @@ mod tests {
         );
         assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
         assert!(args.headerpad_max_install_names);
+    }
+
+    #[test]
+    fn dylib_version_arguments() {
+        let args = MachOArgs::default();
+        assert_eq!(args.current_version.get(), Version(0));
+        assert_eq!(args.compatibility_version.get(), Version(0));
+
+        for (value, expected) in [
+            ("0", Version(0)),
+            ("3", Version::new(3, 0, 0)),
+            ("3.2", Version::new(3, 2, 0)),
+            ("3.2.1", Version::new(3, 2, 1)),
+            ("65535.255.255", Version::new(65535, 255, 255)),
+        ] {
+            for option in ["-current_version", "-compatibility_version"] {
+                let mut args = MachOArgs::default();
+                args.parse(["-dylib", option, value].iter()).unwrap();
+                if option == "-current_version" {
+                    assert_eq!(args.current_version.get(), expected);
+                    assert_eq!(args.compatibility_version.get(), Version(0));
+                } else {
+                    assert_eq!(args.current_version.get(), Version(0));
+                    assert_eq!(args.compatibility_version.get(), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_dylib_versions() {
+        for option in ["-current_version", "-compatibility_version"] {
+            for value in [
+                "", "abc", "-1", "1.", "1..2", "1.2.3.4", "65536", "1.256", "1.2.256",
+            ] {
+                let mut args = MachOArgs::default();
+                let error = args.parse(["-dylib", option, value].iter()).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("Invalid {option}: {value}")),
+                    "{error:?}"
+                );
+            }
+            let mut args = MachOArgs::default();
+            assert!(args.parse(["-dylib", option].iter()).is_err());
+        }
     }
 
     #[test]
