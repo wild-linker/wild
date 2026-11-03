@@ -158,6 +158,10 @@ impl Arch for X86_64 {
                     Self::RelaxationKind::RexMovIndirectToAbsolute(3),
                     object::elf::R_X86_64_TPOFF32,
                 );
+                relax(
+                    Self::RelaxationKind::RexAddIndirectToAbsolute(3),
+                    object::elf::R_X86_64_TPOFF32,
+                );
             }
             (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTTPOFF) => {
                 relax(
