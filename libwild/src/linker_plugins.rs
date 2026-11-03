@@ -14,7 +14,6 @@ use crate::args::Input;
 use crate::args::Modifiers;
 use crate::args::elf::ElfArgs;
 use crate::bail;
-use crate::elf;
 use crate::elf::Elf;
 use crate::elf::ElfClass;
 use crate::elf::RawSymbolName;
@@ -30,19 +29,22 @@ use crate::input_data::FileId;
 use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::lto::LtoInputInfo;
+use crate::lto::LtoSymbol;
+use crate::lto::SymbolKind;
+use crate::lto::has_loaded_lto_input;
+use crate::lto::mark_lto_symbols_for_dynamic_export;
+use crate::lto::mark_wrap_symbols_as_non_ir_ref;
 use crate::output_section_id::OutputSections;
 use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
-use crate::resolution::ResolutionResources;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::Resolver;
-use crate::resolution::SymbolAttributes;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
-use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
 use crate::value_flags::FlagsForSymbol;
@@ -52,7 +54,6 @@ use crate::verbose_timing_phase;
 use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
-use rayon::Scope;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::CStr;
@@ -101,25 +102,6 @@ pub(crate) struct LoadedPlugin {
     _lib: PluginLibrary,
 
     version_info: Option<VersionInfo>,
-}
-
-#[derive(Debug)]
-pub(crate) struct LtoInput<'data> {
-    pub(crate) file_id: FileId,
-    pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) section_id_range: crate::input_section_id::SectionIdRange,
-    pub(crate) input_ref: InputRef<'data>,
-    pub(crate) symbols: Vec<PluginSymbol<'data>>,
-    /// Set to false once symbols from this object should be ignored. This is done once LTO has
-    /// been performed.
-    pub(crate) enabled: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct LtoInputInfo<'data> {
-    input_ref: InputRef<'data>,
-    symbols: Vec<PluginSymbol<'data>>,
-    handle: &'data FileHandle<'data>,
 }
 
 /// Stores symbol names passed to --wrap in a form that we can pass to the linker plugin if
@@ -256,34 +238,14 @@ impl<'data> LinkerPlugin<'data> {
         let plugin_loaded =
             file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
 
-        // Temporarily restore original (pre-wrap) name mappings so that definitions of wrapped
-        // names in the LTO output are registered as alternatives of the original symbols rather
-        // than of `__wrap_*`.
-        symbol_db.restore_wrapped_symbol_names();
-
-        resolver.begin_lto_output(symbol_db.groups.len());
-        symbol_db.add_inputs(
+        crate::lto::ingest_generated_inputs(
+            plugin_loaded,
+            symbol_db,
+            resolver,
             per_symbol_flags,
             output_sections,
             layout_rules_builder,
-            plugin_loaded,
-        )?;
-
-        // Re-apply --wrap overrides so that wrapped names now map to definitions from the LTO
-        // output rather than the LTO input objects.
-        symbol_db.apply_wrapped_symbol_overrides();
-
-        resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags)?;
-
-        symbol_db.disable_lto_inputs();
-
-        crate::symbol_db::resolve_alternative_symbol_definitions(
-            symbol_db,
-            per_symbol_flags,
-            &resolver.resolved_groups,
-        )?;
-
-        Ok(())
+        )
     }
 
     fn claim_file(
@@ -349,7 +311,7 @@ impl<'data> LinkerPlugin<'data> {
             Ok(Some(Box::new(LtoInputInfo {
                 input_ref,
                 symbols: ctx.symbols,
-                handle,
+                handle: Some(&handle.file_id),
             })))
         })
     }
@@ -357,55 +319,6 @@ impl<'data> LinkerPlugin<'data> {
     pub(crate) fn is_initialised(&self) -> bool {
         matches!(self.store, Store::Loaded(_))
     }
-}
-
-fn mark_lto_symbols_for_dynamic_export<C: ElfClass>(
-    symbol_db: &SymbolDb<Elf<C>>,
-    per_symbol_flags: &mut PerSymbolFlags,
-    resolved_groups: &[ResolvedGroup<Elf<C>>],
-) {
-    use crate::grouping::Group;
-
-    for group in resolved_groups {
-        for file in &group.files {
-            if let ResolvedFile::LtoInput(lto_input) = file {
-                let Group::LtoInputs(files) = &symbol_db.groups[lto_input.file_id.group()] else {
-                    unreachable!();
-                };
-                let file = &files[lto_input.file_id.file()];
-
-                let Some(mode) = crate::layout::export_symbols_mode(symbol_db, &file.input_ref)
-                else {
-                    continue;
-                };
-
-                for (symbol_id, symbol) in file.symbols_iter() {
-                    if symbol.is_definition()
-                        && crate::layout::can_export_global_def(
-                            symbol_db,
-                            elf::convert_elf_visibility(object::elf::SymbolVisibility(
-                                symbol.visibility,
-                            )),
-                            symbol_id,
-                            per_symbol_flags.flags_for_symbol(symbol_id),
-                            mode,
-                        )
-                    {
-                        per_symbol_flags.set_flag(symbol_id, ValueFlags::EXPORT_DYNAMIC);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn has_loaded_lto_input<P: Platform>(resolved_groups: &[ResolvedGroup<P>]) -> bool {
-    resolved_groups.iter().any(|group| {
-        group
-            .files
-            .iter()
-            .any(|file| matches!(file, ResolvedFile::LtoInput(_)))
-    })
 }
 
 impl<'data> WrapSymbols<'data> {
@@ -589,66 +502,6 @@ struct VersionInfo {
     identifier: Vec<u8>,
     version: Vec<u8>,
 }
-
-impl<'data> LtoInputInfo<'data> {
-    pub(crate) fn num_symbols(&self) -> usize {
-        self.symbols.len()
-    }
-
-    pub(crate) fn into_input_object(
-        self,
-        file_id: FileId,
-        symbol_id_range: SymbolIdRange,
-    ) -> LtoInput<'data> {
-        self.handle.file_id.store(Some(file_id));
-
-        LtoInput {
-            file_id,
-            symbol_id_range,
-            section_id_range: crate::input_section_id::SectionIdRange::empty(),
-            input_ref: self.input_ref,
-            symbols: self.symbols,
-            enabled: true,
-        }
-    }
-}
-
-impl<'data> LtoInput<'data> {
-    pub(crate) fn symbol_name(
-        &self,
-        symbol_id: crate::symbol_db::SymbolId,
-    ) -> UnversionedSymbolName<'data> {
-        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        self.symbols[local_index].name
-    }
-
-    pub(crate) fn symbol_visibility(
-        &self,
-        symbol_id: crate::symbol_db::SymbolId,
-    ) -> crate::symbol_db::Visibility {
-        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        crate::elf::convert_elf_visibility(object::elf::SymbolVisibility(
-            self.symbols[local_index].visibility,
-        ))
-    }
-
-    pub(crate) fn symbols_iter(&self) -> impl Iterator<Item = (SymbolId, &PluginSymbol<'data>)> {
-        self.symbol_id_range.into_iter().zip(self.symbols.iter())
-    }
-
-    pub(crate) fn symbol_properties_display(
-        &'_ self,
-        symbol_id: SymbolId,
-    ) -> SymbolPropertiesDisplay<'_> {
-        SymbolPropertiesDisplay(&self.symbols[self.symbol_id_range.id_to_offset(symbol_id)])
-    }
-
-    pub(crate) fn is_optional(&self) -> bool {
-        self.input_ref.has_archive_semantics() && !self.input_ref.file.modifiers.whole_archive
-    }
-}
-
-pub(crate) struct SymbolPropertiesDisplay<'data>(&'data PluginSymbol<'data>);
 
 // Some APIs don't let us pass along a pointer to our own data, so we need to store our state in
 // thread-locals.
@@ -839,16 +692,6 @@ enum PluginSymbolResolution {
     PrevailingDefIronlyExp,
 }
 
-#[derive(Debug)]
-pub(crate) struct PluginSymbol<'data> {
-    pub(crate) name: UnversionedSymbolName<'data>,
-    pub(crate) version: Option<&'data [u8]>,
-    pub(crate) comdat_key: Option<crate::hash::PreHashed<&'data [u8]>>,
-    pub(crate) visibility: u8,
-    pub(crate) kind: Option<SymbolKind>,
-    pub(crate) size: u64,
-}
-
 #[repr(C)]
 struct RawPluginSymbol {
     name: *const c_char,
@@ -923,7 +766,7 @@ extern "C" fn add_symbols(
             let arena = ctx.herd.get();
             ctx.symbols = raw_symbols
                 .iter()
-                .map(|sym| PluginSymbol {
+                .map(|sym| LtoSymbol {
                     name: UnversionedSymbolName::new(
                         arena.alloc_slice_copy(unsafe { CStr::from_ptr(sym.name) }.to_bytes()),
                     ),
@@ -1228,7 +1071,7 @@ fn catch_panics(body: impl FnOnce() -> Status) -> Status {
 }
 
 struct ClaimContext<'data> {
-    symbols: Vec<PluginSymbol<'data>>,
+    symbols: Vec<LtoSymbol<'data>>,
     herd: &'data Herd,
     wrap_symbols: WrapSymbols<'data>,
 }
@@ -1322,12 +1165,6 @@ impl RawPluginSymbol {
     }
 }
 
-impl PluginSymbol<'_> {
-    pub(crate) fn is_definition(&self) -> bool {
-        self.kind.is_some_and(|kind| kind.is_definition())
-    }
-}
-
 impl std::fmt::Display for MessageLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
@@ -1337,24 +1174,6 @@ impl std::fmt::Display for MessageLevel {
             MessageLevel::Fatal => "fatal error",
         };
         std::fmt::Display::fmt(message, f)
-    }
-}
-
-impl std::fmt::Display for SymbolPropertiesDisplay<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LTO ")?;
-        if let Some(kind) = self.0.kind {
-            write!(f, "{kind:?}")?;
-        } else {
-            write!(f, "UNKNOWN")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::fmt::Display for LtoInput<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LTO input `{}`", self.input_ref)
     }
 }
 
@@ -1431,15 +1250,6 @@ impl Callbacks {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SymbolKind {
-    Def = 0,
-    WeakDef = 1,
-    Undef = 2,
-    WeakUndef = 3,
-    Common = 4,
-}
-
 impl std::fmt::Display for LinkerPlugin<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.store {
@@ -1467,15 +1277,6 @@ impl std::fmt::Display for VersionInfo {
     }
 }
 
-impl SymbolKind {
-    fn is_definition(self) -> bool {
-        matches!(
-            self,
-            SymbolKind::Def | SymbolKind::WeakDef | SymbolKind::Common
-        )
-    }
-}
-
 impl<'data> Store<'data> {
     fn loaded(&mut self) -> Result<&mut LoadedPlugin> {
         match self {
@@ -1498,70 +1299,6 @@ impl<'data> Store<'data> {
                 Ok(*loaded)
             }
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
-        }
-    }
-}
-
-pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
-    obj: &crate::linker_plugins::LtoInput<'data>,
-    resources: &'scope ResolutionResources<'data, 'scope, Elf<C>>,
-    definitions_out: &mut [SymbolId],
-    scope: &Scope<'scope>,
-) -> Result {
-    obj.symbols
-        .iter()
-        .enumerate()
-        .zip(definitions_out)
-        .try_for_each(
-            |((local_symbol_index, local_symbol), definition)| -> Result {
-                if !local_symbol.is_definition() {
-                    let mut name_info = Elf::<C>::parse_raw_symbol_name(local_symbol.name.bytes());
-                    if let Some(version) = local_symbol.version {
-                        name_info.version_name = Some(version);
-                    }
-
-                    let symbol_attributes = SymbolAttributes {
-                        name_info,
-                        is_local: false,
-                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT.0,
-                        is_weak: local_symbol.kind
-                            == Some(crate::linker_plugins::SymbolKind::WeakUndef),
-                    };
-
-                    crate::resolution::resolve_symbol(
-                        obj.symbol_id_range.offset_to_id(local_symbol_index),
-                        &symbol_attributes,
-                        definition,
-                        resources,
-                        false,
-                        obj.file_id,
-                        scope,
-                        true,
-                    )?;
-                }
-
-                Ok(())
-            },
-        )
-}
-
-/// Marks symbols related to --wrap as having non-IR references. This ensures that the linker
-/// plugin preserves these symbols in its output rather than internalising them.
-fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
-    symbol_db: &SymbolDb<'data, P>,
-    per_symbol_flags: &mut PerSymbolFlags,
-) {
-    for name in symbol_db.args.symbol_names_to_wrap() {
-        for lookup_name in [
-            name.clone(),
-            format!("__wrap_{name}"),
-            format!("__real_{name}"),
-        ] {
-            if let Some(symbol_id) =
-                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(lookup_name.as_bytes()))
-            {
-                per_symbol_flags.set_flag(symbol_id, ValueFlags::HAS_NON_IR_REF);
-            }
         }
     }
 }

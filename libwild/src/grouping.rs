@@ -31,7 +31,7 @@ pub(crate) enum Group<'data, P: Platform> {
     LinkerScripts(Vec<SequencedLinkerScript<'data, P>>),
     SyntheticSymbols(SyntheticSymbols),
     #[cfg(feature = "plugins")]
-    LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
+    LtoInputs(Vec<crate::lto::LtoInput<'data>>),
 }
 
 #[derive(Debug)]
@@ -65,7 +65,7 @@ pub(crate) enum SequencedInput<'db, 'data, P: Platform> {
     LinkerScript(&'db SequencedLinkerScript<'data, P>),
     SyntheticSymbols(&'db SyntheticSymbols),
     #[cfg(feature = "plugins")]
-    LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
+    LtoInput(&'db crate::lto::LtoInput<'data>),
 }
 
 impl<'data, P: Platform> Group<'data, P> {
