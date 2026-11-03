@@ -60,6 +60,7 @@ pub struct WasmArgs {
     pub(crate) initial_memory: Option<u64>,
     pub(crate) max_memory: Option<u64>,
     pub(crate) no_growable_memory: bool,
+    pub(crate) growable_table: bool,
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
@@ -120,6 +121,7 @@ impl Default for WasmArgs {
             initial_memory: None,
             max_memory: None,
             no_growable_memory: false,
+            growable_table: false,
             shared_memory: false,
             import_memory: None,
             export_memory: None,
@@ -555,6 +557,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Set maximum size of the linear memory to its initial size")
         .execute(|args, _modifier_stack| {
             args.no_growable_memory = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("growable-table")
+        .help("Remove maximum size from function table, allowing table to grow")
+        .execute(|args, _modifier_stack| {
+            args.growable_table = true;
             Ok(())
         });
 
