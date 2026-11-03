@@ -1,0 +1,19 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, arm64e-macos ]
+install-name: '@rpath/libversions.dylib'
+current-version: 7.8.9
+compatibility-version: 2.3.4
+reexported-libraries:
+  - targets: [ arm64-macos, arm64e-macos ]
+    libraries: [ '@rpath/libchild.dylib' ]
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, arm64e-macos ]
+install-name: '@rpath/libchild.dylib'
+current-version: 99
+compatibility-version: 98
+exports:
+  - targets: [ arm64-macos, arm64e-macos ]
+    symbols: [ _foo ]
+...

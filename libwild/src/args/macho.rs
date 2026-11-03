@@ -43,7 +43,7 @@ pub struct MachOArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemanticVersion(Version);
 impl SemanticVersion {
-    fn try_from(value: &str) -> Result<Self> {
+    pub(crate) fn try_from(value: &str) -> Result<Self> {
         let mut parts = value.split('.').collect_vec();
         ensure!(
             !parts.is_empty() && parts.len() <= 3,

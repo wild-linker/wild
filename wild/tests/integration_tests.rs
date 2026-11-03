@@ -84,12 +84,13 @@
 //! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
 //! absent from the .dynamic section.
 //!
-//! ExpectLoadDylib:{install-name} Checks for exactly one Mach-O LC_LOAD_DYLIB with this name.
+//! ExpectLoadDylib:{install-name} [properties] Checks for exactly one Mach-O LC_LOAD_DYLIB with
+//! this name. Optional comma-separated properties are `current_version` and
+//! `compatibility_version`, each using the full major.minor.patch form. For example:
+//! `ExpectLoadDylib:@rpath/libfoo.dylib current_version=3.2.1,compatibility_version=1.0.0`.
 //!
-//! ExpectIdDylib:{install-name} [properties] Checks the Mach-O dylib identity and install name.
-//! Optional comma-separated properties are `current_version` and `compatibility_version`, each
-//! using the full major.minor.patch form. For example:
-//! `ExpectIdDylib:@rpath/libfoo.dylib current_version=3.2.1,compatibility_version=1.0.0`.
+//! ExpectIdDylib:{install-name} [properties] Checks the Mach-O dylib identity and install name,
+//! with the same optional version properties as ExpectLoadDylib.
 //!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
@@ -2154,7 +2155,7 @@ struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_entry: Option<String>,
-    expected_load_dylibs: Vec<String>,
+    expected_load_dylibs: Vec<ExpectedDylib>,
     expected_id_dylib: Option<ExpectedDylib>,
     expected_load_command_sizes: Vec<(String, Vec<u32>)>,
     expected_comments: Vec<String>,
@@ -2866,7 +2867,10 @@ fn process_directive(
             .assertions
             .expected_dynsym_entries
             .push(ExpectedSymtabEntry::parse(arg)?),
-        "ExpectLoadDylib" => config.assertions.expected_load_dylibs.push(arg.to_owned()),
+        "ExpectLoadDylib" => config
+            .assertions
+            .expected_load_dylibs
+            .push(ExpectedDylib::parse(arg)?),
         "ExpectIdDylib" => config.assertions.expected_id_dylib = Some(ExpectedDylib::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectLoadCommandSize" => {
@@ -6086,30 +6090,32 @@ impl Assertions {
         }
 
         let object::File::MachO64(file) = obj else {
-            bail!("ExpectLoadDylib is only supported for 64-bit Mach-O");
+            bail!("ExpectLoadDylib requires 64-bit Mach-O");
         };
 
         let e = file.endianness();
         let mut commands = file.macho_load_commands()?;
-        let mut names = Vec::new();
+        let mut libraries = Vec::new();
 
         while let Some(command) = commands.next()? {
             if command.cmd() == object::macho::LC_LOAD_DYLIB {
                 let dylib = command.dylib()?.context("Missing dylib command")?;
-                names.push(command.string(e, dylib.dylib.name)?);
+                libraries.push((
+                    command.string(e, dylib.dylib.name)?,
+                    dylib.dylib.current_version.get(e),
+                    dylib.dylib.compatibility_version.get(e),
+                ));
             }
         }
 
         for expected in &self.expected_load_dylibs {
-            let count = names
+            let name = &expected.name;
+            let (_, actual_current, actual_compatibility) = libraries
                 .iter()
-                .filter(|name| **name == expected.as_bytes())
-                .count();
-
-            ensure!(
-                count == 1,
-                "Expected exactly one LC_LOAD_DYLIB for `{expected}`, found {count}"
-            );
+                .filter(|(actual_name, _, _)| *actual_name == name.as_bytes())
+                .exactly_one()
+                .with_context(|| format!("Expected exactly one LC_LOAD_DYLIB for `{name}`"))?;
+            expected.verify_versions("LC_LOAD_DYLIB", *actual_current, *actual_compatibility)?;
         }
 
         Ok(())

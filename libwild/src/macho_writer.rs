@@ -303,16 +303,15 @@ fn write_prelude<'data>(
     {
         let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
         let dylib_command = take_mut(&mut command_buffer)?;
-        let path = crate::macho::install_name(file_id, &layout.symbol_db);
+        let dependency = crate::macho::dylib_metadata(file_id, &layout.symbol_db);
 
-        // TODO: Read versions from the imported library.
         write_dylib_command(
             dylib_command,
             command_buffer,
-            path,
+            dependency.install_name,
             LC_LOAD_DYLIB,
-            macho::Version(1356 << 16),
-            macho::Version(1 << 16),
+            dependency.current_version,
+            dependency.compatibility_version,
         );
     }
 

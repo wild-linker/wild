@@ -441,9 +441,11 @@ enum ObjectKind<'data> {
     Dylib(Dylib<'data>),
 }
 
-#[derive(Debug)]
-struct Dylib<'data> {
-    install_name: &'data [u8],
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Dylib<'data> {
+    pub(crate) install_name: &'data [u8],
+    pub(crate) current_version: macho::Version,
+    pub(crate) compatibility_version: macho::Version,
 }
 
 #[derive(derive_more::Debug)]
@@ -475,6 +477,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                     install_name: command
                         .string(LE, id.dylib.name)
                         .context("Invalid LC_ID_DYLIB install name")?,
+                    current_version: id.dylib.current_version.get(LE),
+                    compatibility_version: id.dylib.compatibility_version.get(LE),
                 });
             } else if !is_dynamic
                 && let Some((segment_command, segment_data)) = command.segment_64()?
@@ -2584,10 +2588,23 @@ pub(crate) fn install_name<'data>(
     file_id: FileId,
     symbol_db: &crate::symbol_db::SymbolDb<'data, MachO>,
 ) -> &'data [u8] {
+    dylib_metadata(file_id, symbol_db).install_name
+}
+
+pub(crate) fn dylib_metadata<'data>(
+    file_id: FileId,
+    symbol_db: &crate::symbol_db::SymbolDb<'data, MachO>,
+) -> Dylib<'data> {
     match symbol_db.file(file_id) {
-        SequencedInput::StubLibrary(stub) => return stub.defined_symbols.install_name.as_bytes(),
+        SequencedInput::StubLibrary(stub) => {
+            return Dylib {
+                install_name: stub.defined_symbols.install_name.as_bytes(),
+                current_version: stub.defined_symbols.current_version,
+                compatibility_version: stub.defined_symbols.compatibility_version,
+            };
+        }
         SequencedInput::Object(obj) => match &obj.parsed.object.kind {
-            ObjectKind::Dylib(dylib) => return dylib.install_name,
+            ObjectKind::Dylib(dylib) => return *dylib,
             ObjectKind::Regular(_) => {}
         },
         _ => {}
