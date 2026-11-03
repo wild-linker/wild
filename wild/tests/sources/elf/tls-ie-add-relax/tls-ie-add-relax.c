@@ -29,12 +29,12 @@ __asm__(
     "    ret\n"
     ".size get_tvar_r9, .-get_tvar_r9\n");
 
-int *get_tvar_rax(void);
-int *get_tvar_r9(void);
+int* get_tvar_rax(void);
+int* get_tvar_r9(void);
 
 int main() {
-  int *a = get_tvar_rax();
-  int *b = get_tvar_r9();
+  int* a = get_tvar_rax();
+  int* b = get_tvar_r9();
   if (a != &tvar || b != &tvar) {
     return 1;
   }
