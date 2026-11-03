@@ -164,7 +164,7 @@ impl platform::Args for MachOArgs {
                     let rooted = sysroot.join(relative);
                     // Match other linkers - an existing SDK directory replaces the host directory,
                     // even when it doesn't contain the requested framework.
-                    if file_system.is_dir(&rooted) {
+                    if file_system.is_dir(&self.common.resolve_input_path(&rooted)) {
                         *path = rooted.into_boxed_path();
                     }
                 }
