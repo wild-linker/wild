@@ -95,6 +95,9 @@ use std::fmt::Write as _;
 use std::iter::Peekable;
 use std::ops::Range;
 
+#[cfg(test)]
+mod tests;
+
 /// Set this environment variable to a function name to show only diffs for that function.
 const SHOW_FUNCTION_ENV: &str = "LINKER_DIFF_FOCUS_FUNCTION";
 
@@ -326,9 +329,12 @@ fn update_offsets_if_match_failed<A: Arch>(
     relocations: &mut Peekable<std::vec::IntoIter<(u64, object::Relocation)>>,
 ) -> Result {
     if resolutions.iter().any(|r| {
-        r.annotations
-            .iter()
-            .any(|a| matches!(a.kind, AnnotationKind::MatchFailed(..)))
+        r.relaxations.as_ref().is_some_and(|group| {
+            group
+                .match_results
+                .iter()
+                .any(|result| matches!(result, RelaxationMatchResult::AllFailed(_)))
+        })
     }) {
         let offset = testers.iter().map(|t| t.previous_end).max().unwrap_or(0);
 
@@ -420,6 +426,20 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
                 }
             }
         }
+    }
+
+    fn failure(
+        &self,
+        r_types: impl Iterator<Item = A::RType>,
+    ) -> Option<ResolutionFailure<A::RType>> {
+        self.match_results
+            .iter()
+            .zip(r_types)
+            .find_map(|(result, r_type)| match result {
+                RelaxationMatchResult::Matched(_) => None,
+                RelaxationMatchResult::AllFailed(_) => Some(ResolutionFailure::MatchFailed(r_type)),
+                RelaxationMatchResult::Ambiguous(_) => Some(ResolutionFailure::Ambiguous),
+            })
     }
 
     fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<'data, A>>> {
@@ -580,6 +600,7 @@ fn diff_literal_bytes<'data, A: Arch>(
             .iter()
             .map(|_| ResolvedGroup {
                 relaxations: None,
+                failure: Some(ResolutionFailure::LiteralByteMismatch),
                 annotations: vec![Annotation {
                     offset_in_section: start,
                     kind: AnnotationKind::<A>::LiteralByteMismatch,
@@ -944,33 +965,14 @@ fn diff_key_for_res_mismatch<A: Arch>(
             }
         }
     } else {
-        let failure_kind = |r: &ResolvedGroup<A>| {
-            if r.annotations
-                .iter()
-                .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
-            {
-                Some("literal-byte-mismatch".to_owned())
-            } else {
-                r.annotations
-                    .iter()
-                    .zip(original_annotations)
-                    .find_map(|(a, orig)| match &a.kind {
-                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                        AnnotationKind::MatchFailed(_) => {
-                            Some(format!("rel.match_failed.{}", orig.success.r_type))
-                        }
-                        AnnotationKind::MatchedRelaxation(_) => None,
-                        AnnotationKind::LiteralByteMismatch => {
-                            unreachable!();
-                        }
-                        AnnotationKind::Error(e) => Some(e.clone()),
-                    })
-            }
-        };
-
-        failure_kind(&resolutions[0])
-            .or(failure_kind(&resolutions[1]))
-            .unwrap_or("rel.unknown_failure".to_owned())
+        resolutions[0]
+            .failure
+            .as_ref()
+            .or(resolutions[1].failure.as_ref())
+            .map_or_else(
+                || "rel.unknown_failure".to_owned(),
+                ResolutionFailure::diff_key,
+            )
     }
 }
 
@@ -1439,10 +1441,29 @@ impl ColumnWidths {
     }
 }
 
+#[derive(Clone, Debug)]
+enum ResolutionFailure<R: RType> {
+    LiteralByteMismatch,
+    Ambiguous,
+    MatchFailed(R),
+}
+
+impl<R: RType> ResolutionFailure<R> {
+    fn diff_key(&self) -> String {
+        match self {
+            Self::LiteralByteMismatch => "literal-byte-mismatch".to_owned(),
+            Self::Ambiguous => "rel.multiple_matches".to_owned(),
+            Self::MatchFailed(r_type) => format!("rel.match_failed.{r_type}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ResolvedGroup<'data, A: Arch> {
     /// The chosen relaxation if we successfully matched to exactly one.
     relaxations: Option<RelaxationGroup<'data, A>>,
+
+    failure: Option<ResolutionFailure<A::RType>>,
 
     annotations: Vec<Annotation<'data, A>>,
 
@@ -2583,7 +2604,7 @@ impl<'data> RelaxationTester<'data> {
 
         let mut res = crate::diagnostics::trace_scope(&mut trace, || {
             let relaxation_group = self.determine_relaxations(section_kind, group);
-            self.resolve_group(relaxation_group)
+            self.resolve_group(relaxation_group, group)
         });
 
         res.trace = trace;
@@ -2637,7 +2658,14 @@ impl<'data> RelaxationTester<'data> {
     fn resolve_group<A: Arch>(
         &self,
         mut relaxation_group: RelaxationGroup<'data, A>,
+        input: &RelocationGroup<'data, A>,
     ) -> ResolvedGroup<'data, A> {
+        let failure = relaxation_group.failure(
+            input
+                .relocations
+                .iter()
+                .map(|rel| rel.original_annotation.success.r_type),
+        );
         let mut reference = None;
         let mut error = None;
 
@@ -2672,6 +2700,7 @@ impl<'data> RelaxationTester<'data> {
             start: relaxation_group.start_offset(),
             end: relaxation_group.end_offset(),
             relaxations: Some(relaxation_group),
+            failure,
             annotations,
             reference: reference.unwrap_or(Reference {
                 referent: Referent::Unknown,
