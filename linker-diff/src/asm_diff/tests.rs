@@ -105,14 +105,104 @@ fn selects_the_reference_that_differs() {
     );
     let comparisons = [ours.compare(&matching), ours.compare(&differing)];
 
-    let (index, comparison) = select_comparison(&comparisons, false).unwrap();
+    let (index, comparison) = select_comparison(&comparisons, false, |_, _| false).unwrap();
     assert_eq!(index, 1);
     assert_eq!(key(comparison), "rel.missing-plt-got");
-    assert!(select_comparison(&comparisons, true).is_none());
+    assert!(select_comparison(&comparisons, true, |_, _| false).is_none());
 
     let comparisons = [ours.compare(&differing), ours.compare(&matching)];
-    assert!(select_comparison(&comparisons, true).is_none());
-    assert_eq!(select_comparison(&comparisons, false).unwrap().0, 0);
+    assert!(select_comparison(&comparisons, true, |_, _| false).is_none());
+    assert_eq!(
+        select_comparison(&comparisons, false, |_, _| false)
+            .unwrap()
+            .0,
+        0
+    );
+}
+
+#[test]
+fn ignored_tls_relaxation_does_not_hide_a_later_wrong_offset() {
+    let mut config = crate::Config::default();
+    config.apply_wild_defaults(crate::arch::ArchKind::X86_64);
+    let report = Report {
+        names: vec![],
+        paths: vec![],
+        diffs: vec![],
+        config,
+        coverage: None,
+    };
+    let ours = resolved(
+        named(b"target"),
+        Indirection::Direct,
+        X86RelaxationKind::RexAddIndirectToAbsolute(3),
+    );
+    let good = resolved(
+        named(b"target"),
+        Indirection::Direct,
+        X86RelaxationKind::RexAddIndirectToLea(3),
+    );
+    let bad = resolved(
+        Referent::Named(
+            SymbolName {
+                bytes: b"target",
+                version: None,
+            },
+            1,
+        ),
+        Indirection::Direct,
+        X86RelaxationKind::RexAddIndirectToLea(3),
+    );
+    let input_types = [X86RelocationType::from_raw(object::elf::R_X86_64_GOTTPOFF)];
+    let mut comparisons = [ours.compare(&good), ours.compare(&bad)];
+    let key = |comparison: &ResolutionComparison<X86_64>| comparison_key(comparison, &input_types);
+    assert!(report.should_ignore(&key(&comparisons[0])));
+    assert!(!report.should_ignore(&key(&comparisons[1])));
+    for expected_index in [1, 0] {
+        let (index, comparison) = select_comparison(&comparisons, false, |_, comparison| {
+            report.should_ignore(&key(comparison))
+        })
+        .unwrap();
+        assert!(!report.should_ignore(&key(comparison)));
+        assert_eq!(index, expected_index);
+        assert_eq!(key(comparison), "rel.referent-mismatch");
+        let (_, comparison) = select_comparison(&comparisons, true, |_, comparison| {
+            report.should_ignore(&key(comparison))
+        })
+        .unwrap();
+        assert!(report.should_ignore(&key(comparison)));
+        comparisons.swap(0, 1);
+    }
+}
+
+#[test]
+fn ignored_resolution_failure_does_not_hide_a_reference_difference() {
+    let ours = resolved(
+        named(b"target"),
+        Indirection::Direct,
+        X86RelaxationKind::NoOp,
+    );
+    let bad = resolved(
+        named(b"wrong_target"),
+        Indirection::Direct,
+        X86RelaxationKind::NoOp,
+    );
+    let mut comparisons = [
+        ResolutionComparison::Unresolved(ResolutionFailure::MatchFailed(
+            X86RelocationType::from_raw(object::elf::R_X86_64_PC32),
+        )),
+        ours.compare(&bad),
+    ];
+    for expected_index in [1, 0] {
+        let (index, comparison) = select_comparison(&comparisons, false, |_, comparison| {
+            key(comparison) == "rel.match_failed.R_X86_64_PC32"
+        })
+        .unwrap();
+        assert_eq!(index, expected_index);
+        assert_eq!(key(comparison), "rel.referent-mismatch");
+        comparisons.swap(0, 1);
+    }
+    let (_, comparison) = select_comparison(&comparisons[..1], false, |_, _| true).unwrap();
+    assert!(matches!(comparison, ResolutionComparison::Unresolved(_)));
 }
 
 #[test]
@@ -307,7 +397,7 @@ fn unresolved_outputs_do_not_match_each_other() {
         comparisons[0],
         ResolutionComparison::Unresolved(_)
     ));
-    assert!(select_comparison(&comparisons, true).is_some());
+    assert!(select_comparison(&comparisons, true, |_, _| false).is_some());
     assert_eq!(key(&comparisons[0]), "rel.unknown_failure");
 }
 
@@ -333,7 +423,7 @@ fn resolution_errors_are_not_equivalent() {
     let comparison = ours.compare(&other);
     assert!(matches!(comparison, ResolutionComparison::Unresolved(_)));
     assert_eq!(key(&comparison), "rel.reference_failed.R_X86_64_PC32");
-    assert!(select_comparison(&[comparison], true).is_some());
+    assert!(select_comparison(&[comparison], true, |_, _| false).is_some());
 }
 
 #[test]
@@ -404,7 +494,7 @@ fn copy_relocation_classification_uses_the_differing_pair() {
         X86RelaxationKind::NoOp,
     );
     let comparisons = [ours.compare(&ours), ours.compare(&other)];
-    let (index, comparison) = select_comparison(&comparisons, false).unwrap();
+    let (index, comparison) = select_comparison(&comparisons, false, |_, _| false).unwrap();
     assert_eq!(index, 1);
     assert_eq!(key(comparison), "rel.extra-copy-relocation.R_X86_64_PC32");
     assert_eq!(
@@ -572,12 +662,12 @@ fn reference_failure_keys_do_not_depend_on_reference_order() {
             .iter()
             .map(|reference| resolutions[0].compare(reference))
             .collect_vec();
-        let (_, comparison) = select_comparison(&comparisons, false).unwrap();
+        let (_, comparison) = select_comparison(&comparisons, false, |_, _| false).unwrap();
         assert_eq!(
             comparison.diff_key(&original_annotations, bin_attributes),
             "rel.reference_failed.R_X86_64_TLSGD"
         );
-        assert!(select_comparison(&comparisons, true).is_none());
+        assert!(select_comparison(&comparisons, true, |_, _| false).is_none());
         resolutions.swap(1, 2);
     }
 
@@ -587,7 +677,7 @@ fn reference_failure_keys_do_not_depend_on_reference_order() {
         .map(|reference| resolutions[0].compare(reference))
         .collect_vec();
     for match_any in [false, true] {
-        let (_, comparison) = select_comparison(&comparisons, match_any).unwrap();
+        let (_, comparison) = select_comparison(&comparisons, match_any, |_, _| false).unwrap();
         assert_eq!(
             comparison.diff_key(&original_annotations, bin_attributes),
             "rel.multiple_matches"
@@ -623,7 +713,8 @@ fn resolution_failures_take_precedence_over_optimization_differences() {
 
     for expected_index in [1, 0] {
         for match_any in [false, true] {
-            let (index, comparison) = select_comparison(&comparisons, match_any).unwrap();
+            let (index, comparison) =
+                select_comparison(&comparisons, match_any, |_, _| false).unwrap();
             assert_eq!(index, expected_index);
             assert_eq!(key(comparison), "rel.reference_failed.R_X86_64_PC32");
         }
@@ -631,9 +722,11 @@ fn resolution_failures_take_precedence_over_optimization_differences() {
     }
 
     comparisons.push(ours.compare(&ours));
-    assert!(select_comparison(&comparisons, true).is_none());
+    assert!(select_comparison(&comparisons, true, |_, _| false).is_none());
     assert_eq!(
-        key(select_comparison(&comparisons, false).unwrap().1),
+        key(select_comparison(&comparisons, false, |_, _| false)
+            .unwrap()
+            .1),
         "rel.reference_failed.R_X86_64_PC32"
     );
 }

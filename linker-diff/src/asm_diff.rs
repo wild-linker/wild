@@ -252,40 +252,48 @@ fn compare_sections<A: Arch>(
                     .collect_vec()
             });
 
-            if let Some((reference_index, comparison)) =
-                select_comparison(&comparisons, report.config.match_any)
+            if comparisons
+                .iter()
+                .any(|comparison| !matches!(comparison, ResolutionComparison::Equivalent))
             {
                 let start_offset = group.start_offset();
                 let original_annotations = group.into_original_annotations();
-                let bin_attributes = testers[reference_index + 1]
-                    .bin
-                    .address_index
-                    .bin_attributes;
-                let diff_key = comparison.diff_key(&original_annotations, bin_attributes);
+                let diff_key = |index: usize, comparison: &ResolutionComparison<A>| {
+                    comparison.diff_key(
+                        &original_annotations,
+                        testers[index + 1].bin.address_index.bin_attributes,
+                    )
+                };
+                if let Some((reference_index, comparison)) = select_comparison(
+                    &comparisons,
+                    report.config.match_any,
+                    |index, comparison| report.should_ignore(&diff_key(index, comparison)),
+                ) {
+                    let diff_key = diff_key(reference_index, comparison);
+                    if !report.should_ignore(&diff_key) {
+                        let diff = resolution_diff_exec(
+                            &diff_key,
+                            start_offset,
+                            original_annotations,
+                            &resolutions,
+                            &testers,
+                            section_versions.input_section_id,
+                            layout,
+                            trace,
+                            report.config.colour,
+                        )?;
+                        report.add_diff(diff);
+                    }
 
-                if !report.should_ignore(&diff_key) {
-                    let diff = resolution_diff_exec(
-                        &diff_key,
-                        start_offset,
-                        original_annotations,
-                        &resolutions,
-                        &testers,
-                        section_versions.input_section_id,
+                    update_offsets_if_match_failed(
+                        section_versions,
                         layout,
-                        trace,
-                        report.config.colour,
+                        original_section.size(),
+                        &mut testers,
+                        &resolutions,
+                        &mut relocations,
                     )?;
-                    report.add_diff(diff);
                 }
-
-                update_offsets_if_match_failed(
-                    section_versions,
-                    layout,
-                    original_section.size(),
-                    &mut testers,
-                    &resolutions,
-                    &mut relocations,
-                )?;
             }
         }
     }
@@ -1003,6 +1011,7 @@ impl<R: RType> ResolutionFailure<R> {
 fn select_comparison<'a, 'data, A: Arch>(
     comparisons: &'a [ResolutionComparison<'data, A>],
     match_any: bool,
+    mut should_ignore: impl FnMut(usize, &ResolutionComparison<'data, A>) -> bool,
 ) -> Option<(usize, &'a ResolutionComparison<'data, A>)> {
     if match_any
         && comparisons
@@ -1013,16 +1022,27 @@ fn select_comparison<'a, 'data, A: Arch>(
     }
 
     // TODO: Report distinct failures against multiple reference linkers instead of selecting one.
-    comparisons
-        .iter()
-        .enumerate()
-        .find(|(_, c)| matches!(c, ResolutionComparison::Unresolved(_)))
-        .or_else(|| {
-            comparisons
-                .iter()
-                .enumerate()
-                .find(|(_, c)| !matches!(c, ResolutionComparison::Equivalent))
-        })
+    let mut selected = None;
+    let mut selected_priority = (true, true);
+    for (index, comparison) in comparisons.iter().enumerate() {
+        if matches!(comparison, ResolutionComparison::Equivalent) {
+            continue;
+        }
+        let ignored = should_ignore(index, comparison);
+        if match_any && ignored {
+            return Some((index, comparison));
+        }
+        let priority = (
+            ignored,
+            !matches!(comparison, ResolutionComparison::Unresolved(_)),
+        );
+        if selected.is_none() || priority < selected_priority {
+            selected = Some((index, comparison));
+            selected_priority = priority;
+        }
+    }
+    // Keep an ignored comparison when all differences are ignored so match-failure recovery runs.
+    selected
 }
 
 impl<A: Arch> ResolutionComparison<'_, A> {
