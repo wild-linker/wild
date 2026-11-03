@@ -180,6 +180,9 @@ pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = section_id::MAX as usize +
 /// Default `__table_base` for non-PIC executables.
 const DEFAULT_TABLE_BASE: u32 = 1;
 
+/// Export name of the indirect function table (`--export-table`).
+const INDIRECT_FUNCTION_TABLE_NAME: &str = "__indirect_function_table";
+
 /// The custom-section name used for the linker metadata.
 pub(crate) const LINKING_SECTION_NAME: &str = "linking";
 
@@ -5913,6 +5916,25 @@ fn push_memory_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'dat
     });
 }
 
+fn export_indirect_function_table<'data>(exports: &mut Vec<OutputExport<'data>>) -> Result {
+    if let Some(existing) = exports
+        .iter()
+        .find(|export| export.name == INDIRECT_FUNCTION_TABLE_NAME)
+    {
+        ensure!(
+            matches!(existing.kind, wasmparser::ExternalKind::Table) && existing.index == 0,
+            "duplicate export name: {INDIRECT_FUNCTION_TABLE_NAME}"
+        );
+        return Ok(());
+    }
+    exports.push(OutputExport {
+        name: INDIRECT_FUNCTION_TABLE_NAME,
+        kind: wasmparser::ExternalKind::Table,
+        index: 0,
+    });
+    Ok(())
+}
+
 fn export_name_exists(exports: &[OutputExport<'_>], name: &str) -> bool {
     exports.iter().any(|export| export.name == name)
 }
@@ -6869,9 +6891,16 @@ where
             &mut layout,
             &layout_inputs,
             &reloc_scan.table_index_symbol_indices,
-            reloc_scan.needs_table,
+            reloc_scan.needs_table || symbol_db.args.export_table,
             &weak_undef_funcs,
         )?;
+        if symbol_db.args.export_table {
+            ensure!(
+                layout.tables.len() == 1,
+                "expected one indirect function table for --export-table"
+            );
+            export_indirect_function_table(&mut layout.exports)?;
+        }
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
     }
