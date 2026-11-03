@@ -1,3 +1,5 @@
+// Retain sections referenced through __start / __stop with either linker.
+//#LinkArgs:-z nostart-stop-gc
 //#Object:runtime.c
 //#LinkArgs:--whole-archive
 //#Archive:whole_archive0.c

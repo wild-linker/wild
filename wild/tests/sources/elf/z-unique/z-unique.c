@@ -1,4 +1,6 @@
 //#AbstractConfig:common
+// LLD does not implement -z unique / DT_GNU_FLAGS_1.
+//#ReferenceLinkers:bfd
 //#CompArgs:-fPIC
 //#DiffIgnore:section.got
 //#Mode:dynamic

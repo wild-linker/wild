@@ -7,6 +7,8 @@
 //#CompArgs:-flto -O1
 
 //#Config:gcc:default
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#LinkerDriver:gcc
 //#Object:lto-dead-code-undef-1.c
 //#LinkArgs:-flto -O1 -nostdlib -Wl,-z,now

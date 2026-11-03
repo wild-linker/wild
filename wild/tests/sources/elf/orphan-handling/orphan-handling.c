@@ -165,6 +165,8 @@
 //#Arch:x86_64
 
 //#Config:no-orphans-error:no-orphans
+// TODO: Account for compiler-generated .note.gnu.property sections so this also passes with
+// Ubuntu's BFD without weakening the unexpected-orphan assertions.
 //#CompArgs:-DNO_ORPHAN_VAR
 //#LinkArgs:--orphan-handling=error
 //#CompArgs:-fPIE

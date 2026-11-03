@@ -9,6 +9,7 @@
 // `-no-pie` should override `-shared`, and `-pie --dynamic-linker ..` should result in dynamic PIE.
 // LLD rejects this with an error.
 //#Config:pie-over-shared
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -z now -pie
 //#Object:runtime.c
 //#Mode:dynamic
@@ -17,6 +18,7 @@
 
 // `-no-pie` should override `-shared`. LLD rejects this with an error.
 //#Config:no-pie-over-shared
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -z now -no-pie
 //#Object:runtime.c
 //#CompArgs:-fPIE
@@ -48,6 +50,7 @@
 // Setting dynamic linker doesn't change output kind for non-PIE. LLD sets requested interpreter,
 // but GNU ld doesn't. We follow GNU ld this time.
 //#Config:dynamic-linker
+//#ReferenceLinkers:bfd
 //#LinkArgs:-z now --dynamic-linker=/lib64/bad.so
 //#Object:runtime.c
 //#Mode:unspecified

@@ -1,4 +1,6 @@
 //#Config:default
+// LLD writes unversioned names in .symtab for these .symver aliases.
+//#ReferenceLinkers:bfd
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_RELA
 //#CompArgs:-fPIC

@@ -1,4 +1,6 @@
 //#AbstractConfig:default
+// LLD does not define __etext.
+//#ReferenceLinkers:bfd
 //#Object:runtime.c
 //#Object:ptr_black_box.c
 

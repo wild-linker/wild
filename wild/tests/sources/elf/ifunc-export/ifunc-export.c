@@ -1,4 +1,6 @@
 //#Config:ifunc-export
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.dynamic-non-pie
 //#LinkerDriver:gcc
 //#CompArgs:-fno-pic -fno-pie
 //#CompSoArgs:-fno-pic -fno-pie

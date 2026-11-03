@@ -1,3 +1,5 @@
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_GOTPCRELX.MovIndirectToAbsolute.MovIndirectToLea.static-non-pie
 // Checks that we work correctly when there's a GOT reference to a local. I'm not entirely sure why
 // you'd have a GOT reference to a local, but it is something I've observed.
 

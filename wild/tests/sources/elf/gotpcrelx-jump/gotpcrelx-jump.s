@@ -5,6 +5,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:malfunction-no-jmp-indirect-to-relative:default
+//#ReferenceLinkers:bfd
 //#Malfunction:no-jmp-indirect-to-relative
 
 .globl _start

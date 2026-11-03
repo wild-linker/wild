@@ -1,3 +1,5 @@
+// LLD keeps .ctors separate instead of converting its entries to .init_array.
+//#ReferenceLinkers:bfd
 //#LinkerDriver:gcc
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata

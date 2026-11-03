@@ -244,9 +244,9 @@
 //! test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements are
 //! met and no tests are skipped.
 //!
-//! RequiresLinkerFlags:{flag} Checks if the system linker supports the specified flag(s) and skips
-//! the test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements
-//! are met and no tests are skipped.
+//! RequiresLinkerFlags:{flag} Checks if every enabled reference linker supports the flag(s) and
+//! skips the test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all
+//! requirements are met and no tests are skipped.
 //!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
@@ -8912,7 +8912,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
             path,
             cross_paths: find_cross_paths("ld.lld"),
             direct_args: Vec::new(),
-            enabled_by_default: false,
+            enabled_by_default: true,
         }));
     }
 
@@ -9436,22 +9436,17 @@ fn verify_platform_requirements(
     }
 
     if !config.requires_linker_flags.is_empty() {
-        let linker = config
+        for linker in config
             .available_linkers
             .iter()
-            .find_map(|linker| match linker {
-                Linker::ThirdParty(third_party_linker) if third_party_linker.enabled_by_default => {
-                    Some(third_party_linker.path.clone())
-                }
-                _ => None,
-            })
-            .context("RequiresLinkerFlags is set, but no system linker was configured")?;
-
-        verify_command_success(
-            Command::new(&linker)
-                .arg("-v")
-                .args(&config.requires_linker_flags),
-        )?;
+            .filter(|linker| !linker.is_wild() && config.is_linker_enabled(linker))
+        {
+            verify_command_success(
+                Command::new(linker.path(cross_arch))
+                    .arg("-v")
+                    .args(&config.requires_linker_flags),
+            )?;
+        }
     }
 
     Ok(())

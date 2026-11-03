@@ -1,3 +1,5 @@
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#RequiresLinkerPlugin:true
 //#Archive:bar.c
 //#LinkerDriver:gcc

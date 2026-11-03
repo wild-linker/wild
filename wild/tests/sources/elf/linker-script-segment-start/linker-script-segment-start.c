@@ -17,6 +17,10 @@
 // Defaults are 0x10/0x11/0x12/0x13 — distinct from actual section addresses
 // to prove SEGMENT_START returns the default, not the actual segment address.
 //#Config:no-overrides:default
+// This script relies on GNU orphan placement and segment permissions for execution.
+// TODO: Make the script's segment permissions and page boundaries explicit while preserving
+// its address assertions, then restore LLD coverage.
+//#ReferenceLinkers:bfd
 //#Variant:0
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
@@ -25,6 +29,7 @@
 // alongside a linker script. lld ignores -T* when a linker script is present,
 // so we skip it here.
 //#Config:with-T-overrides:default
+//#ReferenceLinkers:bfd
 //#LinkArgs:-Ttext=0x700000 -Tdata=0x800000 -Tbss=0x900000
 //#Variant:1
 //#CompArgs:-fPIE

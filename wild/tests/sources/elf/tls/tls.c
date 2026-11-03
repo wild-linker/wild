@@ -33,6 +33,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:local-dynamic-no-plt:default
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
 //#CompArgs:-ftls-model=local-dynamic -mtls-dialect=gnu -Wa,-mrelax-relocations=yes -fPIC -fno-plt
 //#Variant: 1
 //#LinkArgs:-no-pie

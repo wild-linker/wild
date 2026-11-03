@@ -20,6 +20,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:archive-first:default
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.dynamic-non-pie
 //#Archive:shared-priority-1.c
 //#Shared:shared-priority-2.c
 //#LinkArgs:-no-pie

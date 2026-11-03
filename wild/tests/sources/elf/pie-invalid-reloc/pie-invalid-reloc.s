@@ -1,3 +1,5 @@
+// LLD rejects the combination of -shared and -pie before checking relocations.
+//#ReferenceLinkers:bfd
 // Test that R_X86_64_32 to a DSO symbol errors in PIE/shared output.
 // Both GNU ld and lld error with "recompile with -fPIC".
 //#Arch:x86_64

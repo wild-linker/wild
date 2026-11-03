@@ -1,3 +1,7 @@
+// LLD rejects the unreferenced _GLOBAL_OFFSET_TABLE_ expression on non-x86 targets.
+// TODO: Split the undefined-symbol PROVIDE expression into its own case so the remaining
+// PROVIDE assertions can also run against LLD.
+//#ReferenceLinkers:bfd
 //#Mode:dynamic
 //#RunEnabled:false
 //#LinkArgs:-shared -T ./linker-script-provide.ld

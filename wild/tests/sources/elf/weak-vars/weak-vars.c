@@ -1,4 +1,7 @@
 //#AbstractConfig:default
+// LLD uses lea for defined symbols and leaves undefined-weak GOT loads unrelaxed.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
 //#Object:weak-vars1.c
 //#Object:runtime.c
 //#CompArgs:-ffreestanding -fno-builtin -fno-stack-protector

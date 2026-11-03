@@ -15,6 +15,8 @@
 //#CompArgs:-fPIE
 
 //#Config:old-dtags:default
+// LLD uses DF_BIND_NOW even with --disable-new-dtags.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -rpath /test/path --disable-new-dtags -z now
 //#ExpectDynamic:DT_RPATH
 //#ExpectDynamic:DT_BIND_NOW

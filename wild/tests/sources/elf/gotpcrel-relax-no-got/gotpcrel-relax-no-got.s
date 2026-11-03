@@ -1,3 +1,5 @@
+# LLD leaves R_X86_64_GOTPCREL accesses unrelaxed and retains .got.
+//#ReferenceLinkers:bfd
 //#Arch:x86_64
 //#Compiler:gcc
 //#CompArgs:-Wa,-mrelax-relocations=no

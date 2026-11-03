@@ -16,15 +16,19 @@
 //#LinkArgs:-no-pie
 
 //#Config:verdef-0:verdef
+//#LinkArgs:--undefined-version
 //#TestUpdateInPlace:true
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map
 //#CompArgs:-fPIE
 
 //#Config:verdef-1:verdef
+//#LinkArgs:--undefined-version
 //#LinkArgs:--shared --soname=symbol-versions.so --version-script=./symbol-versions-script.map
 //#CompArgs:-fPIE
 
 //#Config:verdef-lto:verdef
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:gcc
 //#CompArgs:-flto -znow
@@ -34,6 +38,8 @@
 
 //#Config:with-escaping:verdef
 //#Object:escaped-glob.c
+// LLD treats the backslash in this exact version-script name literally.
+//#ReferenceLinkers:bfd
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
 //#CompArgs:-fPIE
 //#ExpectSym:xfoobarx section=".text"
