@@ -843,6 +843,13 @@ fn diff_key_for_res_mismatch<A: Arch>(
         return "missing-resolutions".to_owned();
     }
 
+    if let Some(failure) = resolutions
+        .iter()
+        .find_map(|resolution| resolution.failure.as_ref())
+    {
+        return failure.diff_key();
+    }
+
     match (
         &resolutions[0].reference.referent,
         &resolutions[1].reference.referent,
@@ -965,14 +972,7 @@ fn diff_key_for_res_mismatch<A: Arch>(
             }
         }
     } else {
-        resolutions[0]
-            .failure
-            .as_ref()
-            .or(resolutions[1].failure.as_ref())
-            .map_or_else(
-                || "rel.unknown_failure".to_owned(),
-                ResolutionFailure::diff_key,
-            )
+        "rel.unknown_failure".to_owned()
     }
 }
 
@@ -1446,6 +1446,7 @@ enum ResolutionFailure<R: RType> {
     LiteralByteMismatch,
     Ambiguous,
     MatchFailed(R),
+    Reference(R),
 }
 
 impl<R: RType> ResolutionFailure<R> {
@@ -1454,6 +1455,7 @@ impl<R: RType> ResolutionFailure<R> {
             Self::LiteralByteMismatch => "literal-byte-mismatch".to_owned(),
             Self::Ambiguous => "rel.multiple_matches".to_owned(),
             Self::MatchFailed(r_type) => format!("rel.match_failed.{r_type}"),
+            Self::Reference(r_type) => format!("rel.reference_failed.{r_type}"),
         }
     }
 }
@@ -1489,9 +1491,7 @@ impl<A: Arch> ResolvedGroup<'_, A> {
     }
 
     fn has_error(&self) -> bool {
-        self.annotations
-            .iter()
-            .any(|a| matches!(a.kind, AnnotationKind::Error(_)))
+        matches!(self.failure, Some(ResolutionFailure::Reference(_)))
     }
 }
 
@@ -2660,7 +2660,7 @@ impl<'data> RelaxationTester<'data> {
         mut relaxation_group: RelaxationGroup<'data, A>,
         input: &RelocationGroup<'data, A>,
     ) -> ResolvedGroup<'data, A> {
-        let failure = relaxation_group.failure(
+        let mut failure = relaxation_group.failure(
             input
                 .relocations
                 .iter()
@@ -2690,6 +2690,9 @@ impl<'data> RelaxationTester<'data> {
             .collect_vec();
 
         if let Some(e) = error {
+            failure = Some(ResolutionFailure::Reference(
+                input.relocations[0].original_annotation.success.r_type,
+            ));
             annotations.push(Annotation {
                 offset_in_section: relaxation_group.end_offset(),
                 kind: AnnotationKind::Error(e.to_string()),
