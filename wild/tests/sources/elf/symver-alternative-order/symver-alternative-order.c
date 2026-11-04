@@ -25,7 +25,7 @@
 // LLD emits a copy relocation for the explicit version instead of using the archive definition.
 //#ReferenceLinkers:bfd
 // BFD leaves the explicit version's AArch64 GOT entry for the dynamic loader to resolve.
-//#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
+//#DiffIgnore:rel.referent-mismatch
 
 //#Config:repeated:default
 //#Shared:lib2.c

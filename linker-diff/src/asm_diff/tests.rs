@@ -139,10 +139,137 @@ fn retains_simultaneous_differences() {
         diff.reference.indirection,
         Some(IndirectionDifference::Other)
     ));
-    assert_eq!(
-        key(&comparison),
-        "rel.missing-opt.R_X86_64_PC32.MovIndirectToLea.static-non-pie"
+    assert_eq!(key(&comparison), "rel.referent-mismatch");
+}
+
+#[test]
+fn optimization_ignores_do_not_hide_referent_mismatches() {
+    let report = Report {
+        names: vec![],
+        paths: vec![],
+        diffs: vec![],
+        config: crate::Config {
+            ignore: vec!["rel.missing-opt.*".to_owned(), "rel.extra-opt.*".to_owned()],
+            ..Default::default()
+        },
+        coverage: None,
+    };
+    let ours = resolved(
+        named(b"target"),
+        Indirection::Direct,
+        X86RelaxationKind::NoOp,
     );
+    let mut other = resolved(
+        named(b"target"),
+        Indirection::Direct,
+        X86RelaxationKind::MovIndirectToLea,
+    );
+
+    for (comparison, expected) in [
+        (
+            ours.compare(&other),
+            "rel.missing-opt.R_X86_64_PC32.MovIndirectToLea.static-non-pie",
+        ),
+        (
+            other.compare(&ours),
+            "rel.extra-opt.R_X86_64_PC32.MovIndirectToLea.static-non-pie",
+        ),
+    ] {
+        let key = key(&comparison);
+        assert_eq!(key, expected);
+        assert!(report.should_ignore(&key));
+    }
+
+    other.reference.referent = named(b"wrong_target");
+    for comparison in [ours.compare(&other), other.compare(&ours)] {
+        let key = key(&comparison);
+        assert_eq!(key, "rel.referent-mismatch");
+        assert!(!report.should_ignore(&key));
+    }
+}
+
+#[test]
+fn absolute_relaxation_requires_the_same_value() {
+    let ours = resolved(
+        Referent::Undefined(UnmatchedAddress {
+            address: 42,
+            reason: "",
+        }),
+        Indirection::Direct,
+        X86RelaxationKind::RexMovIndirectToAbsolute(3),
+    );
+    for value in [42, 43] {
+        let other = resolved(
+            Referent::Absolute(value),
+            Indirection::Got,
+            X86RelaxationKind::NoOp,
+        );
+        for (comparison, direction) in [
+            (ours.compare(&other), "extra"),
+            (other.compare(&ours), "missing"),
+        ] {
+            let expected = if value == 42 {
+                format!(
+                    "rel.{direction}-opt.R_X86_64_PC32.RexMovIndirectToAbsolute(3).static-non-pie"
+                )
+            } else {
+                "rel.referent-mismatch".to_owned()
+            };
+            assert_eq!(key(&comparison), expected);
+        }
+    }
+}
+
+#[test]
+fn tls_model_relaxation_requires_the_same_symbol_and_addend() {
+    let entry = SymtabEntryInfo {
+        name: SymbolName {
+            bytes: b"target",
+            version: None,
+        },
+        is_weak: false,
+        visibility: Visibility::Default,
+        is_ifunc: false,
+    };
+    let ours = resolved(
+        Referent::TlsGd(entry),
+        Indirection::Got,
+        X86RelaxationKind::NoOp,
+    );
+    for (name, addend) in [
+        (b"target".as_slice(), 0),
+        (b"wrong_target".as_slice(), 0),
+        (b"target".as_slice(), 1),
+    ] {
+        let other = resolved(
+            Referent::DynamicRelocation(DynamicRelocation {
+                entry: SymtabEntryInfo {
+                    name: SymbolName {
+                        bytes: name,
+                        version: None,
+                    },
+                    ..entry
+                },
+                r_type: X86RelocationType::from_dynamic_relocation_kind(
+                    DynamicRelocationKind::TpOff,
+                ),
+                addend,
+            }),
+            Indirection::Got,
+            X86RelaxationKind::TlsGdToInitialExec,
+        );
+        for (comparison, direction) in [
+            (ours.compare(&other), "missing"),
+            (other.compare(&ours), "extra"),
+        ] {
+            let expected = if name == b"target" && addend == 0 {
+                format!("rel.{direction}-opt.R_X86_64_PC32.TlsGdToInitialExec.static-non-pie")
+            } else {
+                "rel.referent-mismatch".to_owned()
+            };
+            assert_eq!(key(&comparison), expected);
+        }
+    }
 }
 
 #[test]
@@ -243,6 +370,21 @@ fn preserves_dynamic_relocation_equivalence_and_classifies_plt_bypass() {
     ));
     other.reference.indirection = Indirection::PltGot;
     assert_eq!(key(&ours.compare(&other)), "rel.dynamic-plt-bypass");
+
+    let ours = resolved(
+        dynamic(DynamicRelocationKind::Absolute),
+        Indirection::Direct,
+        X86RelaxationKind::NoOp,
+    );
+    let comparison = ours.compare(&other);
+    let ResolutionComparison::Different(diff) = &comparison else {
+        panic!("Expected differences, got {comparison:?}");
+    };
+    assert!(matches!(
+        diff.reference.referent,
+        Some(ReferentDifference::Other)
+    ));
+    assert_eq!(key(&comparison), "rel.dynamic-plt-bypass");
 }
 
 #[test]
@@ -648,6 +790,39 @@ fn aarch64_group(kinds: &[AArch64RelaxationKind]) -> ResolvedGroup<'static, AArc
         start: 0,
         end: kinds.len() as u64 * 4,
         trace: TraceOutput::default(),
+    }
+}
+
+#[test]
+fn removing_an_undefined_reference_keeps_the_optimization_key() {
+    let mut ours = aarch64_group(&[AArch64RelaxationKind::NoOp]);
+    ours.reference.referent = Referent::Undefined(UnmatchedAddress::default());
+    let mut other = aarch64_group(&[AArch64RelaxationKind::ReplaceWithNop]);
+    other.reference.referent = Referent::NoRelocation;
+    let input_types = [AArch64RelocationType::from_raw(
+        object::elf::R_AARCH64_CALL26,
+    )];
+    assert_eq!(
+        comparison_key(&ours.compare(&other), &input_types),
+        "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie"
+    );
+    assert_eq!(
+        comparison_key(&other.compare(&ours), &input_types),
+        "rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie"
+    );
+
+    ours.reference.referent = Referent::Named(
+        SymbolName {
+            bytes: b"target",
+            version: None,
+        },
+        0,
+    );
+    for comparison in [ours.compare(&other), other.compare(&ours)] {
+        assert_eq!(
+            comparison_key(&comparison, &input_types),
+            "rel.referent-mismatch"
+        );
     }
 }
 
