@@ -6,19 +6,15 @@
 //#DiffIgnore:.dynamic.DT_TEXTREL
 
 //#Config:global-dynamic:default
-//#SkipArch: ppc64le
 //#CompArgs:-Ztls-model=global-dynamic
 
 //#Config:local-dynamic:default
-//#SkipArch: ppc64le
 //#CompArgs:-Ztls-model=local-dynamic
 
 //#Config:initial-exec:default
-//#SkipArch: ppc64le
 //#CompArgs:-Ztls-model=initial-exec
 
 //#Config:local-exec:default
-//#SkipArch: ppc64le
 //#CompArgs:-Ztls-model=local-exec
 
 use std::cell::Cell;
