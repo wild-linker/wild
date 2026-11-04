@@ -24,6 +24,9 @@ RUN apt-get update && \
         gcc-loongarch64-linux-gnu \
         g++-loongarch64-linux-gnu \
         binutils-loongarch64-linux-gnu \
+        gcc-powerpc64le-linux-gnu \
+        g++-powerpc64le-linux-gnu \
+        binutils-powerpc64le-linux-gnu \
         build-essential \
         elfutils \
         rustup \
@@ -39,6 +42,8 @@ RUN rustup toolchain install nightly && \
         riscv64gc-unknown-linux-musl \
         loongarch64-unknown-linux-gnu \
         loongarch64-unknown-linux-musl \
+        powerpc64le-unknown-linux-gnu \
+        powerpc64le-unknown-linux-musl \
         && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 RUN cargo install --locked cargo-chef

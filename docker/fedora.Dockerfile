@@ -36,6 +36,10 @@ RUN rustup toolchain install nightly && \
         aarch64-unknown-linux-musl \
         riscv64gc-unknown-linux-gnu \
         riscv64gc-unknown-linux-musl \
+        loongarch64-unknown-linux-gnu \
+        loongarch64-unknown-linux-musl \
+        powerpc64le-unknown-linux-gnu \
+        powerpc64le-unknown-linux-musl \
         && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 RUN cargo install --locked cargo-chef

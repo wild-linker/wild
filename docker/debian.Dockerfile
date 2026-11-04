@@ -24,6 +24,10 @@ RUN rustup toolchain install nightly && \
         x86_64-unknown-linux-musl \
         aarch64-unknown-linux-gnu \
         aarch64-unknown-linux-musl \
+        loongarch64-unknown-linux-gnu \
+        loongarch64-unknown-linux-musl \
+        powerpc64le-unknown-linux-gnu \
+        powerpc64le-unknown-linux-musl \
         && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 WORKDIR /wild
