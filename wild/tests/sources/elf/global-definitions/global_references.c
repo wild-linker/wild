@@ -29,6 +29,12 @@ int black_box(int input) {
   __asm__ __volatile__("nop" : "+r"(a0));
   return a0;
 }
+#elif defined(__PPC64__)
+int black_box(int input) {
+  register int r3 __asm__("r3") = input;
+  __asm__ __volatile__("nop" : "+r"(r3));
+  return r3;
+}
 #endif
 
 void _start() {

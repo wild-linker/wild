@@ -108,8 +108,24 @@ pub const fn relocation_type_from_raw(
             1,
             0,
         ),
-        // TOC-relative data access. The value is relative to the TOC base (start of the GOT); the
-        // 0x8000 centring bias lives on the `@ha` half.
+        // TOC-relative data access. The value is `S + A - TOC`, where TOC is the start of the GOT.
+        // `@ha` adds the 0x8000 high-adjust. `@h` (`TOC16_HI`) does not. `TOC16` and `TOC16_DS`
+        // are the signed 16-bit `@toc` forms (the small code model) and reject values that do not
+        // fit. `TOC16_DS` also requires 4-byte alignment, matching the DS instruction field.
+        object::elf::R_PPC64_TOC16 => (
+            RelocationKind::SymRelGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_TOC16_HI => (
+            RelocationKind::SymRelGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
         object::elf::R_PPC64_TOC16_HA => (
             RelocationKind::SymRelGotBase,
             RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
@@ -122,6 +138,13 @@ pub const fn relocation_type_from_raw(
             RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
             AllowedRange::no_check(),
             1,
+            0,
+        ),
+        object::elf::R_PPC64_TOC16_DS => (
+            RelocationKind::SymRelGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::from_bit_size(16, Sign::Signed),
+            4,
             0,
         ),
         object::elf::R_PPC64_TOC16_LO_DS => (

@@ -1,4 +1,3 @@
-//#SkipArch: ppc64le
 //#Object:global_references.c
 //#Object:runtime.c
 //#ReferenceLinkers:bfd,lld

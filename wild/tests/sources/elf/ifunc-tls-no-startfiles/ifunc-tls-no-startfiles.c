@@ -23,7 +23,7 @@
 //#LinkArgs:-pie
 
 //#Config:other:default
-//#SkipArch:ppc64le,riscv64
+//#SkipArch:riscv64
 //#LinkArgs:-pie
 
 #include "../common/runtime.h"

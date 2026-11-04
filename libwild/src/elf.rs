@@ -376,6 +376,7 @@ enum RegularSectionId {
     GccExceptTable,
     NoteAbiTag,
     DataRelRo,
+    Toc,
     PartialLinkingSingletons,
 
     // Must be last.
@@ -495,6 +496,7 @@ pub(crate) mod output_section_id {
     pub(crate) const NOTE_ABI_TAG: OutputSectionId =
         RegularSectionId::NoteAbiTag.output_section_id();
     pub(crate) const DATA_REL_RO: OutputSectionId = RegularSectionId::DataRelRo.output_section_id();
+    pub(crate) const TOC: OutputSectionId = RegularSectionId::Toc.output_section_id();
     pub(crate) const PARTIAL_LINKING_SINGLETONS: OutputSectionId =
         RegularSectionId::PartialLinkingSingletons.output_section_id();
 }
@@ -2678,6 +2680,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::DATA_REL_RO);
         builder.add_section(output_section_id::DYNAMIC);
         builder.add_section(output_section_id::GOT);
+        builder.add_section(output_section_id::TOC);
         builder.add_section(output_section_id::RELRO_PADDING);
         builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
@@ -6787,6 +6790,14 @@ impl<C: ElfClass> Elf<C> {
             is_relro: true,
             ..Self::DEFAULT_DEFS
         };
+        defs[output_section_id::TOC.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TOC_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
 
         defs
     };
@@ -7660,6 +7671,18 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section(
         secnames::DATA_REL_RO_SECTION_NAME,
         output_section_id::DATA_REL_RO,
+    ),
+    SectionRule::exact(
+        secnames::TOC_SECTION_NAME,
+        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(
+            output_section_id::TOC,
+        )),
+    ),
+    SectionRule::prefix(
+        b".toc.",
+        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(
+            output_section_id::TOC,
+        )),
     ),
     SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
     SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
