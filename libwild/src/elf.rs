@@ -2279,6 +2279,31 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         sizes.increment(part_id::STRTAB, total_name_bytes as u64);
     }
 
+    fn load_extra_gc_roots<'data, 'scope, A: Arch<Platform = Self>>(
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        scope: &Scope<'scope>,
+    ) {
+        // Keep the functions named by -init and -fini alive, like the entry point. As in bfd and
+        // lld, this doesn't pull them out of archives.
+        let symbol_db = resources.symbol_db;
+        for name in [&symbol_db.args.init, &symbol_db.args.fini]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(symbol_id) =
+                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+            {
+                layout::load_redirect_referenced_symbol::<A>(
+                    resources,
+                    queue,
+                    scope,
+                    symbol_db.definition(symbol_id),
+                );
+            }
+        }
+    }
+
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.

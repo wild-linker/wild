@@ -84,6 +84,10 @@ pub struct ElfArgs {
     pub(crate) relro: bool,
     pub(crate) combreloc: bool,
     pub(crate) entry: Option<String>,
+    /// Symbol whose address `DT_INIT` holds, from `-init`. If `None`, `DT_INIT` points at `.init`.
+    pub(crate) init: Option<String>,
+    /// Symbol whose address `DT_FINI` holds, from `-fini`. If `None`, `DT_FINI` points at `.fini`.
+    pub(crate) fini: Option<String>,
     pub(crate) export_all_dynamic_symbols: bool,
     pub(crate) export_list: Vec<String>,
     pub(crate) export_list_path: Option<PathBuf>,
@@ -415,6 +419,8 @@ impl Default for ElfArgs {
             // and this flag only controls sorting.
             combreloc: false,
             entry: None,
+            init: None,
+            fini: None,
             b_symbolic: BSymbolicKind::None,
             export_all_dynamic_symbols: false,
             export_list: Vec::new(),
@@ -1248,6 +1254,24 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Set the entry point")
         .execute(|args, _modifier_stack, value| {
             args.entry = Some(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("init")
+        .help("Set the function whose address DT_INIT holds")
+        .execute(|args, _modifier_stack, value| {
+            args.init = Some(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("fini")
+        .help("Set the function whose address DT_FINI holds")
+        .execute(|args, _modifier_stack, value| {
+            args.fini = Some(value.to_owned());
             Ok(())
         });
 

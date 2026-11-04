@@ -3540,6 +3540,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         self.load_entry_point::<A>(resources, queue, scope);
+        P::load_extra_gc_roots::<A>(resources, queue, scope);
 
         P::allocate_prelude(common, resources.symbol_db);
 
@@ -4013,7 +4014,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 }
 
-fn load_redirect_referenced_symbol<'data, 'scope, A: Arch>(
+pub(crate) fn load_redirect_referenced_symbol<'data, 'scope, A: Arch>(
     resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
     queue: &mut LocalWorkQueue<A::Platform>,
     scope: &Scope<'scope>,

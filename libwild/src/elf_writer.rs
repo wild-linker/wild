@@ -84,6 +84,7 @@ use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::thunks::ThunkBlockId;
@@ -5214,6 +5215,8 @@ fn write_epilogue_dynamic_entries<C: ElfClass>(
         has_textrel: layout.has_textrel,
         has_variant_pcs: layout.has_variant_pcs,
         bti_plt,
+        init_symbol_address: init_fini_symbol_address(layout, layout.args().init.as_deref()),
+        fini_symbol_address: init_fini_symbol_address(layout, layout.args().fini.as_deref()),
         section_layouts: &layout.merged_section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
@@ -6272,13 +6275,13 @@ pub(crate) const NUM_EPILOGUE_DYNAMIC_ENTRIES: usize = EPILOGUE_DYNAMIC_ENTRY_WR
 const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(
         object::elf::DT_INIT,
-        |inputs| inputs.has_data_in_section(output_section_id::INIT),
-        |inputs| inputs.vma_of_section(output_section_id::INIT),
+        |inputs| inputs.init_address().is_some(),
+        |inputs| inputs.init_address().unwrap_or(0),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FINI,
-        |inputs| inputs.has_data_in_section(output_section_id::FINI),
-        |inputs| inputs.vma_of_section(output_section_id::FINI),
+        |inputs| inputs.fini_address().is_some(),
+        |inputs| inputs.fini_address().unwrap_or(0),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_INIT_ARRAY,
@@ -6544,12 +6547,29 @@ struct DynamicEntryWriter {
     cb: fn(&DynamicEntryInputs) -> u64,
 }
 
+/// The value for DT_INIT or DT_FINI from the symbol named by `-init` or `-fini`: its address, or
+/// its value if it's absolute. `None` if the symbol is missing or comes from a shared object.
+fn init_fini_symbol_address<C: ElfClass>(layout: &ElfLayout<C>, name: Option<&str>) -> Option<u64> {
+    let symbol_db = &layout.symbol_db;
+    let symbol_id =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name?.as_bytes()))?;
+    let resolution = layout.merged_symbol_resolution(symbol_db.definition(symbol_id))?;
+    let flags = resolution.flags;
+    // Like the entry point, accept either an address or an absolute value, e.g. from --defsym.
+    if flags.is_dynamic() || (!flags.has_link_time_address() && !flags.is_absolute()) {
+        return None;
+    }
+    Some(resolution.raw_value)
+}
+
 struct DynamicEntryInputs<'layout> {
     args: &'layout ElfArgs,
     has_static_tls: bool,
     has_textrel: bool,
     has_variant_pcs: bool,
     bti_plt: bool,
+    init_symbol_address: Option<u64>,
+    fini_symbol_address: Option<u64>,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     non_addressable_counts: NonAddressableCounts,
@@ -6617,6 +6637,27 @@ impl DynamicEntryInputs<'_> {
         }
 
         flags
+    }
+
+    /// The value for `DT_INIT`: the `-init` symbol if that option was given, otherwise the start of
+    /// `.init`, if it has any data.
+    fn init_address(&self) -> Option<u64> {
+        if self.args.init.is_some() {
+            self.init_symbol_address
+        } else {
+            self.has_data_in_section(output_section_id::INIT)
+                .then(|| self.vma_of_section(output_section_id::INIT))
+        }
+    }
+
+    /// The value for `DT_FINI`, like `init_address`.
+    fn fini_address(&self) -> Option<u64> {
+        if self.args.fini.is_some() {
+            self.fini_symbol_address
+        } else {
+            self.has_data_in_section(output_section_id::FINI)
+                .then(|| self.vma_of_section(output_section_id::FINI))
+        }
     }
 
     fn vma_of_section(&self, section_id: OutputSectionId) -> u64 {
