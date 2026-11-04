@@ -10,7 +10,6 @@
 //#LinkArgs:-pie
 
 //#Config:gcc-static:default
-//#SkipArch: ppc64le
 //#LinkArgs:-static -Wl,--gc-sections
 //#DiffIgnore:section.sdata
 // TODO: RISC-V BFD linker keeps the symbol in .dynsym section
@@ -27,7 +26,6 @@
 //#SkipArch: riscv64,ppc64le
 
 //#Config:clang-static:default
-//#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkArgs:-static
 //#DiffIgnore:section.sdata

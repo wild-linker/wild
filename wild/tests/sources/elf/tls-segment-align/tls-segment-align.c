@@ -14,8 +14,6 @@
 
 //#Config:static:default
 //#LinkArgs:-static
-// Static libgcc references R_PPC64_TOC16_DS, which is not decoded yet.
-//#SkipArch:ppc64le
 //#CompArgs:-fPIE
 
 //#Config:compress-debug:default
