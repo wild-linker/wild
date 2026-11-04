@@ -226,7 +226,9 @@ pub(crate) fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
         if let Some(symbol_id) =
             symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
         {
-            per_symbol_flags.set_flag(symbol_id, ValueFlags::HAS_NON_IR_REF);
+            // Mark the selected definition, which isn't necessarily the first symbol with this
+            // name, e.g. a weak definition may precede the strong one.
+            per_symbol_flags.set_flag(symbol_db.definition(symbol_id), ValueFlags::HAS_NON_IR_REF);
         }
     }
 }

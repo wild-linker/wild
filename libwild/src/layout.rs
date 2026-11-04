@@ -3540,7 +3540,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         self.load_entry_point::<A>(resources, queue, scope);
-        P::load_prelude_symbols::<A>(resources, queue, scope);
+        P::load_extra_gc_roots::<A>(resources, queue, scope);
 
         P::allocate_prelude(common, resources.symbol_db);
 

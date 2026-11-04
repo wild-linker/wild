@@ -2279,7 +2279,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         sizes.increment(part_id::STRTAB, total_name_bytes as u64);
     }
 
-    fn load_prelude_symbols<'data, 'scope, A: Arch<Platform = Self>>(
+    fn load_extra_gc_roots<'data, 'scope, A: Arch<Platform = Self>>(
         resources: &'scope layout::GraphResources<'data, '_, Self>,
         queue: &mut layout::LocalWorkQueue<Self>,
         scope: &Scope<'scope>,

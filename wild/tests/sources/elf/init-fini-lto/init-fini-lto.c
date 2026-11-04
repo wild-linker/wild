@@ -6,7 +6,9 @@
 // and LoongArch only support .init_array.
 //#Arch:x86_64,aarch64
 //#RequiresLinkerPlugin:true
-//#Shared:init-fini-lto-lib.c
+// The native weak definitions precede the strong LTO definitions, so retention must use the
+// selected definitions rather than the first symbols found by name.
+//#Shared:init-fini-lto-weak.c:-fno-lto,init-fini-lto-lib.c
 //#CompArgs:-fPIC
 //#CompSoArgs:-fPIC -flto
 //#LinkArgs:-pie

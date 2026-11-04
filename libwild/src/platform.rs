@@ -1051,9 +1051,9 @@ pub(crate) trait Platform:
 
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>);
 
-    /// Loads symbols that the prelude needs to keep alive besides the entry point, so that garbage
+    /// Loads extra symbols that must be kept as GC roots, beyond the entry point, so that garbage
     /// collection doesn't discard them. Called while traversing the reference graph.
-    fn load_prelude_symbols<'data, 'scope, A: Arch<Platform = Self>>(
+    fn load_extra_gc_roots<'data, 'scope, A: Arch<Platform = Self>>(
         _resources: &'scope layout::GraphResources<'data, '_, Self>,
         _queue: &mut layout::LocalWorkQueue<Self>,
         _scope: &Scope<'scope>,
