@@ -2,6 +2,9 @@
 // the shared object, so only DT_INIT and DT_FINI refer to them, and the plugin would otherwise be
 // free to discard them.
 //#AbstractConfig:default
+// glibc only calls DT_INIT on architectures that define ELF_INITFINI. Newer ports such as RISC-V
+// and LoongArch only support .init_array.
+//#Arch:x86_64,aarch64
 //#RequiresLinkerPlugin:true
 //#Shared:init-fini-lto-lib.c
 //#CompArgs:-fPIC

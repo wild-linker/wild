@@ -1,6 +1,9 @@
 // Checks that the dynamic loader calls the functions that -init and -fini name for a shared object:
 // lib_init before main runs, and lib_fini at exit, where it sets the exit code.
 //#AbstractConfig:base
+// glibc only calls DT_INIT on architectures that define ELF_INITFINI. Newer ports such as RISC-V
+// only support .init_array.
+//#Arch:x86_64,aarch64
 //#LinkerDriver:gcc
 //#Shared:init-fini-run-lib.c
 //#CompArgs:-fPIC
