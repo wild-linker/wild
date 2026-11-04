@@ -33,6 +33,7 @@ use crate::lto::LtoInputInfo;
 use crate::lto::LtoSymbol;
 use crate::lto::SymbolKind;
 use crate::lto::has_loaded_lto_input;
+use crate::lto::mark_init_fini_symbols_as_non_ir_ref;
 use crate::lto::mark_lto_symbols_for_dynamic_export;
 use crate::lto::mark_wrap_symbols_as_non_ir_ref;
 use crate::output_section_id::OutputSections;
@@ -215,6 +216,10 @@ impl<'data> LinkerPlugin<'data> {
         // code. This ensures the plugin keeps them in the LTO output rather than
         // internalising/removing them.
         mark_wrap_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
+
+        // Likewise for the functions named by -init and -fini, which only DT_INIT and DT_FINI
+        // refer to.
+        mark_init_fini_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
 
         mark_lto_symbols_for_dynamic_export(symbol_db, per_symbol_flags, &resolver.resolved_groups);
 

@@ -213,6 +213,24 @@ pub(crate) fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
     }
 }
 
+/// Marks the symbols named by -init and -fini as having non-IR references. Only DT_INIT and
+/// DT_FINI refer to them, so without this the plugin could internalise or remove them.
+pub(crate) fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
+    symbol_db: &SymbolDb<'data, Elf<C>>,
+    per_symbol_flags: &mut PerSymbolFlags,
+) {
+    for name in [&symbol_db.args.init, &symbol_db.args.fini]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(symbol_id) =
+            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        {
+            per_symbol_flags.set_flag(symbol_id, ValueFlags::HAS_NON_IR_REF);
+        }
+    }
+}
+
 pub(crate) fn mark_lto_symbols_for_dynamic_export<C: ElfClass>(
     symbol_db: &SymbolDb<Elf<C>>,
     per_symbol_flags: &mut PerSymbolFlags,

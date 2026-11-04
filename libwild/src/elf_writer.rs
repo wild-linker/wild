@@ -6547,14 +6547,16 @@ struct DynamicEntryWriter {
     cb: fn(&DynamicEntryInputs) -> u64,
 }
 
-/// The address of the symbol named by `-init` or `-fini`, if it's defined in the output itself
-/// rather than missing or coming from a shared object.
+/// The value for DT_INIT or DT_FINI from the symbol named by `-init` or `-fini`: its address, or
+/// its value if it's absolute. `None` if the symbol is missing or comes from a shared object.
 fn init_fini_symbol_address<C: ElfClass>(layout: &ElfLayout<C>, name: Option<&str>) -> Option<u64> {
     let symbol_db = &layout.symbol_db;
     let symbol_id =
         symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name?.as_bytes()))?;
     let resolution = layout.merged_symbol_resolution(symbol_db.definition(symbol_id))?;
-    if resolution.flags.is_dynamic() || !resolution.flags.has_link_time_address() {
+    let flags = resolution.flags;
+    // Like the entry point, accept either an address or an absolute value, e.g. from --defsym.
+    if flags.is_dynamic() || (!flags.has_link_time_address() && !flags.is_absolute()) {
         return None;
     }
     Some(resolution.raw_value)

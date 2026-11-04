@@ -43,10 +43,14 @@ _fini:
 _start:
   ret
 
+# Each function is in its own section, as -ffunction-sections would do, so that --gc-sections
+# discards them unless -init and -fini keep them alive.
+.section .text.my_init,"ax",@progbits
 .globl my_init
 my_init:
   ret
 
+.section .text.my_fini,"ax",@progbits
 .globl my_fini
 my_fini:
   ret
