@@ -20,7 +20,7 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         less
 RUN rustup toolchain install nightly \
         --allow-downgrade \
-        --target x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl \
+        --target x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl,loongarch64-unknown-linux-gnu,loongarch64-unknown-linux-musl,powerpc64le-unknown-linux-gnu,powerpc64le-unknown-linux-musl \
         --component rustc-codegen-cranelift-preview
 RUN cargo install --locked cargo-chef
 WORKDIR /wild

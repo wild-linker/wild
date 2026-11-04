@@ -91,7 +91,7 @@ Wild supports testing on non-native architectures using QEMU.
   rustup target add --toolchain nightly loongarch64-unknown-linux-gnu loongarch64-unknown-linux-musl
 
   # For ppc64le
-  rustup target add --toolchain nightly powerpc64le-unknown-linux-gnu
+  rustup target add --toolchain nightly powerpc64le-unknown-linux-gnu powerpc64le-unknown-linux-musl
   ```
 
 2. Install required packages (for apt-based systems):
