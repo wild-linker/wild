@@ -1,0 +1,9 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, arm64e-macos ]
+install-name: '@rpath/libversions.dylib'
+current-version: 3.2.1
+exports:
+  - targets: [ arm64-macos, arm64e-macos ]
+    symbols: [ _foo ]
+...
