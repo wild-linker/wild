@@ -884,7 +884,7 @@ mod tests {
             "--output=original-output".into(),
             input.display().to_string(),
         ];
-        args.parse(tokens.iter())?;
+        args.parse(tokens.iter(), &crate::fs::OsFileSystem)?;
         let state = args.common.save_dir.0.as_ref().unwrap();
         let arena = colosseum::sync::Arena::new();
         let input_data = FileLoader::new(&arena, std::sync::Arc::new(crate::fs::OsFileSystem));
@@ -948,7 +948,7 @@ mod tests {
         assert!(output.status.success());
         let replay_args = String::from_utf8(output.stdout)?;
         let mut replay = MachOArgs::default();
-        replay.parse(replay_args.lines())?;
+        replay.parse(replay_args.lines(), &crate::fs::OsFileSystem)?;
         let found = replay
             .framework_search_path
             .iter()

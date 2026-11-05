@@ -1688,7 +1688,7 @@ pub(crate) enum EntryPoint<'a> {
 }
 
 pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
-    fn parse<S, I>(&mut self, input: I) -> Result
+    fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>;

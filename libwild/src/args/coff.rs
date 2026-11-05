@@ -4,6 +4,7 @@ use crate::args::Modifiers;
 use crate::args::OptionSyntax;
 use crate::bail;
 use crate::error::Result;
+use crate::fs::FileSystem;
 use crate::platform;
 use crate::platform::Args as _;
 use std::path::Path;
@@ -62,12 +63,12 @@ impl Default for CoffArgs {
 }
 
 impl platform::Args for CoffArgs {
-    fn parse<S, I>(&mut self, input: I) -> Result
+    fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input)
+        parse(self, input, file_system)
     }
 
     fn should_strip_debug(&self) -> bool {
@@ -136,6 +137,7 @@ impl platform::Args for CoffArgs {
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut CoffArgs,
     mut input: I,
+    file_system: &impl FileSystem,
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
@@ -143,7 +145,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input, file_system)?;
     }
 
     args.common.report_unrecognized()?;
@@ -378,7 +380,7 @@ mod tests {
 
     fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> CoffArgs {
         let mut coff_args = CoffArgs::default();
-        parse(&mut coff_args, args.into_iter()).unwrap();
+        parse(&mut coff_args, args.into_iter(), &crate::fs::OsFileSystem).unwrap();
         coff_args
     }
 
@@ -432,7 +434,7 @@ mod tests {
 
     fn parse_error<'a>(args: impl IntoIterator<Item = &'a str>) -> String {
         let mut coff_args = CoffArgs::default();
-        parse(&mut coff_args, args.into_iter())
+        parse(&mut coff_args, args.into_iter(), &crate::fs::OsFileSystem)
             .unwrap_err()
             .to_string()
     }
@@ -498,9 +500,13 @@ mod tests {
         }
 
         let mut args = CoffArgs::default();
-        let message = parse(&mut args, ["/SUBSYSTEM:CONSOLE,x"].into_iter())
-            .unwrap_err()
-            .to_string();
+        let message = parse(
+            &mut args,
+            ["/SUBSYSTEM:CONSOLE,x"].into_iter(),
+            &crate::fs::OsFileSystem,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(message.contains("invalid /SUBSYSTEM version"), "{message}");
     }
 
@@ -508,9 +514,13 @@ mod tests {
     fn other_subsystems_are_unsupported_rather_than_unrecognized() {
         for name in ["NATIVE", "EFI_APPLICATION", "BOOT_APPLICATION", "POSIX"] {
             let mut args = CoffArgs::default();
-            let message = parse(&mut args, [&format!("/SUBSYSTEM:{name}")].into_iter())
-                .unwrap_err()
-                .to_string();
+            let message = parse(
+                &mut args,
+                [&format!("/SUBSYSTEM:{name}")].into_iter(),
+                &crate::fs::OsFileSystem,
+            )
+            .unwrap_err()
+            .to_string();
 
             assert!(
                 message.contains("unsupported subsystem"),
@@ -528,14 +538,18 @@ mod tests {
             "/machine:AMD64",
         ] {
             let mut args = CoffArgs::default();
-            parse(&mut args, [machine].into_iter()).unwrap();
+            parse(&mut args, [machine].into_iter(), &crate::fs::OsFileSystem).unwrap();
         }
 
         for machine in ["X86", "arm64", "ARM64EC", "arm64x", "ARM", "mips"] {
             let mut args = CoffArgs::default();
-            let message = parse(&mut args, [&format!("/MACHINE:{machine}")].into_iter())
-                .unwrap_err()
-                .to_string();
+            let message = parse(
+                &mut args,
+                [&format!("/MACHINE:{machine}")].into_iter(),
+                &crate::fs::OsFileSystem,
+            )
+            .unwrap_err()
+            .to_string();
 
             assert!(
                 message.contains("only X64 is supported"),
@@ -564,7 +578,9 @@ mod tests {
     fn unknown_options_are_an_error() {
         for arg in ["/FOO", "-FOO:bar"] {
             let mut args = CoffArgs::default();
-            let message = parse(&mut args, [arg].into_iter()).unwrap_err().to_string();
+            let message = parse(&mut args, [arg].into_iter(), &crate::fs::OsFileSystem)
+                .unwrap_err()
+                .to_string();
 
             assert!(
                 message.contains("unrecognized option(s)"),
@@ -576,9 +592,13 @@ mod tests {
     #[test]
     fn unknown_options_are_reported_together_with_valid_ones() {
         let mut args = CoffArgs::default();
-        let message = parse(&mut args, ["/OUT:a.exe", "/FOO", "main.obj"].into_iter())
-            .unwrap_err()
-            .to_string();
+        let message = parse(
+            &mut args,
+            ["/OUT:a.exe", "/FOO", "main.obj"].into_iter(),
+            &crate::fs::OsFileSystem,
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(message.contains("/FOO"), "{message}");
     }
@@ -597,7 +617,7 @@ mod tests {
                 .push(warning.warning().to_owned());
         });
 
-        parse(&mut coff_args, args.into_iter()).unwrap();
+        parse(&mut coff_args, args.into_iter(), &crate::fs::OsFileSystem).unwrap();
 
         let warnings = warnings.lock().unwrap().clone();
         (coff_args, warnings)

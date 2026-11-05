@@ -5373,7 +5373,7 @@ impl LinkCommand {
                 let warnings = warnings.clone();
                 Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
             });
-            parsed_args.parse(get_args)?;
+            parsed_args.parse(get_args, &libwild::OsFileSystem)?;
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);

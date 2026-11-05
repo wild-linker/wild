@@ -23,7 +23,7 @@ fn run() -> libwild::error::Result {
 
     let mut args = libwild::Args::new(std::env::args)?;
     args.set_version_info(VERSION);
-    args.parse(std::env::args)?;
+    args.parse(std::env::args, &libwild::OsFileSystem)?;
 
     if libwild::should_fork(&args) {
         // Safety: We haven't spawned any threads yet.

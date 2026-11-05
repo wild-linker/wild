@@ -250,22 +250,20 @@ pub trait OutputFileData: Send {
 ///         .unwrap()
 ///         .insert(PathBuf::from("main.o"), create_main_object()?);
 ///
-///     let arguments = [
-///         "wild",
-///         "-flavor",
-///         "gnu",
-///         "-m",
-///         "elf_x86_64",
-///         "-shared",
-///         "main.o",
-///         "-o",
-///         "libx.so",
-///     ];
-///     let get_arguments = || arguments.into_iter();
-///     let mut args = libwild::Args::new(get_arguments)?;
-///     args.parse(get_arguments)?;
+///     fs.files.lock().unwrap().insert(
+///         PathBuf::from("args.rsp"),
+///         b"-m elf_x86_64 -shared @inputs.rsp -o libx.so".to_vec(),
+///     );
+///     fs.files.lock().unwrap().insert(
+///         PathBuf::from("inputs.rsp"),
+///         b"main.o".to_vec(),
+///     );
 ///
 ///     let linker = Linker::with_file_system(fs.clone());
+///     let get_arguments = || ["wild", "-flavor", "gnu", "@args.rsp"].into_iter();
+///     let mut args = libwild::Args::new(get_arguments)?;
+///     args.parse(get_arguments, linker.file_system())?;
+///
 ///     linker.run(&args)?;
 ///
 ///     let output = fs
@@ -290,6 +288,12 @@ pub trait FileSystem: Send + Sync + 'static {
         path: &Path,
         prepopulate_maps: bool,
     ) -> Result<(Self::Input, Option<Arc<File>>)>;
+
+    /// Reads a complete UTF-8 text file.
+    fn read_to_string(&self, path: &Path) -> Result<String> {
+        let (input, _) = self.open_input(path, false)?;
+        Ok(std::str::from_utf8(input.bytes())?.to_owned())
+    }
 
     fn is_dir(&self, path: &Path) -> bool {
         self.file_type(path).is_ok_and(|t| t == FileType::Directory)
@@ -404,6 +408,10 @@ impl OutputFileData for OsOutputFile {
 impl FileSystem for OsFileSystem {
     type Input = OsInputFile;
     type Output = OsOutputFile;
+
+    fn read_to_string(&self, path: &Path) -> Result<String> {
+        Ok(std::fs::read_to_string(path)?)
+    }
 
     fn open_input(
         &self,

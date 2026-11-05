@@ -1502,8 +1502,11 @@ mod tests {
                 sysroot: Some(Path::new("/sdk").into()),
                 ..Default::default()
             };
-            args.parse(["-F/vendor", "-framework", "Foo"].into_iter())
-                .unwrap();
+            args.parse(
+                ["-F/vendor", "-framework", "Foo"].into_iter(),
+                &crate::fs::OsFileSystem,
+            )
+            .unwrap();
             let arena = Arena::new();
             let mut loader = FileLoader::new(&arena, Arc::new(file_system));
             let result =
