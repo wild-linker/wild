@@ -865,10 +865,19 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         } else {
             self.take_next_got_entry()?
         };
-        match elf::got_relocation_kind(flags, self.output_kind, is_linker_script_symbol) {
+        match elf::got_relocation_kind(flags, self.output_kind, is_linker_script_symbol, args) {
             elf::GotRelocationKind::JumpSlot => {
                 *got_entry = elf::Word::<C>::from_u64(0)?;
-                self.write_jump_slot_relocation::<A>(got_address, res.dynamic_symbol_index()?)?;
+                let addend = if args.is_plt_marking_enabled() {
+                    (res.plt_address()? + crate::elf_x86_64::PLT_BRANCH_OFFSET) as i64
+                } else {
+                    0
+                };
+                self.write_jump_slot_relocation::<A>(
+                    got_address,
+                    res.dynamic_symbol_index()?,
+                    addend,
+                )?;
             }
             elf::GotRelocationKind::DynamicSymbol => {
                 *got_entry = elf::Word::<C>::from_u64(0)?;
@@ -1248,13 +1257,14 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         &mut self,
         got_address: u64,
         dynamic_symbol_index: u32,
+        addend: i64,
     ) -> Result {
         let out = self
             .rela_plt
             .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".rela.plt"))?;
 
-        out.set_addend(0)?;
+        out.set_addend(addend)?;
         out.set_offset(got_address)?;
 
         out.set_info(
@@ -6407,6 +6417,21 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size,
     ),
+    DynamicEntryWriter::optional(
+        linker_utils::x86_64::DT_X86_64_PLT,
+        has_marked_plt,
+        |inputs| inputs.section_part_layouts.get(part_id::PLT_GOT).mem_offset,
+    ),
+    DynamicEntryWriter::optional(
+        linker_utils::x86_64::DT_X86_64_PLTSZ,
+        has_marked_plt,
+        |inputs| inputs.section_part_layouts.get(part_id::PLT_GOT).mem_size,
+    ),
+    DynamicEntryWriter::optional(
+        linker_utils::x86_64::DT_X86_64_PLTENT,
+        has_marked_plt,
+        |_| elf::PLT_ENTRY_SIZE,
+    ),
     DynamicEntryWriter::optional(object::elf::DT_RELA, has_rela_dyn, |inputs| {
         inputs.vma_of_section(output_section_id::RELA_DYN_RELATIVE)
     }),
@@ -7473,6 +7498,11 @@ fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
     let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
     let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
     relative.mem_size > 0 || general.mem_size > 0
+}
+
+fn has_marked_plt(inputs: &DynamicEntryInputs) -> bool {
+    inputs.args.is_plt_marking_enabled()
+        && inputs.section_part_layouts.get(part_id::PLT_GOT).mem_size > 0
 }
 
 fn has_android_relr_tags(inputs: &DynamicEntryInputs) -> bool {

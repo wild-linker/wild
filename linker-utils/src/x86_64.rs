@@ -5,6 +5,11 @@ use crate::elf::RelocationSize;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
 
+// TODO: Upstream to `object` and use constants here once available.
+pub const DT_X86_64_PLT: object::elf::DynamicTag = object::elf::DynamicTag(0x70000000);
+pub const DT_X86_64_PLTSZ: object::elf::DynamicTag = object::elf::DynamicTag(0x70000001);
+pub const DT_X86_64_PLTENT: object::elf::DynamicTag = object::elf::DynamicTag(0x70000003);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Transforms a mov instruction that would have loaded an address to not use the GOT. The

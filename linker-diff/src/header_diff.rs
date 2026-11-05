@@ -718,6 +718,21 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_SYMINFO => (Cow::Borrowed("DT_SYMINFO"), Converter::None),
             DT_RELCOUNT => (Cow::Borrowed("DT_RELCOUNT"), Converter::None),
             DT_AUXILIARY => (Cow::Borrowed("DT_AUXILIARY"), Converter::DynStrOffset),
+            linker_utils::x86_64::DT_X86_64_PLT
+                if obj.file.architecture() == object::Architecture::X86_64 =>
+            {
+                (Cow::Borrowed("DT_X86_64_PLT"), Converter::SectionAddress)
+            }
+            linker_utils::x86_64::DT_X86_64_PLTSZ
+                if obj.file.architecture() == object::Architecture::X86_64 =>
+            {
+                (Cow::Borrowed("DT_X86_64_PLTSZ"), Converter::None)
+            }
+            linker_utils::x86_64::DT_X86_64_PLTENT
+                if obj.file.architecture() == object::Architecture::X86_64 =>
+            {
+                (Cow::Borrowed("DT_X86_64_PLTENT"), Converter::None)
+            }
             // TODO: DT_GNU_FLAGS_1 once added to `object`
             object::elf::DynamicTag(0x6ffffdf4) => (
                 Cow::Borrowed("DT_GNU_FLAGS_1"),

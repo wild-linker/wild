@@ -161,6 +161,10 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind>;
 
+    fn dynamic_relocation_ignores_addend(self) -> bool {
+        false
+    }
+
     fn should_ignore_when_computing_referent(self) -> bool {
         false
     }

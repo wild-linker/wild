@@ -959,6 +959,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             load_glibc_abi_dt_relr_version(groups, symbol_db)?;
         }
 
+        if symbol_db.args.is_plt_marking_enabled() && symbol_db.output_kind.needs_dynamic() {
+            add_glibc_mark_plt_version_requirement(groups, symbol_db)?;
+        }
+
         Ok(())
     }
 
@@ -2125,7 +2129,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             if flags.needs_plt() {
                 mem_sizes.increment(part_id::PLT_GOT, plt_entry_size(args.architecture()));
             }
-            match got_relocation_kind(flags, output_kind, is_linker_script_symbol) {
+            match got_relocation_kind(flags, output_kind, is_linker_script_symbol, args) {
                 GotRelocationKind::JumpSlot | GotRelocationKind::Ifunc => {
                     mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
                 }
@@ -3270,21 +3274,74 @@ fn load_glibc_abi_dt_relr_version<C: ElfClass>(
     groups: &mut [layout::GroupState<'_, Elf<C>>],
     symbol_db: &SymbolDb<Elf<C>>,
 ) -> Result {
-    if let Some(symbol_id) =
-        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(b"GLIBC_ABI_DT_RELR"))
+    mark_dynamic_symbol_version_as_needed(groups, symbol_db, b"GLIBC_ABI_DT_RELR")?;
+    Ok(())
+}
+
+fn add_glibc_mark_plt_version_requirement<C: ElfClass>(
+    groups: &mut [layout::GroupState<'_, Elf<C>>],
+    symbol_db: &SymbolDb<Elf<C>>,
+) -> Result {
+    // Glibc loaders prior to 2.36 add JUMP_SLOT's addend to the resolved address instead of
+    // ignoring it, so we require that, but only if we're linking against glibc.
+    if !mark_dynamic_symbol_version_as_needed(groups, symbol_db, b"GLIBC_ABI_DT_X86_64_PLT")?
+        && !mark_dynamic_symbol_version_as_needed(groups, symbol_db, b"GLIBC_2.36")?
+        && is_linking_against_glibc(groups, symbol_db)
     {
-        let file_id = symbol_db.file_id_for_symbol(symbol_id);
-        if let layout::FileLayoutState::Dynamic(state) =
-            &mut groups[file_id.group()].files[file_id.file()]
-        {
-            let symbol_index = state.symbol_id_range.id_to_offset(symbol_id);
-            state
-                .format_specific
-                .mark_version_as_needed(state.object.versym[symbol_index])?;
-        }
+        bail!("-z mark-plt requires libc.so.6 to define GLIBC_ABI_DT_X86_64_PLT or GLIBC_2.36");
+    }
+    Ok(())
+}
+
+/// Returns false if the symbol has no version or doesn't belong to a retained dynamic input.
+fn mark_dynamic_symbol_version_as_needed<C: ElfClass>(
+    groups: &mut [layout::GroupState<'_, Elf<C>>],
+    symbol_db: &SymbolDb<Elf<C>>,
+    name: &[u8],
+) -> Result<bool> {
+    let Some(symbol_id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name)) else {
+        return Ok(false);
+    };
+
+    let symbol_id = symbol_db.definition(symbol_id);
+    let file_id = symbol_db.file_id_for_symbol(symbol_id);
+
+    let layout::FileLayoutState::Dynamic(state) =
+        &mut groups[file_id.group()].files[file_id.file()]
+    else {
+        return Ok(false);
+    };
+
+    let symbol_index = state.symbol_id_range.id_to_offset(symbol_id);
+    let Some(&version) = state.object.versym.get(symbol_index) else {
+        return Ok(false);
+    };
+
+    if version.0.get(LittleEndian).index().is_special() {
+        return Ok(false);
     }
 
-    Ok(())
+    state.format_specific.mark_version_as_needed(version)?;
+
+    Ok(true)
+}
+
+fn is_linking_against_glibc<C: ElfClass>(
+    groups: &[layout::GroupState<'_, Elf<C>>],
+    symbol_db: &SymbolDb<Elf<C>>,
+) -> bool {
+    let Some(symbol_id) =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(b"GLIBC_2.2.5"))
+    else {
+        return false;
+    };
+
+    let symbol_id = symbol_db.definition(symbol_id);
+    let file_id = symbol_db.file_id_for_symbol(symbol_id);
+    matches!(
+        &groups[file_id.group()].files[file_id.file()],
+        layout::FileLayoutState::Dynamic(_)
+    )
 }
 
 impl<'data, C: ElfClass> File<'data, C> {
@@ -7472,8 +7529,13 @@ pub(crate) fn got_relocation_kind(
     flags: ValueFlags,
     output_kind: OutputKind,
     is_linker_script_symbol: bool,
+    args: &ElfArgs,
 ) -> GotRelocationKind {
-    if flags.needs_canonical_plt() {
+    if flags.needs_canonical_plt()
+        || (args.is_plt_marking_enabled()
+            && flags.needs_plt()
+            && flags.needs_dynamic_symbol_relocation())
+    {
         GotRelocationKind::JumpSlot
     } else if flags.needs_dynamic_symbol_relocation() {
         GotRelocationKind::DynamicSymbol

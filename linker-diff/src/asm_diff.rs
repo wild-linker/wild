@@ -1993,6 +1993,11 @@ impl<R: RType> DynamicRelocation<'_, R> {
     fn normalised(self) -> Self {
         let mut out = self;
 
+        // In particular, x86-64 JUMP_SLOT addends can identify PLT instructions for rewriting.
+        if self.r_type.dynamic_relocation_ignores_addend() {
+            out.addend = 0;
+        }
+
         // Other linkers appear to emit jump slot relocations even when `-z now` is passed, whereas
         // we emit GLOB_DAT relocations. So we normalise to GLOB_DAT so as to treat them as
         // equivalent.

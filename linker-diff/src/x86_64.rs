@@ -479,6 +479,13 @@ impl crate::arch::RType for RType {
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {
         DynamicRelocationKind::from_x86_64_r_type(self.0)
     }
+
+    fn dynamic_relocation_ignores_addend(self) -> bool {
+        matches!(
+            self.0,
+            object::elf::R_X86_64_JUMP_SLOT | object::elf::R_X86_64_GLOB_DAT
+        )
+    }
 }
 
 impl Display for RType {

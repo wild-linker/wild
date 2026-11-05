@@ -35,6 +35,8 @@ use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 
 pub(crate) struct ElfX86_64;
 
+pub(crate) const PLT_BRANCH_OFFSET: u64 = 4;
+
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
     0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // jmp *{relative GOT address}(%rip)

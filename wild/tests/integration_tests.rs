@@ -81,6 +81,9 @@
 //! ExpectDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RUNPATH, DT_FLAGS) is
 //! present in the .dynamic section. An optional `count=N` asserts the exact number of entries.
 //!
+//! ExpectPltMarking:true|false Checks x86-64 PLT tags and JUMP_SLOT addends against the original
+//! indirect jumps in the output file, before the loader can rewrite them.
+//!
 //! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
 //! absent from the .dynamic section.
 //!
@@ -2166,6 +2169,7 @@ struct Assertions {
     expect_dynamic: bool,
     expected_load_alignments: Vec<u64>,
     expected_dynamic_entries: Vec<ExpectedDynamicEntry>,
+    expected_plt_marking: Option<bool>,
     absent_dynamic_entries: Vec<String>,
     expected_sections: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
@@ -2776,26 +2780,25 @@ fn process_directive(
         "LinkerWorkingDirectory" => {
             config.linker_working_directory = Some(arg.to_owned());
         }
-        "LinkArgs" => {
+        "LinkArgs" | "LinkSoArgs" => {
             if is_rust {
-                bail!("LinkArgs is not used when building Rust code");
+                bail!("{directive} is not used when building Rust code");
             }
             let arg = expand_test_arg_placeholders(arg, config);
+            let args = if directive == "LinkSoArgs" {
+                &mut config.linker_so_args.args
+            } else {
+                &mut config.linker_args.args
+            };
             if let Some((_, rest)) = arg.split_once("./") {
                 let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
                 let src_path = config.test_src_dir.join(filename);
                 config.tracked_files.push(src_path.clone());
                 let with_replaced_path =
                     arg.replace(&format!("./{filename}"), &src_path.display().to_string());
-                config
-                    .linker_args
-                    .args
-                    .extend(ArgumentSet::parse(&with_replaced_path).args);
+                args.extend(ArgumentSet::parse(&with_replaced_path).args);
             } else {
-                config
-                    .linker_args
-                    .args
-                    .extend(ArgumentSet::parse(&arg).args);
+                args.extend(ArgumentSet::parse(&arg).args);
             }
         }
         "PostLinkArgs" => {
@@ -2807,15 +2810,6 @@ fn process_directive(
                 .post_linker_args
                 .args
                 .extend(ArgumentSet::parse(&arg).args);
-        }
-        "LinkSoArgs" => {
-            if is_rust {
-                bail!("LinkSoArgs is not used when building Rust code");
-            }
-            config
-                .linker_so_args
-                .args
-                .extend(ArgumentSet::parse(arg).args);
         }
         "SoSingleLinker" => {
             config.so_single_linker = Some(
@@ -3064,6 +3058,7 @@ fn process_directive(
                     count,
                 });
         }
+        "ExpectPltMarking" => config.assertions.expected_plt_marking = Some(arg.parse()?),
         "NoDynamic" => config
             .assertions
             .absent_dynamic_entries
@@ -6682,12 +6677,16 @@ impl Assertions {
         &self,
         obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
     ) -> Result {
-        if self.expected_dynamic_entries.is_empty() && self.absent_dynamic_entries.is_empty() {
+        if self.expected_dynamic_entries.is_empty()
+            && self.absent_dynamic_entries.is_empty()
+            && self.expected_plt_marking.is_none()
+        {
             return Ok(());
         }
 
         let Some(dynamic_section) = obj.section_by_name(".dynamic") else {
-            if !self.expected_dynamic_entries.is_empty() {
+            if !self.expected_dynamic_entries.is_empty() || self.expected_plt_marking == Some(true)
+            {
                 bail!(
                     "Expected dynamic entries {:?} but no .dynamic section found",
                     self.expected_dynamic_entries
@@ -6705,7 +6704,7 @@ impl Assertions {
 
         for entry in entries {
             let tag = entry.d_tag.get(endian);
-            if let Some(name) = dynamic_tag_name(tag) {
+            if let Some(name) = dynamic_tag_name(tag, obj.architecture()) {
                 *found_tags.entry(name).or_default() += 1;
             }
 
@@ -6737,6 +6736,100 @@ impl Assertions {
             }
         }
 
+        if let Some(marked) = self.expected_plt_marking {
+            Self::verify_plt_marking(obj, entries, marked)?;
+        }
+
+        Ok(())
+    }
+
+    fn verify_plt_marking(
+        obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
+        entries: &[object::elf::Dyn64<object::Endianness>],
+        marked: bool,
+    ) -> Result {
+        ensure!(
+            obj.architecture() == object::Architecture::X86_64,
+            "ExpectPltMarking requires x86-64"
+        );
+        let endian = obj.endian();
+        let tag_value = |name| {
+            entries
+                .iter()
+                .take_while(|entry| entry.d_tag.get(endian) != object::elf::DT_NULL)
+                .find(|entry| {
+                    dynamic_tag_name(entry.d_tag.get(endian), obj.architecture()) == Some(name)
+                })
+                .map(|entry| entry.d_val.get(endian))
+        };
+
+        let (plt, plt_data) = if marked {
+            let plt = tag_value("DT_X86_64_PLT").context("Missing DT_X86_64_PLT")?;
+            let size = tag_value("DT_X86_64_PLTSZ").context("Missing DT_X86_64_PLTSZ")?;
+            let entry_size = tag_value("DT_X86_64_PLTENT").context("Missing DT_X86_64_PLTENT")?;
+            ensure!(
+                entry_size == 16 && size > 0 && size % entry_size == 0,
+                "Invalid marked PLT size {size} or entry size {entry_size}"
+            );
+
+            let data = obj
+                .sections()
+                .find_map(|section| section.data_range(plt, size).transpose())
+                .transpose()?
+                .context("Marked PLT range is not backed by a section")?;
+            (plt, data)
+        } else {
+            for name in ["DT_X86_64_PLT", "DT_X86_64_PLTSZ", "DT_X86_64_PLTENT"] {
+                ensure!(tag_value(name).is_none(), "Unexpected {name}");
+            }
+            (0, &[][..])
+        };
+
+        let section = obj.section_by_name(".rela.plt");
+        let data = section
+            .as_ref()
+            .map(|section| section.data())
+            .transpose()?
+            .unwrap_or_default();
+        let relocs = object::pod::slice_from_all_bytes::<object::elf::Rela64<_>>(data)
+            .map_err(|_| error!("Invalid .rela.plt length"))?;
+        let mut jump_slots = 0;
+
+        for reloc in relocs {
+            if reloc.r_type(endian, false) != object::elf::R_X86_64_JUMP_SLOT {
+                continue;
+            }
+            jump_slots += 1;
+            let branch = reloc.r_addend.get(endian) as u64;
+            if !marked {
+                ensure!(branch == 0, "Unmarked JUMP_SLOT has a nonzero addend");
+                continue;
+            }
+
+            let offset = usize::try_from(branch.wrapping_sub(plt))?;
+            let instruction = plt_data
+                .get(offset..)
+                .and_then(|data| data.get(..6))
+                .context("JUMP_SLOT addend is outside the marked PLT")?;
+            ensure!(
+                instruction[..2] == [0xff, 0x25],
+                "JUMP_SLOT addend does not point to an indirect jump"
+            );
+
+            let displacement = i32::from_le_bytes(instruction[2..].try_into().unwrap());
+            ensure!(
+                branch
+                    .wrapping_add(6)
+                    .wrapping_add_signed(i64::from(displacement))
+                    == reloc.r_offset.get(endian),
+                "Marked PLT jump does not reference its JUMP_SLOT"
+            );
+        }
+
+        ensure!(
+            !marked || jump_slots > 0,
+            "Marked PLT has no JUMP_SLOT relocations"
+        );
         Ok(())
     }
 
@@ -7910,7 +8003,10 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
 }
 
 #[allow(clippy::wildcard_imports)]
-fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
+fn dynamic_tag_name(
+    tag: object::elf::DynamicTag,
+    architecture: object::Architecture,
+) -> Option<&'static str> {
     use object::elf::*;
     Some(match tag {
         DT_NULL => "DT_NULL",
@@ -7954,7 +8050,13 @@ fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
         DT_PREINIT_ARRAYSZ => "DT_PREINIT_ARRAYSZ",
         DT_FLAGS_1 => "DT_FLAGS_1",
         DT_GNU_HASH => "DT_GNU_HASH",
-        DT_AARCH64_BTI_PLT => "DT_AARCH64_BTI_PLT",
+        // TODO: Use the constants from `object` once available.
+        DynamicTag(0x70000000) if architecture == object::Architecture::X86_64 => "DT_X86_64_PLT",
+        DynamicTag(0x70000001) if architecture == object::Architecture::X86_64 => "DT_X86_64_PLTSZ",
+        DynamicTag(0x70000003) if architecture == object::Architecture::X86_64 => {
+            "DT_X86_64_PLTENT"
+        }
+        DT_AARCH64_BTI_PLT if architecture == object::Architecture::Aarch64 => "DT_AARCH64_BTI_PLT",
         DT_RELACOUNT => "DT_RELACOUNT",
         DT_RELCOUNT => "DT_RELCOUNT",
         DT_VERSYM => "DT_VERSYM",
