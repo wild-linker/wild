@@ -8,9 +8,23 @@
 //#Arch: x86_64
 
 //#Config:merge_strings:default
+//#ReferenceLinkers:bfd,lld
 //#LinkArgs:-z noexecstack
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
+
+//#Config:merge_strings_no_relax:merge_strings
+//#CompArgs:-Wa,-mrelax-relocations=no
+//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.static-non-pie
+
+//#Config:merge_strings_pie:merge_strings
+//#Mode:dynamic
+//#LinkArgs:-pie -z now
+
+//#Config:merge_strings_relr:merge_strings_pie
+//#LinkArgs:-z pack-relative-relocs
+//#RelrCount:1
 
 //#Config:export_merged_str_dyn:default
 //#Mode:dynamic
@@ -32,6 +46,7 @@ extern const char s4h[];
 extern const char s1w[];
 extern const char s2w[];
 extern const char a1[];
+extern const unsigned long s2w_with_offset;
 
 const char* get_loc1(void);
 const char* get_s1w(void);
@@ -79,6 +94,9 @@ void _start(void) {
   }
   if (get_s2w_via_offset() != get_s2w()) {
     exit_syscall(111);
+  }
+  if (s2w_with_offset + 0x10000000 != (unsigned long)s2w) {
+    exit_syscall(112);
   }
   exit_syscall(42);
 }
