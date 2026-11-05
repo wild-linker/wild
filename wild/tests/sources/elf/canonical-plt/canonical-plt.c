@@ -5,6 +5,8 @@
 //#Mode:dynamic
 //#Object:runtime.c
 //#Object:canonical-plt-pic.c:-fPIC
+//#Object:read-only-pointer.s
+//#ExpectSym:read_only_pointer section=".rodata"
 //#ReferenceLinkers:bfd,lld
 //#Shared:canonical-plt-shared.c:-fPIC
 //#DiffIgnore:.dynamic.DT_NEEDED
@@ -18,7 +20,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:other:default
-//#Arch:riscv64,loongarch64
+//#Arch:riscv64,loongarch64,ppc64le
 //#LinkArgs:-no-pie
 
 //#Config:aarch64:default
@@ -38,6 +40,11 @@ extern Func get_foo_from_executable(void);
 extern Func get_imported_ifunc_from_executable(void);
 extern void imported_ifunc(void);
 
+// Assembly keeps this pointer in .rodata rather than .data.rel.ro, forcing a
+// canonical PLT address even when the compiler uses writable TOC entries.
+extern Func const read_only_pointer;
+extern Func get_read_only_foo(void);
+
 void _start(void) {
   runtime_init();
 
@@ -56,6 +63,10 @@ void _start(void) {
 
   if (imported_ifunc_address != get_imported_ifunc_from_executable()) {
     exit_syscall(102);
+  }
+
+  if (read_only_pointer != get_read_only_foo()) {
+    exit_syscall(103);
   }
 
   executable_address();

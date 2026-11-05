@@ -6044,11 +6044,7 @@ fn write_canonical_plt_dynamic_symbol_definition<'data, C: ElfClass>(
     if sym.is_undefined(LittleEndian) {
         entry.set_binding_and_type(sym.st_bind(), sym.st_type());
     } else {
-        // A non-zero st_value on SHN_UNDEF is a definition to glibc, so ld.so would
-        // call the ppc64 stub with its own r2. Leave the value zero.
-        if layout.args().architecture() != crate::arch::Architecture::Ppc64 {
-            entry.set_value(resolution.plt_address()?)?;
-        }
+        entry.set_value(resolution.plt_address()?)?;
         entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
     }
 
