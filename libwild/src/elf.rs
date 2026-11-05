@@ -7290,8 +7290,8 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
             common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
         } else if needs_plt_for_call {
             flags_to_add.remove(ValueFlags::DIRECT);
-            // A non-zero st_value is a definition to glibc, and ld.so would call the ppc64 stub
-            // with its own r2. Leave the dynamic symbol undefined.
+            // Omit CANONICAL_PLT. Its non-zero st_value would be a definition to glibc, so ld.so
+            // would call the ppc64 stub with its own r2.
             *flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
         } else if flags.is_function() {
             flags_to_add.remove(ValueFlags::DIRECT);
