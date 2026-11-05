@@ -1,10 +1,13 @@
 use crate::ArchKind;
+use crate::Result;
 use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
 use crate::asm_diff::BasicValueKind;
+use crate::asm_diff::ValueKind;
 use crate::utils::decode_insn_with_objdump;
+use anyhow::ensure;
 use itertools::Itertools;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::AArch64Instruction;
@@ -116,10 +119,16 @@ impl Arch for AArch64 {
                 );
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
-            object::elf::R_AARCH64_LD64_GOT_LO12_NC => relax(
-                RelaxationKind::LdrToAdr,
-                object::elf::R_AARCH64_ADR_PREL_LO21,
-            ),
+            object::elf::R_AARCH64_LD64_GOT_LO12_NC => {
+                relax(
+                    RelaxationKind::LdrToAdr,
+                    object::elf::R_AARCH64_ADR_PREL_LO21,
+                );
+                relax(
+                    RelaxationKind::LdrToAdd,
+                    object::elf::R_AARCH64_ADD_ABS_LO12_NC,
+                );
+            }
             object::elf::R_AARCH64_ADD_ABS_LO12_NC => relax(
                 RelaxationKind::AddToAdr,
                 object::elf::R_AARCH64_ADR_PREL_LO21,
@@ -142,8 +151,18 @@ impl Arch for AArch64 {
         section_bytes: &mut [u8],
         offset_in_section: &mut u64,
         addend: &mut i64,
-    ) {
+    ) -> Result<()> {
+        if relaxation_kind == RelaxationKind::LdrToAdd {
+            let offset = *offset_in_section as usize;
+            ensure!(
+                u32_from_slice(&section_bytes[offset..offset + 4]) & 0xffc0_0000 == 0xf940_0000,
+                "LdrToAdd requires a 64-bit unsigned-immediate integer ldr"
+            );
+        }
+
         relaxation_kind.apply(section_bytes, offset_in_section, addend);
+
+        Ok(())
     }
 
     fn next_relocation_modifier(relaxation_kind: Self::RelaxationKind) -> RelocationModifier {
@@ -548,5 +567,14 @@ impl crate::arch::RelaxationKind for RelaxationKind {
 
     fn is_replace_with_no_op(self) -> bool {
         matches!(self, RelaxationKind::ReplaceWithNop)
+    }
+
+    fn value_kind_override(self) -> Option<ValueKind> {
+        match self {
+            // The preceding ADRP still has a GOT relocation, but the pair now computes the
+            // symbol address directly.
+            Self::LdrToAdd => Some(ValueKind::OptionalPlt),
+            _ => None,
+        }
     }
 }

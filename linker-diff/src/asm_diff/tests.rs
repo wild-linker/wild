@@ -1,10 +1,35 @@
 use super::*;
 use crate::aarch64::AArch64;
 use crate::aarch64::RType as AArch64RelocationType;
+use crate::loongarch64::LoongArch64;
+use crate::loongarch64::RType as LoongArch64RelocationType;
 use crate::x86_64::RType as X86RelocationType;
 use crate::x86_64::X86_64;
 use linker_utils::aarch64::RelaxationKind as AArch64RelaxationKind;
 use linker_utils::x86_64::RelaxationKind as X86RelaxationKind;
+
+#[test]
+fn loongarch64_tls_low_part_preserves_descriptor_kind() {
+    for high_r_type in [
+        object::elf::R_LARCH_TLS_GD_PC_HI20,
+        object::elf::R_LARCH_TLS_LD_PC_HI20,
+    ] {
+        let mut value_kind = ValueKind::OptionalPlt;
+
+        for r_type in [high_r_type, object::elf::R_LARCH_PCALA_LO12] {
+            let info = LoongArch64RelocationType::from_raw(r_type)
+                .relocation_info()
+                .unwrap();
+            if let Some(kind) =
+                value_kind_for_relocation::<LoongArch64>(info.kind, Relocatability::NonRelocatable)
+            {
+                value_kind = kind;
+            }
+        }
+
+        assert_eq!(value_kind, ValueKind::Got(BasicValueKind::TlsGd));
+    }
+}
 
 fn named(name: &'static [u8]) -> Referent<'static, X86RelocationType> {
     Referent::Named(

@@ -229,6 +229,8 @@ impl Config {
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
+                // LLD relaxes GOT loads to adrp/add, including accesses to absolute symbols.
+                "rel.missing-opt.R_AARCH64_LD64_GOT_LO12_NC.LdrToAdd.*",
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // LLD does some different relaxations to us
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.*",

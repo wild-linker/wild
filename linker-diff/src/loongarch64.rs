@@ -1,4 +1,5 @@
 use crate::ArchKind;
+use crate::Result;
 use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
@@ -47,8 +48,9 @@ impl Arch for LoongArch64 {
         section_bytes: &mut [u8],
         offset_in_section: &mut u64,
         addend: &mut i64,
-    ) {
+    ) -> Result<()> {
         relaxation_kind.apply(section_bytes, offset_in_section, addend);
+        Ok(())
     }
 
     fn next_relocation_modifier(relaxation_kind: Self::RelaxationKind) -> RelocationModifier {
