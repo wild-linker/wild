@@ -3127,6 +3127,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             builder.add_sections(&custom.bss);
         }
 
+        builder.emit_location_counters_up_to(builder.num_location_counters());
+
         for &id in &custom.nonalloc {
             if id != output_section_id::RISCV_ATTRIBUTES {
                 builder.add_section(id);

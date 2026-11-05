@@ -185,6 +185,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
     }
 
+    pub(crate) fn num_location_counters(&self) -> usize {
+        self.location_counters.len()
+    }
+
     pub(crate) fn emit_location_counters_up_to(&mut self, lc_end: LocationCounterIndex) {
         if let Some(lc_start) = self.last_location_counter {
             self.emit_location_counters(lc_start, lc_end);
@@ -882,8 +886,22 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         let info = self.section_infos.get_mut(output_id);
         info.min_alignment = info.min_alignment.max(min_alignment);
         info.region_name = region_name.or(info.region_name);
-        if location_info.is_some() {
-            info.location_info = location_info.cloned();
+        if let Some(loc) = location_info {
+            if let Some(existing) = info.location_info.as_mut() {
+                if loc.location.is_some() {
+                    existing.location = loc.location.clone();
+                }
+                if loc.at_location.is_some() {
+                    existing.at_location = loc.at_location.clone();
+                }
+                if loc.from_script {
+                    existing.location_counters = loc.location_counters;
+                    existing.is_top_level = loc.is_top_level;
+                    existing.from_script = true;
+                }
+            } else {
+                info.location_info = Some(loc.clone());
+            }
         }
         info.fill = fill.or(info.fill);
         if !phdrs.is_empty() {
