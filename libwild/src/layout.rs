@@ -6354,7 +6354,7 @@ fn compute_layout_sections<'data, P: Platform>(
     // to construct thread local data. However, uninitialized TLS data is assumed to be zero
     // and therefore no copy happens. It would be wasteful to reserve that address in the TLS
     // template, so we don't do it.
-    let mut tls_memsave: Option<u64> = None;
+    let mut tls_memsave: Option<(u64, u64)> = None;
     let mut in_tls = false;
     let mut has_reset_base_address =
         output_order.has_custom_layout() || !output_sections.has_custom_base_address();
@@ -6476,13 +6476,15 @@ fn compute_layout_sections<'data, P: Platform>(
                     .section_attributes
                     .occupies_only_tls_address_space()
                 {
-                    // Save our current mem_offset as we enter our first nobits TLS section
+                    // Save our current mem_offset and lma_offset as we enter our first nobits TLS
+                    // section
                     if tls_memsave.is_none() {
-                        tls_memsave = Some(mem_offset);
+                        tls_memsave = Some((mem_offset, lma_offset));
                     }
-                } else if let Some(tls_memsave) = tls_memsave.take() {
+                } else if let Some((saved_mem, saved_lma)) = tls_memsave.take() {
                     // Restore offsets when exiting nobits TLS sections
-                    mem_offset = tls_memsave;
+                    mem_offset = saved_mem;
+                    lma_offset = saved_lma;
                 }
 
                 let part_id_range = section_id.part_id_range::<P>();
@@ -6645,12 +6647,13 @@ fn compute_layout_sections<'data, P: Platform>(
                         is_first_part,
                     );
 
-                    if let Some(expr) = section_info
-                        .location_info
-                        .as_ref()
-                        .and_then(|info| info.at_location.as_ref())
+                    if is_first_part
+                        && let Some(expr) = section_info
+                            .location_info
+                            .as_ref()
+                            .and_then(|info| info.at_location.as_ref())
                     {
-                        lma_offset = expression_eval(
+                        let base_lma = expression_eval(
                             expr,
                             &SymbolLoc::None,
                             memory_regions,
@@ -6658,9 +6661,10 @@ fn compute_layout_sections<'data, P: Platform>(
                             &resolved_lc,
                             &laid_out_mem_offsets,
                         )?;
-                        part_layout.lma_offset = lma_offset;
+                        part_layout.lma_offset = base_lma;
                         let section_layout = section_layouts.get_mut(section_id);
-                        section_layout.lma_offset = lma_offset;
+                        section_layout.lma_offset = base_lma;
+                        lma_offset = base_lma + mem_size;
                     }
 
                     is_first_part = false;

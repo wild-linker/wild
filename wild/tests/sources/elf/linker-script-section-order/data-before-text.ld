@@ -8,9 +8,12 @@ SECTIONS {
         data_end = .;
     }
     . = 0x502000;
-	.got : {
-		*(.got)
-	}
+    .got : {
+        *(.got)
+    }
+    .toc : {
+        *(.toc*)
+    }
     . = 0x600000;
     .text : {
         text_start = .;
