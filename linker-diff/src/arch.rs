@@ -1,6 +1,7 @@
 use crate::Binary;
 use crate::Result;
 use crate::asm_diff::BasicValueKind;
+use crate::asm_diff::ValueKind;
 use anyhow::Context;
 use anyhow::bail;
 use linker_utils::elf::BitMask;
@@ -80,13 +81,14 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange;
 
     /// Applies the supplied relaxation to `section_bytes`, possibly also updating
-    /// `offset_in_section` and `addend` according to the relaxation kind.
+    /// `offset_in_section` and `addend` according to the relaxation kind. Returns an error if the
+    /// input instruction does not support this relaxation.
     fn apply_relaxation(
         relaxation_kind: Self::RelaxationKind,
         section_bytes: &mut [u8],
         offset_in_section: &mut u64,
         addend: &mut i64,
-    );
+    ) -> Result<()>;
 
     /// Returns whether the next relocation should be skipped based on a relaxation applied to the
     /// current relocation.
@@ -172,6 +174,12 @@ pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {
 
     /// Returns whether this relaxation replaces an instruction with a nop.
     fn is_replace_with_no_op(self) -> bool;
+
+    /// Overrides the value kind when the resulting relocation alone does not describe how the
+    /// relaxation changes the interpretation of the relocation group.
+    fn value_kind_override(self) -> Option<ValueKind> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2053,7 +2053,7 @@ pub(crate) enum BasicValueKind {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum ValueKind {
+pub(crate) enum ValueKind {
     Unwrapped(BasicValueKind),
     Got(BasicValueKind),
     OptionalPlt,
@@ -2208,12 +2208,14 @@ impl<'data> RelaxationTester<'data> {
         // Apply the relaxation to our scratch buffer.
         let mut scratch_offset = base_scratch_offset;
         let next_modifier = A::next_relocation_modifier(candidate.relaxation_kind);
-        A::apply_relaxation(
+        if let Err(error) = A::apply_relaxation(
             candidate.relaxation_kind,
             scratch,
             &mut scratch_offset,
             &mut addend,
-        );
+        ) {
+            return failure(error.to_string());
+        }
 
         let mask = A::relaxation_mask(candidate, scratch_offset as usize);
 
@@ -2340,8 +2342,16 @@ impl<'data> RelaxationTester<'data> {
 
             let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
 
-            if let Some(kind) =
-                value_kind_for_relocation::<A>(relocation_info.kind, &self.bin.address_index)
+            if let Some(kind) = relaxation_match
+                .relaxation
+                .relaxation_kind
+                .value_kind_override()
+                .or_else(|| {
+                    value_kind_for_relocation::<A>(
+                        relocation_info.kind,
+                        self.bin.address_index.bin_attributes.relocatability,
+                    )
+                })
             {
                 value_kind = kind;
             }
@@ -2996,7 +3006,7 @@ fn matches_are_compatible<A: Arch>(matches: &[RelaxationMatch<'_, A>]) -> bool {
 /// Returns what kind of value we can expect when we extract the value written by a relocation.
 fn value_kind_for_relocation<A: Arch>(
     relocation_kind: RelocationKind,
-    address_index: &AddressIndex,
+    relocatability: Relocatability,
 ) -> Option<ValueKind> {
     let kind = match relocation_kind {
         RelocationKind::Absolute
@@ -3007,7 +3017,7 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => {
-            if address_index.is_relocatable() {
+            if relocatability == Relocatability::Relocatable {
                 ValueKind::Unwrapped(BasicValueKind::AbsoluteValue)
             } else {
                 return None;
