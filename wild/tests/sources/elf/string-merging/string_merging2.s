@@ -59,3 +59,9 @@ get_s2w_via_offset:
     add $100, %rax
     ret
 .size get_s2w_via_offset, .-get_s2w_via_offset
+
+.section .data, "aw", @progbits
+.balign 8
+.globl s2w_with_offset
+s2w_with_offset:
+    .quad s2w - 0x10000000

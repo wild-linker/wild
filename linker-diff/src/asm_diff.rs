@@ -2308,6 +2308,7 @@ impl<'data> RelaxationTester<'data> {
                     Some(DynamicRelocationKind::Relative) => {
                         merged_value =
                             merged_value.wrapping_add(runtime_relocation.addend() as u64);
+                        addend = relaxation_match.addend;
                         continue;
                     }
                     Some(DynamicRelocationKind::Irelative) => {
@@ -2467,6 +2468,7 @@ impl<'data> RelaxationTester<'data> {
         if let Referent::MergedString(orig_merged) = last_match.original_referent {
             referent = Some(self.resolve_merged_string::<A>(
                 merged_value,
+                addend,
                 last_relocation_info,
                 orig_merged,
             )?);
@@ -2747,11 +2749,13 @@ impl<'data> RelaxationTester<'data> {
     fn resolve_merged_string<A: Arch>(
         &self,
         merged_value: u64,
+        addend: i64,
         last_relocation_info: RelocationKindInfo,
         orig_merged: MergedStringRef<'_>,
     ) -> Result<Referent<'data, <A as Arch>::RType>> {
-        let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend {
-            (merged_value as i64 - named_symbol_addend) as u64
+        let string_address = if orig_merged.named_symbol_addend.is_some() {
+            // Relaxations can change the addend, and GOT dereferencing consumes it.
+            merged_value.wrapping_sub(addend as u64)
         } else if last_relocation_info.kind == RelocationKind::Relative {
             merged_value + A::relocation_to_pc_offset(&last_relocation_info)
         } else {
