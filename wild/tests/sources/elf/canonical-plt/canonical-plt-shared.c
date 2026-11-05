@@ -12,3 +12,6 @@ static Func called_ifunc_only_resolver(void) { return called_ifunc_only_impl; }
 __attribute__((ifunc("called_ifunc_only_resolver"))) void called_ifunc_only(void);
 
 Func get_foo(void) { return foo; }
+
+void read_only_foo(void) {}
+Func get_read_only_foo(void) { return read_only_foo; }
