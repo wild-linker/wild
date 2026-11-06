@@ -454,7 +454,9 @@ impl<'data> MergedStringsSection<'data> {
             verbose_timing_phase!("Handle overflows");
 
             // Handle any offsets that didn't fit in their respective blocks in the offset map.
-            let overflow = core::mem::take(&mut resources.overflowed_offsets);
+            let mut overflow = core::mem::take(&mut resources.overflowed_offsets);
+            self.overflowed_string_offsets
+                .reserve(overflow.iter_mut().map(|cell| cell.get_mut().len()).sum());
             overflow
                 .into_iter()
                 .flat_map(|cell| cell.into_inner())
