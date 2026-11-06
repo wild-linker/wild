@@ -932,13 +932,13 @@ pub(crate) trait Platform:
         Ok(())
     }
 
-    /// Returns any extra size needed for the part that currently ends last in
-    /// the output file, once its file offset and provisional size are known.
-    fn last_part_size_to_extend(
-        _record: &OutputRecordLayout,
-        _last_part_id: PartId,
-    ) -> Result<usize> {
-        Ok(0)
+    /// An opportunity to adjust sizes once symbol resolutions are known. Sections that are adjusted
+    /// must be late in the file since they must not affect any symbol addresses.
+    ///
+    /// If implementations change section sizes, then they should call
+    /// `Layout::refresh_file_layouts`.
+    fn apply_post_resolution_adjustments(_layout: &mut Layout<'_, Self>) -> Result {
+        Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(

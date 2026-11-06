@@ -229,20 +229,20 @@ fn write_prelude<'data>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
-    let exports_trie = build_exports_trie(layout)?;
-    let out = buffers.get_mut(part_id::EXPORTS_TRIE);
-    ensure!(
-        exports_trie.len() <= out.len(),
-        "Mach-O exports trie exceeded its reserved size"
+    let exports_trie = &layout.format_specific.exports_trie;
+    let names = crate::macho::ExportNames::new(
+        &layout.dynamic_symbol_definitions,
+        &prelude.format_specific.reexports,
     );
-    out[..exports_trie.len()].copy_from_slice(&exports_trie);
-    out[exports_trie.len()..].fill(0);
+    let out = buffers.get_mut(part_id::EXPORTS_TRIE);
+    exports_trie.encode_into(out, |index| names.get(index))?;
+
     tracing::debug!(
         target: "metrics",
         section = "EXPORTS_TRIE",
         allocated_bytes = out.len(),
-        used_bytes = exports_trie.len(),
-        zero_filled_bytes = out.len() - exports_trie.len(),
+        used_bytes = exports_trie.encoded_size(),
+        zero_filled_bytes = out.len() - exports_trie.encoded_size(),
         "section allocation"
     );
 
@@ -327,7 +327,7 @@ fn write_prelude<'data>(
     write_dyld_chained_fixups_command(layout, take_mut(&mut load_command_buffer)?);
 
     if layout.symbol_db.output_kind.needs_dynsym() {
-        write_exports_trie_command(layout, &exports_trie, take_mut(&mut load_command_buffer)?)?;
+        write_exports_trie_command(layout, take_mut(&mut load_command_buffer)?)?;
     }
 
     write_symtab_command(layout, take_mut(&mut load_command_buffer)?);
@@ -399,87 +399,6 @@ fn write_init_offsets(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
     Ok(())
 }
 
-fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
-    if !layout.symbol_db.output_kind.needs_dynsym() {
-        return Ok(Vec::new());
-    }
-
-    let text_segment = get_text_segment_layout(layout)?;
-    let image_base = text_segment.sizes.mem_offset;
-
-    let mut symbols = layout
-        .dynamic_symbol_definitions
-        .iter()
-        .map(|symbol| {
-            let resolution = layout
-                .symbol_resolutions
-                .get(symbol.symbol_id)
-                .with_context(|| {
-                    format!(
-                        "Missing resolution for exported symbol `{}`",
-                        String::from_utf8_lossy(symbol.name)
-                    )
-                })?;
-
-            let (address, mut flags) = if resolution.is_absolute() {
-                (
-                    resolution.raw_value,
-                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE.into(),
-                )
-            } else {
-                let is_thread_local = layout
-                    .symbol_db
-                    .output_section_id(symbol.symbol_id)
-                    .map(|id| layout.output_sections.primary_output_section(id))
-                    .is_some_and(|id| {
-                        layout.output_sections.section_flags(id).typ() == S_THREAD_LOCAL_VARIABLES
-                    });
-
-                let kind = if is_thread_local {
-                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL
-                } else {
-                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_REGULAR
-                };
-
-                (
-                    resolution
-                        .raw_value
-                        .checked_sub(image_base)
-                        .with_context(|| {
-                            format!(
-                                "Exported symbol `{}` is before the Mach-O image base",
-                                String::from_utf8_lossy(symbol.name)
-                            )
-                        })?,
-                    kind.into(),
-                )
-            };
-
-            if exported_symbol_is_weak(layout, symbol.symbol_id)? {
-                flags |= object::macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
-            }
-
-            Ok(crate::trie::Symbol {
-                name: symbol.name,
-                target: crate::trie::Target::Regular { address },
-                flags,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let prelude = layout.prelude();
-
-    symbols.extend(
-        prelude
-            .format_specific
-            .reexports
-            .iter()
-            .map(super::macho::Reexport::trie_symbol),
-    );
-
-    Ok(prelude.format_specific.exports_trie.encode(&symbols))
-}
-
 fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result<Vec<u8>> {
     let unwind_infos = layout
         .format_specific
@@ -539,15 +458,6 @@ fn build_compact_unwind(layout: &MachOLayout<'_>, section_size: usize) -> Result
 
     let text_segment = get_text_segment_layout(layout)?.sizes.mem_offset;
     crate::compact_unwind::build(text_segment, section_size, &unwind_infos)
-}
-
-fn exported_symbol_is_weak(layout: &MachOLayout<'_>, symbol_id: SymbolId) -> Result<bool> {
-    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-    let FileLayout::Object(object) = layout.file_layout(file_id) else {
-        return Ok(false);
-    };
-    let symbol_index = object.symbol_id_range.id_to_input(symbol_id);
-    Ok(object.object.symbol(symbol_index)?.is_weak())
 }
 
 fn write_plt_entries<A: Arch<Platform = MachO>>(
@@ -1303,11 +1213,7 @@ fn write_dyld_chained_fixups_command(layout: &MachOLayout, command: &mut DyldCha
         .set(LE, chained_fixup_table.file_size as u32);
 }
 
-fn write_exports_trie_command(
-    layout: &MachOLayout,
-    exports_trie: &[u8],
-    command: &mut ExportsTrieCommand,
-) -> Result {
+fn write_exports_trie_command(layout: &MachOLayout, command: &mut ExportsTrieCommand) -> Result {
     let exports_trie_layout = layout.section_layouts.get(output_section_id::EXPORTS_TRIE);
 
     command.cmd.set(LE, LC_DYLD_EXPORTS_TRIE);
@@ -1323,8 +1229,8 @@ fn write_exports_trie_command(
     );
     command.datasize.set(
         LE,
-        exports_trie
-            .len()
+        exports_trie_layout
+            .file_size
             .try_into()
             .context("Mach-O exports trie size exceeds 32 bits")?,
     );
