@@ -5015,6 +5015,28 @@ fn make_archive(
     };
 
     let mut cmd = Command::new(ar_cmd);
+
+    if config.platform == PlatformKind::Elf
+        && config.requires_linker_plugin
+        && let LinkerDriver::Compiler(compiler @ Compiler::Clang(_)) = config.linker_driver
+    {
+        // GNU ar may not discover LLVMgold automatically, leaving bitcode archives without an
+        // index.
+        let output = Command::new(compiler.name())
+            .arg("-print-file-name=LLVMgold.so")
+            .output()
+            .context("Failed to locate Clang's LTO plugin")?;
+
+        ensure!(
+            output.status.success(),
+            "Failed to locate Clang's LTO plugin: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let plugin_path = String::from_utf8(output.stdout).context("Non-UTF-8 LTO plugin path")?;
+        cmd.arg("--plugin").arg(plugin_path.trim());
+    }
+
     cmd.arg("cr");
 
     if thin {

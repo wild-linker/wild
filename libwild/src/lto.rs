@@ -5,7 +5,9 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::platform::Args as _;
+use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::Symbol as _;
 use crate::resolution::ResolutionResources;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -17,8 +19,11 @@ use crate::symbol_db::SymbolIdRange;
 use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crossbeam_utils::atomic::AtomicCell;
 use rayon::Scope;
+use rayon::iter::IntoParallelRefIterator as _;
+use rayon::iter::ParallelIterator as _;
 
 pub(crate) struct SymbolPropertiesDisplay<'data>(&'data LtoSymbol<'data>);
 #[derive(Debug)]
@@ -192,6 +197,40 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
                 Ok(())
             },
         )
+}
+
+pub(crate) fn mark_native_symbols_as_non_ir_ref<C: ElfClass>(
+    symbol_db: &SymbolDb<Elf<C>>,
+    per_symbol_flags: &mut PerSymbolFlags,
+    resolved_groups: &[ResolvedGroup<Elf<C>>],
+) {
+    verbose_timing_phase!("Mark native symbols HAS_NON_IR_REF");
+
+    let flags = per_symbol_flags.borrow_atomic();
+    resolved_groups.par_iter().for_each(|group| {
+        for file in &group.files {
+            let ResolvedFile::Object(obj) = file else {
+                continue;
+            };
+
+            for (symbol_id, symbol) in obj
+                .common
+                .symbol_id_range
+                .into_iter()
+                .zip(obj.common.object.symbols_iter())
+            {
+                // A native definition can reference itself and still be overridden by LTO.
+                if !symbol.is_local() {
+                    let definition = symbol_db.definition(symbol_id);
+                    if !definition.is_undefined() {
+                        flags
+                            .get_atomic(definition)
+                            .fetch_or(ValueFlags::HAS_NON_IR_REF);
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub(crate) fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
