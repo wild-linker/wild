@@ -189,7 +189,7 @@ fn add_silently_ignored_flags(parser: &mut ArgumentParser<CoffArgs>) {
 
 /// Parses `/SUBSYSTEM:name[,major[.minor]]`. The version only sets optional-header fields we don't
 /// emit yet, so it's validated and ignored.
-fn parse_subsystem(value: &str) -> crate::error::Result<Subsystem> {
+pub(crate) fn parse_subsystem(value: &str) -> crate::error::Result<Subsystem> {
     let (name, version) = value
         .split_once(',')
         .map_or((value, None), |(name, version)| (name, Some(version)));

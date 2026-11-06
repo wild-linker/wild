@@ -2,10 +2,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::Modifiers;
-use crate::args::mingw;
 use crate::args::msvc;
-use crate::error;
-use crate::error::Error;
 use crate::error::Result;
 use crate::platform;
 use std::path::Path;
@@ -21,9 +18,10 @@ pub(crate) enum Subsystem {
     Windows,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CoffArgs {
-    is_mingw: bool,
+    pub(crate) is_mingw: bool,
     pub(crate) common: CommonArgs,
     pub(crate) entry: Option<String>,
     pub(crate) subsystem: Option<Subsystem>,
@@ -35,43 +33,17 @@ pub struct CoffArgs {
     /// Set by a bare `/NODEFAULTLIB`, which ignores every default library.
     pub(crate) no_default_libraries: bool,
 
-    // TODO: how to handle this?
-    // link.exe uses machine while ld uses emulation
     pub(crate) machine: CoffMachine,
-    emulation: mingw::Emulation,
-    emulation_error: Option<Error>,
 }
 
 impl CoffArgs {
-    pub(crate) fn new(is_mingw: bool) -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let args = Self {
-            is_mingw,
             common: CommonArgs::from_env()?,
             ..Default::default()
         };
 
-        // TODO: check if win32 bfd supports this
-        // if let Ok(value) = env::var(LDEMULATION_ENV) {
-        //     args.set_emulation_str(&value, LDEMULATION_ENV);
-        // }
-
         Ok(args)
-    }
-
-    pub(crate) fn set_emulation_str(&mut self, value: &str, source: &'static str) {
-        match value.parse() {
-            Ok(emulation) => self.set_emulation(emulation),
-            Err(_) => {
-                self.emulation_error = Some(error!(
-                    "Emulation '{value}' is not yet supported (from {source})"
-                ));
-            }
-        }
-    }
-
-    pub(crate) fn set_emulation(&mut self, emulation: mingw::Emulation) {
-        self.emulation = emulation;
-        self.emulation_error = None;
     }
 }
 
@@ -88,8 +60,6 @@ impl Default for CoffArgs {
             default_libraries: Vec::new(),
             excluded_default_libraries: Vec::new(),
             no_default_libraries: false,
-            emulation: mingw::Emulation::I386Pep,
-            emulation_error: None,
         }
     }
 }
@@ -161,18 +131,12 @@ impl platform::Args for CoffArgs {
 
     // TODO: use trait with implementations to avoid repeating `if mingw` all over the place?
     fn is_ignored_flag(&self, flag: &str) -> bool {
-        if self.is_mingw {
-            mingw::is_ignored_flag(flag)
-        } else {
-            msvc::is_ignored_flag(flag)
-        }
+        msvc::is_ignored_flag(flag)
     }
 
     fn architecture(&self) -> Architecture {
-        if self.is_mingw {
-            self.emulation.architecture()
-        } else {
-            unimplemented!()
+        match self.machine {
+            CoffMachine::X86_64 => Architecture::X86_64,
         }
     }
 }
@@ -184,11 +148,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
-    let arg_parser = if args.is_mingw {
-        mingw::setup_argument_parser()
-    } else {
-        msvc::setup_argument_parser()
-    };
+    let arg_parser = msvc::setup_argument_parser();
 
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();

@@ -797,7 +797,7 @@ fn regular_section_or_discard(section_id: Option<OutputSectionId>) -> SectionRul
 #[test]
 fn test_section_mapping() {
     let rules = SectionRules::from_rules(&crate::elf::Elf64::default_layout_rules(
-        &crate::args::elf::ElfArgs::new().unwrap(),
+        &crate::args::elf::ElfArgs::new().unwrap().elf(),
     ));
     let header = object::elf::SectionHeader64::<object::LittleEndian> {
         sh_name: Default::default(),

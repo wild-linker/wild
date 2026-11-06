@@ -161,6 +161,9 @@ pub struct ElfArgs {
 
     pub(crate) only_keep_debug_requested: bool,
     pub(crate) strip_requested: bool,
+
+    // MinGW only
+    subsystem: Option<crate::args::coff::Subsystem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,7 +302,7 @@ enum DynamicLinker {
 }
 
 #[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
-enum Emulation {
+pub(crate) enum Emulation {
     #[strum(serialize = "elf_x86_64", message = "x86-64 ELF target")]
     ElfX86_64,
     #[strum(serialize = "elf_x86_64_sol2", message = "x86-64 ELF target (Solaris)")]
@@ -316,6 +319,8 @@ enum Emulation {
     LoongArch64,
     #[strum(serialize = "elf64lppc", message = "PowerPC64 LE ELF target")]
     Ppc64,
+    #[strum(serialize = "i386pep", message = "x86-64 PE target")]
+    I386Pep,
     #[strum(disabled)]
     Unsupported,
 }
@@ -323,7 +328,9 @@ enum Emulation {
 impl Emulation {
     fn architecture(self) -> Architecture {
         match self {
-            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 => Architecture::X86_64,
+            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 | Emulation::I386Pep => {
+                Architecture::X86_64
+            }
             Emulation::AArch64 => Architecture::AArch64,
             Emulation::RiscV64 => Architecture::RiscV64,
             Emulation::LoongArch64 => Architecture::LoongArch64,
@@ -435,6 +442,8 @@ impl Default for ElfArgs {
 
             only_keep_debug_requested: false,
             strip_requested: false,
+
+            subsystem: None,
         }
     }
 }
@@ -467,8 +476,23 @@ const fn default_emulation() -> Emulation {
     Emulation::Unsupported
 }
 
+pub(crate) enum LdArgsKind {
+    Elf(ElfArgs),
+    MingwArgs(crate::args::coff::CoffArgs),
+}
+
+#[cfg(test)]
+impl LdArgsKind {
+    pub(crate) fn elf(self) -> ElfArgs {
+        match self {
+            LdArgsKind::Elf(args) => args,
+            _ => panic!("not elf args"),
+        }
+    }
+}
+
 impl ElfArgs {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<LdArgsKind> {
         let mut args = Self {
             common: CommonArgs::from_env()?,
             ..Default::default()
@@ -478,7 +502,21 @@ impl ElfArgs {
             args.set_emulation_str(&value, LDEMULATION_ENV);
         }
 
-        Ok(args)
+        if matches!(args.emulation, Emulation::I386Pep) {
+            let convert = |args: ElfArgs| -> Result<crate::args::coff::CoffArgs> {
+                Ok(crate::args::coff::CoffArgs {
+                    common: args.common,
+                    entry: args.entry,
+                    lib_search_path: args.lib_search_path,
+                    is_dll: !args.should_output_executable,
+                    is_mingw: true,
+                    ..Default::default()
+                })
+            };
+            let args = convert(args)?;
+            return Ok(LdArgsKind::MingwArgs(args));
+        };
+        Ok(LdArgsKind::Elf(args))
     }
 
     fn set_emulation_str(&mut self, value: &str, source: &'static str) {
@@ -681,6 +719,15 @@ pub(crate) fn supported_emulations() -> String {
 
 fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     let mut parser = ArgumentParser::<ElfArgs>::new();
+
+    parser
+        .declare_with_param()
+        .long("subsystem")
+        .help("Set subsystem")
+        .execute(|args, _modifier_stack, value| {
+            args.subsystem = Some(crate::args::msvc::parse_subsystem(value)?);
+            Ok(())
+        });
 
     parser
         .declare_with_param()
@@ -2613,7 +2660,7 @@ mod tests {
 
     #[test]
     fn test_parse_inline_only_options() {
-        let mut args = ElfArgs::new().unwrap();
+        let mut args = ElfArgs::new().unwrap().elf();
         args.parse(INPUT1.iter()).unwrap();
         input1_assertions(&args);
     }
@@ -2630,7 +2677,7 @@ mod tests {
 
         // pass the name of the file where options are as the only inline option "@filename"
         let inline_options = [format!("@{}", file.path().to_str().unwrap())];
-        let mut args = ElfArgs::new().unwrap();
+        let mut args = ElfArgs::new().unwrap().elf();
         args.parse(inline_options.iter()).unwrap();
         input1_assertions(&args);
     }
@@ -2653,7 +2700,7 @@ mod tests {
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
-        let mut args = ElfArgs::new().unwrap();
+        let mut args = ElfArgs::new().unwrap().elf();
         args.parse(inline_options.iter()).unwrap();
         inline_and_file_options_assertions(&args);
     }
@@ -2679,7 +2726,7 @@ mod tests {
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
-        let mut args = ElfArgs::new().unwrap();
+        let mut args = ElfArgs::new().unwrap().elf();
         args.parse(inline_options.iter()).unwrap();
         inline_and_file_options_assertions(&args);
     }
@@ -2701,7 +2748,7 @@ mod tests {
         let inline_options = [format!("@{}", file1.path().to_str().unwrap())];
 
         // confirm that this works and the resulting set of options is correct
-        let mut args = ElfArgs::new().unwrap();
+        let mut args = ElfArgs::new().unwrap().elf();
         args.parse(inline_options.iter())
             .expect("Recursive @file options should parse correctly but be ignored");
         input1_assertions(&args);
@@ -2755,14 +2802,14 @@ mod tests {
 
     // Helper: parse a small set of args and return the resulting ElfArgs.
     fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> ElfArgs {
-        let mut elf_args = ElfArgs::new().unwrap();
+        let mut elf_args = ElfArgs::new().unwrap().elf();
         elf_args.parse(args.into_iter()).unwrap();
         elf_args
     }
 
     // Helper: parse args and expect a parse error.
     fn parse_args_err<'a>(args: impl IntoIterator<Item = &'a str>) -> crate::error::Error {
-        let mut elf_args = ElfArgs::new().unwrap();
+        let mut elf_args = ElfArgs::new().unwrap().elf();
         elf_args.parse(args.into_iter()).unwrap_err()
     }
 

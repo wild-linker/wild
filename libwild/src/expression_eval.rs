@@ -1109,7 +1109,7 @@ mod tests {
     ) -> R {
         let sections = OutputSections::<Elf64>::for_testing();
         let layouts = sections.new_section_map::<OutputRecordLayout>();
-        let args = crate::args::elf::ElfArgs::new().unwrap();
+        let args = crate::args::elf::ElfArgs::new().unwrap().elf();
         let output_kind = crate::output_kind::OutputKind::PartialLink;
         let arena = Arena::new();
         let auxiliary =
