@@ -2,7 +2,6 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
-use crate::FileSystem;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -22,7 +21,6 @@ use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
 use crate::expression_eval::evaluate_early_expression;
 use crate::expression_eval::evaluate_expression;
-use crate::file_writer;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileId;
@@ -111,12 +109,11 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 
-pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
+pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     symbol_db: SymbolDb<'data, A::Platform>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, A::Platform>>,
     mut output_sections: OutputSections<'data, P>,
-    output: &mut file_writer::Output<F>,
 ) -> Result<Layout<'data, A::Platform>> {
     timing_phase!("Layout");
 
@@ -534,8 +531,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     P::maybe_only_keep_debug::<A>(&mut layout)?;
     P::validate_layout(&layout)?;
 
-    output.set_size(compute_total_file_size(&layout.section_layouts));
-
     Ok(layout)
 }
 
@@ -844,12 +839,6 @@ pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
             _ => None,
         })
     })
-}
-
-fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
-    let mut file_size = 0;
-    section_layouts.for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
-    file_size as u64
 }
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
@@ -1841,6 +1830,13 @@ pub(crate) struct MemoryRegion {
 }
 
 impl<'data, P: Platform> Layout<'data, P> {
+    pub(crate) fn file_size(&self) -> u64 {
+        let mut file_size = 0;
+        self.section_layouts
+            .for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
+        file_size as u64
+    }
+
     pub(crate) fn prelude(&self) -> &PreludeLayout<'data, P> {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {

@@ -27,12 +27,10 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 
 pub struct Output<F: FileSystem> {
     path: Arc<Path>,
-    creator: FileCreator<F::Output>,
+    background_deletion: bool,
     config: OutputConfig,
     file_system: Arc<F>,
 }
@@ -44,16 +42,6 @@ struct OutputConfig {
     file_write_mode: Option<FileWriteMode>,
     fallocate: Option<bool>,
     madvise_huge_pages: Option<bool>,
-}
-
-enum FileCreator<O: OutputFileData> {
-    Background {
-        sized_output_sender: Option<Sender<Result<SizedOutput<O>>>>,
-        sized_output_recv: Receiver<Result<SizedOutput<O>>>,
-    },
-    Regular {
-        file_size: Option<u64>,
-    },
 }
 
 pub(crate) struct SizedOutput<O: OutputFileData> {
@@ -104,20 +92,10 @@ impl<F: FileSystem> Output<F> {
             default_file_replacement_mode::<P>(args, output_kind, file_system.as_ref())
         });
 
-        let creator = if args.common().available_threads.get() > 1 {
-            let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
-            FileCreator::Background {
-                sized_output_sender: Some(sized_output_sender),
-                sized_output_recv,
-            }
-        } else {
-            FileCreator::Regular { file_size: None }
-        };
-
         Output {
             path: args.output().clone(),
             file_system,
-            creator,
+            background_deletion: args.common().available_threads.get() > 1,
             config: OutputConfig {
                 file_replacement_mode,
                 should_write_trace: args.common().write_trace,
@@ -125,59 +103,6 @@ impl<F: FileSystem> Output<F> {
                 fallocate: args.common().fallocate_output_file,
                 madvise_huge_pages: args.common().madvise_huge_pages,
             },
-        }
-    }
-
-    pub(crate) fn set_size(&mut self, size: u64) {
-        match &mut self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv: _,
-            } => {
-                let sender = sized_output_sender
-                    .take()
-                    .expect("set_size must only be called once");
-                let path = self.path.clone();
-
-                let output_config = self.config;
-                let file_system = Arc::clone(&self.file_system);
-
-                rayon::spawn(move || {
-                    verbose_timing_phase!("Create output file");
-
-                    if output_config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace
-                    {
-                        // Rename the old output file so that we can create a new file in its place.
-                        // Reusing the existing file would also be an option, but that wouldn't
-                        // error if the file is currently being executed.
-                        let renamed_old_file = path.with_extension("delete");
-                        let rename_status = file_system.rename_file(&path, &renamed_old_file);
-
-                        // If there was an old output file that we renamed, then delete it. We do so
-                        // from a separate task so that it can run in the background while other
-                        // threads continue working. Deleting can take a while for large files.
-                        if rename_status.is_ok() {
-                            let file_system = Arc::clone(&file_system);
-                            rayon::spawn(move || {
-                                let _ = file_system.remove_file(&renamed_old_file);
-                                // Note, we don't currently signal when we've finished deleting the
-                                // file. Based on experiments run on Linux 6.9.3, if we exit while
-                                // an unlink syscall is in progress on a separate thread, Linux will
-                                // wait for the unlink syscall to complete before terminating the
-                                // process.
-                            });
-                        }
-                    }
-
-                    // Create the output file.
-                    let sized_output = SizedOutput::new(&file_system, &path, output_config, size);
-
-                    // Pass it to the main thread, so that it can start writing it once layout
-                    // finishes.
-                    let _ = sender.send(sized_output);
-                });
-            }
-            FileCreator::Regular { file_size } => *file_size = Some(size),
         }
     }
 
@@ -190,22 +115,7 @@ impl<F: FileSystem> Output<F> {
         if layout.args().common().write_layout {
             write_layout(layout, self.file_system.as_ref())?;
         }
-        let mut sized_output = match &self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv,
-            } => {
-                assert!(sized_output_sender.is_none(), "set_size was never called");
-                wait_for_sized_output(sized_output_recv)?
-            }
-            FileCreator::Regular { file_size } => {
-                if self.config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace {
-                    delete_old_output(self.file_system.as_ref(), &self.path);
-                }
-                let file_size = file_size.context("set_size was never called")?;
-                self.create_file_non_lazily(file_size)?
-            }
-        };
+        let mut sized_output = self.create_file(layout.file_size())?;
         write_fn(&mut sized_output, layout)?;
         sized_output.trace.close(self.file_system.as_ref())?;
 
@@ -219,8 +129,11 @@ impl<F: FileSystem> Output<F> {
         Ok(())
     }
 
-    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput<F::Output>> {
+    fn create_file(&self, file_size: u64) -> Result<SizedOutput<F::Output>> {
         timing_phase!("Create output file");
+        if self.config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace {
+            delete_old_output(&self.file_system, &self.path, self.background_deletion);
+        }
         SizedOutput::new(&self.file_system, &self.path, self.config, file_size)
     }
 }
@@ -246,17 +159,25 @@ fn default_file_replacement_mode<P: Platform>(
     P::DEFAULT_FILE_REPLACEMENT_MODE
 }
 
-/// Delete the old output file. Note, this is only used when running from a single thread.
-fn delete_old_output(file_system: &impl FileSystem, path: &Path) {
+fn delete_old_output<F: FileSystem>(file_system: &Arc<F>, path: &Path, background: bool) {
     timing_phase!("Delete old output");
-    let _ = file_system.remove_file(path);
-}
-
-fn wait_for_sized_output<O: OutputFileData>(
-    sized_output_recv: &Receiver<Result<SizedOutput<O>>>,
-) -> Result<SizedOutput<O>> {
-    timing_phase!("Wait for output file creation");
-    sized_output_recv.recv()?
+    if background {
+        // Rename the old output so we can create its replacement while deleting it. Deleting can
+        // take a while for large files.
+        let renamed_old_file = path.with_extension("delete");
+        if file_system.rename_file(path, &renamed_old_file).is_ok() {
+            let file_system = Arc::clone(file_system);
+            rayon::spawn(move || {
+                let _ = file_system.remove_file(&renamed_old_file);
+                // Note, we don't currently signal when we've finished deleting the file. Based on
+                // experiments run on Linux 6.9.3, if we exit while an unlink syscall is in progress
+                // on a separate thread, Linux will wait for it to complete before terminating the
+                // process.
+            });
+        }
+    } else {
+        let _ = file_system.remove_file(path);
+    }
 }
 
 impl<O: OutputFileData> SizedOutput<O> {

@@ -337,7 +337,7 @@ impl<F: FileSystem> Linker<F> {
 
         let output_kind = OutputKind::new(args, file_loader);
 
-        let mut output = file_writer::Output::new::<P>(args, output_kind, self.file_system.clone());
+        let output = file_writer::Output::new::<P>(args, output_kind, self.file_system.clone());
 
         let mut output_sections = OutputSections::with_base_address(
             args.image_base()
@@ -417,13 +417,8 @@ impl<F: FileSystem> Linker<F> {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<P, A, F>(
-            symbol_db,
-            per_symbol_flags,
-            resolved,
-            output_sections,
-            &mut output,
-        )?;
+        let layout =
+            layout::compute::<P, A>(symbol_db, per_symbol_flags, resolved, output_sections)?;
 
         P::write_output_file::<A, F>(&output, &layout)?;
         diff::maybe_diff()?;
