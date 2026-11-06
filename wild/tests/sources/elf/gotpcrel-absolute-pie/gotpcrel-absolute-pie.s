@@ -13,7 +13,6 @@
 //#LinkArgs:--defsym target=42
 // BFD incorrectly relaxes this load to LEA, adding the PIE load bias to 42.
 //#ReferenceLinkers:lld
-//#DiffIgnore:section.got.plt.entsize
 
 //#Config:fixed:default
 //#CompArgs:-Wa,--defsym,expected=42

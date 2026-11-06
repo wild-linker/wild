@@ -13,7 +13,6 @@
 //#RunEnabled:false
 //#ReferenceLinkers:lld
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
-//#DiffIgnore:section.got.plt.entsize
 
 //#Config:x86_64:default
 //#Arch:x86_64

@@ -7,7 +7,6 @@
 //#CompArgs:-fPIC
 //#LinkArgs:-shared
 //#DiffIgnore:.dynamic.DT_FLAGS_1*
-//#DiffIgnore:section.got.plt.entsize
 //#RunEnabled:false
 //#ExpectSection:.got
 //#ExpectSym:_GLOBAL_OFFSET_TABLE_ binding=local

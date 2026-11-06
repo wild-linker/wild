@@ -6,7 +6,6 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:section.relro_padding
-//#DiffIgnore:section.got.plt.entsize
 
 //#Config:both-hashes:default
 //#LinkArgs:--hash-style=both -shared -z now

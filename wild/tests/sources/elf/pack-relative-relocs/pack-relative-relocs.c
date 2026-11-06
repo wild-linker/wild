@@ -10,7 +10,6 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:dynsym.__global_pointer$.section
-//#DiffIgnore:section.got.plt.entsize
 //#Mode:dynamic
 //#Contains:.relr.dyn
 //#DoesNotContain:GLIBC_ABI_DT_RELR

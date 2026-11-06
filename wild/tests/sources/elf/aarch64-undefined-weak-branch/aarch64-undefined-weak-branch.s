@@ -16,7 +16,6 @@
 //#LinkArgs:-shared
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
-//#DiffIgnore:section.got.plt.entsize
 
 //#Config:shared-conditional-only:shared
 //#CompArgs:-Wa,--defsym,CONDITIONAL_ONLY=1

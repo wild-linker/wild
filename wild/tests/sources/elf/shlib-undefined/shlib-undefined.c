@@ -10,7 +10,6 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 // Ignore a few things that lld does differently.
 //#DiffIgnore:section.relro_padding
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 
 // Allow linking against shared object with undefined symbols. We don't run this because the runtime

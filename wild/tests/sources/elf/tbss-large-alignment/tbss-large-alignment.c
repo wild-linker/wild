@@ -4,7 +4,6 @@
 //#LinkArgs:-Wl,-znow -pie
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.rodata
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.gnu.version_r.alignment
 //#CompArgs:-fPIE
 

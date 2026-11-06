@@ -40,7 +40,6 @@
 //#Config:symbolic-non-weak:common
 //#LinkArgs:-Bsymbolic-non-weak
 //#ReferenceLinkers:lld
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.relro_padding
 //#CompArgs:-fPIE
 //#CompSoArgs:-fPIE
@@ -49,7 +48,6 @@
 //#LinkArgs:-Bsymbolic-non-weak-functions
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.relro_padding
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:dynsym.baz.section
 //#CompArgs:-fPIE
 //#CompSoArgs:-fPIE
