@@ -64,4 +64,4 @@ impl Architecture {
 }
 
 pub(crate) const SUPPORTED_TARGETS: &str =
-    "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle";
+    "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle pe-x86-64";

@@ -1,3 +1,5 @@
+use crate::alignment::Alignment;
+use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::Modifiers;
 use crate::args::mingw;
@@ -140,8 +142,11 @@ impl platform::Args for CoffArgs {
         todo!()
     }
 
-    fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
-        todo!()
+    fn loadable_segment_alignment(&self) -> Alignment {
+        match self.architecture() {
+            Architecture::X86_64 => Alignment { exponent: 12 },
+            _ => unimplemented!(),
+        }
     }
 
     fn should_merge_sections(&self) -> bool {
@@ -160,6 +165,14 @@ impl platform::Args for CoffArgs {
             mingw::is_ignored_flag(flag)
         } else {
             msvc::is_ignored_flag(flag)
+        }
+    }
+
+    fn architecture(&self) -> Architecture {
+        if self.is_mingw {
+            self.emulation.architecture()
+        } else {
+            unimplemented!()
         }
     }
 }
