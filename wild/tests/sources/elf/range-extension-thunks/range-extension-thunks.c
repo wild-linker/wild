@@ -25,7 +25,6 @@
 // We only test with lld, since GNU ld doesn't seem to be able to create thunks for ifuncs.
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.rodata
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.iplt
 //#DiffIgnore:section.gnu.version_r.alignment
 // On Ubuntu 24.04, lld ends up setting the INFO flag for .rela.dyn.

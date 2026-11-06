@@ -9,7 +9,6 @@
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
-//#DiffIgnore:section.got.plt.entsize
 .global _start
 _start:
     call zed_fn

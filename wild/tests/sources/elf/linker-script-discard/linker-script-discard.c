@@ -3,7 +3,6 @@
 //#RunEnabled:false
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.got
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 // Wild does not emit the `.eh_frame` section as all code sections are discarded, but lld still

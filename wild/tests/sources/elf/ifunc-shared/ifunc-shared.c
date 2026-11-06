@@ -11,7 +11,6 @@
 
 //#Config:lld:default
 //#ReferenceLinkers:lld
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:.dynamic.DT_RELA*
 
 int compute_value32(void);

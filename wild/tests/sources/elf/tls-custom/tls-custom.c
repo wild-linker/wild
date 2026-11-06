@@ -10,7 +10,6 @@
 // At least some versions of GNU ld for risc-v export these symbols for some reason.
 //#DiffIgnore:dynsym.tbss_a.section
 //#DiffIgnore:dynsym.tcustom_a.section
-//#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.gnu.version_r.alignment
 // Wild relaxes the startup code's GOT load of main to an immediate. LLD uses LEA.
 //#DiffIgnore:rel.R_X86_64_32S.R_X86_64_PC32

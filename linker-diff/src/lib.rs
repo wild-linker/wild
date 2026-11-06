@@ -157,6 +157,7 @@ impl Config {
                 "section.got.entsize",
                 "section.plt.got.entsize",
                 "section.plt.entsize",
+                "section.got.plt.entsize",
                 // GNU ld sometimes sets this differently that we do.
                 "section.plt",
                 "section.plt.alignment",

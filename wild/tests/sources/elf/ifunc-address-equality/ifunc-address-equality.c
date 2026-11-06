@@ -21,7 +21,6 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:section.rela.dyn
 //#DiffIgnore:section.iplt
-//#DiffIgnore:section.got.plt.entsize
 //#Mode:dynamic
 //#CompArgs:-fPIE -DDYNAMIC
 //#LinkArgs:-pie

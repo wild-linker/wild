@@ -12,7 +12,6 @@
 // BFD subtracts the TLS segment address from the undefined symbol's zero value.
 // LLD uses a zero offset, which is the behavior we match.
 //#ReferenceLinkers:lld
-//#DiffIgnore:section.got.plt.entsize
 //#ExpectProgramHeader:TLS file-size=8,mem-size=8,sections=[.tdata]
 
 //#Config:default-visibility:with-tls
