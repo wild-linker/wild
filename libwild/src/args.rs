@@ -61,6 +61,8 @@ pub const EXPERIMENTAL_PLATFORMS: &str = "WILD_EXPERIMENTAL_PLATFORMS";
 /// spinlock. By the time we reach 128 threads, we're spending about 56% of time in that spinlock.
 const DEFAULT_THREAD_CAP: NonZeroUsize = NonZeroUsize::new(32).unwrap();
 
+const SUPPORTED_FLAVORS: &str = "gnu, wasm, darwin, link";
+
 #[derive(derive_more::Debug)]
 pub struct CommonArgs {
     pub(crate) unrecognized_options: Vec<String>,
@@ -136,7 +138,7 @@ impl Args {
 
             let flavor = input
                 .next()
-                .context("-flavor requires an argument (gnu, darwin, or link)")?;
+                .with_context(|| format!("-flavor requires an argument ({SUPPORTED_FLAVORS})"))?;
 
             PlatformKind::from_flavor(flavor.as_ref())?
         } else if let Some(platform) = PlatformKind::from_executable_name(prog_name.as_ref()) {
@@ -266,10 +268,7 @@ impl PlatformKind {
             "darwin" | "ld64" => Ok(PlatformKind::MachO),
             "link" => Ok(PlatformKind::Coff),
             "wasm" | "ld-wasm" => Ok(PlatformKind::Wasm),
-            _ => bail!(
-                "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
-                flavor
-            ),
+            _ => bail!("Unknown flavor '{flavor}'. Valid flavors: {SUPPORTED_FLAVORS}",),
         }
     }
 
