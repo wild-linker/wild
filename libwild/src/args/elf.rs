@@ -720,6 +720,7 @@ pub(crate) fn supported_emulations() -> String {
 fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     let mut parser = ArgumentParser::<ElfArgs>::new();
 
+    // The problem: this argument is now parsed also for Elf binaries but shouldn't
     parser
         .declare_with_param()
         .long("subsystem")
@@ -1134,6 +1135,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    // The opposite problem: this argument doesn't exist on Windows
     parser
         .declare_with_param()
         .long("pack-dyn-relocs")
