@@ -147,7 +147,6 @@
 //#ReferenceLinkers:lld
 //#NoSym:GLIBC_ABI_DT_RELR
 //#Contains:.relr.dyn
-//#DiffIgnore:section.gnu.version_r.alignment
 //#DiffIgnore:rel.missing-opt.*
 //#DiffIgnore:rel.match_failed.R_AARCH64_TLSLE_ADD_TPREL_HI12
 // Glibc refuses to run binaries with RELR unless `GLIBC_ABI_DT_RELR` version is

@@ -29,7 +29,6 @@
 //#Compiler:clang
 //#LinkerDriver:clang
 //#ReferenceLinkers:lld
-//#DiffIgnore:section.gnu.version_r.alignment
 
 int lib_init_ran(void);
 

@@ -5,7 +5,6 @@
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkArgs:-flto -Wl,--as-needed,-znow
-//#DiffIgnore:section.gnu.version_r.alignment
 //#DiffIgnore:section.rodata
 //#DiffIgnore:eh_frame
 //#CompArgs:-fPIE

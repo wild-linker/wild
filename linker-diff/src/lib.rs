@@ -179,6 +179,8 @@ impl Config {
                 GOT_PLT_SECTION_NAME_STR,
                 // We don't currently produce a separate .plt.sec section.
                 "section.plt.sec",
+                // We align .gnu.version_r to 8, like GNU ld. lld uses 4.
+                "section.gnu.version_r.alignment",
                 // Different hash values due to different implementations.
                 ".dynamic.DT_HASH",
                 // Different hash values due to different implementations.
