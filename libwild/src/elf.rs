@@ -3192,10 +3192,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     builder.add_sections(&custom.tdata);
                     builder.add_sections(&custom.tbss);
                 }
-                if !has_data_in_script {
-                    builder.add_sections(&custom.data);
-                    builder.add_sections(&custom.bss);
-                } else {
+                if has_data_in_script {
                     for &id in &custom.data {
                         if !id.is_custom::<Self>() {
                             builder.add_section(id);
@@ -3206,6 +3203,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                             builder.add_section(id);
                         }
                     }
+                } else {
+                    builder.add_sections(&custom.data);
+                    builder.add_sections(&custom.bss);
                 }
             }
         }
@@ -3215,10 +3215,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.add_sections(&custom.tdata);
                 builder.add_sections(&custom.tbss);
             }
-            if !has_data_in_script {
-                builder.add_sections(&custom.data);
-                builder.add_sections(&custom.bss);
-            } else {
+            if has_data_in_script {
                 for &id in &custom.data {
                     if !id.is_custom::<Self>() {
                         builder.add_section(id);
@@ -3229,6 +3226,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                         builder.add_section(id);
                     }
                 }
+            } else {
+                builder.add_sections(&custom.data);
+                builder.add_sections(&custom.bss);
             }
         }
 
