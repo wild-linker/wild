@@ -35,6 +35,7 @@ use crate::lto::SymbolKind;
 use crate::lto::has_loaded_lto_input;
 use crate::lto::mark_init_fini_symbols_as_non_ir_ref;
 use crate::lto::mark_lto_symbols_for_dynamic_export;
+use crate::lto::mark_native_symbols_as_non_ir_ref;
 use crate::lto::mark_wrap_symbols_as_non_ir_ref;
 use crate::output_section_id::OutputSections;
 use crate::platform::Args as _;
@@ -211,6 +212,8 @@ impl<'data> LinkerPlugin<'data> {
         }
 
         timing_phase!("Linker plugin codegen");
+
+        mark_native_symbols_as_non_ir_ref(symbol_db, per_symbol_flags, &resolver.resolved_groups);
 
         // Mark wrapped symbol names and their __wrap_/__real_ variants as referenced by non-IR
         // code. This ensures the plugin keeps them in the LTO output rather than
