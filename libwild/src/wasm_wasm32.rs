@@ -1,7 +1,6 @@
 use crate::platform::PreviousRelocationInfo;
 use crate::wasm::Wasm;
-use crate::wasm::relocation_type_to_string;
-use wasmparser::RelocationType;
+use object::wasm::RelocationType;
 
 pub(crate) struct WasmWasm32;
 
@@ -60,7 +59,7 @@ impl crate::platform::Arch for WasmWasm32 {
     }
 
     fn rel_type_to_string(r_type: RelocationType) -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed(relocation_type_to_string(r_type))
+        std::borrow::Cow::Borrowed(r_type.name().unwrap_or("unknown"))
     }
 
     fn tp_offset_start(_layout: &crate::layout::Layout<Self::Platform>) -> u64 {

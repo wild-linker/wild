@@ -67,7 +67,7 @@ impl FileKind {
             || bytes.starts_with(&macho::MH_MAGIC_64.to_be_bytes())
         {
             determine_macho_kind(bytes)
-        } else if bytes.starts_with(b"\0asm") {
+        } else if bytes.starts_with(&object::wasm::MAGIC) {
             // Wasm binary magic number is `\0asm` followed by a 4-byte version.
             ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
             Ok(FileKind::WasmObject)

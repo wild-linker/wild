@@ -843,7 +843,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "nix",
- "object 0.40.0",
+ "object 0.41.0",
  "perf-event",
  "perfetto-recorder",
  "rayon",
@@ -861,7 +861,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wasm-encoder",
- "wasmparser",
+ "wasmparser 0.262.0",
  "winnow",
  "yaml_serde",
  "zerocopy",
@@ -891,7 +891,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.40.0",
+ "object 0.41.0",
  "symbolic-demangle",
  "tabled",
  "tempfile",
@@ -925,7 +925,7 @@ version = "0.11.0"
 dependencies = [
  "anyhow",
  "leb128",
- "object 0.40.0",
+ "object 0.41.0",
  "paste",
 ]
 
@@ -1224,9 +1224,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.40.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+checksum = "11dbdb66876026054e4ffc8d757d862bdf5df5aebd5c0b95a41f17832a94f7d2"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -1234,6 +1234,7 @@ dependencies = [
  "indexmap",
  "memchr",
  "ruzstd",
+ "wasmparser 0.263.0",
 ]
 
 [[package]]
@@ -2072,6 +2073,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmparser"
+version = "0.263.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "web-time"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2109,7 +2119,7 @@ dependencies = [
  "linker-diff",
  "linker-layout",
  "mimalloc",
- "object 0.40.0",
+ "object 0.41.0",
  "os_info",
  "rand",
  "regex",
@@ -2120,7 +2130,7 @@ dependencies = [
  "tempfile",
  "toml",
  "wait-timeout",
- "wasmparser",
+ "wasmparser 0.262.0",
  "which",
 ]
 

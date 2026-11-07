@@ -10,12 +10,7 @@ use crate::platform::Arch;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use crate::wasm::DebugSectionInput;
-use crate::wasm::TARGET_FEATURE_PREFIX_DISALLOWED;
-use crate::wasm::TARGET_FEATURE_PREFIX_USED;
-use crate::wasm::TARGET_FEATURES_SECTION_NAME;
 use crate::wasm::WASM_DEAD_INDEX;
-use crate::wasm::WASM_MAGIC;
-use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmDataSegmentLayout;
 use crate::wasm::WasmFunctionBody;
@@ -23,17 +18,13 @@ use crate::wasm::WasmGotMemSource;
 use crate::wasm::WasmInputTargetFeature;
 use crate::wasm::WasmLayout;
 use crate::wasm::WasmObjectIndexMap;
-use crate::wasm::WasmRelocation;
 use crate::wasm::WasmSymbol;
-use crate::wasm::WasmSymbolKind;
 use crate::wasm::count_output_imports;
 use crate::wasm::deferred_tls_template_pointer;
 use crate::wasm::demangle_symbol_name;
 use crate::wasm::output_data_has_passive;
 use crate::wasm::output_data_segment_count;
 use crate::wasm::output_section_id;
-use crate::wasm::relocation_type_to_string;
-use crate::wasm::section_id;
 use crate::wasm::wasm_symbol_name_str;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
@@ -51,7 +42,6 @@ use wasm_encoder::ImportSection;
 use wasm_encoder::MemorySection;
 use wasm_encoder::TableSection;
 use wasm_encoder::TypeSection;
-use wasmparser::RelocationType;
 
 /// Write `value` as an unsigned LEB128 into `buf`, returning the number of bytes written.
 pub(crate) fn write_uleb128(buf: &mut [u8], value: u64) -> usize {
@@ -90,46 +80,46 @@ fn write_sleb128_5(buf: &mut [u8; 5], value: i32) {
 
 pub(crate) fn apply_relocation(
     bytes: &mut [u8],
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
     value: u32,
 ) -> crate::error::Result<()> {
-    let offset = reloc.offset as usize;
-    let size = reloc.slot_size();
+    let offset = reloc.r_offset as usize;
+    let size = usize::from(reloc.r_type.extent().unwrap_or(0));
     let end = offset
         .checked_add(size)
         .context("Wasm relocation offset overflow")?;
     let slot = bytes
         .get_mut(offset..end)
         .context("Wasm relocation slot out of range")?;
-    match reloc.ty {
-        RelocationType::FunctionIndexLeb
-        | RelocationType::MemoryAddrLeb
-        | RelocationType::TypeIndexLeb
-        | RelocationType::GlobalIndexLeb
-        | RelocationType::EventIndexLeb
-        | RelocationType::TableNumberLeb => {
+    match reloc.r_type {
+        object::wasm::R_WASM_FUNCTION_INDEX_LEB
+        | object::wasm::R_WASM_MEMORY_ADDR_LEB
+        | object::wasm::R_WASM_TYPE_INDEX_LEB
+        | object::wasm::R_WASM_GLOBAL_INDEX_LEB
+        | object::wasm::R_WASM_EVENT_INDEX_LEB
+        | object::wasm::R_WASM_TABLE_NUMBER_LEB => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_uleb128_5(buf, value);
         }
-        RelocationType::TableIndexSleb
-        | RelocationType::TableIndexRelSleb
-        | RelocationType::MemoryAddrSleb
-        | RelocationType::MemoryAddrRelSleb
-        | RelocationType::MemoryAddrTlsSleb => {
+        object::wasm::R_WASM_TABLE_INDEX_SLEB
+        | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB
+        | object::wasm::R_WASM_MEMORY_ADDR_SLEB
+        | object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
+        | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_sleb128_5(buf, value as i32);
         }
-        RelocationType::TableIndexI32
-        | RelocationType::MemoryAddrI32
-        | RelocationType::FunctionOffsetI32
-        | RelocationType::SectionOffsetI32
-        | RelocationType::GlobalIndexI32
-        | RelocationType::FunctionIndexI32 => {
+        object::wasm::R_WASM_TABLE_INDEX_I32
+        | object::wasm::R_WASM_MEMORY_ADDR_I32
+        | object::wasm::R_WASM_FUNCTION_OFFSET_I32
+        | object::wasm::R_WASM_SECTION_OFFSET_I32
+        | object::wasm::R_WASM_GLOBAL_INDEX_I32
+        | object::wasm::R_WASM_FUNCTION_INDEX_I32 => {
             slot.copy_from_slice(&value.to_le_bytes());
         }
         other => bail!(
             "unsupported Wasm relocation type {}",
-            relocation_type_to_string(other)
+            other.name().unwrap_or("unknown")
         ),
     }
     Ok(())
@@ -143,22 +133,22 @@ fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
 }
 
 /// Apply addend policy. Relative table/memory bases already include the addend.
-fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
+fn finalize_reloc_value(reloc: &object::wasm::Relocation, base: u32) -> Result<u32> {
     if matches!(
-        reloc.ty,
-        RelocationType::MemoryAddrRelSleb
-            | RelocationType::TableIndexRelSleb
-            | RelocationType::MemoryAddrTlsSleb
+        reloc.r_type,
+        object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
+            | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB
+            | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB
     ) {
         Ok(base)
     } else {
-        reloc_value_with_addend(base, reloc.addend)
+        reloc_value_with_addend(base, reloc.r_addend)
     }
 }
 
 fn apply_resolved_reloc(
     index_map: &WasmObjectIndexMap,
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
@@ -170,7 +160,10 @@ fn apply_resolved_reloc(
     apply_relocation(buf, reloc, finalize_reloc_value(reloc, base)?)
 }
 
-fn relocs_in_index_range(relocs: &[WasmRelocation], range: Range<u32>) -> &[WasmRelocation] {
+fn relocs_in_index_range(
+    relocs: &[object::wasm::Relocation],
+    range: Range<u32>,
+) -> &[object::wasm::Relocation] {
     let start = range.start as usize;
     let end = range.end as usize;
     relocs.get(start..end).unwrap_or(&[])
@@ -178,7 +171,7 @@ fn relocs_in_index_range(relocs: &[WasmRelocation], range: Range<u32>) -> &[Wasm
 
 fn apply_section_reloc(
     index_map: &WasmObjectIndexMap,
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
     local_base: u32,
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
@@ -188,8 +181,8 @@ fn apply_section_reloc(
     buf: &mut [u8],
 ) -> Result<()> {
     let mut reloc = *reloc;
-    reloc.offset = reloc
-        .offset
+    reloc.r_offset = reloc
+        .r_offset
         .checked_sub(local_base)
         .context("Wasm relocation offset is before the body or payload start")?;
     // The passive template is shared. Per-thread TLS pointers are stored by `__wasm_init_tls`.
@@ -220,8 +213,8 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
         .get_mut(crate::output_section_id::FILE_HEADER)
         .get_mut(..8)
         .context("Wasm output buffer is shorter than the 8-byte preamble")?;
-    preamble[..4].copy_from_slice(&WASM_MAGIC);
-    preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
+    preamble[..4].copy_from_slice(&object::wasm::MAGIC);
+    preamble[4..8].copy_from_slice(&object::wasm::VERSION.to_le_bytes());
 
     if let Some(unsupported) = layout.format_specific.unsupported_output.first() {
         bail!("Wasm {unsupported} emission is not implemented yet");
@@ -353,7 +346,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let mut pos = 0;
 
     // Section id.
-    out[pos] = section_id::CODE;
+    out[pos] = object::wasm::SEC_CODE.0;
     pos += 1;
 
     let count = bodies.len() as u64;
@@ -458,7 +451,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     );
 
     let mut pos = 0;
-    out[pos] = section_id::DATA;
+    out[pos] = object::wasm::SEC_DATA.0;
     pos += 1;
 
     let segments_total: u64 = flat
@@ -529,7 +522,7 @@ fn write_data_segment(
     out: &mut [u8],
     segment: &WasmDataSegmentLayout<'_>,
     index_map: &WasmObjectIndexMap,
-    object_relocs: &[WasmRelocation],
+    object_relocs: &[object::wasm::Relocation],
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
@@ -1141,14 +1134,14 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
                         continue;
                     };
                     match sym.kind {
-                        WasmSymbolKind::Func
+                        object::wasm::SYM_TYPE_FUNCTION
                             if let Some(&out_idx) =
                                 index_map.function_indices.get(sym.index as usize)
                                 && out_idx != WASM_DEAD_INDEX =>
                         {
                             entries.functions.push((out_idx, name));
                         }
-                        WasmSymbolKind::Global
+                        object::wasm::SYM_TYPE_GLOBAL
                             if let Some(&out_idx) =
                                 index_map.global_indices.get(sym.index as usize)
                                 && out_idx != WASM_DEAD_INDEX =>
@@ -1367,10 +1360,10 @@ pub(crate) fn build_target_features_section<'a>(
     if explicit_features.is_none() || check_features {
         for entry in features {
             match entry.feature.prefix {
-                TARGET_FEATURE_PREFIX_USED => {
+                object::wasm::FEATURE_PREFIX_USED => {
                     used.insert(entry.feature.name);
                 }
-                TARGET_FEATURE_PREFIX_DISALLOWED => {
+                object::wasm::FEATURE_PREFIX_DISALLOWED => {
                     disallowed
                         .entry(entry.feature.name)
                         .or_insert(entry.file_id);
@@ -1414,14 +1407,14 @@ pub(crate) fn build_target_features_section<'a>(
     let mut payload = Vec::new();
     leb128::write::unsigned(&mut payload, feature_names.len() as u64).unwrap();
     for name in feature_names {
-        payload.push(TARGET_FEATURE_PREFIX_USED);
+        payload.push(object::wasm::FEATURE_PREFIX_USED);
         let name_bytes = name.as_bytes();
         leb128::write::unsigned(&mut payload, name_bytes.len() as u64).unwrap();
         payload.extend_from_slice(name_bytes);
     }
 
     Ok(Some(wasm_encoder::CustomSection {
-        name: Cow::Borrowed(TARGET_FEATURES_SECTION_NAME),
+        name: Cow::Borrowed(object::wasm::TARGET_FEATURES_SECTION_NAME),
         data: Cow::Owned(payload),
     }))
 }
