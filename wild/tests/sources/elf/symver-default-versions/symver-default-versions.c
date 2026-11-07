@@ -14,7 +14,6 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:section.gnu.version_d.alignment
-//#DiffIgnore:section.gnu.version_r.alignment
 //#DiffIgnore:version_d.verdef_1
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
