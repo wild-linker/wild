@@ -336,7 +336,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             sizeof_headers,
         )?;
 
-    if symbol_db.args.should_relax() && A::supports_size_reduction_relaxations() {
+    if symbol_db.args.should_relax()
+        && !symbol_db.args.should_output_partial_object()
+        && A::supports_size_reduction_relaxations()
+    {
         perform_iterative_relaxation::<A>(
             &mut group_states,
             &mut section_part_sizes,
