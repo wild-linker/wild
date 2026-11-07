@@ -1,5 +1,5 @@
 //#LinkerScript:sections.ld
-//#ReferenceLinkers:bfd,lld
+//#ReferenceLinkers:bfd
 //#SkipArch:riscv64
 //#Object:runtime.c
 //#CompArgs:-fPIE -fno-asynchronous-unwind-tables

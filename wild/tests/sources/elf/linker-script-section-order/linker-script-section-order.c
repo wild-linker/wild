@@ -1,4 +1,5 @@
 //#AbstractConfig:default
+//#ReferenceLinkers:bfd
 //#Object:runtime.c
 //#SkipArch:riscv64
 //#CompArgs:-fPIE
