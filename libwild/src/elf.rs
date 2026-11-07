@@ -3042,6 +3042,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut last_ro = None;
         let mut last_exec = None;
         let mut last_rw = None;
+        let mut last_tdata = None;
+        let mut first_tbss = None;
+        let mut last_tbss = None;
 
         for script in linker_scripts {
             for &id in &script.parsed.ordered_sections {
@@ -3056,9 +3059,21 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 if attr.is_writable() {
                     last_rw = Some(pos);
                 }
+                if attr.is_tls() {
+                    if attr.is_no_bits() {
+                        if first_tbss.is_none() {
+                            first_tbss = Some(pos);
+                        }
+                        last_tbss = Some(pos);
+                    } else {
+                        last_tdata = Some(pos);
+                    }
+                }
                 ordered_sections.push(id);
             }
         }
+
+        let has_tls_in_script = last_tdata.is_some() || first_tbss.is_some();
 
         #[derive(Copy, Clone, PartialEq, Eq)]
         enum Anchor {
@@ -3104,7 +3119,19 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.emit_location_counters_up_to(lc_stop);
             }
 
+            if first_tbss == Some(pos) {
+                builder.add_sections(&custom.tdata);
+            }
+
             builder.add_section(section_id);
+
+            if first_tbss.is_none() && last_tdata == Some(pos) {
+                builder.add_sections(&custom.tdata);
+            }
+
+            if last_tbss == Some(pos) || (last_tbss.is_none() && last_tdata == Some(pos)) {
+                builder.add_sections(&custom.tbss);
+            }
 
             if exec_anchor == Anchor::After(pos) {
                 builder.add_sections(&custom.exec);
@@ -3113,16 +3140,20 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.add_sections(&custom.ro);
             }
             if rw_anchor == Anchor::After(pos) {
-                builder.add_sections(&custom.tdata);
-                builder.add_sections(&custom.tbss);
+                if !has_tls_in_script {
+                    builder.add_sections(&custom.tdata);
+                    builder.add_sections(&custom.tbss);
+                }
                 builder.add_sections(&custom.data);
                 builder.add_sections(&custom.bss);
             }
         }
 
         if rw_anchor == Anchor::AfterEnd {
-            builder.add_sections(&custom.tdata);
-            builder.add_sections(&custom.tbss);
+            if !has_tls_in_script {
+                builder.add_sections(&custom.tdata);
+                builder.add_sections(&custom.tbss);
+            }
             builder.add_sections(&custom.data);
             builder.add_sections(&custom.bss);
         }
