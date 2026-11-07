@@ -3045,9 +3045,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut last_tdata = None;
         let mut first_tbss = None;
         let mut last_tbss = None;
+        let mut last_data = None;
+        let mut first_bss = None;
+        let mut last_bss = None;
+        let mut has_riscv_attributes = false;
 
         for script in linker_scripts {
             for &id in &script.parsed.ordered_sections {
+                if id == output_section_id::RISCV_ATTRIBUTES {
+                    has_riscv_attributes = true;
+                }
                 let pos = ordered_sections.len();
                 let attr = output_sections.section_infos.get(id).section_attributes;
                 if attr.is_alloc() && !attr.is_writable() && !attr.is_executable() {
@@ -3068,12 +3075,22 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     } else {
                         last_tdata = Some(pos);
                     }
+                } else if attr.is_writable() {
+                    if attr.is_no_bits() {
+                        if first_bss.is_none() {
+                            first_bss = Some(pos);
+                        }
+                        last_bss = Some(pos);
+                    } else {
+                        last_data = Some(pos);
+                    }
                 }
                 ordered_sections.push(id);
             }
         }
 
         let has_tls_in_script = last_tdata.is_some() || first_tbss.is_some();
+        let has_data_in_script = last_data.is_some() || first_bss.is_some();
 
         #[derive(Copy, Clone, PartialEq, Eq)]
         enum Anchor {
@@ -3123,6 +3140,14 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.add_sections(&custom.tdata);
             }
 
+            if last_data.is_none() && first_bss == Some(pos) {
+                for &id in &custom.data {
+                    if id.is_custom::<Self>() {
+                        builder.add_section(id);
+                    }
+                }
+            }
+
             builder.add_section(section_id);
 
             if first_tbss.is_none() && last_tdata == Some(pos) {
@@ -3131,6 +3156,29 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
             if last_tbss == Some(pos) || (last_tbss.is_none() && last_tdata == Some(pos)) {
                 builder.add_sections(&custom.tbss);
+            }
+
+            if last_data == Some(pos) {
+                for &id in &custom.data {
+                    if id.is_custom::<Self>() {
+                        builder.add_section(id);
+                    }
+                }
+                if last_bss.is_none() {
+                    for &id in &custom.bss {
+                        if id.is_custom::<Self>() {
+                            builder.add_section(id);
+                        }
+                    }
+                }
+            }
+
+            if last_bss == Some(pos) {
+                for &id in &custom.bss {
+                    if id.is_custom::<Self>() {
+                        builder.add_section(id);
+                    }
+                }
             }
 
             if exec_anchor == Anchor::After(pos) {
@@ -3144,8 +3192,21 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     builder.add_sections(&custom.tdata);
                     builder.add_sections(&custom.tbss);
                 }
-                builder.add_sections(&custom.data);
-                builder.add_sections(&custom.bss);
+                if !has_data_in_script {
+                    builder.add_sections(&custom.data);
+                    builder.add_sections(&custom.bss);
+                } else {
+                    for &id in &custom.data {
+                        if !id.is_custom::<Self>() {
+                            builder.add_section(id);
+                        }
+                    }
+                    for &id in &custom.bss {
+                        if !id.is_custom::<Self>() {
+                            builder.add_section(id);
+                        }
+                    }
+                }
             }
         }
 
@@ -3154,8 +3215,21 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.add_sections(&custom.tdata);
                 builder.add_sections(&custom.tbss);
             }
-            builder.add_sections(&custom.data);
-            builder.add_sections(&custom.bss);
+            if !has_data_in_script {
+                builder.add_sections(&custom.data);
+                builder.add_sections(&custom.bss);
+            } else {
+                for &id in &custom.data {
+                    if !id.is_custom::<Self>() {
+                        builder.add_section(id);
+                    }
+                }
+                for &id in &custom.bss {
+                    if !id.is_custom::<Self>() {
+                        builder.add_section(id);
+                    }
+                }
+            }
         }
 
         builder.emit_location_counters_up_to(builder.num_location_counters());
@@ -3166,7 +3240,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         }
 
-        builder.add_section(output_section_id::RISCV_ATTRIBUTES);
+        if !has_riscv_attributes {
+            builder.add_section(output_section_id::RISCV_ATTRIBUTES);
+        }
         builder.add_section(output_section_id::SECTION_HEADERS);
 
         Ok(builder.build())

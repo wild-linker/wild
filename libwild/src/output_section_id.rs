@@ -1064,7 +1064,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
 
             let attr = info.section_attributes;
-            if attr.is_executable() {
+            if !attr.is_alloc() {
+                custom.nonalloc.push(id);
+            } else if attr.is_executable() {
                 custom.exec.push(id);
             } else if attr.is_tls() {
                 if attr.is_no_bits() {
@@ -1073,11 +1075,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                     custom.tdata.push(id);
                 }
             } else if !attr.is_writable() {
-                if attr.is_alloc() {
-                    custom.ro.push(id);
-                } else {
-                    custom.nonalloc.push(id);
-                }
+                custom.ro.push(id);
             } else if attr.is_no_bits() {
                 custom.bss.push(id);
             } else {
