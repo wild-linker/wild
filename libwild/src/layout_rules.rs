@@ -299,6 +299,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 location: sec.start_address_expression.clone(),
                                 at_location: sec.at_address.clone(),
                                 is_top_level: true,
+                                from_script: true,
                             };
 
                             let fill_value = sec
@@ -336,6 +337,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 fill_value,
                                 prev_phdrs.clone(),
                                 sec.attributes.as_ref(),
+                                true,
                             );
                             ordered_sections.push(primary_section_id);
                             current_section_id = Some(primary_section_id);
@@ -363,6 +365,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                 location: None,
                                                 at_location: None,
                                                 is_top_level: false,
+                                                from_script: true,
                                             };
                                             inner_lc_start_idx = inner_lc_idx;
                                             output_sections.add_secondary_section(
@@ -450,6 +453,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     location: None,
                                     at_location: None,
                                     is_top_level: false,
+                                    from_script: true,
                                 };
                                 output_sections.add_secondary_section(
                                     primary_section_id,
