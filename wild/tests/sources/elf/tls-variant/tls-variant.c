@@ -24,6 +24,8 @@
 //#Config:gcc-tls-trad:default
 // TODO: Support local TLSGD GOT entries without dynamic relocations in linker-diff.
 //#DiffIgnore:rel.reference_failed.R_AARCH64_TLSGD_ADR_PAGE21
+// LLD does not support traditional AArch64 TLSGD relocations.
+//#ReferenceLinkers:bfd
 //#CompArgs:-fpic
 //#Object:tls-variant-1.c
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad
@@ -32,6 +34,8 @@
 //#LinkArgs:-pie
 
 //#Config:gcc-shared-tls-trad:default
+// LLD does not support traditional AArch64 TLSGD relocations.
+//#ReferenceLinkers:bfd
 //#CompArgs:-fpic
 //#CompSoArgs:-fpic
 //#Shared:tls-variant-1.c,tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad,tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad

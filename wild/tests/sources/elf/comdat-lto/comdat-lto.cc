@@ -8,6 +8,8 @@
 //#DiffIgnore:section.got
 
 //#Config:gcc:base
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#Compiler:gcc
 //#LinkerDriver:gcc
 //#CompArgs:-fPIE

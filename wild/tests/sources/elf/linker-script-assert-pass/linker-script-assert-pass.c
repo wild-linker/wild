@@ -1,3 +1,5 @@
+// LLD requires power-of-two alignment in ALIGN expressions.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-T ./linker-script-assert-pass.ld
 //#RunEnabled:false
 //#DiffEnabled:false

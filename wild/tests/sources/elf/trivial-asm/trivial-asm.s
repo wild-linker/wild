@@ -1,3 +1,5 @@
+# LLD rejects SHF_MERGE on .data.rel.ro.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-z noexecstack
 //#Object:runtime.c
 //#Arch: x86_64

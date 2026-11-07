@@ -25,6 +25,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:no-gc:base
+# LLD retains losing_only as undefined after discarding its COMDAT group.
+//#ReferenceLinkers:bfd
 //#LinkArgs:--no-gc-sections
 //#LinkArgs:-no-pie
 

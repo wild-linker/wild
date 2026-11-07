@@ -1,4 +1,6 @@
 //#Config:default
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#RequiresLinkerPlugin:true
 //#Object:runtime.c
 //#LinkerDriver:gcc

@@ -1,4 +1,6 @@
 /*
+LLD gets the line number wrong.
+//#ReferenceLinkers:bfd
 
 This test is similar to source-info-from-debug, but due to being asm, can more reliably pick up some
 problems that test fails to detect.

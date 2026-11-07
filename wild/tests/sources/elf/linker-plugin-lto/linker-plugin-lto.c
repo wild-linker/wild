@@ -8,6 +8,8 @@
 //#RequiresLinkerPlugin:true
 
 //#Config:gcc:default
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#CompArgs:-flto
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
@@ -17,6 +19,7 @@
 //#LinkArgs:-pie
 
 //#Config:clang:default
+//#SkipArch:ppc64le
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkerDriver:clang
@@ -30,6 +33,7 @@
 //#LinkArgs:-pie
 
 //#Config:clang-thin:default
+//#SkipArch:ppc64le
 //#Compiler:clang
 //#CompArgs:-flto=thin
 //#LinkerDriver:clang
@@ -129,6 +133,8 @@
 //#LinkArgs:-pie
 
 //#Config:plugin-not-found:error
+// LLD ignores --plugin and handles LLVM bitcode internally.
+//#ReferenceLinkers:bfd
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkArgs:--plugin=/does/not/exist
@@ -137,6 +143,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:gcc-fat-objects:default
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#Compiler:gcc
 //#CompArgs:-flto -ffat-lto-objects -O1
 //#LinkerDriver:gcc
@@ -160,6 +168,16 @@
 //#DoesNotContain: foo
 //#CompArgs:-fPIE
 //#LinkArgs:-pie
+
+//#Config:clang-ppc64le:clang
+//#Arch:ppc64le
+// LLD doesn't define .TOC. when linking this LTO input.
+//#ReferenceLinkers:bfd
+
+//#Config:clang-thin-ppc64le:clang-thin
+//#Arch:ppc64le
+// LLD fails to define .TOC. when linking this LTO input.
+//#ReferenceLinkers:bfd
 
 #include "../common/runtime.h"
 

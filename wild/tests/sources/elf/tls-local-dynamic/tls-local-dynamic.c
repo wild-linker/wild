@@ -22,22 +22,31 @@
 //#LinkArgs:-pie
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
+// LLD does not support traditional AArch64 TLSGD relocations.
+//#ReferenceLinkers:bfd
 //#CompArgs:-mtls-dialect=trad
 //#Arch:aarch64
 
 //#Config:gcc-large-local-dynamic:gcc
+// LLD rejects the large-model TLSLD call sequence.
+// TODO: Restore LLD coverage when it supports this large-model TLSLD sequence.
+//#ReferenceLinkers:bfd
 //#CompArgs:-mcmodel=large
 //#Arch:x86_64
 
 //#Config:gcc-large-global-dynamic:gcc-base
+// LLD 22 produces a crashing binary for this large-model TLSGD sequence.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-pie
 //#CompArgs:-ftls-model=global-dynamic -fPIC -O2 -mcmodel=large
 //#Arch:x86_64
 
 //#Config:malfunction-no-identify-tls-gd-large:gcc-large-global-dynamic
+//#ReferenceLinkers:bfd
 //#Malfunction:no-identify-tls-gd-large
 
 //#Config:malfunction-no-movzx0lsl16:gcc
+//#ReferenceLinkers:bfd
 //#Arch:aarch64
 //#Malfunction:no-movzx0lsl16
 

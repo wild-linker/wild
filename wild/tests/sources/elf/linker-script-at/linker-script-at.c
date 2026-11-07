@@ -1,3 +1,7 @@
+// This script relies on GNU orphan placement and segment permissions for execution.
+// TODO: Make the script's segment permissions and page boundaries explicit while preserving
+// its address assertions, then restore LLD coverage.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-at.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)

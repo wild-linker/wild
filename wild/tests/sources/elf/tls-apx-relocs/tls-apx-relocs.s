@@ -1,3 +1,6 @@
+# LLD 22 emits a different EVEX prefix for the CODE_6_GOTTPOFF relaxation.
+# TODO: Investigate different behaviour of LLD here.
+//#ReferenceLinkers:bfd
 //#Object:runtime.c
 //#RunEnabled:false
 //#LinkArgs:-z noexecstack

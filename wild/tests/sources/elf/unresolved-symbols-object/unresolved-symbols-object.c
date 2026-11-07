@@ -6,6 +6,8 @@
    against symbol `foo'. */
 
 //#Config:ignore-all-dynamic:default
+// LLD retains dynamic PLT references to unresolved symbols; Wild and BFD resolve them to zero.
+//#DiffMatchAny:true
 //#Mode:dynamic
 //#RunEnabled:false
 //#Shared:force-dynamic-linking.c
@@ -23,11 +25,15 @@
 //#LinkArgs:-no-pie
 
 //#Config:ignore-all:default
+// LLD leaves GOT loads of unresolved symbols unrelaxed.
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
 //#LinkArgs:--unresolved-symbols=ignore-all
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
 //#Config:ignore-in-object-files:default
+// LLD leaves GOT loads of unresolved symbols unrelaxed.
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
 //#LinkArgs:--unresolved-symbols=ignore-in-object-files
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
@@ -39,6 +45,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:warn-unresolved-symbols:default
+// LLD leaves GOT loads of unresolved symbols unrelaxed.
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
 //#LinkArgs:--warn-unresolved-symbols
 //#ExpectWarningWild:Undefined symbol foo
 //#CompArgs:-fPIE

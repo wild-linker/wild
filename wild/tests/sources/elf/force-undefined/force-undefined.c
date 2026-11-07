@@ -2,6 +2,8 @@
 //#Object:runtime.c
 
 //#Config:undefined:default
+// LLD omits unresolved --undefined symbols from .symtab.
+//#ReferenceLinkers:bfd
 //#LinkArgs:--undefined=foo -u bar -ubaz
 //#ExpectSym:foo
 //#ExpectSym:bar
