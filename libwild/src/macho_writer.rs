@@ -104,6 +104,7 @@ use object::macho::LC_BUILD_VERSION;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::LC_FUNCTION_STARTS;
 use object::macho::LC_LOAD_DYLIB;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
@@ -140,6 +141,7 @@ const LE: Endianness = Endianness::Little;
 type MachOLayout<'data> = Layout<'data, MachO>;
 type SymtabEntry = object::macho::Nlist64<Endianness>;
 type ExportsTrieCommand = object::macho::LinkeditDataCommand<Endianness>;
+type FunctionStartsCommand = object::macho::LinkeditDataCommand<Endianness>;
 
 pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     sized_output: &mut SizedOutput<impl OutputFileData>,
@@ -246,6 +248,10 @@ fn write_prelude<'data>(
         "section allocation"
     );
 
+    buffers
+        .get_mut(part_id::FUNCTION_STARTS)
+        .copy_from_slice(&layout.format_specific.function_starts);
+
     debug_assert_eq!(
         prelude.format_specific.imported_library_file_ids.len(),
         prelude.format_specific.load_dylib_command_sizes.len()
@@ -331,6 +337,10 @@ fn write_prelude<'data>(
     }
 
     write_symtab_command(layout, take_mut(&mut load_command_buffer)?);
+
+    if layout.args().function_starts {
+        write_function_starts_command(layout, take_mut(&mut load_command_buffer)?)?;
+    }
 
     write_code_signature_command(layout, take_mut(&mut load_command_buffer)?);
 
@@ -1233,6 +1243,34 @@ fn write_exports_trie_command(layout: &MachOLayout, command: &mut ExportsTrieCom
             .file_size
             .try_into()
             .context("Mach-O exports trie size exceeds 32 bits")?,
+    );
+    Ok(())
+}
+
+fn write_function_starts_command(
+    layout: &MachOLayout,
+    command: &mut FunctionStartsCommand,
+) -> Result {
+    let functions = layout
+        .section_layouts
+        .get(output_section_id::FUNCTION_STARTS);
+    command.cmd.set(LE, LC_FUNCTION_STARTS);
+    command
+        .cmdsize
+        .set(LE, size_of::<FunctionStartsCommand>() as u32);
+    command.dataoff.set(
+        LE,
+        functions
+            .file_offset
+            .try_into()
+            .context("Mach-O function starts offset exceeds 32 bits")?,
+    );
+    command.datasize.set(
+        LE,
+        functions
+            .file_size
+            .try_into()
+            .context("Mach-O function starts size exceeds 32 bits")?,
     );
     Ok(())
 }

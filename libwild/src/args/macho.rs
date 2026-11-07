@@ -30,6 +30,7 @@ pub struct MachOArgs {
     pub(crate) framework_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
+    pub(crate) function_starts: bool,
     pub(crate) headerpad_max_install_names: bool,
     pub(crate) entry: String,
     pub(crate) dylib: bool,
@@ -112,6 +113,7 @@ impl Default for MachOArgs {
             framework_search_path: Vec::new(),
             plugin_path: None,
             dead_strip_dylibs: false,
+            function_starts: true,
             headerpad_max_install_names: false,
             entry: "_main".to_owned(),
             dylib: false,
@@ -480,6 +482,24 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .long("dead_strip_dylibs")
         .execute(|args, _modifier_stack| {
             args.dead_strip_dylibs = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("function_starts")
+        .help("Emit a table of function start addresses (default)")
+        .execute(|args, _modifier_stack| {
+            args.function_starts = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no_function_starts")
+        .help("Do not emit a table of function start addresses")
+        .execute(|args, _modifier_stack| {
+            args.function_starts = false;
             Ok(())
         });
 

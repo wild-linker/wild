@@ -74,6 +74,11 @@
 //! have exactly the specified sizes in load-command order. Command must be an LC_* name.
 //! May be repeated for different command types.
 //!
+//! ExpectFunctionStarts:{symbol-name} ... (Mach-O) Checks the complete set of LC_FUNCTION_STARTS
+//! addresses against the named symbols, optionally followed by a signed decimal byte offset
+//! (e.g. `_main-8`). A trailing ` ...` allows additional function starts. An empty list expects
+//! an empty table; `none` expects no LC_FUNCTION_STARTS command.
+//!
 //! ExpectEntry:symbol-name|address Checks that the executable entry point refers to the specified
 //! symbol or numeric address. Symbols are supported for ELF and Mach-O. Numeric addresses are
 //! supported for ELF.
@@ -440,6 +445,7 @@ use object::ObjectSymbol as _;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::LC_FUNCTION_STARTS;
 use object::macho::MH_HAS_TLV_DESCRIPTORS;
 use object::macho::S_THREAD_LOCAL_REGULAR;
 use object::macho::S_THREAD_LOCAL_VARIABLES;
@@ -2161,6 +2167,7 @@ struct Assertions {
     expected_load_dylibs: Vec<ExpectedDylib>,
     expected_id_dylib: Option<ExpectedDylib>,
     expected_load_command_sizes: Vec<(String, Vec<u32>)>,
+    expected_function_starts: Option<String>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
     no_dynsym: HashSet<String>,
@@ -2867,6 +2874,7 @@ fn process_directive(
             .push(ExpectedDylib::parse(arg)?),
         "ExpectIdDylib" => config.assertions.expected_id_dylib = Some(ExpectedDylib::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
+        "ExpectFunctionStarts" => config.assertions.expected_function_starts = Some(arg.to_owned()),
         "ExpectLoadCommandSize" => {
             let (command, sizes) = arg.trim().split_once(' ').context(
                 "ExpectLoadCommandSize requires a command name and comma-separated sizes",
@@ -5925,6 +5933,7 @@ impl Assertions {
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
             expected_entry: self.expected_entry.clone(),
             expected_load_command_sizes: self.expected_load_command_sizes.clone(),
+            expected_function_starts: self.expected_function_starts.clone(),
             expected_load_dylibs: self.expected_load_dylibs.clone(),
             expected_id_dylib: self.expected_id_dylib.clone(),
             no_sym: self.no_sym.clone(),
@@ -5967,6 +5976,7 @@ impl Assertions {
 
         self.verify_macho_entry(obj)?;
         self.verify_macho_load_command_sizes(obj)?;
+        verify_macho_function_starts(obj, bytes, self.expected_function_starts.as_deref())?;
         self.verify_macho_load_dylibs(obj)?;
         verify_macho_dylib(obj, bytes, self.expected_id_dylib.as_ref())?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
@@ -7472,6 +7482,138 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     Ok(exports)
 }
 
+fn verify_macho_function_starts(
+    obj: &object::File,
+    bytes: &[u8],
+    expected: Option<&str>,
+) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    let e = file.endianness();
+    let mut commands = file.macho_load_commands()?;
+    let mut functions = None;
+    let mut text_address = None;
+    let mut linkedit_range = None;
+
+    while let Some(command) = commands.next()? {
+        match command.variant()? {
+            LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_FUNCTION_STARTS => {
+                ensure!(
+                    functions.replace(data).is_none(),
+                    "Duplicate LC_FUNCTION_STARTS"
+                );
+            }
+            LoadCommandVariant::Segment64(segment, _) if segment.name() == b"__TEXT" => {
+                text_address = Some(segment.vmaddr.get(e));
+            }
+            LoadCommandVariant::Segment64(segment, _) if segment.name() == b"__LINKEDIT" => {
+                let start = segment.fileoff.get(e);
+                linkedit_range = Some(start..start + segment.filesize.get(e));
+            }
+            _ => {}
+        }
+    }
+
+    if expected == Some("none") {
+        ensure!(functions.is_none(), "Unexpected LC_FUNCTION_STARTS");
+        return Ok(());
+    }
+
+    let Some(functions) = functions else {
+        ensure!(expected.is_none(), "Missing LC_FUNCTION_STARTS");
+        return Ok(());
+    };
+
+    let start = u64::from(functions.dataoff.get(e));
+    let end = start + u64::from(functions.datasize.get(e));
+    let linkedit_range = linkedit_range.context("Missing __LINKEDIT")?;
+
+    ensure!(
+        start >= linkedit_range.start && end <= linkedit_range.end,
+        "Function starts outside __LINKEDIT"
+    );
+    ensure!(
+        start % 8 == 0 && end % 8 == 0,
+        "Unaligned function starts table"
+    );
+
+    let data = bytes
+        .get(start as usize..end as usize)
+        .context("Invalid function starts range")?;
+
+    // Decode independently of the writer and require a terminator followed only by padding.
+    let mut remaining = object::read::Bytes(data);
+    loop {
+        let delta = remaining
+            .read_uleb128()
+            .map_err(|_| error!("Missing function starts terminator"))?;
+        if delta == 0 {
+            ensure!(
+                remaining.0.iter().all(|byte| *byte == 0),
+                "Nonzero function starts padding"
+            );
+            break;
+        }
+    }
+
+    let actual = functions
+        .function_starts(e, bytes, text_address.context("Missing __TEXT")?)?
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(
+        actual.windows(2).all(|pair| pair[0] < pair[1]),
+        "Function starts are not strictly increasing"
+    );
+
+    if let Some(expected) = expected {
+        let (expected, allow_extra) = expected
+            .strip_suffix(" ...")
+            .map_or((expected, false), |expected| (expected, true));
+        let mut addresses = expected
+            .split_whitespace()
+            .map(|name| {
+                let (name, offset) = name
+                    .rfind(['+', '-'])
+                    .and_then(|index| {
+                        name[index..]
+                            .parse::<i64>()
+                            .ok()
+                            .map(|offset| (&name[..index], offset))
+                    })
+                    .unwrap_or((name, 0));
+                let address = obj
+                    .symbols()
+                    .find(|symbol| symbol.name() == Ok(name))
+                    .map(|symbol| symbol.address())
+                    .with_context(|| format!("Missing function symbol `{name}`"))?;
+                address
+                    .checked_add_signed(offset)
+                    .with_context(|| format!("Invalid function address `{name}{offset:+}`"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        addresses.sort_unstable();
+        addresses.dedup();
+
+        if allow_extra {
+            ensure!(
+                addresses
+                    .iter()
+                    .all(|address| actual.binary_search(address).is_ok()),
+                "Expected function starts to include {addresses:x?}, got {actual:x?}"
+            );
+        } else {
+            ensure!(
+                actual == addresses,
+                "Expected function starts {addresses:x?}, got {actual:x?}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn verify_macho_linkedit_tail(obj: &object::File, bytes: &[u8]) -> Result {
     let object::File::MachO64(file) = obj else {
         return Ok(());
@@ -7480,6 +7622,7 @@ fn verify_macho_linkedit_tail(obj: &object::File, bytes: &[u8]) -> Result {
     let e = file.endianness();
     let mut commands = file.macho_load_commands()?;
     let mut exports = None;
+    let mut functions = None;
     let mut symtab = None;
     let mut signature = None;
     let mut linkedit = None;
@@ -7488,6 +7631,9 @@ fn verify_macho_linkedit_tail(obj: &object::File, bytes: &[u8]) -> Result {
         match command.variant()? {
             LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_DYLD_EXPORTS_TRIE => {
                 exports = Some(data);
+            }
+            LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_FUNCTION_STARTS => {
+                functions = Some(data);
             }
             LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_CODE_SIGNATURE => {
                 signature = Some(data);
@@ -7506,9 +7652,17 @@ fn verify_macho_linkedit_tail(obj: &object::File, bytes: &[u8]) -> Result {
     let linkedit = linkedit.context("Missing __LINKEDIT")?;
 
     let exports_end = u64::from(exports.dataoff.get(e)) + u64::from(exports.datasize.get(e));
+    let mut metadata_end = exports_end.next_multiple_of(8);
+    if let Some(functions) = functions {
+        ensure!(
+            u64::from(functions.dataoff.get(e)) == metadata_end,
+            "Unexpected gap before function starts"
+        );
+        metadata_end += u64::from(functions.datasize.get(e));
+    }
     ensure!(
-        u64::from(symtab.symoff.get(e)) == exports_end.next_multiple_of(8),
-        "Unused allocation after Mach-O exports trie"
+        u64::from(symtab.symoff.get(e)) == metadata_end,
+        "Unused allocation before Mach-O symbol table"
     );
 
     let symtab_end = u64::from(symtab.symoff.get(e))

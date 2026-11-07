@@ -28,6 +28,7 @@ use crate::layout_rules::SectionRuleOutcome;
 use crate::macho::output_section_id::CHAINED_FIXUP_TABLE;
 use crate::macho::output_section_id::CODE_SIGNATURE;
 use crate::macho::output_section_id::EXPORTS_TRIE;
+use crate::macho::output_section_id::FUNCTION_STARTS;
 use crate::macho::output_section_id::LOAD_COMMANDS;
 use crate::macho::output_section_id::LOAD_COMMANDS_PADDING;
 use crate::macho::output_section_id::STRTAB;
@@ -48,6 +49,7 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Relaxation;
 use crate::platform::SectionAttributes as _;
+use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
@@ -62,6 +64,7 @@ use crate::verbose_timing_phase;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationSize;
+use linker_utils::relaxation::opt_input_to_output;
 use object::Endianness;
 use object::SectionIndex;
 use object::SymbolIndex;
@@ -90,6 +93,8 @@ use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use std::borrow::Cow;
 use std::mem::offset_of;
@@ -132,6 +137,7 @@ enum SinglePartSectionId {
     CodeSignature,
     ChainedFixupTable,
     ExportsTrie,
+    FunctionStarts,
     InitOffsets,
     UnwindInfo,
 
@@ -153,6 +159,7 @@ pub(crate) mod part_id {
     pub(crate) const CODE_SIGNATURE: PartId = SinglePartSectionId::CodeSignature.part_id();
     pub(crate) const CHAINED_FIXUP_TABLE: PartId = SinglePartSectionId::ChainedFixupTable.part_id();
     pub(crate) const EXPORTS_TRIE: PartId = SinglePartSectionId::ExportsTrie.part_id();
+    pub(crate) const FUNCTION_STARTS: PartId = SinglePartSectionId::FunctionStarts.part_id();
     pub(crate) const INIT_OFFSETS: PartId = SinglePartSectionId::InitOffsets.part_id();
     pub(crate) const COMPACT_UNWIND: PartId = SinglePartSectionId::UnwindInfo.part_id();
 }
@@ -180,6 +187,8 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::ChainedFixupTable.output_section_id();
     pub(crate) const EXPORTS_TRIE: OutputSectionId =
         SinglePartSectionId::ExportsTrie.output_section_id();
+    pub(crate) const FUNCTION_STARTS: OutputSectionId =
+        SinglePartSectionId::FunctionStarts.output_section_id();
     pub(crate) const INIT_OFFSETS: OutputSectionId =
         SinglePartSectionId::InitOffsets.output_section_id();
     pub(crate) const UNWIND_INFO: OutputSectionId =
@@ -352,6 +361,7 @@ impl std::fmt::Display for SegmentName {
 #[derive(Debug, Default)]
 pub(crate) struct LayoutExt {
     pub(crate) exports_trie: crate::trie::PreparedTrie,
+    pub(crate) function_starts: Vec<u8>,
     /// Imported STUB library symbols, sorted by GOT.
     pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution>,
     /// Final addresses of initializer functions, in input relocation order.
@@ -1250,6 +1260,7 @@ impl platform::Platform for MachO {
         output_section_id::LOAD_COMMANDS_PADDING,
         output_section_id::CHAINED_FIXUP_TABLE,
         output_section_id::EXPORTS_TRIE,
+        output_section_id::FUNCTION_STARTS,
         output_section_id::CODE_SIGNATURE,
         output_section_id::UNWIND_INFO,
     ];
@@ -1343,24 +1354,38 @@ impl platform::Platform for MachO {
     fn apply_post_resolution_adjustments(layout: &mut Layout<'_, Self>) -> Result {
         verbose_timing_phase!("Finalise Mach-O metadata layout");
 
-        let exports_trie = prepare_exports_trie(layout)?;
+        let shared_layout = &*layout;
+        let (exports_trie, function_starts) = rayon::join(
+            || prepare_exports_trie(shared_layout),
+            || prepare_function_starts(shared_layout),
+        );
+        let exports_trie = exports_trie?;
+        let function_starts = function_starts?;
+
         let signature_header_size =
             (CS_HEADERS_SIZE + code_signature_padded_identifier_size(layout.args())) as usize;
         layout_linkedit_tail(
             &mut layout.section_layouts,
             &mut layout.section_part_layouts,
             exports_trie.encoded_size(),
+            function_starts.len(),
             signature_header_size,
         );
 
         let prelude_group = &mut layout.group_layouts[0];
-        for part_id in [part_id::EXPORTS_TRIE, part_id::CODE_SIGNATURE] {
+
+        for part_id in [
+            part_id::EXPORTS_TRIE,
+            part_id::FUNCTION_STARTS,
+            part_id::CODE_SIGNATURE,
+        ] {
             let part = layout.section_part_layouts.get(part_id);
             *prelude_group.file_sizes.get_mut(part_id) = part.file_size;
             *prelude_group.mem_sizes.get_mut(part_id) = part.mem_size;
         }
 
         layout.format_specific.exports_trie = exports_trie;
+        layout.format_specific.function_starts = function_starts;
         layout.refresh_file_layouts(layout::SegmentFileLayout::FromSections)
     }
 
@@ -1610,9 +1635,11 @@ impl platform::Platform for MachO {
             (FILE_HEADER | LOAD_COMMANDS | LOAD_COMMANDS_PADDING, _) => {
                 segment_def.name == SegmentName::TEXT
             }
-            (STRTAB | CHAINED_FIXUP_TABLE | SYMTAB_GLOBAL | EXPORTS_TRIE | CODE_SIGNATURE, _) => {
-                segment_def.name == SegmentName::LINKEDIT
-            }
+            (
+                STRTAB | CHAINED_FIXUP_TABLE | SYMTAB_GLOBAL | EXPORTS_TRIE | FUNCTION_STARTS
+                | CODE_SIGNATURE,
+                _,
+            ) => segment_def.name == SegmentName::LINKEDIT,
             (_, SectionKind::Primary(identity)) => {
                 identity.format_specific() == Some(segment_def.name)
             }
@@ -2246,6 +2273,9 @@ impl platform::Platform for MachO {
             allocate_load_cmd(size_of::<object::macho::LinkeditDataCommand<Endianness>>());
         }
         allocate_load_cmd(size_of::<SymtabCommand>());
+        if args.function_starts {
+            allocate_load_cmd(size_of::<object::macho::LinkeditDataCommand<Endianness>>());
+        }
         allocate_load_cmd(size_of::<CodeSignatureCommand>());
         allocate_load_cmd(size_of::<UuidCommand>());
         if args.platform_version.is_some() {
@@ -2318,6 +2348,7 @@ impl platform::Platform for MachO {
     ) -> Result {
         let mut num_globals = 0;
         let mut strings_size = 0;
+
         for ((sym_index, sym), flags) in state
             .object
             .enumerate_symbols()
@@ -2325,6 +2356,7 @@ impl platform::Platform for MachO {
         {
             let symbol_id = state.symbol_id_range.input_to_id(sym_index);
             let symbol_state = flags.get();
+
             if let Some(info) = SymbolCopyInfo::new(
                 state.object,
                 sym_index,
@@ -2343,6 +2375,7 @@ impl platform::Platform for MachO {
                 strings_size += info.name.len() + 1;
             }
         }
+
         let entry_size = size_of::<SymtabEntry>() as u64;
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
@@ -2697,6 +2730,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"SYMTAB"), None)),
+        min_alignment: alignment::USIZE,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::FUNCTION_STARTS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"FUNCTION_STARTS"), None)),
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
@@ -3246,7 +3284,13 @@ impl Reexport {
 
 /// Generated, single-part sections with no addressable symbols. This suffix must end the file,
 /// with the code signature last, so it can be laid out again without changing symbol addresses.
-const LINKEDIT_TAIL: &[OutputSectionId] = &[EXPORTS_TRIE, SYMTAB_GLOBAL, STRTAB, CODE_SIGNATURE];
+const LINKEDIT_TAIL: &[OutputSectionId] = &[
+    EXPORTS_TRIE,
+    FUNCTION_STARTS,
+    SYMTAB_GLOBAL,
+    STRTAB,
+    CODE_SIGNATURE,
+];
 
 /// Place the metadata tail after resolving symbols. These generated tables follow all input
 /// sections and contain no addressable symbols, so growing them does not affect symbol values.
@@ -3255,6 +3299,7 @@ fn layout_linkedit_tail(
     sections: &mut OutputSectionMap<OutputRecordLayout>,
     parts: &mut OutputSectionPartMap<OutputRecordLayout>,
     exports_size: usize,
+    function_starts_size: usize,
     signature_header_size: usize,
 ) {
     let start = *sections.get(LINKEDIT_TAIL[0]);
@@ -3269,6 +3314,7 @@ fn layout_linkedit_tail(
 
         let file_size = match section_id {
             EXPORTS_TRIE => exports_size,
+            FUNCTION_STARTS => function_starts_size,
             CODE_SIGNATURE => {
                 signature_header_size + file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize
             }
@@ -3286,19 +3332,122 @@ fn layout_linkedit_tail(
     }
 }
 
-fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::PreparedTrie> {
-    if !layout.symbol_db.output_kind.needs_dynsym() {
-        return Ok(crate::trie::PreparedTrie::default());
-    }
-
-    let image_base = layout
+fn text_segment_address(layout: &Layout<'_, MachO>) -> Result<u64> {
+    Ok(layout
         .segment_layouts
         .segments
         .iter()
         .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
         .context("Missing Mach-O __TEXT segment")?
         .sizes
-        .mem_offset;
+        .mem_offset)
+}
+
+fn prepare_function_starts(layout: &Layout<'_, MachO>) -> Result<Vec<u8>> {
+    if !layout.args().function_starts {
+        return Ok(Vec::new());
+    }
+
+    verbose_timing_phase!("Prepare function starts");
+
+    let addresses = collect_function_start_addresses(layout)?;
+    encode_function_starts(addresses, text_segment_address(layout)?)
+}
+
+fn collect_function_start_addresses(layout: &Layout<'_, MachO>) -> Result<Vec<u64>> {
+    verbose_timing_phase!("Collect function starts");
+
+    layout
+        .group_layouts
+        .par_iter()
+        .try_fold(Vec::new, |mut addresses, group| {
+            for file in &group.files {
+                let layout::FileLayout::Object(object) = file else {
+                    continue;
+                };
+
+                for (symbol_index, symbol) in object.object.enumerate_symbols() {
+                    if symbol.n_type.is_stab()
+                        || !layout
+                            .symbol_db
+                            .is_canonical(object.symbol_id_range.input_to_id(symbol_index))
+                    {
+                        continue;
+                    }
+
+                    let Some(section_index) = object.object.symbol_section(symbol, symbol_index)?
+                    else {
+                        continue;
+                    };
+
+                    let Some(section_address) =
+                        object.section_resolutions[section_index.0].address()
+                    else {
+                        continue;
+                    };
+
+                    let section = object.object.section(section_index)?;
+
+                    if !section.is_executable() || section.size.get(LE) == 0 {
+                        continue;
+                    }
+
+                    // We can't just use resolutions here, since unused local symbols in sections
+                    // that were kept won't have one and we still need to include these in the
+                    // function starts list.
+                    let input_offset = object
+                        .object
+                        .symbol_offset_in_section(symbol, section_index)?;
+                    let output_offset = opt_input_to_output(
+                        object.section_relax_deltas.get(section_index.0),
+                        input_offset,
+                    );
+                    addresses.push(section_address + output_offset);
+                }
+            }
+
+            Ok(addresses)
+        })
+        .try_reduce(Vec::new, |mut left, mut right| {
+            left.append(&mut right);
+            Ok(left)
+        })
+}
+
+fn encode_function_starts(mut addresses: Vec<u64>, image_base: u64) -> Result<Vec<u8>> {
+    {
+        verbose_timing_phase!("Sort function starts");
+        addresses.sort_unstable();
+    }
+
+    verbose_timing_phase!("Encode function starts");
+
+    let mut previous = image_base;
+    let mut bytes = Vec::new();
+
+    for address in addresses {
+        let delta = address
+            .checked_sub(previous)
+            .context("Mach-O function start is before the __TEXT segment")?;
+
+        // Aliases must not emit a zero delta, which would terminate the table early.
+        if delta != 0 {
+            leb128::write::unsigned(&mut bytes, delta)?;
+            previous = address;
+        }
+    }
+
+    bytes.push(0);
+    bytes.resize(alignment::USIZE.align_up_usize(bytes.len()), 0);
+    Ok(bytes)
+}
+
+fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::PreparedTrie> {
+    if !layout.symbol_db.output_kind.needs_dynsym() {
+        return Ok(crate::trie::PreparedTrie::default());
+    }
+
+    let image_base = text_segment_address(layout)?;
 
     let mut symbols = layout
         .dynamic_symbol_definitions
@@ -3386,20 +3535,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn function_starts_encoding() {
+        for base in [0, MACHO_START_MEM_ADDRESS] {
+            // Unsorted addresses, aliases, and one-, two- and three-byte ULEB128 deltas.
+            let addresses = [0x40c0, 0x40, 0xc0, 0x40, 0xc0].map(|offset| base + offset);
+            assert_eq!(
+                encode_function_starts(addresses.to_vec(), base).unwrap(),
+                [0x40, 0x80, 0x01, 0x80, 0x80, 0x01, 0, 0]
+            );
+        }
+        assert_eq!(encode_function_starts(Vec::new(), 0).unwrap(), [0; 8]);
+        assert!(encode_function_starts(vec![0xff], 0x100).is_err());
+    }
+
+    #[test]
     fn place_exports_across_signature_page_boundary() {
-        for (exports_size, symtab_offset, signature_offset, pages) in [
-            (0, 0x1000, 0x1030, 2),
-            (127, 0x1080, 0x10b0, 2),
+        for (exports_size, function_starts_size, symtab_offset, signature_offset, pages) in [
+            (0, 0, 0x1000, 0x1030, 2),
+            (127, 0, 0x1080, 0x10b0, 2),
             // Closest 16-byte-aligned signature offsets below, at and above a page boundary.
-            (0xfc0, 0x1fc0, 0x1ff0, 2),
-            (0xfd0, 0x1fd0, 0x2000, 2),
-            (0xfe0, 0x1fe0, 0x2010, 3),
+            (0xfc0, 0, 0x1fc0, 0x1ff0, 2),
+            (0xfd0, 0, 0x1fd0, 0x2000, 2),
+            (0xfe0, 0, 0x1fe0, 0x2010, 3),
+            (127, 8, 0x1088, 0x10b0, 2),
+            (0xfc0, 8, 0x1fc8, 0x1ff0, 2),
+            (0xfd0, 8, 0x1fd8, 0x2000, 2),
+            (0xfe0, 8, 0x1fe8, 0x2010, 3),
+            (0, 0x1008, 0x2008, 0x2030, 3),
         ] {
             let mut sections = OutputSectionMap::with_size(SinglePartSectionId::Count as usize);
             let mut parts = OutputSectionPartMap::default();
             let signature_header_size = CS_HEADERS_SIZE as usize + 16;
             for (id, offset, size, alignment) in [
                 (EXPORTS_TRIE, 0x1000, 0, alignment::MIN),
+                (FUNCTION_STARTS, 0x1000, 0, alignment::USIZE),
                 (SYMTAB_GLOBAL, 0x1000, 32, alignment::USIZE),
                 (STRTAB, 0x1020, 7, alignment::MIN),
                 (
@@ -3427,10 +3596,16 @@ mod tests {
                 &mut sections,
                 &mut parts,
                 exports_size,
+                function_starts_size,
                 signature_header_size,
             );
 
             assert_eq!(sections.get(EXPORTS_TRIE).file_size, exports_size);
+            assert_eq!(
+                sections.get(FUNCTION_STARTS).file_size,
+                function_starts_size
+            );
+            assert_eq!(sections.get(FUNCTION_STARTS).file_end(), symtab_offset);
             assert_eq!(sections.get(SYMTAB_GLOBAL).file_offset, symtab_offset);
             assert_eq!(sections.get(STRTAB).file_offset, symtab_offset + 32);
             let signature = sections.get(CODE_SIGNATURE);
@@ -3439,7 +3614,7 @@ mod tests {
                 signature.file_size,
                 signature_header_size + pages * CS_HASH_SIZE as usize
             );
-            for id in [EXPORTS_TRIE, SYMTAB_GLOBAL, STRTAB, CODE_SIGNATURE] {
+            for &id in LINKEDIT_TAIL {
                 let record = sections.get(id);
                 assert_eq!(*record, parts.get(id.base_part_id::<MachO>()));
                 assert_eq!(record.mem_size, record.file_size as u64);
