@@ -1,0 +1,7 @@
+V1 {
+  global:
+    f0;
+    call_f0;
+  local:
+    *;
+};
