@@ -158,6 +158,9 @@ impl Config {
                 "section.plt.got.entsize",
                 "section.plt.entsize",
                 "section.got.plt.entsize",
+                // GNU ld preserves an input .init_array entry size of 0, while Wild
+                // uses the target pointer size (8 on x86-64).
+                "section.init_array.entsize",
                 // GNU ld sometimes sets this differently that we do.
                 "section.plt",
                 "section.plt.alignment",
