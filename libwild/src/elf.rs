@@ -3039,9 +3039,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.set_has_custom_layout(true);
 
         let mut ordered_sections = Vec::new();
+        let mut first_alloc = None;
         let mut last_ro = None;
         let mut last_exec = None;
         let mut last_rw = None;
+        let mut first_rw = None;
+        let mut first_rw_after_exec = None;
         let mut last_tdata = None;
         let mut first_tbss = None;
         let mut last_tbss = None;
@@ -3057,29 +3060,34 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
                 let pos = ordered_sections.len();
                 let attr = output_sections.section_infos.get(id).section_attributes;
+                if attr.is_alloc() {
+                    first_alloc.get_or_insert(id);
+                }
                 if attr.is_alloc() && !attr.is_writable() && !attr.is_executable() {
                     last_ro = Some(pos);
                 }
                 if attr.is_executable() {
                     last_exec = Some(pos);
+                    first_rw_after_exec = None;
                 }
                 if attr.is_writable() {
                     last_rw = Some(pos);
                 }
+
                 if attr.is_tls() {
                     if attr.is_no_bits() {
-                        if first_tbss.is_none() {
-                            first_tbss = Some(pos);
-                        }
+                        first_tbss.get_or_insert(pos);
                         last_tbss = Some(pos);
                     } else {
                         last_tdata = Some(pos);
                     }
                 } else if attr.is_writable() {
+                    first_rw.get_or_insert(pos);
+                    if last_exec.is_some() && !attr.is_executable() {
+                        first_rw_after_exec.get_or_insert(pos);
+                    }
                     if attr.is_no_bits() {
-                        if first_bss.is_none() {
-                            first_bss = Some(pos);
-                        }
+                        first_bss.get_or_insert(pos);
                         last_bss = Some(pos);
                     } else {
                         last_data = Some(pos);
@@ -3089,6 +3097,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         }
 
+        let first_rw_pos = first_rw_after_exec.or(first_rw);
         let has_tls_in_script = last_tdata.is_some() || first_tbss.is_some();
         let has_data_in_script = last_data.is_some() || first_bss.is_some();
 
@@ -3099,28 +3108,26 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             AfterEnd,
         }
 
-        let ro_anchor = if let Some(pos) = last_ro {
-            Anchor::After(pos)
-        } else if let Some(pos) = last_exec {
-            Anchor::After(pos)
-        } else {
-            Anchor::BeforeStart
-        };
-        let exec_anchor = if let Some(pos) = last_exec {
-            Anchor::After(pos)
-        } else if let Some(pos) = last_ro {
-            Anchor::After(pos)
-        } else {
-            Anchor::BeforeStart
-        };
-        let rw_anchor = if let Some(pos) = last_rw {
-            Anchor::After(pos)
-        } else {
-            Anchor::AfterEnd
-        };
+        let ro_anchor = last_ro
+            .or(last_exec)
+            .map_or(Anchor::BeforeStart, Anchor::After);
+        let exec_anchor = last_exec
+            .or(last_ro)
+            .map_or(Anchor::BeforeStart, Anchor::After);
+        let rw_anchor = last_rw.map_or(Anchor::AfterEnd, Anchor::After);
 
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
+
+        if (ro_anchor == Anchor::BeforeStart || exec_anchor == Anchor::BeforeStart)
+            && let Some(first_alloc_id) = first_alloc
+        {
+            let sec_info = output_sections.output_info(first_alloc_id);
+            if let Some(ref loc_info) = sec_info.location_info {
+                let (_, lc_stop) = loc_info.location_counters;
+                builder.emit_location_counters_up_to(lc_stop);
+            }
+        }
 
         if ro_anchor == Anchor::BeforeStart {
             builder.add_sections(&custom.ro);
@@ -3129,9 +3136,26 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             builder.add_sections(&custom.exec);
         }
 
-        let is_non_relro = |id: OutputSectionId| {
-            !id.opt_built_in_details::<Self>()
-                .is_some_and(|details| details.is_relro)
+        let (relro_data, non_relro_data): (Vec<_>, Vec<_>) =
+            custom.data.iter().copied().partition(|&id| {
+                id.opt_built_in_details::<Self>()
+                    .is_some_and(|details| details.is_relro)
+            });
+        let (relro_bss, non_relro_bss): (Vec<_>, Vec<_>) =
+            custom.bss.iter().copied().partition(|&id| {
+                id.opt_built_in_details::<Self>()
+                    .is_some_and(|details| details.is_relro)
+            });
+
+        let emit_unplaced_rw = |builder: &mut OutputOrderBuilder<Self>| {
+            if !has_tls_in_script {
+                builder.add_sections(&custom.tdata);
+                builder.add_sections(&custom.tbss);
+            }
+            builder.add_sections(&relro_data);
+            builder.add_sections(&relro_bss);
+            builder.add_sections(&non_relro_data);
+            builder.add_sections(&non_relro_bss);
         };
 
         for (pos, &section_id) in ordered_sections.iter().enumerate() {
@@ -3139,12 +3163,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 builder.add_sections(&custom.tdata);
             }
 
-            if last_data.is_none() && first_bss == Some(pos) {
-                for &id in &custom.data {
-                    if is_non_relro(id) {
-                        builder.add_section(id);
-                    }
+            if first_rw_pos == Some(pos) {
+                if !has_tls_in_script {
+                    builder.add_sections(&custom.tdata);
+                    builder.add_sections(&custom.tbss);
                 }
+                builder.add_sections(&relro_data);
+                builder.add_sections(&relro_bss);
+            }
+
+            if last_data.is_none() && first_bss == Some(pos) {
+                builder.add_sections(&non_relro_data);
             }
 
             let sec_info = output_sections.output_info(section_id);
@@ -3164,77 +3193,35 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
 
             if last_data == Some(pos) {
-                for &id in &custom.data {
-                    if is_non_relro(id) {
-                        builder.add_section(id);
-                    }
-                }
-                if last_bss.is_none() {
-                    for &id in &custom.bss {
-                        if is_non_relro(id) {
-                            builder.add_section(id);
-                        }
-                    }
+                builder.add_sections(&non_relro_data);
+                if last_bss.is_none_or(|b| b < pos) {
+                    builder.add_sections(&non_relro_bss);
                 }
             }
 
-            if last_bss == Some(pos) {
-                for &id in &custom.bss {
-                    if is_non_relro(id) {
-                        builder.add_section(id);
-                    }
-                }
+            if last_bss == Some(pos) && last_data.is_none_or(|d| pos > d) {
+                builder.add_sections(&non_relro_bss);
             }
 
-            if exec_anchor == Anchor::After(pos) {
-                builder.add_sections(&custom.exec);
-            }
-            if ro_anchor == Anchor::After(pos) {
+            if Some(pos) == last_ro {
                 builder.add_sections(&custom.ro);
+                if exec_anchor == Anchor::After(pos) && Some(pos) != last_exec {
+                    builder.add_sections(&custom.exec);
+                }
             }
-            if rw_anchor == Anchor::After(pos) {
-                if !has_tls_in_script {
-                    builder.add_sections(&custom.tdata);
-                    builder.add_sections(&custom.tbss);
+            if Some(pos) == last_exec {
+                builder.add_sections(&custom.exec);
+                if ro_anchor == Anchor::After(pos) && Some(pos) != last_ro {
+                    builder.add_sections(&custom.ro);
                 }
-                if has_data_in_script {
-                    for &id in &custom.data {
-                        if !is_non_relro(id) {
-                            builder.add_section(id);
-                        }
-                    }
-                    for &id in &custom.bss {
-                        if !is_non_relro(id) {
-                            builder.add_section(id);
-                        }
-                    }
-                } else {
-                    builder.add_sections(&custom.data);
-                    builder.add_sections(&custom.bss);
-                }
+            }
+            if rw_anchor == Anchor::After(pos) && !has_data_in_script {
+                emit_unplaced_rw(&mut builder);
             }
         }
 
         if rw_anchor == Anchor::AfterEnd {
-            if !has_tls_in_script {
-                builder.add_sections(&custom.tdata);
-                builder.add_sections(&custom.tbss);
-            }
-            if has_data_in_script {
-                for &id in &custom.data {
-                    if !is_non_relro(id) {
-                        builder.add_section(id);
-                    }
-                }
-                for &id in &custom.bss {
-                    if !is_non_relro(id) {
-                        builder.add_section(id);
-                    }
-                }
-            } else {
-                builder.add_sections(&custom.data);
-                builder.add_sections(&custom.bss);
-            }
+            emit_unplaced_rw(&mut builder);
         }
 
         builder.emit_location_counters_up_to(builder.num_location_counters());
