@@ -2012,9 +2012,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         is_undefined: bool,
     ) -> bool {
         let symbol_is_exported = || {
-            if let Some(export_list) = &export_list
+            if let Some(export_list) = export_list
                 && let Ok(symbol_name) = object.symbol_name(sym)
-                && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name))
+                && !layout::export_list_matches_symbol::<Self>(export_list, symbol_name)
             {
                 return false;
             }

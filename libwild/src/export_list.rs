@@ -70,6 +70,12 @@ impl<'data> ExportList<'data> {
         Ok(out)
     }
 
+    pub(crate) fn contains_exact(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
+        let mut lookup_name = SymbolLookupNameWrapper::from_name(name);
+        self.rules.general.matches_exact(&mut lookup_name, false)
+            || self.rules.cxx.matches_exact(&mut lookup_name, true)
+    }
+
     // Based on Version Script counterpart
     pub(crate) fn contains(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         let mut lookup_name = SymbolLookupNameWrapper::from_name(name);

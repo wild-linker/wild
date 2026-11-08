@@ -16,6 +16,7 @@ use crate::error::Context;
 use crate::error::Error;
 use crate::error::MultiErrorBuilder;
 use crate::error::Result;
+use crate::export_list::ExportList;
 use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
@@ -48,6 +49,7 @@ use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
+use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
@@ -5373,6 +5375,21 @@ fn can_export_symbol<P: Platform>(
     )
 }
 
+/// Whether `raw_name` is selected by an export list or `--dynamic-list`.
+pub(crate) fn export_list_matches_symbol<P: Platform>(
+    export_list: &ExportList<'_>,
+    raw_name: &[u8],
+) -> bool {
+    let parsed = P::parse_raw_symbol_name(raw_name);
+    if parsed.is_default()
+        && parsed.version_name().is_some()
+        && export_list.contains_exact(&UnversionedSymbolName::prehashed(parsed.name()))
+    {
+        return true;
+    }
+    export_list.contains(&UnversionedSymbolName::prehashed(raw_name))
+}
+
 pub(crate) fn can_export_global_def<P: Platform>(
     symbol_db: &SymbolDb<P>,
     visibility: Visibility,
@@ -5396,7 +5413,7 @@ pub(crate) fn can_export_global_def<P: Platform>(
     if (mode == ExportSymbolsMode::MatchingExportList || symbol_db.has_restrictive_export_list())
         && let Some(export_list) = &symbol_db.export_list
         && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
-        && !export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+        && !export_list_matches_symbol::<P>(export_list, symbol_name.bytes())
     {
         return false;
     }
