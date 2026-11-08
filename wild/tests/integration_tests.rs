@@ -5981,6 +5981,7 @@ impl Assertions {
         verify_macho_tlv_template_layout(obj)?;
 
         if linker_used.is_wild() {
+            verify_macho_linkedit_tail(obj, bytes)?;
             verify_macho_tlv_descriptor_bindings(obj, bytes)?;
             verify_uuid(obj, bytes)?;
         }
@@ -7471,6 +7472,78 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     Ok(exports)
 }
 
+fn verify_macho_linkedit_tail(obj: &object::File, bytes: &[u8]) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    let e = file.endianness();
+    let mut commands = file.macho_load_commands()?;
+    let mut exports = None;
+    let mut symtab = None;
+    let mut signature = None;
+    let mut linkedit = None;
+
+    while let Some(command) = commands.next()? {
+        match command.variant()? {
+            LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_DYLD_EXPORTS_TRIE => {
+                exports = Some(data);
+            }
+            LoadCommandVariant::LinkeditData(data) if command.cmd() == LC_CODE_SIGNATURE => {
+                signature = Some(data);
+            }
+            LoadCommandVariant::Symtab(data) => symtab = Some(data),
+            LoadCommandVariant::Segment64(segment, _) if segment.name() == b"__LINKEDIT" => {
+                linkedit = Some(segment);
+            }
+            _ => {}
+        }
+    }
+
+    let exports = exports.context("Missing LC_DYLD_EXPORTS_TRIE")?;
+    let symtab = symtab.context("Missing LC_SYMTAB")?;
+    let signature = signature.context("Missing LC_CODE_SIGNATURE")?;
+    let linkedit = linkedit.context("Missing __LINKEDIT")?;
+
+    let exports_end = u64::from(exports.dataoff.get(e)) + u64::from(exports.datasize.get(e));
+    ensure!(
+        u64::from(symtab.symoff.get(e)) == exports_end.next_multiple_of(8),
+        "Unused allocation after Mach-O exports trie"
+    );
+
+    let symtab_end = u64::from(symtab.symoff.get(e))
+        + u64::from(symtab.nsyms.get(e))
+            * size_of::<object::macho::Nlist64<object::Endianness>>() as u64;
+    ensure!(
+        u64::from(symtab.stroff.get(e)) == symtab_end,
+        "Unexpected gap after Mach-O symbol table"
+    );
+
+    let strtab_end = u64::from(symtab.stroff.get(e)) + u64::from(symtab.strsize.get(e));
+    ensure!(
+        u64::from(signature.dataoff.get(e)) == strtab_end.next_multiple_of(16),
+        "Unexpected gap before Mach-O code signature"
+    );
+
+    let end = u64::from(signature.dataoff.get(e)) + u64::from(signature.datasize.get(e));
+    ensure!(
+        end == bytes.len() as u64,
+        "Code signature must end the file"
+    );
+
+    ensure!(
+        linkedit.fileoff.get(e) + linkedit.filesize.get(e) == end,
+        "__LINKEDIT file size does not reflect final metadata sizes"
+    );
+
+    ensure!(
+        linkedit.vmsize.get(e) == linkedit.filesize.get(e),
+        "__LINKEDIT memory size does not reflect final metadata sizes"
+    );
+
+    Ok(())
+}
+
 fn verify_macho_dylib(
     obj: &object::File,
     bytes: &[u8],
@@ -7960,6 +8033,37 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
     let code_signature_data = bytes
         .get(code_signature_offset..code_signature_end)
         .context("Invalid code signature range")?;
+
+    let parsed_signature = code_signature.code_signature(e, bytes)?;
+    ensure!(
+        parsed_signature.header().length.get(object::BigEndian) as usize
+            == code_signature_data.len(),
+        "Code signature length differs from its allocation"
+    );
+
+    let mut checked_directory = false;
+    for blob in parsed_signature.blobs() {
+        if let Some(directory) = blob?.code_directory()? {
+            let header = directory.header();
+            ensure!(
+                header.n_code_slots.get(object::BigEndian) as usize
+                    == code_signature_offset.div_ceil(CS_BLOCK_SIZE),
+                "Code signature page count does not match its final offset"
+            );
+            ensure!(
+                directory.code_limit() == code_signature_offset as u64,
+                "Code signature limit does not match its final offset"
+            );
+            ensure!(
+                header.hash_offset.get(object::BigEndian) as usize + hashes_size
+                    == header.length.get(object::BigEndian) as usize,
+                "Code directory size does not match its page count"
+            );
+            checked_directory = true;
+        }
+    }
+    ensure!(checked_directory, "Missing code directory");
+
     let hashes_start = code_signature_data
         .len()
         .checked_sub(hashes_size)

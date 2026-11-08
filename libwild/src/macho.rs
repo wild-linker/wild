@@ -40,6 +40,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
+use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::platform;
@@ -47,6 +48,7 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Relaxation;
 use crate::platform::SectionAttributes as _;
+use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
@@ -349,6 +351,7 @@ impl std::fmt::Display for SegmentName {
 
 #[derive(Debug, Default)]
 pub(crate) struct LayoutExt {
+    pub(crate) exports_trie: crate::trie::PreparedTrie,
     /// Imported STUB library symbols, sorted by GOT.
     pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution>,
     /// Final addresses of initializer functions, in input relocation order.
@@ -380,6 +383,35 @@ pub(crate) struct PreludeLayoutExt {
     pub(crate) load_command_count: usize,
     pub(crate) exports_trie: Arc<crate::trie::Trie>,
     pub(crate) reexports: Vec<Reexport>,
+}
+
+pub(crate) struct ExportNames<'scope, 'data> {
+    definitions: &'scope [layout::DynamicSymbolDefinition<'data, MachO>],
+    reexports: &'scope [Reexport],
+}
+
+impl<'scope, 'data> ExportNames<'scope, 'data> {
+    pub(crate) fn new(
+        definitions: &'scope [layout::DynamicSymbolDefinition<'data, MachO>],
+        reexports: &'scope [Reexport],
+    ) -> Self {
+        Self {
+            definitions,
+            reexports,
+        }
+    }
+
+    pub(crate) fn get(&self, index: usize) -> &'scope [u8] {
+        if index < self.definitions.len() {
+            self.definitions[index].name
+        } else {
+            &self.reexports[index - self.definitions.len()].name
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &'scope [u8]> {
+        (0..self.definitions.len() + self.reexports.len()).map(|index| self.get(index))
+    }
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
@@ -1308,6 +1340,30 @@ impl platform::Platform for MachO {
         output.write(layout, macho_writer::write::<A>)
     }
 
+    fn apply_post_resolution_adjustments(layout: &mut Layout<'_, Self>) -> Result {
+        verbose_timing_phase!("Finalise Mach-O metadata layout");
+
+        let exports_trie = prepare_exports_trie(layout)?;
+        let signature_header_size =
+            (CS_HEADERS_SIZE + code_signature_padded_identifier_size(layout.args())) as usize;
+        layout_linkedit_tail(
+            &mut layout.section_layouts,
+            &mut layout.section_part_layouts,
+            exports_trie.encoded_size(),
+            signature_header_size,
+        );
+
+        let prelude_group = &mut layout.group_layouts[0];
+        for part_id in [part_id::EXPORTS_TRIE, part_id::CODE_SIGNATURE] {
+            let part = layout.section_part_layouts.get(part_id);
+            *prelude_group.file_sizes.get_mut(part_id) = part.file_size;
+            *prelude_group.mem_sizes.get_mut(part_id) = part.mem_size;
+        }
+
+        layout.format_specific.exports_trie = exports_trie;
+        layout.refresh_file_layouts(layout::SegmentFileLayout::FromSections)
+    }
+
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes::new(
             header.flags.get(LE),
@@ -1357,39 +1413,19 @@ impl platform::Platform for MachO {
 
     fn finalise_sizes_prelude<'data>(
         prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
+        _mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
     ) -> Result {
-        // Currently we determine the output file size before we assign symbol addresses. This lets
-        // us do file creation in parallel with address assignment, however it means that we can't
-        // take addresses into account when determining section sizes. The export trie, due to using
-        // uleb128 encoding for addresses, needs addresses in order to determine an exact size. We
-        // work around this for now by assuming all addresses will be u64::MAX. This gives us an
-        // upper bound on how large the trie will be, but wastes some space in the file. TODO:
-        // Figure out a good way to fix this.
-        let exports = dynamic_symbol_definitions
-            .iter()
-            .map(|symbol| crate::trie::Symbol {
-                name: symbol.name,
-                target: crate::trie::Target::Regular { address: u64::MAX },
-                flags: object::macho::ExportSymbolFlags(0),
-            })
-            .chain(
-                prelude
-                    .format_specific
-                    .reexports
-                    .iter()
-                    .map(Reexport::trie_symbol),
-            )
-            .collect_vec();
-
-        let trie = crate::trie::Trie::new(&exports);
-        mem_sizes.increment(
-            part_id::EXPORTS_TRIE,
-            trie.compute_byte_size(&exports) as u64,
+        // We only build the structure of the trie here, since we can't compute its encoded size
+        // until later when we know all the symbol addresses. We could defer building the
+        // structure until we know the addresses, but doing it here gives more opportunity for
+        // parallelism. This might change if we find other ways to achieve parallelism in
+        // `finalise_metadata_layout`.
+        let names = ExportNames::new(
+            dynamic_symbol_definitions,
+            &prelude.format_specific.reexports,
         );
-
-        prelude.format_specific.exports_trie = std::sync::Arc::new(trie);
+        prelude.format_specific.exports_trie = Arc::new(crate::trie::Trie::new(names.iter()));
         Ok(())
     }
 
@@ -2485,10 +2521,9 @@ impl platform::Platform for MachO {
 
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
-        builder.add_section(output_section_id::EXPORTS_TRIE);
-        builder.add_section(output_section_id::SYMTAB_GLOBAL);
-        builder.add_section(output_section_id::STRTAB);
-        builder.add_section(output_section_id::CODE_SIGNATURE);
+        for &section_id in LINKEDIT_TAIL {
+            builder.add_section(section_id);
+        }
 
         builder.build()
     }
@@ -2511,20 +2546,6 @@ impl platform::Platform for MachO {
             n_desc: Default::default(),
             n_value: Default::default(),
         }
-    }
-
-    fn last_part_size_to_extend(
-        record: &OutputRecordLayout,
-        last_part_id: PartId,
-    ) -> Result<usize> {
-        ensure!(
-            last_part_id == part_id::CODE_SIGNATURE,
-            "code signature must be last part_id"
-        );
-        // The CODE_SIGNATURE size depends on the final file size, excluding the
-        // signature itself. Compute it after layout because there is one SHA hash
-        // per file block (4 KiB) covered by the signature.
-        Ok(record.file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
     }
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
@@ -3213,13 +3234,218 @@ pub(crate) struct Reexport {
 }
 
 impl Reexport {
-    pub(crate) fn trie_symbol(&self) -> crate::trie::Symbol<'_> {
-        crate::trie::Symbol {
-            name: &self.name,
+    pub(crate) fn trie_terminal(&self) -> crate::trie::Terminal {
+        crate::trie::Terminal {
             flags: object::macho::ExportSymbolFlags(0),
             target: crate::trie::Target::Reexport {
                 dylib_ordinal: self.dylib_ordinal,
             },
+        }
+    }
+}
+
+/// Generated, single-part sections with no addressable symbols. This suffix must end the file,
+/// with the code signature last, so it can be laid out again without changing symbol addresses.
+const LINKEDIT_TAIL: &[OutputSectionId] = &[EXPORTS_TRIE, SYMTAB_GLOBAL, STRTAB, CODE_SIGNATURE];
+
+/// Place the metadata tail after resolving symbols. These generated tables follow all input
+/// sections and contain no addressable symbols, so growing them does not affect symbol values.
+/// Keep their file and memory layouts in sync with __LINKEDIT's file-to-memory mapping.
+fn layout_linkedit_tail(
+    sections: &mut OutputSectionMap<OutputRecordLayout>,
+    parts: &mut OutputSectionPartMap<OutputRecordLayout>,
+    exports_size: usize,
+    signature_header_size: usize,
+) {
+    let start = *sections.get(LINKEDIT_TAIL[0]);
+    let mut cursor = start.file_offset;
+    debug_assert_eq!(LINKEDIT_TAIL.last(), Some(&CODE_SIGNATURE));
+
+    for &section_id in LINKEDIT_TAIL {
+        let part_range = section_id.part_id_range::<MachO>();
+        debug_assert_eq!(part_range.end.as_usize() - part_range.start.as_usize(), 1);
+        let section = sections.get_mut(section_id);
+        let file_offset = section.alignment.align_up_usize(cursor);
+
+        let file_size = match section_id {
+            EXPORTS_TRIE => exports_size,
+            CODE_SIGNATURE => {
+                signature_header_size + file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize
+            }
+            _ => section.file_size,
+        };
+
+        let offset_in_tail = (file_offset - start.file_offset) as u64;
+        section.file_offset = file_offset;
+        section.mem_offset = start.mem_offset + offset_in_tail;
+        section.lma_offset = start.lma_offset + offset_in_tail;
+        section.file_size = file_size;
+        section.mem_size = file_size as u64;
+        *parts.get_mut(section_id.base_part_id::<MachO>()) = *section;
+        cursor = section.file_end();
+    }
+}
+
+fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::PreparedTrie> {
+    if !layout.symbol_db.output_kind.needs_dynsym() {
+        return Ok(crate::trie::PreparedTrie::default());
+    }
+
+    let image_base = layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
+        .context("Missing Mach-O __TEXT segment")?
+        .sizes
+        .mem_offset;
+
+    let mut symbols = layout
+        .dynamic_symbol_definitions
+        .iter()
+        .map(|symbol| {
+            let resolution = layout
+                .symbol_resolutions
+                .get(symbol.symbol_id)
+                .with_context(|| {
+                    format!(
+                        "Missing resolution for exported symbol `{}`",
+                        String::from_utf8_lossy(symbol.name)
+                    )
+                })?;
+
+            let (address, mut flags) = if resolution.is_absolute() {
+                (
+                    resolution.raw_value,
+                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE.into(),
+                )
+            } else {
+                let is_thread_local = layout
+                    .symbol_db
+                    .output_section_id(symbol.symbol_id)
+                    .map(|id| layout.output_sections.primary_output_section(id))
+                    .is_some_and(|id| {
+                        layout.output_sections.section_flags(id).typ() == S_THREAD_LOCAL_VARIABLES
+                    });
+
+                let kind = if is_thread_local {
+                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL
+                } else {
+                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_REGULAR
+                };
+
+                (
+                    resolution
+                        .raw_value
+                        .checked_sub(image_base)
+                        .with_context(|| {
+                            format!(
+                                "Exported symbol `{}` is before the Mach-O image base",
+                                String::from_utf8_lossy(symbol.name)
+                            )
+                        })?,
+                    kind.into(),
+                )
+            };
+
+            if exported_symbol_is_weak(layout, symbol.symbol_id)? {
+                flags |= object::macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
+            }
+
+            Ok(crate::trie::Terminal {
+                target: crate::trie::Target::Regular { address },
+                flags,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let prelude = layout.prelude();
+
+    symbols.extend(
+        prelude
+            .format_specific
+            .reexports
+            .iter()
+            .map(Reexport::trie_terminal),
+    );
+
+    Ok(prelude.format_specific.exports_trie.prepare(symbols))
+}
+
+fn exported_symbol_is_weak(layout: &Layout<'_, MachO>, symbol_id: SymbolId) -> Result<bool> {
+    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+    let layout::FileLayout::Object(object) = layout.file_layout(file_id) else {
+        return Ok(false);
+    };
+    let symbol_index = object.symbol_id_range.id_to_input(symbol_id);
+    Ok(object.object.symbol(symbol_index)?.is_weak())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn place_exports_across_signature_page_boundary() {
+        for (exports_size, symtab_offset, signature_offset, pages) in [
+            (0, 0x1000, 0x1030, 2),
+            (127, 0x1080, 0x10b0, 2),
+            // Closest 16-byte-aligned signature offsets below, at and above a page boundary.
+            (0xfc0, 0x1fc0, 0x1ff0, 2),
+            (0xfd0, 0x1fd0, 0x2000, 2),
+            (0xfe0, 0x1fe0, 0x2010, 3),
+        ] {
+            let mut sections = OutputSectionMap::with_size(SinglePartSectionId::Count as usize);
+            let mut parts = OutputSectionPartMap::default();
+            let signature_header_size = CS_HEADERS_SIZE as usize + 16;
+            for (id, offset, size, alignment) in [
+                (EXPORTS_TRIE, 0x1000, 0, alignment::MIN),
+                (SYMTAB_GLOBAL, 0x1000, 32, alignment::USIZE),
+                (STRTAB, 0x1020, 7, alignment::MIN),
+                (
+                    CODE_SIGNATURE,
+                    0x1030,
+                    signature_header_size,
+                    Alignment {
+                        exponent: CS_SECTION_ALIGNMENT_EXP,
+                    },
+                ),
+            ] {
+                let record = OutputRecordLayout {
+                    file_offset: offset,
+                    file_size: size,
+                    mem_offset: 0x1_0000_0000 + offset as u64,
+                    lma_offset: 0x1_0000_0000 + offset as u64,
+                    mem_size: size as u64,
+                    alignment,
+                };
+                *sections.get_mut(id) = record;
+                *parts.get_mut(id.base_part_id::<MachO>()) = record;
+            }
+
+            layout_linkedit_tail(
+                &mut sections,
+                &mut parts,
+                exports_size,
+                signature_header_size,
+            );
+
+            assert_eq!(sections.get(EXPORTS_TRIE).file_size, exports_size);
+            assert_eq!(sections.get(SYMTAB_GLOBAL).file_offset, symtab_offset);
+            assert_eq!(sections.get(STRTAB).file_offset, symtab_offset + 32);
+            let signature = sections.get(CODE_SIGNATURE);
+            assert_eq!(signature.file_offset, signature_offset);
+            assert_eq!(
+                signature.file_size,
+                signature_header_size + pages * CS_HASH_SIZE as usize
+            );
+            for id in [EXPORTS_TRIE, SYMTAB_GLOBAL, STRTAB, CODE_SIGNATURE] {
+                let record = sections.get(id);
+                assert_eq!(*record, parts.get(id.base_part_id::<MachO>()));
+                assert_eq!(record.mem_size, record.file_size as u64);
+                assert_eq!(record.mem_offset, 0x1_0000_0000 + record.file_offset as u64);
+                assert_eq!(record.lma_offset, record.mem_offset);
+            }
         }
     }
 }

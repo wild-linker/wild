@@ -356,31 +356,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         )?;
     }
 
-    if let Some((last_section_id, _)) = section_layouts
-        .iter()
-        .max_by_key(|(_, record)| record.file_end())
-    {
-        let last_part_id =
-            PartId::from_usize(last_section_id.part_id_range::<P>().end.as_usize() - 1);
-
-        let extra_file_size = A::Platform::last_part_size_to_extend(
-            &section_part_layouts.get(last_part_id),
-            last_part_id,
-        )?;
-
-        if extra_file_size > 0 {
-            section_part_sizes.increment(last_part_id, extra_file_size as u64);
-
-            let part_layout = section_part_layouts.get_mut(last_part_id);
-            part_layout.file_size += extra_file_size;
-            part_layout.mem_size += extra_file_size as u64;
-
-            let section_layout = section_layouts.get_mut(last_section_id);
-            section_layout.file_size += extra_file_size;
-            section_layout.mem_size += extra_file_size as u64;
-        }
-    }
-
     let merged_section_layouts = merge_secondary_parts(&output_sections, &section_layouts);
 
     let Some(FileLayoutState::Prelude(internal)) =
@@ -530,6 +505,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         erratum_padding: AtomicU64::new(0),
     };
 
+    P::apply_post_resolution_adjustments(&mut layout)?;
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
     P::maybe_only_keep_debug::<A>(&mut layout)?;
     P::validate_layout(&layout)?;
@@ -1852,8 +1828,9 @@ impl<'data, P: Platform> Layout<'data, P> {
         self.symbol_db.args
     }
 
-    /// Rebuilds merged section records and program-header file ranges from the current section file
-    /// offsets, preserving their memory layout.
+    /// Rebuilds merged section records and segment file and memory bounds from the current section
+    /// layouts. Does not change section layouts, update part or group allocations, or update symbol
+    /// resolutions.
     pub(crate) fn refresh_file_layouts(&mut self, file_layout: SegmentFileLayout) -> Result {
         self.merged_section_layouts =
             merge_secondary_parts(&self.output_sections, &self.section_layouts);
