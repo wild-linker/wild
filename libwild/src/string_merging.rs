@@ -53,6 +53,8 @@ use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use rayon::Scope;
+use rayon::iter::ParallelBridge;
+use rayon::iter::ParallelIterator;
 use sharded_offset_map::OffsetMap;
 use sharded_offset_map::ShardedWriter;
 use std::cell::RefCell;
@@ -181,6 +183,23 @@ impl Default for MergedStringsSection<'_> {
             overflowed_string_offsets: HashMap::new(),
         }
     }
+}
+
+pub(crate) fn write_merged_strings_to_buffer(
+    merged: &MergedStringsSection<'_>,
+    buffer: &mut &mut [u8],
+) {
+    merged
+        .buckets
+        .iter()
+        .map(|bucket| (bucket, buffer.split_off_mut(..bucket.len()).unwrap()))
+        .par_bridge()
+        .for_each(|(bucket, mut buffer)| {
+            for string in &bucket.strings {
+                let destination = buffer.split_off_mut(..string.len()).unwrap();
+                destination.copy_from_slice(string);
+            }
+        });
 }
 
 #[derive(derive_more::Debug, Default)]
@@ -1018,7 +1037,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
-    let mut input_offset = symbol.value();
+    let mut input_offset = object.symbol_offset_in_section(symbol, section_index)?;
 
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend

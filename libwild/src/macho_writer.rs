@@ -229,6 +229,14 @@ fn write_prelude<'data>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
+    layout.merged_strings.for_each(|section_id, merged| {
+        if merged.len() > 0 {
+            let buffer =
+                buffers.get_mut(section_id.part_id_with_alignment::<MachO>(crate::alignment::MIN));
+            crate::string_merging::write_merged_strings_to_buffer(merged, buffer);
+        }
+    });
+
     let exports_trie = &layout.format_specific.exports_trie;
     let names = crate::macho::ExportNames::new(
         &layout.dynamic_symbol_definitions,
@@ -1691,7 +1699,7 @@ fn write_symbols<'data>(
         let (section, mut symbol_type, desc) =
             if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                 let section_id = match &object.sections[section_index.0] {
-                    SectionSlot::Loaded(_) => object
+                    SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => object
                         .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                         .output_section_id::<MachO>(),
                     _ => bail!(

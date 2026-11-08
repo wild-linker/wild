@@ -5,7 +5,6 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::elf;
 use crate::elf::ElfClass;
-use crate::elf_writer;
 use crate::elf_writer::apply_debug_relocations;
 use crate::error::Result;
 use crate::layout::FileLayout;
@@ -339,7 +338,7 @@ fn build_debug_section_in_memory<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 ) -> Result {
     let merged = layout.merged_strings.get(section_id);
     if merged.len() > 0 {
-        elf_writer::write_merged_strings_to_buffer(merged, &mut buffer);
+        crate::string_merging::write_merged_strings_to_buffer(merged, &mut buffer);
         return Ok(());
     }
 
