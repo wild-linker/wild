@@ -3129,23 +3129,28 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             builder.add_sections(&custom.exec);
         }
 
-        for (pos, &section_id) in ordered_sections.iter().enumerate() {
-            let sec_info = output_sections.output_info(section_id);
-            if let Some(ref loc_info) = sec_info.location_info {
-                let (_, lc_stop) = loc_info.location_counters;
-                builder.emit_location_counters_up_to(lc_stop);
-            }
+        let is_non_relro = |id: OutputSectionId| {
+            !id.opt_built_in_details::<Self>()
+                .is_some_and(|details| details.is_relro)
+        };
 
+        for (pos, &section_id) in ordered_sections.iter().enumerate() {
             if first_tbss == Some(pos) {
                 builder.add_sections(&custom.tdata);
             }
 
             if last_data.is_none() && first_bss == Some(pos) {
                 for &id in &custom.data {
-                    if id.is_custom::<Self>() {
+                    if is_non_relro(id) {
                         builder.add_section(id);
                     }
                 }
+            }
+
+            let sec_info = output_sections.output_info(section_id);
+            if let Some(ref loc_info) = sec_info.location_info {
+                let (_, lc_stop) = loc_info.location_counters;
+                builder.emit_location_counters_up_to(lc_stop);
             }
 
             builder.add_section(section_id);
@@ -3160,13 +3165,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
             if last_data == Some(pos) {
                 for &id in &custom.data {
-                    if id.is_custom::<Self>() {
+                    if is_non_relro(id) {
                         builder.add_section(id);
                     }
                 }
                 if last_bss.is_none() {
                     for &id in &custom.bss {
-                        if id.is_custom::<Self>() {
+                        if is_non_relro(id) {
                             builder.add_section(id);
                         }
                     }
@@ -3175,7 +3180,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
             if last_bss == Some(pos) {
                 for &id in &custom.bss {
-                    if id.is_custom::<Self>() {
+                    if is_non_relro(id) {
                         builder.add_section(id);
                     }
                 }
@@ -3194,12 +3199,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
                 if has_data_in_script {
                     for &id in &custom.data {
-                        if !id.is_custom::<Self>() {
+                        if !is_non_relro(id) {
                             builder.add_section(id);
                         }
                     }
                     for &id in &custom.bss {
-                        if !id.is_custom::<Self>() {
+                        if !is_non_relro(id) {
                             builder.add_section(id);
                         }
                     }
@@ -3217,12 +3222,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
             if has_data_in_script {
                 for &id in &custom.data {
-                    if !id.is_custom::<Self>() {
+                    if !is_non_relro(id) {
                         builder.add_section(id);
                     }
                 }
                 for &id in &custom.bss {
-                    if !id.is_custom::<Self>() {
+                    if !is_non_relro(id) {
                         builder.add_section(id);
                     }
                 }
