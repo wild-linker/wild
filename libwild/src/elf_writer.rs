@@ -6902,8 +6902,12 @@ fn write_section_headers<C: ElfClass>(
                 link = symtab_idx;
             }
             if let Some(target_name) = name.bytes().strip_prefix(b".rela")
-                && let Some(target_id) = output_sections
-                    .custom_identity_to_id(SectionIdentity::new(SectionName(target_name), ()))
+                && let Some(rela_identity) = output_sections.identity(section_id)
+                && let Some(target_id) =
+                    output_sections.custom_identity_to_id(SectionIdentity::new(
+                        SectionName(target_name),
+                        rela_identity.format_specific().relocation_target(),
+                    ))
                 && let Some(target_idx) = output_sections.output_index_of_section(target_id)
             {
                 info_value = target_idx;

@@ -1156,7 +1156,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
             output_sections.get_or_create_named_section(
-                SectionIdentity::new(SectionName(name.as_bytes()), ()),
+                SectionIdentity::new(
+                    SectionName(name.as_bytes()),
+                    crate::elf::ElfSectionIdentity::NONE,
+                ),
                 crate::alignment::MIN,
                 None,
                 None,

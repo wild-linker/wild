@@ -139,7 +139,7 @@
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
 //!   or 1 if sh_entsize is 0).
 //!   entsize=N: Asserts the ELF section entry size.
-//!   flags=WAX: Asserts the section has the specified section flags.
+//!   flags=WAXE: Asserts the section has the specified section flags.
 //!   type=int: Asserts the section has the specified section type.
 //!   address=int: Asserts the section has the specified address.
 //!   index=int: Asserts the section has the specified section header index.
@@ -1778,6 +1778,7 @@ bitflags! {
         const G = object::elf::SHF_GROUP.0;
         const T = object::elf::SHF_TLS.0;
         const C = object::elf::SHF_COMPRESSED.0;
+        const E = object::elf::SHF_EXCLUDE.0;
     }
 }
 
@@ -1803,6 +1804,7 @@ impl SectionFlags {
                 'G' => flags |= Self::G,
                 'T' => flags |= Self::T,
                 'C' => flags |= Self::C,
+                'E' => flags |= Self::E,
                 _ => {
                     return Err(serde::de::Error::custom(
                         "Invalid character in SectionFlags",

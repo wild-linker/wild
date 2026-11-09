@@ -681,6 +681,40 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
     raw_name
 }
 
+/// Fields that keep same-named input sections from being combined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ElfSectionIdentity {
+    exclude: bool,
+    relocation_target_excluded: bool,
+}
+
+impl ElfSectionIdentity {
+    pub(crate) const NONE: Self = Self {
+        exclude: false,
+        relocation_target_excluded: false,
+    };
+
+    const fn from_exclude_flag(exclude: bool) -> Self {
+        Self {
+            exclude,
+            relocation_target_excluded: false,
+        }
+    }
+
+    fn with_relocation_target(mut self, excluded: bool) -> Self {
+        self.relocation_target_excluded = excluded;
+        self
+    }
+
+    /// Identity of the section this relocation section's `sh_info` should select.
+    pub(crate) const fn relocation_target(self) -> Self {
+        Self {
+            exclude: self.relocation_target_excluded,
+            relocation_target_excluded: false,
+        }
+    }
+}
+
 impl<C: ElfClass> platform::Platform for Elf<C> {
     const NUM_SINGLE_PART_SECTIONS: u32 = ELF_NUM_SINGLE_PART_SECTIONS;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = ELF_NUM_BUILT_IN_REGULAR_SECTIONS;
@@ -798,7 +832,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
     type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
-    type SectionIdentityExt = ();
+    type SectionIdentityExt = ElfSectionIdentity;
     type GcUnit = SectionGcUnit;
 
     fn validate_layout(layout: &layout::Layout<Self>) -> Result {
@@ -3065,11 +3099,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             ));
         }
 
-        if section.should_exclude() {
-            return SectionRuleOutcome::Discard;
-        }
-
         if section_name.is_empty() {
+            if section.should_exclude() {
+                return SectionRuleOutcome::Discard;
+            }
             return crate::layout_rules::unnamed_section_output::<Elf<C>>(section);
         }
 
@@ -3190,15 +3223,36 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
     fn section_identity<'data>(
         name: SectionName<'data>,
-        _section: &Self::SectionHeader,
+        section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
-        SectionIdentity::new(name, ())
+        SectionIdentity::new(
+            name,
+            ElfSectionIdentity::from_exclude_flag(section.should_exclude()),
+        )
+    }
+
+    fn section_identity_in_file<'data>(
+        file: &Self::File<'data>,
+        _section_index: object::SectionIndex,
+        name: SectionName<'data>,
+        section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self> {
+        let mut identity = ElfSectionIdentity::from_exclude_flag(section.should_exclude());
+        let section_type = section.sh_type(LittleEndian);
+        if section_type == sht::REL || section_type == sht::RELA {
+            let target_index = object::SectionIndex(section.sh_info(LittleEndian) as usize);
+            if let Ok(target) = file.section(target_index) {
+                identity = identity
+                    .with_relocation_target(target.sh_flags(LittleEndian).contains(shf::EXCLUDE));
+            }
+        }
+        SectionIdentity::new(name, identity)
     }
 
     fn section_identity_from_name<'data>(
         name: SectionName<'data>,
     ) -> Option<SectionIdentity<'data, Self>> {
-        Some(SectionIdentity::new(name, ()))
+        Some(SectionIdentity::new(name, ElfSectionIdentity::NONE))
     }
 
     fn apply_linker_script_attributes(
@@ -6529,7 +6583,10 @@ impl<C: ElfClass> Elf<C> {
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Elf<C>> {
-        SectionKind::Primary(SectionIdentity::new(SectionName(name), ()))
+        SectionKind::Primary(SectionIdentity::new(
+            SectionName(name),
+            ElfSectionIdentity::NONE,
+        ))
     }
 
     const SECTION_DEFINITIONS: [BuiltInSectionDetails<C>; ELF_NUM_BUILT_IN_SECTIONS] = {
