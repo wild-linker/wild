@@ -1734,7 +1734,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
         .execute(|args, _modifier_stack, value| {
             match value {
                 Some(v) => {
-                    args.common_mut().num_threads = Some(NonZeroUsize::from_str_radix(v, 10)?);
+                    args.common_mut().num_threads = Some(v.parse()?);
                 }
                 None => {
                     args.common_mut().num_threads = None; // Default behaviour

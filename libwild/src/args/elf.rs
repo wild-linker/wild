@@ -1582,7 +1582,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("thread-count")
         .help("Set the number of threads to use")
         .execute(|args, _modifier_stack, value| {
-            args.common_mut().num_threads = Some(NonZeroUsize::from_str_radix(value, 10)?);
+            args.common_mut().num_threads = Some(value.parse()?);
             Ok(())
         });
 
@@ -2422,8 +2422,8 @@ impl platform::Args for ElfArgs {
         // The --entry flag is used first, falling back to what the linker script says, or otherwise
         // defaults to `_start`.
         if let Some(entry) = self.entry.as_deref() {
-            return parse_number(entry).map_or_else(
-                |_| platform::EntryPoint::Symbol(entry.as_bytes()),
+            return parse_number(entry).map_or(
+                platform::EntryPoint::Symbol(entry.as_bytes()),
                 platform::EntryPoint::Address,
             );
         }
