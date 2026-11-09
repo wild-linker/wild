@@ -657,6 +657,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
     parser
         .declare()
         .long("strip-debug")
+        .short("S")
         .help("Strip debug info")
         .execute(|args, _modifier_stack| {
             args.strip_debug = true;
