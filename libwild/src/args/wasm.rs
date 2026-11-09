@@ -29,6 +29,9 @@ pub(crate) const DEFAULT_STACK_SIZE: u32 = 64 * 1024;
 /// Default entry symbol for Wasm command modules.
 pub(crate) const DEFAULT_ENTRY: &str = "_start";
 
+/// Default `--table-base`.
+pub(crate) const DEFAULT_TABLE_BASE: u32 = 1;
+
 /// Default export name for the module's linear memory.
 pub(crate) const DEFAULT_MEMORY_EXPORT_NAME: &str = "memory";
 
@@ -63,6 +66,7 @@ pub struct WasmArgs {
     pub(crate) no_growable_memory: bool,
     pub(crate) growable_table: bool,
     pub(crate) global_base: Option<u32>,
+    pub(crate) table_base: u32,
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
@@ -125,6 +129,7 @@ impl Default for WasmArgs {
             no_growable_memory: false,
             growable_table: false,
             global_base: None,
+            table_base: DEFAULT_TABLE_BASE,
             shared_memory: false,
             import_memory: None,
             export_memory: None,
@@ -516,6 +521,22 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
                         format!("--global-base is too large for Wasm32: {base}")
                     })?)
                 };
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("table-base")
+        .help("Table offset at which to place address-taken functions")
+        .execute(|args, _modifier_stack, value| {
+            // wasm-ld treats 0 as unset, then uses 1 so slot 0 stays the null function.
+            let base = parse_number(value)?;
+            args.table_base = if base == 0 {
+                DEFAULT_TABLE_BASE
+            } else {
+                u32::try_from(base)
+                    .with_context(|| format!("--table-base is too large for Wasm32: {base}"))?
+            };
             Ok(())
         });
 
