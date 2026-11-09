@@ -39,6 +39,15 @@ pub struct MachOArgs {
     pub(crate) compatibility_version: SemanticVersion,
     pub(crate) rpaths: Vec<String>,
     pub(crate) export_list_paths: Vec<PathBuf>,
+    pub(crate) sectcreate: Vec<SectCreate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectCreate {
+    pub(crate) segname: String,
+    pub(crate) sectname: String,
+    pub(crate) path: PathBuf,
+    pub(crate) object: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +129,7 @@ impl Default for MachOArgs {
             install_name: None,
             current_version: SemanticVersion(Version(0)),
             compatibility_version: SemanticVersion(Version(0)),
+            sectcreate: Vec::new(),
             rpaths: Vec::new(),
             export_list_paths: Vec::new(),
         }
@@ -127,6 +137,13 @@ impl Default for MachOArgs {
 }
 
 impl platform::Args for MachOArgs {
+    fn synthetic_objects(&self) -> Vec<(&Path, &[u8])> {
+        self.sectcreate
+            .iter()
+            .map(|s| (s.path.as_path(), s.object.as_slice()))
+            .collect()
+    }
+
     fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
@@ -357,9 +374,19 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     parser
         .declare_with_three_params()
         .short("sectcreate")
-        .help("Create a section from a file (not yet supported)")
-        .execute(|args, _modifier_stack, _segment, _section, _file| {
-            args.warn_unsupported("-sectcreate")
+        .help("Create a section from the contents of a file")
+        .execute(|args, _modifier_stack, segname, sectname, file| {
+            let path = PathBuf::from(file);
+            let contents = std::fs::read(&path)
+                .with_context(|| format!("Failed to read -sectcreate file `{file}`"))?;
+            let object = crate::macho::build_sectcreate_object(segname, sectname, &contents)?;
+            args.sectcreate.push(SectCreate {
+                segname: segname.to_owned(),
+                sectname: sectname.to_owned(),
+                path,
+                object,
+            });
+            Ok(())
         });
     parser
         .declare_with_param()

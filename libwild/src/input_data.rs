@@ -461,7 +461,32 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             );
             *entry = Some(file.state);
         }
-        self.extract_all(&mut files_by_index, plugin)
+        let mut loaded = self.extract_all(&mut files_by_index, plugin)?;
+        for (path, bytes) in args.synthetic_objects() {
+            let input_file = &*self.inputs_arena.alloc(InputFile {
+                filename: path.to_owned(),
+                original_filename: path.to_owned(),
+                modifiers: Default::default(),
+                data: None,
+            });
+            let input_ref = InputRef {
+                file: input_file.as_ref(),
+                data: bytes,
+                entry: None,
+            };
+            let kind = FileKind::identify_bytes(bytes, false)
+                .with_context(|| format!("Failed to identify {input_ref}"))?;
+            let input_bytes = InputBytes {
+                kind,
+                input: input_ref,
+                data: bytes,
+                modifiers: input_ref.file.modifiers,
+            };
+            let record = InputRecord::Object(ParsedInputObject::new(&input_bytes, args));
+            loaded.add_record(record, plugin);
+            self.loaded_files.push(input_file);
+        }
+        Ok(loaded)
     }
 
     /// Checks that the modification timestamp on all our input files hasn't changed since we opened
