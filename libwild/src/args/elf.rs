@@ -372,6 +372,10 @@ impl Emulation {
             _ => None,
         }
     }
+
+    pub(crate) fn is_windows(self) -> bool {
+        matches!(self, Self::I386Pep)
+    }
 }
 
 impl Default for ElfArgs {

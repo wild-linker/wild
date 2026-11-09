@@ -137,7 +137,7 @@ impl Args {
         let mut has_flavor = false;
 
         let next_arg = input.next();
-        let mut platform = if next_arg
+        let platform = if next_arg
             .as_ref()
             .is_some_and(|arg| arg.as_ref() == "-flavor")
         {
@@ -154,35 +154,19 @@ impl Args {
             PlatformKind::host()
         };
 
-        let mut emulation = None;
-        if matches!(platform, PlatformKind::Elf) {
-            let mut emulation_string = None;
-            while let Some(arg) = input.next() {
-                if let Some(value) = arg.as_ref().strip_prefix("-m") {
-                    if value.is_empty() {
-                        emulation_string = input.next().map(|v| v.as_ref().to_owned());
-                    } else {
-                        emulation_string = Some(value.to_owned());
-                    }
-                    break;
-                }
-            }
-            if let Some(emulation_string) = emulation_string.as_deref() {
-                match emulation_string.parse() {
-                    Ok(parsed_emulation) => {
-                        emulation = Some(parsed_emulation);
-                        if matches!(parsed_emulation, Emulation::I386Pep) {
-                            platform = PlatformKind::Coff;
-                        }
-                    }
-                    Err(_) => (),
-                };
-            }
-        };
+        let emulation = matches!(platform, PlatformKind::Elf)
+            .then(|| find_emulation(input))
+            .flatten();
 
         let mut args = match platform {
             PlatformKind::Coff => Args::Coff(coff::CoffArgs::new(emulation)?),
-            PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
+            PlatformKind::Elf => {
+                if emulation.is_some_and(|emulation| emulation.is_windows()) {
+                    Args::Coff(coff::CoffArgs::new(emulation)?)
+                } else {
+                    Args::Elf(elf::ElfArgs::new()?)
+                }
+            }
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
             PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
         };
@@ -277,6 +261,33 @@ impl Args {
         }
         Ok(())
     }
+}
+
+/// Scans remaining arguments, searching for the **first** emulation argument.
+/// Currently skips reading response files.
+fn find_emulation<S, I>(mut input: I) -> Option<Emulation>
+where
+    S: AsRef<str>,
+    I: Iterator<Item = S>,
+{
+    let mut emulation_string = None;
+    while let Some(arg) = input.next() {
+        if let Some(value) = arg.as_ref().strip_prefix("-m") {
+            if value.is_empty() {
+                emulation_string = input.next().map(|v| v.as_ref().to_owned());
+            } else {
+                emulation_string = Some(value.to_owned());
+            }
+            break;
+        }
+    }
+
+    if let Some(emulation_string) = emulation_string.as_deref()
+        && let Ok(parsed_emulation) = emulation_string.parse()
+    {
+        return Some(parsed_emulation);
+    };
+    None
 }
 
 enum PlatformKind {
