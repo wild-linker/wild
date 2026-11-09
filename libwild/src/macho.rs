@@ -3625,3 +3625,94 @@ mod tests {
         }
     }
 }
+
+fn name16(name: &str) -> Result<[u8; 16]> {
+    ensure!(
+        name.len() <= 16,
+        "Segment or section name `{name}` is longer than 16 bytes"
+    );
+    let mut buf = [0u8; 16];
+    buf[..name.len()].copy_from_slice(name.as_bytes());
+    Ok(buf)
+}
+
+pub(crate) fn build_sectcreate_object(
+    segname: &str,
+    sectname: &str,
+    contents: &[u8],
+) -> Result<Vec<u8>> {
+    const HEADER_SIZE: usize = 32;
+    const SEGMENT_SIZE: usize = 72;
+    const SECTION_SIZE: usize = 80;
+    const SYMTAB_SIZE: usize = 24;
+
+    let cmds_size = SEGMENT_SIZE + SECTION_SIZE + SYMTAB_SIZE;
+    let data_off = HEADER_SIZE + cmds_size;
+    let symtab_off = (data_off + contents.len()).next_multiple_of(8);
+    let seg = name16(segname)?;
+    let sect = name16(sectname)?;
+    let len = contents.len() as u64;
+
+    let mut out = Vec::with_capacity(symtab_off + 1);
+    out.extend_from_slice(&0xfeed_facf_u32.to_le_bytes());
+    out.extend_from_slice(&0x0100_000c_u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(cmds_size as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+
+    out.extend_from_slice(&0x19u32.to_le_bytes());
+    out.extend_from_slice(&((SEGMENT_SIZE + SECTION_SIZE) as u32).to_le_bytes());
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(data_off as u64).to_le_bytes());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+
+    out.extend_from_slice(&sect);
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(data_off as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(SYMTAB_SIZE as u32).to_le_bytes());
+    out.extend_from_slice(&(symtab_off as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(symtab_off as u32).to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+
+    out.extend_from_slice(contents);
+    out.resize(symtab_off, 0);
+    out.push(0);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod sectcreate_tests {
+    use super::*;
+
+    #[test]
+    fn sectcreate_object_parses() {
+        let bytes = build_sectcreate_object("__TEXT", "__info", b"hello").unwrap();
+        assert!(File::parse_bytes(&bytes, false).is_ok());
+    }
+
+    #[test]
+    fn sectcreate_rejects_long_names() {
+        assert!(build_sectcreate_object("__SEGMENT_TOO_LONG", "__a", b"x").is_err());
+    }
+}
