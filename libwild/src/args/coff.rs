@@ -37,9 +37,7 @@ pub struct CoffArgs {
     pub(crate) is_dll: bool,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) default_libraries: Vec<String>,
-    /// Libraries named by `/NODEFAULTLIB:name`.
     pub(crate) excluded_default_libraries: Vec<String>,
-    /// Set by a bare `/NODEFAULTLIB`, which ignores every default library.
     pub(crate) no_default_libraries: bool,
     pub(crate) variant: CoffVariant,
 }
