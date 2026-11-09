@@ -1867,6 +1867,24 @@ fn heap_base_after_data(data_end: u32) -> Result<u32> {
         .context("Wasm heap base overflow")
 }
 
+fn data_start_address(
+    stack_first: bool,
+    stack_size: u32,
+    global_base: Option<u32>,
+    memory_base: u32,
+) -> Result<u32> {
+    if stack_first {
+        if let Some(base) = global_base {
+            if base < stack_size {
+                bail!("--global-base cannot be less than stack size when --stack-first is used");
+            }
+            return Ok(base);
+        }
+        return Ok(stack_size);
+    }
+    Ok(global_base.unwrap_or(memory_base))
+}
+
 /// Initial `__stack_pointer` value for the chosen stack layout.
 fn stack_pointer_init(data_end: u32, stack_size: u32, stack_first: bool) -> Result<u32> {
     ensure_stack_size_aligned(stack_size)?;
@@ -6530,11 +6548,12 @@ where
         check_features: symbol_db.args.check_features,
         ..WasmLayout::default()
     };
-    let data_start = if stack_first {
-        stack_size
-    } else {
-        layout.memory_base
-    };
+    let data_start = data_start_address(
+        stack_first,
+        stack_size,
+        symbol_db.args.global_base,
+        layout.memory_base,
+    )?;
     let mut memory_cursor = data_start;
     {
         timing_phase!("Merge Wasm object layouts");
