@@ -329,7 +329,7 @@ enum DynamicLinker {
 }
 
 #[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
-enum Emulation {
+pub(crate) enum Emulation {
     #[strum(serialize = "elf_x86_64", message = "x86-64 ELF target")]
     ElfX86_64,
     #[strum(serialize = "elf_x86_64_sol2", message = "x86-64 ELF target (Solaris)")]
@@ -346,14 +346,18 @@ enum Emulation {
     LoongArch64,
     #[strum(serialize = "elf64lppc", message = "PowerPC64 LE ELF target")]
     Ppc64,
+    #[strum(serialize = "i386pep", message = "x86-64 PE target")]
+    I386Pep,
     #[strum(disabled)]
     Unsupported,
 }
 
 impl Emulation {
-    fn architecture(self) -> Architecture {
+    pub(crate) fn architecture(self) -> Architecture {
         match self {
-            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 => Architecture::X86_64,
+            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 | Emulation::I386Pep => {
+                Architecture::X86_64
+            }
             Emulation::AArch64 => Architecture::AArch64,
             Emulation::RiscV64 => Architecture::RiscV64,
             Emulation::LoongArch64 => Architecture::LoongArch64,
@@ -691,7 +695,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     Ok(())
 }
 
-fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
+pub(crate) fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
     Emulation::iter().flat_map(|emulation| {
         emulation
             .get_serializations()

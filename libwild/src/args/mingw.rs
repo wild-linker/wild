@@ -1,15 +1,14 @@
-use crate::arch::Architecture;
 use crate::arch::SUPPORTED_TARGETS;
 use crate::args::ArgumentParser;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::coff::CoffArgs;
+use crate::args::elf::emulations;
+use crate::args::elf::supported_emulations;
 use crate::platform::Args;
-use itertools::Itertools;
 use std::path::Path;
 use std::sync::Arc;
 use strum::EnumMessage;
-use strum::IntoEnumIterator;
 
 pub const SILENTLY_IGNORED_FLAGS: &[&str] = &[];
 
@@ -19,34 +18,6 @@ pub const IGNORED_NO_VALUE_FLAGS: &[&str] = &[];
 
 pub(super) fn is_ignored_flag(flag: &str) -> bool {
     IGNORED_FLAGS.contains(&flag)
-}
-
-fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
-    Emulation::iter().flat_map(|emulation| {
-        emulation
-            .get_serializations()
-            .iter()
-            .map(move |&name| (emulation, name))
-    })
-}
-
-#[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
-pub(crate) enum Emulation {
-    #[strum(serialize = "i386pep", message = "x86-64 PE target")]
-    I386Pep,
-    // TODO: add arm mess
-}
-
-impl Emulation {
-    pub(crate) fn architecture(self) -> Architecture {
-        match self {
-            Emulation::I386Pep => Architecture::X86_64,
-        }
-    }
-}
-
-pub(crate) fn supported_emulations() -> String {
-    emulations().map(|(_, name)| name).join(" ")
 }
 
 pub(super) fn setup_argument_parser() -> ArgumentParser<CoffArgs> {

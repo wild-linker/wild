@@ -12,6 +12,7 @@
 //! Basically, we need to be able to parse arguments in the same way as the other linkers on the
 //! platform that we're targeting.
 
+use crate::args::elf::Emulation;
 use crate::bail;
 use crate::ensure;
 use crate::env;
@@ -153,28 +154,34 @@ impl Args {
             PlatformKind::host()
         };
 
-        // TODO: this very crude, need to think about a better way to do this. Perhaps move
-        // emulation parsing here?
-        let is_mingw = if matches!(platform, PlatformKind::Elf) {
-            let mut has_emulation = !has_flavor && next_arg.is_some_and(|arg| arg.as_ref() == "-m");
-            if !has_emulation {
-                has_emulation = input.find(|arg| arg.as_ref() == "-m").is_some();
-            }
-            has_emulation
-                && input.next().is_some_and(|arg| match arg.as_ref() {
-                    "i386pe" => panic!("i686 is unsupported"),
-                    "i386pep" => {
-                        platform = PlatformKind::Coff;
-                        true
+        let mut emulation = None;
+        if matches!(platform, PlatformKind::Elf) {
+            let mut emulation_string = None;
+            while let Some(arg) = input.next() {
+                if let Some(value) = arg.as_ref().strip_prefix("-m") {
+                    if value.is_empty() {
+                        emulation_string = input.next().map(|v| v.as_ref().to_owned());
+                    } else {
+                        emulation_string = Some(value.to_owned());
                     }
-                    _ => false,
-                })
-        } else {
-            false
+                    break;
+                }
+            }
+            if let Some(emulation_string) = emulation_string.as_deref() {
+                match emulation_string.parse() {
+                    Ok(parsed_emulation) => {
+                        emulation = Some(parsed_emulation);
+                        if matches!(parsed_emulation, Emulation::I386Pep) {
+                            platform = PlatformKind::Coff;
+                        }
+                    }
+                    Err(_) => (),
+                };
+            }
         };
 
         let mut args = match platform {
-            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new(is_mingw)?),
+            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new(emulation)?),
             PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
             PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),

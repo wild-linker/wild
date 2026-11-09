@@ -2,6 +2,7 @@ use crate::args::ArgumentParser;
 use crate::args::OptionSyntax;
 use crate::args::coff::CoffArgs;
 use crate::args::coff::CoffMachine;
+use crate::args::coff::CoffVariant;
 use crate::args::coff::Subsystem;
 use crate::bail;
 use crate::error::Result;
@@ -117,7 +118,7 @@ pub(super) fn setup_argument_parser() -> ArgumentParser<CoffArgs> {
             if !value.eq_ignore_ascii_case("x64") && !value.eq_ignore_ascii_case("amd64") {
                 bail!("unsupported /MACHINE value `{value}`; only X64 is supported");
             }
-            args.machine = CoffMachine::X86_64;
+            args.variant = CoffVariant::Msvc(CoffMachine::X86_64);
             Ok(())
         });
 

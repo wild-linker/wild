@@ -2,6 +2,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::Modifiers;
+use crate::args::elf::Emulation;
 use crate::args::mingw;
 use crate::args::msvc;
 use crate::error;
@@ -23,8 +24,13 @@ pub(crate) enum Subsystem {
 }
 
 #[derive(Debug)]
+pub(crate) enum CoffVariant {
+    Mingw((Emulation, Option<Error>)),
+    Msvc(CoffMachine),
+}
+
+#[derive(Debug)]
 pub struct CoffArgs {
-    is_mingw: bool,
     pub(crate) common: CommonArgs,
     pub(crate) entry: Option<String>,
     pub(crate) subsystem: Option<Subsystem>,
@@ -35,62 +41,57 @@ pub struct CoffArgs {
     pub(crate) excluded_default_libraries: Vec<String>,
     /// Set by a bare `/NODEFAULTLIB`, which ignores every default library.
     pub(crate) no_default_libraries: bool,
-
-    // TODO: how to handle this?
-    // link.exe uses machine while ld uses emulation
-    pub(crate) machine: CoffMachine,
-    emulation: mingw::Emulation,
-    emulation_error: Option<Error>,
+    pub(crate) variant: CoffVariant,
 }
 
 impl CoffArgs {
-    pub(crate) fn new(is_mingw: bool) -> Result<Self> {
+    pub(crate) fn new(emulation: Option<Emulation>) -> Result<Self> {
+        let variant = match emulation {
+            Some(e) => CoffVariant::Mingw((e, None)),
+            None => CoffVariant::Msvc(CoffMachine::X86_64),
+        };
         let args = Self {
-            is_mingw,
+            variant,
             common: CommonArgs::from_env()?,
             ..Default::default()
         };
 
-        // TODO: check if win32 bfd supports this
-        // if let Ok(value) = env::var(LDEMULATION_ENV) {
-        //     args.set_emulation_str(&value, LDEMULATION_ENV);
-        // }
-
         Ok(args)
+    }
+
+    fn is_mingw(&self) -> bool {
+        matches!(self.variant, CoffVariant::Mingw(_))
     }
 
     pub(crate) fn set_emulation_str(&mut self, value: &str, source: &'static str) {
         match value.parse() {
             Ok(emulation) => self.set_emulation(emulation),
             Err(_) => {
-                self.emulation_error = Some(error!(
+                let emulation_error = Some(error!(
                     "Emulation '{value}' is not yet supported (from {source})"
                 ));
+                self.variant = CoffVariant::Mingw((Emulation::Unsupported, emulation_error));
             }
         }
     }
 
-    pub(crate) fn set_emulation(&mut self, emulation: mingw::Emulation) {
-        self.emulation = emulation;
-        self.emulation_error = None;
+    fn set_emulation(&mut self, emulation: Emulation) {
+        self.variant = CoffVariant::Mingw((emulation, None));
     }
 }
 
 impl Default for CoffArgs {
     fn default() -> Self {
         Self {
-            is_mingw: false,
             common: CommonArgs::default(),
             entry: None,
             subsystem: None,
             is_dll: false,
-            machine: CoffMachine::X86_64,
             lib_search_path: Vec::new(),
             default_libraries: Vec::new(),
             excluded_default_libraries: Vec::new(),
             no_default_libraries: false,
-            emulation: mingw::Emulation::I386Pep,
-            emulation_error: None,
+            variant: CoffVariant::Msvc(CoffMachine::X86_64),
         }
     }
 }
@@ -162,7 +163,7 @@ impl platform::Args for CoffArgs {
 
     // TODO: use trait with implementations to avoid repeating `if mingw` all over the place?
     fn is_ignored_flag(&self, flag: &str) -> bool {
-        if self.is_mingw {
+        if self.is_mingw() {
             mingw::is_ignored_flag(flag)
         } else {
             msvc::is_ignored_flag(flag)
@@ -170,10 +171,9 @@ impl platform::Args for CoffArgs {
     }
 
     fn architecture(&self) -> Architecture {
-        if self.is_mingw {
-            self.emulation.architecture()
-        } else {
-            unimplemented!()
+        match self.variant {
+            CoffVariant::Mingw((emulation, _)) => emulation.architecture(),
+            CoffVariant::Msvc(_) => Architecture::X86_64,
         }
     }
 }
@@ -186,7 +186,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
-    let arg_parser = if args.is_mingw {
+    let arg_parser = if args.is_mingw() {
         mingw::setup_argument_parser()
     } else {
         msvc::setup_argument_parser()
@@ -199,6 +199,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     args.common.report_unrecognized()?;
+
+    if let CoffVariant::Mingw((_, e)) = &mut args.variant
+        && let Some(e) = e.take()
+    {
+        return Err(e);
+    }
 
     Ok(())
 }
