@@ -4951,7 +4951,7 @@ fn write_merged_strings<C: ElfClass>(
             let buffer = buffers
                 .get_mut(section_id.part_id_with_alignment::<elf::Elf<C>>(crate::alignment::MIN));
 
-            write_merged_strings_to_buffer(merged, buffer);
+            crate::string_merging::write_merged_strings_to_buffer(merged, buffer);
         }
     });
 
@@ -4965,23 +4965,6 @@ fn write_merged_strings<C: ElfClass>(
             .unwrap()
             .copy_from_slice(prelude.identity.as_bytes());
     }
-}
-
-pub(crate) fn write_merged_strings_to_buffer(
-    merged: &crate::string_merging::MergedStringsSection,
-    buffer: &mut &mut [u8],
-) {
-    merged
-        .buckets
-        .iter()
-        .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
-        .par_bridge()
-        .for_each(|(bucket, mut buffer)| {
-            for string in &bucket.strings {
-                let dest = buffer.split_off_mut(..string.len()).unwrap();
-                dest.copy_from_slice(string);
-            }
-        });
 }
 
 fn write_plt_got_entries<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(

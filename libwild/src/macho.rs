@@ -102,6 +102,7 @@ use std::num::NonZeroU8;
 use std::num::NonZeroU64;
 use std::slice::Iter;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 
 // Useful format documents:
@@ -675,17 +676,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(section.name())
     }
 
-    fn raw_section_data(&self, _section: &SectionHeader) -> Result<&'data [u8]> {
-        todo!()
+    fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        section
+            .data(LE, self.data, section.offset(LE).into())
+            .context("cannot get section data")
     }
 
     fn section_data(
         &self,
-        _section: &SectionHeader,
+        section: &SectionHeader,
         _member: &bumpalo_herd::Member<'data>,
-        _loaded_metrics: &crate::resolution::LoadedMetrics,
+        loaded_metrics: &crate::resolution::LoadedMetrics,
     ) -> Result<&'data [u8]> {
-        todo!()
+        let data = self.raw_section_data(section)?;
+        loaded_metrics
+            .loaded_bytes
+            .fetch_add(data.len(), Ordering::Relaxed);
+        Ok(data)
     }
 
     fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
@@ -802,12 +809,11 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_merge_section(&self) -> bool {
-        // TODO
-        false
+        self.flags.get(LE).typ() == macho::S_CSTRING_LITERALS
     }
 
     fn is_strings(&self) -> bool {
-        todo!()
+        self.flags.get(LE).typ() == macho::S_CSTRING_LITERALS
     }
 
     fn should_retain(&self) -> bool {
