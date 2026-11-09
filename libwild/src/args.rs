@@ -136,8 +136,8 @@ impl Args {
 
         let mut has_flavor = false;
 
-        let next_arg = input.next();
-        let platform = if next_arg
+        let platform = if input
+            .next()
             .as_ref()
             .is_some_and(|arg| arg.as_ref() == "-flavor")
         {
