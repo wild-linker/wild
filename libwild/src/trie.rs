@@ -77,7 +77,7 @@ pub(crate) struct Trie {
 
 impl Trie {
     pub(crate) fn new<'data>(names: impl IntoIterator<Item = &'data [u8]>) -> Self {
-        verbose_timing_phase!("Prepare exports trie");
+        verbose_timing_phase!("Build exports trie");
 
         let mut names = names.into_iter().enumerate().collect::<Vec<_>>();
         {

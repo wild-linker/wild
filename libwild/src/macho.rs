@@ -1769,111 +1769,52 @@ impl platform::Platform for MachO {
         resolutions: &SymbolResolutions<Self>,
         group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>> {
+        verbose_timing_phase!("Create Mach-O layout metadata");
+
         let mut layout_ext = LayoutExt::default();
 
-        let imported_symbols = finalise_sizes_ext
-            .imported_symbols
-            .iter()
-            .map(|&symbol_id| {
-                let resolution = resolutions
-                    .get(symbol_id)
-                    .with_context(|| "missing resolution for a stub library symbol".to_string())?;
+        let imported_symbols =
+            collect_imported_symbol_addresses(&finalise_sizes_ext.imported_symbols, resolutions)?;
 
-                Ok(ImportedSymbolWithResolution {
-                    symbol_id,
-                    got_address: resolution.format_specific.got_address,
-                    plt_address: resolution.format_specific.plt_address,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        {
+            verbose_timing_phase!("Sort imported symbols");
 
-        // Tiebreak by both `got_address` and `symbol_id` for imports that don't have a GOT entry.
-        layout_ext.imported_symbols = imported_symbols
-            .into_iter()
-            .sorted_by_key(|symbol| (symbol.got_address, symbol.symbol_id))
-            .collect();
-        layout_ext.init_function_addresses = finalise_sizes_ext
-            .init_functions
-            .iter()
-            .map(|&symbol_id| {
-                resolutions
-                    .get(symbol_id)
-                    .map(|resolution| resolution.raw_value)
-                    .with_context(|| {
-                        format!("missing resolution for Mach-O initializer {symbol_id:?}")
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
+            // Tiebreak by both `got_address` and `symbol_id` for imports that don't have a GOT
+            // entry.
+            layout_ext.imported_symbols = imported_symbols
+                .into_iter()
+                .sorted_by_key(|symbol| (symbol.got_address, symbol.symbol_id))
+                .collect();
+        }
+
+        layout_ext.init_function_addresses =
+            collect_initializer_addresses(&finalise_sizes_ext.init_functions, resolutions)?;
+
         layout_ext.unwind_info_entries = finalise_sizes_ext.unwind_info_entries;
 
         let mut fixups = Vec::with_capacity(finalise_sizes_ext.pending_fixups.len());
 
-        for (ordinal, import) in layout_ext.imported_symbols.iter().enumerate() {
-            if let Some(got_address) = import.got_address {
-                fixups.push(Fixup {
-                    address: got_address.get(),
-                    kind: FixupKind::Bind {
-                        ordinal: ordinal as u64,
-                        relocation_base: None,
-                    },
-                });
-            }
+        append_got_fixups(
+            &layout_ext.imported_symbols,
+            finalise_sizes_ext.local_got_entries,
+            resolutions,
+            &mut fixups,
+        )?;
+
+        resolve_pending_fixups(
+            finalise_sizes_ext.pending_fixups,
+            &layout_ext.imported_symbols,
+            resolutions,
+            group_layouts,
+            &mut fixups,
+        )?;
+
+        {
+            verbose_timing_phase!("Sort Mach-O fixups");
+
+            fixups.par_sort_unstable_by_key(|fixup| fixup.address);
         }
 
-        for symbol_id in finalise_sizes_ext.local_got_entries {
-            let resolution = resolutions
-                .get(symbol_id)
-                .context("Missing local GOT entry symbol resolution")?;
-            fixups.push(Fixup {
-                address: resolution.got_address()?,
-                kind: FixupKind::Rebase {
-                    target_address: Some(resolution.raw_value),
-                },
-            });
-        }
-
-        for pending in finalise_sizes_ext.pending_fixups {
-            let group = &group_layouts[pending.file_id.group()];
-            let layout::FileLayout::Object(object) = &group.files[pending.file_id.file()] else {
-                bail!("Fixup location belongs to a non-object input");
-            };
-
-            let section_address = object.section_resolutions[pending.section_index.0]
-                .address()
-                .context("Invalid section address for fixup")?;
-            let fixup_address = section_address
-                .checked_add(pending.offset_in_section)
-                .context("Invalid fixup address")?;
-
-            let kind = match pending.kind {
-                PendingFixupKind::Bind { symbol_id } => {
-                    let ordinal = layout_ext
-                        .imported_symbols
-                        .iter()
-                        .position(|import| import.symbol_id == symbol_id)
-                        .context("Invalid ordinal for bind fixup")?;
-                    FixupKind::Bind {
-                        ordinal: ordinal as u64,
-                        relocation_base: Some(
-                            resolutions
-                                .get(symbol_id)
-                                .context("Missing resolution for bind fixup")?
-                                .raw_value,
-                        ),
-                    }
-                }
-                PendingFixupKind::Rebase => FixupKind::Rebase {
-                    target_address: None,
-                },
-            };
-
-            fixups.push(Fixup {
-                address: fixup_address,
-                kind,
-            });
-        }
-
-        fixups.par_sort_unstable_by_key(|fixup| fixup.address);
         layout_ext.fixups = fixups;
         Ok(layout_ext)
     }
@@ -3176,6 +3117,132 @@ impl SinglePartSectionId {
     }
 }
 
+fn collect_imported_symbol_addresses(
+    imported_symbols: &[SymbolId],
+    resolutions: &SymbolResolutions<MachO>,
+) -> Result<Vec<ImportedSymbolWithResolution>> {
+    verbose_timing_phase!("Collect imported symbol addresses");
+
+    imported_symbols
+        .iter()
+        .map(|&symbol_id| {
+            let resolution = resolutions
+                .get(symbol_id)
+                .with_context(|| "missing resolution for a stub library symbol".to_string())?;
+
+            Ok(ImportedSymbolWithResolution {
+                symbol_id,
+                got_address: resolution.format_specific.got_address,
+                plt_address: resolution.format_specific.plt_address,
+            })
+        })
+        .collect()
+}
+
+fn collect_initializer_addresses(
+    init_functions: &[SymbolId],
+    resolutions: &SymbolResolutions<MachO>,
+) -> Result<Vec<u64>> {
+    verbose_timing_phase!("Collect initializer addresses");
+
+    init_functions
+        .iter()
+        .map(|&symbol_id| {
+            resolutions
+                .get(symbol_id)
+                .map(|resolution| resolution.raw_value)
+                .with_context(|| format!("missing resolution for Mach-O initializer {symbol_id:?}"))
+        })
+        .collect()
+}
+
+fn append_got_fixups(
+    imported_symbols: &[ImportedSymbolWithResolution],
+    local_got_entries: Vec<SymbolId>,
+    resolutions: &SymbolResolutions<MachO>,
+    fixups: &mut Vec<Fixup>,
+) -> Result {
+    verbose_timing_phase!("Create GOT fixups");
+
+    for (ordinal, import) in imported_symbols.iter().enumerate() {
+        if let Some(got_address) = import.got_address {
+            fixups.push(Fixup {
+                address: got_address.get(),
+                kind: FixupKind::Bind {
+                    ordinal: ordinal as u64,
+                    relocation_base: None,
+                },
+            });
+        }
+    }
+
+    for symbol_id in local_got_entries {
+        let resolution = resolutions
+            .get(symbol_id)
+            .context("Missing local GOT entry symbol resolution")?;
+        fixups.push(Fixup {
+            address: resolution.got_address()?,
+            kind: FixupKind::Rebase {
+                target_address: Some(resolution.raw_value),
+            },
+        });
+    }
+
+    Ok(())
+}
+
+fn resolve_pending_fixups(
+    pending_fixups: Vec<PendingFixup>,
+    imported_symbols: &[ImportedSymbolWithResolution],
+    resolutions: &SymbolResolutions<MachO>,
+    group_layouts: &[layout::GroupLayout<'_, MachO>],
+    fixups: &mut Vec<Fixup>,
+) -> Result {
+    verbose_timing_phase!("Resolve pending fixups");
+
+    for pending in pending_fixups {
+        let group = &group_layouts[pending.file_id.group()];
+        let layout::FileLayout::Object(object) = &group.files[pending.file_id.file()] else {
+            bail!("Fixup location belongs to a non-object input");
+        };
+
+        let section_address = object.section_resolutions[pending.section_index.0]
+            .address()
+            .context("Invalid section address for fixup")?;
+        let fixup_address = section_address
+            .checked_add(pending.offset_in_section)
+            .context("Invalid fixup address")?;
+
+        let kind = match pending.kind {
+            PendingFixupKind::Bind { symbol_id } => {
+                let ordinal = imported_symbols
+                    .iter()
+                    .position(|import| import.symbol_id == symbol_id)
+                    .context("Invalid ordinal for bind fixup")?;
+                FixupKind::Bind {
+                    ordinal: ordinal as u64,
+                    relocation_base: Some(
+                        resolutions
+                            .get(symbol_id)
+                            .context("Missing resolution for bind fixup")?
+                            .raw_value,
+                    ),
+                }
+            }
+            PendingFixupKind::Rebase => FixupKind::Rebase {
+                target_address: None,
+            },
+        };
+
+        fixups.push(Fixup {
+            address: fixup_address,
+            kind,
+        });
+    }
+
+    Ok(())
+}
+
 /// A re-export can be the only use of a library, so mark libraries providing re-exported symbols as
 /// loaded.
 fn mark_reexport_providers_loaded(
@@ -3453,6 +3520,8 @@ fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::Prepa
     if !layout.symbol_db.output_kind.needs_dynsym() {
         return Ok(crate::trie::PreparedTrie::default());
     }
+
+    verbose_timing_phase!("Prepare exports trie");
 
     let image_base = text_segment_address(layout)?;
 
