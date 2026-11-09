@@ -7556,6 +7556,7 @@ impl platform::Platform for Wasm {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type FinaliseSizesExt<'data> = WasmLayout<'data>;
+    type LayoutMetadata = ();
     type LayoutExt<'data> = WasmLayout<'data>;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;

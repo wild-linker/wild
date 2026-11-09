@@ -806,6 +806,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = object::elf::RelocationType;
     type FinaliseSizesExt<'data> = LayoutExt;
+    type LayoutMetadata = ();
     type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;

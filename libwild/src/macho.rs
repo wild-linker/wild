@@ -361,6 +361,7 @@ impl std::fmt::Display for SegmentName {
 
 #[derive(Debug, Default)]
 pub(crate) struct LayoutExt {
+    pub(crate) reexports: Vec<Reexport>,
     pub(crate) exports_trie: crate::trie::PreparedTrie,
     pub(crate) function_starts: Vec<u8>,
     /// Imported STUB library symbols, sorted by GOT.
@@ -373,6 +374,7 @@ pub(crate) struct LayoutExt {
 
 #[derive(Debug, Default)]
 pub(crate) struct FinaliseSizesExt {
+    reexports: Vec<Reexport>,
     imported_libraries: Vec<FileId>,
     imported_symbols: Vec<SymbolId>,
     init_functions: Vec<SymbolId>,
@@ -392,8 +394,6 @@ pub(crate) struct PreludeLayoutExt {
     pub(crate) imported_library_file_ids: Vec<FileId>,
     pub(crate) load_dylib_command_sizes: Vec<usize>,
     pub(crate) load_command_count: usize,
-    pub(crate) exports_trie: Arc<crate::trie::Trie>,
-    pub(crate) reexports: Vec<Reexport>,
 }
 
 pub(crate) struct ExportNames<'scope, 'data> {
@@ -1299,6 +1299,7 @@ impl platform::Platform for MachO {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type FinaliseSizesExt<'data> = FinaliseSizesExt;
+    type LayoutMetadata = Arc<crate::trie::Trie>;
     type LayoutExt<'data> = LayoutExt;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = Iter<'a, SectionHeader>;
@@ -1357,12 +1358,15 @@ impl platform::Platform for MachO {
         output.write(layout, macho_writer::write::<A>)
     }
 
-    fn apply_post_resolution_adjustments(layout: &mut Layout<'_, Self>) -> Result {
+    fn apply_post_resolution_adjustments(
+        layout: &mut Layout<'_, Self>,
+        exports_trie: Self::LayoutMetadata,
+    ) -> Result {
         verbose_timing_phase!("Finalise Mach-O metadata layout");
 
         let shared_layout = &*layout;
         let (exports_trie, function_starts) = rayon::join(
-            || prepare_exports_trie(shared_layout),
+            || prepare_exports_trie(shared_layout, &exports_trie),
             || prepare_function_starts(shared_layout),
         );
         let exports_trie = exports_trie?;
@@ -1440,24 +1444,6 @@ impl platform::Platform for MachO {
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
         _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
     ) {
-    }
-
-    fn finalise_sizes_prelude<'data>(
-        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        _mem_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-    ) -> Result {
-        // We only build the structure of the trie here, since we can't compute its encoded size
-        // until later when we know all the symbol addresses. We could defer building the
-        // structure until we know the addresses, but doing it here gives more opportunity for
-        // parallelism. This might change if we find other ways to achieve parallelism in
-        // `finalise_metadata_layout`.
-        let names = ExportNames::new(
-            dynamic_symbol_definitions,
-            &prelude.format_specific.reexports,
-        );
-        prelude.format_specific.exports_trie = Arc::new(crate::trie::Trie::new(names.iter()));
-        Ok(())
     }
 
     fn finalise_sizes_dynamic<'data>(
@@ -1748,13 +1734,8 @@ impl platform::Platform for MachO {
 
         let reexports = resolve_reexports(symbol_db, &reexport_symbol_ids, &imported_libraries)?;
 
-        let layout::FileLayoutState::Prelude(prelude) = &mut groups[0].files[0] else {
-            unreachable!("first file must be the prelude");
-        };
-
-        prelude.format_specific.reexports = reexports;
-
         Ok(FinaliseSizesExt {
+            reexports,
             imported_libraries,
             imported_symbols,
             init_functions,
@@ -1764,6 +1745,16 @@ impl platform::Platform for MachO {
         })
     }
 
+    fn compute_layout_metadata<'data>(
+        dynamic_symbol_definitions: &[layout::DynamicSymbolDefinition<'data, Self>],
+        finalise_sizes_ext: &Self::FinaliseSizesExt<'data>,
+    ) -> Self::LayoutMetadata {
+        // Keep definitions followed by reexports in the same input order used for terminals
+        // and encoding. The trie stores indexes into these borrowed names.
+        let names = ExportNames::new(dynamic_symbol_definitions, &finalise_sizes_ext.reexports);
+        Arc::new(crate::trie::Trie::new(names.iter()))
+    }
+
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
         resolutions: &SymbolResolutions<Self>,
@@ -1771,7 +1762,10 @@ impl platform::Platform for MachO {
     ) -> Result<Self::LayoutExt<'data>> {
         verbose_timing_phase!("Create Mach-O layout metadata");
 
-        let mut layout_ext = LayoutExt::default();
+        let mut layout_ext = LayoutExt {
+            reexports: finalise_sizes_ext.reexports,
+            ..Default::default()
+        };
 
         let imported_symbols =
             collect_imported_symbol_addresses(&finalise_sizes_ext.imported_symbols, resolutions)?;
@@ -3516,7 +3510,10 @@ fn encode_function_starts(mut addresses: Vec<u64>, image_base: u64) -> Result<Ve
     Ok(bytes)
 }
 
-fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::PreparedTrie> {
+fn prepare_exports_trie(
+    layout: &Layout<'_, MachO>,
+    trie: &Arc<crate::trie::Trie>,
+) -> Result<crate::trie::PreparedTrie> {
     if !layout.symbol_db.output_kind.needs_dynsym() {
         return Ok(crate::trie::PreparedTrie::default());
     }
@@ -3584,17 +3581,15 @@ fn prepare_exports_trie(layout: &Layout<'_, MachO>) -> Result<crate::trie::Prepa
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let prelude = layout.prelude();
-
     symbols.extend(
-        prelude
+        layout
             .format_specific
             .reexports
             .iter()
             .map(Reexport::trie_terminal),
     );
 
-    Ok(prelude.format_specific.exports_trie.prepare(symbols))
+    Ok(trie.prepare(symbols))
 }
 
 fn exported_symbol_is_weak(layout: &Layout<'_, MachO>, symbol_id: SymbolId) -> Result<bool> {

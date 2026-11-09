@@ -275,6 +275,7 @@ impl Platform for Coff {
     type SymtabShndxEntry = ();
     type ResolvedObjectExt<'data> = ();
     type FinaliseSizesExt<'data> = ();
+    type LayoutMetadata = ();
     type GcUnit = SectionGcUnit;
     type SectionIdentityExt = ();
     type SymbolVersionIndex = ();

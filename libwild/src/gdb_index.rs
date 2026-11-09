@@ -19,7 +19,6 @@ use crate::layout::ObjectLayoutState;
 use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
-use crate::timing_phase;
 use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
@@ -227,7 +226,7 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
 pub(crate) fn compute_gdb_index_size<'data, C: ElfClass>(
     groups: &[GroupState<'data, Elf<C>>],
 ) -> Result<(u64, Option<GdbIndexScanResult<'data>>)> {
-    timing_phase!("Compute GDB index size");
+    verbose_timing_phase!("Compute GDB index size");
 
     let objects: Vec<_> = groups
         .iter()
@@ -431,7 +430,7 @@ struct NamedCuEntry<'data> {
 
 /// Merge per-object scan results into a single `GdbIndexScanResult`, assigning global CU indices.
 fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexScanResult {
-    timing_phase!("Merge GDB index scans");
+    verbose_timing_phase!("Merge GDB index scans");
 
     let mut all_cus = Vec::new();
     let mut total_addr_entries = 0_usize;
@@ -494,7 +493,7 @@ fn bucket_names<'data>(
     all_scans: &[PerObjectGdbScan<'data>],
     num_buckets: usize,
 ) -> Vec<MergeState<'data>> {
-    timing_phase!("Bucket names");
+    verbose_timing_phase!("Bucket names");
 
     // Note, we don't use par_bridge here, since we want the returned order to be deterministic.
     let chunks = all_scans
@@ -530,7 +529,7 @@ fn build_buckets<'data>(
     states: &[MergeState<'data>],
     num_buckets: usize,
 ) -> Vec<SymbolBucket<'data>> {
-    timing_phase!("Build symbol buckets");
+    verbose_timing_phase!("Build symbol buckets");
 
     (0..num_buckets)
         .into_par_iter()
@@ -583,7 +582,7 @@ fn build_buckets<'data>(
 fn scan_objects_for_gdb_index<'data, C: ElfClass>(
     objects: &[(&ObjectLayoutState<'data, Elf<C>>, &[SectionSlot])],
 ) -> Result<GdbIndexScanResult<'data>> {
-    timing_phase!("Scan objects for GDB index");
+    verbose_timing_phase!("Scan objects for GDB index");
 
     let per_object: Result<Vec<_>> = objects
         .par_iter()

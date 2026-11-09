@@ -495,6 +495,8 @@ pub(crate) trait Platform:
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
     type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
     type FinaliseSizesExt<'data>: Send + Sync;
+    /// Layout metadata that does not depend on resolved addresses.
+    type LayoutMetadata: Default + Send;
     type GcUnit: std::fmt::Debug + Copy + Send + Sync + 'static;
 
     /// Format-specific fields that form part of a section's identity.
@@ -650,14 +652,6 @@ pub(crate) trait Platform:
         common: &mut layout::CommonGroupState<'data, Self>,
         resources: &layout::GraphResources<'data, 'scope, Self>,
     );
-
-    fn finalise_sizes_prelude<'data>(
-        _prelude: &mut layout::PreludeLayoutState<'data, Self>,
-        _mem_sizes: &mut OutputSectionPartMap<u64>,
-        _dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
-    ) -> Result {
-        Ok(())
-    }
 
     fn finalise_sizes_dynamic<'data>(
         object: &mut layout::DynamicLayoutState<'data, Self>,
@@ -830,6 +824,14 @@ pub(crate) trait Platform:
         'data: 'files,
         'data: 'states;
 
+    /// Compute layout metadata that does not depend on resolved addresses.
+    fn compute_layout_metadata<'data>(
+        _dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
+        _finalise_sizes_ext: &Self::FinaliseSizesExt<'data>,
+    ) -> Self::LayoutMetadata {
+        Self::LayoutMetadata::default()
+    }
+
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
         _resolutions: &SymbolResolutions<Self>,
@@ -937,7 +939,10 @@ pub(crate) trait Platform:
     ///
     /// If implementations change section sizes, then they should call
     /// `Layout::refresh_file_layouts`.
-    fn apply_post_resolution_adjustments(_layout: &mut Layout<'_, Self>) -> Result {
+    fn apply_post_resolution_adjustments(
+        _layout: &mut Layout<'_, Self>,
+        _layout_metadata: Self::LayoutMetadata,
+    ) -> Result {
         Ok(())
     }
 

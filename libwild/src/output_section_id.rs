@@ -35,7 +35,7 @@ use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
-use crate::timing_phase;
+use crate::verbose_timing_phase;
 use core::slice;
 use hashbrown::HashMap;
 use itertools::multizip;
@@ -1031,7 +1031,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         linker_scripts: &[&SequencedLinkerScript<'data, P>],
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
-        timing_phase!("Compute output order");
+        verbose_timing_phase!("Compute output order");
 
         let mut has_custom_phdrs = false;
         let mut has_section_table = false;
