@@ -270,23 +270,22 @@ where
     S: AsRef<str>,
     I: Iterator<Item = S>,
 {
-    let mut emulation_string = None;
     while let Some(arg) = input.next() {
-        if let Some(value) = arg.as_ref().strip_prefix("-m") {
-            if value.is_empty() {
-                emulation_string = input.next().map(|v| v.as_ref().to_owned());
+        let arg_str = arg.as_ref();
+
+        if let Some(value) = arg_str.strip_prefix("-m") {
+            let emulation_string = if value.is_empty() {
+                input.next().map(|v| v.as_ref().to_owned())?
             } else {
-                emulation_string = Some(value.to_owned());
+                value.to_owned()
+            };
+
+            if let Ok(parsed_emulation) = emulation_string.parse() {
+                return Some(parsed_emulation);
             }
-            break;
         }
     }
 
-    if let Some(emulation_string) = emulation_string.as_deref()
-        && let Ok(parsed_emulation) = emulation_string.parse()
-    {
-        return Some(parsed_emulation);
-    };
     None
 }
 
