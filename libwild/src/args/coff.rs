@@ -62,7 +62,9 @@ impl CoffArgs {
     }
 
     pub(crate) fn set_emulation_str(&mut self, value: &str, source: &'static str) {
-        if let Ok(emulation) = value.parse() { self.set_emulation(emulation) } else {
+        if let Ok(emulation) = value.parse() {
+            self.set_emulation(emulation)
+        } else {
             let emulation_error = Some(error!(
                 "Emulation '{value}' is not yet supported (from {source})"
             ));
