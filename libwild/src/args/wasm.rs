@@ -62,6 +62,7 @@ pub struct WasmArgs {
     pub(crate) max_memory: Option<u64>,
     pub(crate) no_growable_memory: bool,
     pub(crate) growable_table: bool,
+    pub(crate) global_base: Option<u32>,
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
@@ -123,6 +124,7 @@ impl Default for WasmArgs {
             max_memory: None,
             no_growable_memory: false,
             growable_table: false,
+            global_base: None,
             shared_memory: false,
             import_memory: None,
             export_memory: None,
@@ -496,6 +498,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Place stack at the end of linear memory after data")
         .execute(|args, _modifier_stack| {
             args.stack_first = false;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("global-base")
+        .help("Memory offset at which to place static data")
+        .execute(|args, _modifier_stack, value| {
+            // wasm-ld stores this as an integer defaulting to 0, then treats 0 as unset.
+            let base = parse_number(value)?;
+            args.global_base =
+                if base == 0 {
+                    None
+                } else {
+                    Some(u32::try_from(base).with_context(|| {
+                        format!("--global-base is too large for Wasm32: {base}")
+                    })?)
+                };
             Ok(())
         });
 
