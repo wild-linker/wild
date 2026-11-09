@@ -3222,18 +3222,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     }
 
     fn section_identity<'data>(
-        name: SectionName<'data>,
-        section: &Self::SectionHeader,
-    ) -> SectionIdentity<'data, Self> {
-        SectionIdentity::new(
-            name,
-            ElfSectionIdentity::from_exclude_flag(section.should_exclude()),
-        )
-    }
-
-    fn section_identity_in_file<'data>(
         file: &Self::File<'data>,
-        _section_index: object::SectionIndex,
         name: SectionName<'data>,
         section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
