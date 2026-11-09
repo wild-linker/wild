@@ -2586,6 +2586,7 @@ impl platform::Platform for MachO {
     }
 
     fn section_identity<'data>(
+        _file: &Self::File<'data>,
         name: SectionName<'data>,
         section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {

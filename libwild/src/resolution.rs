@@ -1821,7 +1821,11 @@ fn resolve_section<'data, P: Platform>(
 
     if part_id == PartId::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
-            identity: P::section_identity(SectionName(section_name), input_section),
+            identity: P::section_identity(
+                obj.common.object,
+                SectionName(section_name),
+                input_section,
+            ),
             alignment,
             index: input_section_index.into(),
         };

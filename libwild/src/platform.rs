@@ -1220,6 +1220,7 @@ pub(crate) trait Platform:
     /// Constructs the complete identity of an input section, including all format-specific fields
     /// that distinguish sections with the same name.
     fn section_identity<'data>(
+        file: &Self::File<'data>,
         name: SectionName<'data>,
         section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self>;

@@ -8132,6 +8132,7 @@ impl platform::Platform for Wasm {
     }
 
     fn section_identity<'data>(
+        _file: &Self::File<'data>,
         name: SectionName<'data>,
         _section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
