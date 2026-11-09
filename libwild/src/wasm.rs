@@ -7557,6 +7557,7 @@ impl platform::Platform for Wasm {
     type SymbolVersionIndex = ();
     type FinaliseSizesExt<'data> = WasmLayout<'data>;
     type LayoutMetadata = ();
+    type AddressLayoutExt = ();
     type LayoutExt<'data> = WasmLayout<'data>;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
@@ -7900,10 +7901,9 @@ impl platform::Platform for Wasm {
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
-        _resolutions: &layout::SymbolResolutions<Self>,
-        _group_layouts: &[layout::GroupLayout<'data, Self>],
-    ) -> Result<Self::LayoutExt<'data>> {
-        Ok(finalise_sizes_ext)
+        _address_layout_ext: Self::AddressLayoutExt,
+    ) -> Self::LayoutExt<'data> {
+        finalise_sizes_ext
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(

@@ -197,7 +197,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         P::create_finalise_sizes_ext::<A>(symbol_db.args, &mut group_states, &symbol_db)?;
 
     // Compute address-independent layout metadata alongside size finalisation, address
-    // assignment and symbol resolution.
+    // assignment and metadata resolution.
     let (address_layout, layout_metadata) = rayon::join(
         || {
             compute_address_layout::<P, A>(
@@ -218,6 +218,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     );
 
     let AddressLayout {
+        format_specific: address_layout_ext,
         symbol_resolutions,
         got_relr_n,
         segment_layouts,
@@ -241,8 +242,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
     let num_sections = output_sections.num_sections();
 
-    let format_specific =
-        P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
+    let format_specific = P::create_layout_ext(finalise_sizes_ext, address_layout_ext);
 
     let mut layout = Layout {
         symbol_db,
@@ -287,6 +287,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
 /// Address-dependent layout computed alongside address-independent platform metadata.
 struct AddressLayout<'data, P: Platform> {
+    format_specific: P::AddressLayoutExt,
     symbol_resolutions: SymbolResolutions<P>,
     got_relr_n: u64,
     segment_layouts: SegmentLayouts,
@@ -599,7 +600,11 @@ fn compute_address_layout<'data, P: Platform, A: Arch<Platform = P>>(
 
     let thunk_landing_pad_addresses = thunk_landing_pad_addresses_out.into_inner().unwrap();
 
+    let format_specific =
+        P::resolve_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
+
     Ok(AddressLayout {
+        format_specific,
         symbol_resolutions,
         got_relr_n,
         segment_layouts,

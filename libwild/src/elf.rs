@@ -807,6 +807,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type RelocationInfo = object::elf::RelocationType;
     type FinaliseSizesExt<'data> = LayoutExt;
     type LayoutMetadata = ();
+    type AddressLayoutExt = ();
     type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
@@ -1647,10 +1648,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
-        _resolutions: &layout::SymbolResolutions<Self>,
-        _group_layouts: &[layout::GroupLayout<'data, Self>],
-    ) -> Result<Self::LayoutExt<'data>> {
-        Ok(finalise_sizes_ext)
+        _address_layout_ext: Self::AddressLayoutExt,
+    ) -> Self::LayoutExt<'data> {
+        finalise_sizes_ext
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(

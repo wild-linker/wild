@@ -372,6 +372,14 @@ pub(crate) struct LayoutExt {
     pub(crate) unwind_info_entries: Vec<Vec<UnwindInfoWithRelocs>>,
 }
 
+/// Metadata resolved from addresses before joining with exports-trie construction.
+#[derive(Debug, Default)]
+pub(crate) struct AddressLayoutExt {
+    imported_symbols: Vec<ImportedSymbolWithResolution>,
+    init_function_addresses: Vec<u64>,
+    fixups: Vec<Fixup>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FinaliseSizesExt {
     reexports: Vec<Reexport>,
@@ -1300,6 +1308,7 @@ impl platform::Platform for MachO {
     type SymbolVersionIndex = ();
     type FinaliseSizesExt<'data> = FinaliseSizesExt;
     type LayoutMetadata = Arc<crate::trie::Trie>;
+    type AddressLayoutExt = AddressLayoutExt;
     type LayoutExt<'data> = LayoutExt;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = Iter<'a, SectionHeader>;
@@ -1755,49 +1764,42 @@ impl platform::Platform for MachO {
         Arc::new(crate::trie::Trie::new(names.iter()))
     }
 
-    fn create_layout_ext<'data>(
-        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    fn resolve_layout_ext<'data>(
+        finalise_sizes_ext: &Self::FinaliseSizesExt<'data>,
         resolutions: &SymbolResolutions<Self>,
         group_layouts: &[layout::GroupLayout<'data, Self>],
-    ) -> Result<Self::LayoutExt<'data>> {
+    ) -> Result<Self::AddressLayoutExt> {
         verbose_timing_phase!("Create Mach-O layout metadata");
-
-        let mut layout_ext = LayoutExt {
-            reexports: finalise_sizes_ext.reexports,
-            ..Default::default()
-        };
 
         let imported_symbols =
             collect_imported_symbol_addresses(&finalise_sizes_ext.imported_symbols, resolutions)?;
 
-        {
+        let imported_symbols = {
             verbose_timing_phase!("Sort imported symbols");
 
             // Tiebreak by both `got_address` and `symbol_id` for imports that don't have a GOT
             // entry.
-            layout_ext.imported_symbols = imported_symbols
+            imported_symbols
                 .into_iter()
                 .sorted_by_key(|symbol| (symbol.got_address, symbol.symbol_id))
-                .collect();
-        }
+                .collect::<Vec<_>>()
+        };
 
-        layout_ext.init_function_addresses =
+        let init_function_addresses =
             collect_initializer_addresses(&finalise_sizes_ext.init_functions, resolutions)?;
-
-        layout_ext.unwind_info_entries = finalise_sizes_ext.unwind_info_entries;
 
         let mut fixups = Vec::with_capacity(finalise_sizes_ext.pending_fixups.len());
 
         append_got_fixups(
-            &layout_ext.imported_symbols,
-            finalise_sizes_ext.local_got_entries,
+            &imported_symbols,
+            &finalise_sizes_ext.local_got_entries,
             resolutions,
             &mut fixups,
         )?;
 
         resolve_pending_fixups(
-            finalise_sizes_ext.pending_fixups,
-            &layout_ext.imported_symbols,
+            &finalise_sizes_ext.pending_fixups,
+            &imported_symbols,
             resolutions,
             group_layouts,
             &mut fixups,
@@ -1809,8 +1811,26 @@ impl platform::Platform for MachO {
             fixups.par_sort_unstable_by_key(|fixup| fixup.address);
         }
 
-        layout_ext.fixups = fixups;
-        Ok(layout_ext)
+        Ok(AddressLayoutExt {
+            imported_symbols,
+            init_function_addresses,
+            fixups,
+        })
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        address_layout_ext: Self::AddressLayoutExt,
+    ) -> Self::LayoutExt<'data> {
+        LayoutExt {
+            reexports: finalise_sizes_ext.reexports,
+            exports_trie: Default::default(),
+            function_starts: Default::default(),
+            imported_symbols: address_layout_ext.imported_symbols,
+            init_function_addresses: address_layout_ext.init_function_addresses,
+            fixups: address_layout_ext.fixups,
+            unwind_info_entries: finalise_sizes_ext.unwind_info_entries,
+        }
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -3152,7 +3172,7 @@ fn collect_initializer_addresses(
 
 fn append_got_fixups(
     imported_symbols: &[ImportedSymbolWithResolution],
-    local_got_entries: Vec<SymbolId>,
+    local_got_entries: &[SymbolId],
     resolutions: &SymbolResolutions<MachO>,
     fixups: &mut Vec<Fixup>,
 ) -> Result {
@@ -3170,7 +3190,7 @@ fn append_got_fixups(
         }
     }
 
-    for symbol_id in local_got_entries {
+    for &symbol_id in local_got_entries {
         let resolution = resolutions
             .get(symbol_id)
             .context("Missing local GOT entry symbol resolution")?;
@@ -3186,7 +3206,7 @@ fn append_got_fixups(
 }
 
 fn resolve_pending_fixups(
-    pending_fixups: Vec<PendingFixup>,
+    pending_fixups: &[PendingFixup],
     imported_symbols: &[ImportedSymbolWithResolution],
     resolutions: &SymbolResolutions<MachO>,
     group_layouts: &[layout::GroupLayout<'_, MachO>],

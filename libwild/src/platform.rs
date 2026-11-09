@@ -497,6 +497,8 @@ pub(crate) trait Platform:
     type FinaliseSizesExt<'data>: Send + Sync;
     /// Layout metadata that does not depend on resolved addresses.
     type LayoutMetadata: Default + Send;
+    /// Metadata computed from resolved addresses alongside address-independent layout metadata.
+    type AddressLayoutExt: Default + Send;
     type GcUnit: std::fmt::Debug + Copy + Send + Sync + 'static;
 
     /// Format-specific fields that form part of a section's identity.
@@ -832,11 +834,22 @@ pub(crate) trait Platform:
         Self::LayoutMetadata::default()
     }
 
-    fn create_layout_ext<'data>(
-        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    /// Resolve address-dependent metadata without consuming inputs shared with
+    /// `compute_layout_metadata`.
+    fn resolve_layout_ext<'data>(
+        _finalise_sizes_ext: &Self::FinaliseSizesExt<'data>,
         _resolutions: &SymbolResolutions<Self>,
         _group_layouts: &[layout::GroupLayout<'data, Self>],
-    ) -> Result<Self::LayoutExt<'data>>;
+    ) -> Result<Self::AddressLayoutExt> {
+        Ok(Self::AddressLayoutExt::default())
+    }
+
+    /// Assemble the owned platform state after address layout and layout metadata computation
+    /// have joined.
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        address_layout_ext: Self::AddressLayoutExt,
+    ) -> Self::LayoutExt<'data>;
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
