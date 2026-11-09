@@ -162,11 +162,18 @@ fn apply_resolved_reloc(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    table_base: u32,
     tls_base: u32,
     buf: &mut [u8],
 ) -> Result<()> {
-    let base =
-        index_map.resolve_reloc(reloc, symbols, function_table_slots, memory_base, tls_base)?;
+    let base = index_map.resolve_reloc(
+        reloc,
+        symbols,
+        function_table_slots,
+        memory_base,
+        table_base,
+        tls_base,
+    )?;
     apply_relocation(buf, reloc, finalize_reloc_value(reloc, base)?)
 }
 
@@ -183,6 +190,7 @@ fn apply_section_reloc(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    table_base: u32,
     tls_base: u32,
     in_tls_template: bool,
     buf: &mut [u8],
@@ -202,6 +210,7 @@ fn apply_section_reloc(
         symbols,
         function_table_slots,
         memory_base,
+        table_base,
         tls_base,
         buf,
     )
@@ -339,6 +348,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
+    let table_base = wasm_layout.table_base;
     let tls_base = wasm_layout.tls_base;
 
     if bodies.is_empty() {
@@ -419,6 +429,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                         symbols,
                         function_table_slots,
                         memory_base,
+                        table_base,
                         tls_base,
                         false,
                         body_bytes,
@@ -476,6 +487,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
+    let table_base = wasm_layout.table_base;
     let tls_base = wasm_layout.tls_base;
 
     let mut segment_slots: Vec<(&mut [u8], usize, &WasmDataSegmentLayout<'_>)> =
@@ -517,6 +529,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                     per_object_symbols[obj_idx],
                     function_table_slots,
                     memory_base,
+                    table_base,
                     tls_base,
                 )
             })?;
@@ -533,6 +546,7 @@ fn write_data_segment(
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
+    table_base: u32,
     tls_base: u32,
 ) -> Result<()> {
     ensure!(
@@ -569,6 +583,7 @@ fn write_data_segment(
             symbols,
             function_table_slots,
             memory_base,
+            table_base,
             tls_base,
             segment.tls_template,
             payload,
@@ -678,13 +693,13 @@ pub(crate) fn build_table_section(tables: &[wasmparser::TableType]) -> Result<Ta
     Ok(section)
 }
 
-/// One active element segment on table 0 at offset 1 (functions occupy slots 1..).
-pub(crate) fn build_element_section(element_functions: &[u32]) -> ElementSection {
+/// One active element segment on table 0. Functions occupy slots `table_base..`.
+pub(crate) fn build_element_section(element_functions: &[u32], table_base: u32) -> ElementSection {
     let mut section = ElementSection::new();
     if element_functions.is_empty() {
         return section;
     }
-    let offset = ConstExpr::i32_const(1);
+    let offset = ConstExpr::i32_const(table_base as i32);
     section.active(
         Some(0),
         &offset,
@@ -933,7 +948,7 @@ pub(crate) fn encode_metadata_sections(
 
     if !layout.element_functions.is_empty() {
         timing_phase!("Encode Wasm element section");
-        let element_section = build_element_section(&layout.element_functions);
+        let element_section = build_element_section(&layout.element_functions, layout.table_base);
         encoded.element = Some(encode_wasm_section(&element_section));
     }
 
