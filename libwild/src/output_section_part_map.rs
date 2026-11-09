@@ -211,15 +211,17 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     }
 
     /// Returns the maximum alignment for any part with a non-default value starting from
-    /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
-    /// minimum alignment for the section.
-    pub(crate) fn max_alignment<P: Platform>(
+    /// `base_part_id` for the next `count` parts, and whether the range is empty or not. The
+    /// returned alignment will not be any less than the minimum alignment for the section.
+    pub(crate) fn max_alignment_and_has_data<P: Platform>(
         &self,
         range: Range<PartId>,
         output_sections: &OutputSections<P>,
-    ) -> Alignment {
-        self.in_range(range.clone())
-            .find(|(_, value)| **value != T::default())
+    ) -> (Alignment, bool) {
+        let non_empty = self
+            .in_range(range.clone())
+            .find(|(_, value)| **value != T::default());
+        let alignment = non_empty
             .map_or(alignment::MIN, |(part_id, _)| {
                 part_id.alignment(output_sections)
             })
@@ -228,7 +230,19 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                     .start
                     .output_section_id::<P>()
                     .min_alignment(output_sections),
-            )
+            );
+        (alignment, non_empty.is_some())
+    }
+
+    /// Returns the maximum alignment for any part with a non-default value starting from
+    /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
+    /// minimum alignment for the section.
+    pub(crate) fn max_alignment<P: Platform>(
+        &self,
+        range: Range<PartId>,
+        output_sections: &OutputSections<P>,
+    ) -> Alignment {
+        self.max_alignment_and_has_data(range, output_sections).0
     }
 
     /// Zip mutable references to values in `self` with shared references from `other` producing a

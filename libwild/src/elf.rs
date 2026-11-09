@@ -3119,9 +3119,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
 
-        if (ro_anchor == Anchor::BeforeStart || exec_anchor == Anchor::BeforeStart)
-            && let Some(first_alloc_id) = first_alloc
-        {
+        if let Some(first_alloc_id) = first_alloc {
             let sec_info = output_sections.output_info(first_alloc_id);
             if let Some(ref loc_info) = sec_info.location_info {
                 let (_, lc_stop) = loc_info.location_counters;

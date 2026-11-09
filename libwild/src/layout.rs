@@ -6353,6 +6353,7 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut deferred_nonalloc = Vec::new();
     let mut has_seen_alloc_section = false;
     let last_alloc_idx = output_order.custom_layout_last_alloc_index(output_sections);
+    let mut current_load_segment_delta: Option<u64> = None;
 
     for (event_idx, event) in output_order.into_iter().enumerate() {
         match event {
@@ -6434,9 +6435,15 @@ fn compute_layout_sections<'data, P: Platform>(
                             &mut lma_offset,
                         );
                     }
+                    current_load_segment_delta =
+                        Some(mem_offset.saturating_sub(file_offset as u64));
                 }
             }
-            OrderEvent::SegmentEnd(_) => {}
+            OrderEvent::SegmentEnd(segment_id) => {
+                if program_segments.is_load_segment(segment_id) {
+                    current_load_segment_delta = None;
+                }
+            }
             OrderEvent::Section(section_id) => {
                 let merge_target = output_sections.primary_output_section(section_id);
                 let is_alloc = output_sections.section_flags(merge_target).is_alloc();
@@ -6480,7 +6487,8 @@ fn compute_layout_sections<'data, P: Platform>(
                 }
 
                 let part_id_range = section_id.part_id_range::<P>();
-                let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
+                let (max_alignment, section_has_data) =
+                    sizes.max_alignment_and_has_data(part_id_range.clone(), output_sections);
                 let region = section_info
                     .region_name
                     .map(|region_name| {
@@ -6556,6 +6564,16 @@ fn compute_layout_sections<'data, P: Platform>(
                     .map(|(id, &size)| (id, size))
                     .peekable();
 
+                if section_has_data
+                    && output_sections.has_data_in_file(merge_target)
+                    && !is_deferred
+                    && let Some(delta) = current_load_segment_delta
+                    && section_flags.is_alloc()
+                    && mem_offset >= delta
+                {
+                    file_offset = file_offset.max((mem_offset - delta) as usize);
+                }
+
                 // For sections with only empty parts, make sure we run the loop below at least once
                 // so as to properly initialise the section's layout.
                 let empty_part = part_sizes
@@ -6576,19 +6594,6 @@ fn compute_layout_sections<'data, P: Platform>(
                         aligned_offset - mem_offset
                     } else {
                         part_size
-                    };
-
-                    // Note, we align up even if our size is zero, otherwise our section will
-                    // start at an unaligned address. We don't however align up for NOBITS
-                    // sections or sections whose file layout is deferred.
-                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
-                        file_offset = alignment.align_up_usize(file_offset);
-                    }
-
-                    let file_size = if output_sections.has_data_in_file(merge_target) {
-                        mem_size as usize
-                    } else {
-                        0
                     };
 
                     let (part_mem_offset, part_lma_offset) = if section_flags.is_alloc() {
@@ -6616,6 +6621,19 @@ fn compute_layout_sections<'data, P: Platform>(
                         *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
 
                         (mem_offset, mem_offset)
+                    };
+
+                    // Note, we align up even if our size is zero, otherwise our section will
+                    // start at an unaligned address. We don't however align up for NOBITS
+                    // sections or sections whose file layout is deferred.
+                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
+                        file_offset = alignment.align_up_usize(file_offset);
+                    }
+
+                    let file_size = if output_sections.has_data_in_file(merge_target) {
+                        mem_size as usize
+                    } else {
+                        0
                     };
 
                     let part_file_offset = if is_deferred { 0 } else { file_offset };

@@ -117,6 +117,14 @@
 //#ExpectSym:data section=.data
 //#ExpectSym:bss section=.bss
 
+//#Config:bss_before_data_runtime:default
+//#Object:runtime.c
+//#RunEnabled:true
+//#LinkerScript:bss-before-data-runtime.ld
+//#CompArgs:-DTEST_BSS_BEFORE_DATA_RUNTIME
+//#ExpectSym:data section=.data
+//#ExpectSym:bss section=.bss
+
 #if defined(TEST_ORPHAN_DATA)
 #include "../common/runtime.h"
 
@@ -169,14 +177,27 @@ int bss;
 
 void _start(void) {}
 
-#elif defined(TEST_BSS_BEFORE_DATA)
+#elif defined(TEST_BSS_BEFORE_DATA) || defined(TEST_BSS_BEFORE_DATA_RUNTIME)
+
+#include "../common/runtime.h"
 
 void foo(void) {}
 void (*init_funcs[])(void) __attribute__((section(".init_array"))) = {foo};
 int bss;
 int data = 42;
 
-void _start(void) {}
+void _start(void) {
+#ifdef TEST_BSS_BEFORE_DATA_RUNTIME
+  runtime_init();
+  if (data != 42) {
+    exit_syscall(1);
+  }
+  if (bss != 0) {
+    exit_syscall(2);
+  }
+  exit_syscall(42);
+#endif
+}
 
 #elif defined(TEST_LOC_COUNTER_DATA)
 
