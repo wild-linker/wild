@@ -1723,8 +1723,8 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         &[]
     }
 
-    /// Names that load the archive member defining them. Wasm includes `--export` and
-    /// `--export-if-defined`.
+    /// Names that load the archive member defining them. Wasm includes `--export`,
+    /// `--export-if-defined`, and `-u` / `--undefined`.
     fn export_archive_root_names(&self) -> &[String] {
         &[]
     }

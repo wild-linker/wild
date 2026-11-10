@@ -1270,7 +1270,8 @@ fn load_prelude<'scope, 'data, P: Platform>(
         load_symbol_named(resources, &mut SymbolId::undefined(), name, scope);
     }
 
-    // Wasm `--export` and `--export-if-defined` names are archive roots.
+    // Wasm `--export`, `--export-if-defined`, and `-u` / `--undefined` names are archive
+    // roots. `-u` does not export the symbol or keep it as a GC root.
     for name in resources.symbol_db.args.export_archive_root_names() {
         load_symbol_named(
             resources,
