@@ -657,8 +657,8 @@ impl Platform for Coff {
 }
 
 impl<'data> File<'data> {
-    fn parse_coff_bytes(data: &'data [u8], _is_dynamic: bool) -> Result<Self> {
-        Ok(Self { _data: data })
+    fn parse_coff_bytes(data: &'data [u8], _is_dynamic: bool) -> Self {
+        Self { _data: data }
     }
 }
 
@@ -666,7 +666,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Coff;
 
     fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
-        Self::parse_coff_bytes(data, is_dynamic)
+        Ok(Self::parse_coff_bytes(data, is_dynamic))
     }
 
     fn parse(input: &InputBytes<'data>, _args: &CoffArgs) -> Result<Self> {
