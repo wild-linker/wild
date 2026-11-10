@@ -4971,7 +4971,23 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     let address = P::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
-                SectionSlot::InitFunc(..) => SectionResolution::none(),
+                SectionSlot::InitFunc(..) => {
+                    // The section will have been consumed and converted to an initialiser list.
+                    // However, there might be relocations that reference the section. In
+                    // particular, rustc generates symbols.o containing relocations that reference
+                    // every symbol, including symbols that hold pointers to initialisation
+                    // functions. These relocations aren't reachable GC roots, however if we don't
+                    // GC, then we need avoid an error when we encounter those relocations. So we
+                    // need to produce a resolution for the section. It doesn't really matter
+                    // exactly what, so long as it's a resolution that the rest of the linker is
+                    // happy with.
+                    SectionResolution {
+                        address: resources
+                            .section_layouts
+                            .get(output_section_id::FILE_HEADER)
+                            .mem_offset,
+                    }
+                }
                 SectionSlot::CompactUnwind(..) => SectionResolution::none(),
                 _ => SectionResolution::none(),
             };
