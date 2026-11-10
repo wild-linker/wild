@@ -32,6 +32,7 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use object::SectionIndex;
 use object::SymbolIndex;
+use object::coff::CoffHeader as _;
 use object::pe::SectionFlags;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -55,7 +56,14 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SymtabEntry {}
+pub(crate) struct SymtabEntry {
+    pub(crate) raw: object::pe::ImageSymbol,
+    pub(crate) index: SymbolIndex,
+    pub(crate) is_aux: bool,
+    is_hidden: bool,
+}
+
+pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SectionHeader {}
@@ -88,8 +96,13 @@ const COFF_NUM_BUILT_IN_SECTIONS: usize =
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
+    pub(crate) arch: Architecture,
     #[debug(skip)]
-    pub(crate) _data: &'data [u8],
+    pub(crate) data: &'data [u8],
+    pub(crate) sections: object::coff::SectionTable<'data>,
+    pub(crate) symbol_table: object::read::coff::SymbolTable<'data>,
+    pub(crate) symbols: Vec<SymtabEntry>,
+    is_dynamic: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -622,7 +635,20 @@ impl Platform for Coff {
     }
 
     fn default_symtab_entry() -> Self::SymtabEntry {
-        todo!()
+        // TODO: Might need to tinker the defaults
+        SymtabEntry {
+            raw: object::pe::ImageSymbol {
+                name: [0; 8],
+                value: Default::default(),
+                section_number: Default::default(),
+                typ: Default::default(),
+                storage_class: Default::default(),
+                number_of_aux_symbols: 0,
+            },
+            index: SymbolIndex(0),
+            is_aux: false,
+            is_hidden: false,
+        }
     }
 
     type GdbIndexScanResult<'data> = ();
@@ -657,8 +683,64 @@ impl Platform for Coff {
 }
 
 impl<'data> File<'data> {
-    fn parse_coff_bytes(data: &'data [u8], _is_dynamic: bool) -> Self {
-        Self { _data: data }
+    fn parse_coff_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+        let mut offset = 0;
+        let header = CoffFileHeader::parse(data, &mut offset)?;
+        let arch = match header.machine() {
+            object::pe::IMAGE_FILE_MACHINE_AMD64 => Architecture::X86_64,
+            _ => bail!("Unsupported architecture: {:?}", header.machine()),
+        };
+
+        let sections = header.sections(data, offset)?;
+
+        // This is a bit of a hack.
+        // Wild needs dense symbol list, but COFF stores symbols along with zero or more of their
+        // aux symbols.
+        //
+        // `object` crate handles that by densely storing symbols and their aux records, and
+        // reflects that in indexes. However, its iterators return only the "real" symbols.
+        //
+        // This causes Wild's own indexing to fall apart. To fix that we can either:
+        // - store symbols and aux records a separate symbols, to retain `object`'s indexing
+        // - store symbols only and create map between to convert between our and `object`'s
+        //   indexing
+        // - avoid using `object`'s parsing and do it ourselves
+        //
+        // The code below implements the first option.
+        let symbol_table = header.symbols(data)?;
+        let num_symbols = symbol_table.len();
+        let mut symbols = Vec::with_capacity(num_symbols);
+        let mut aux_remaining = 0;
+        for i in 0..num_symbols {
+            let raw = *symbol_table.symbol(SymbolIndex(i))?;
+            let index = SymbolIndex(i);
+            if aux_remaining > 0 {
+                aux_remaining -= 1;
+                symbols.push(SymtabEntry {
+                    raw,
+                    index,
+                    is_aux: true,
+                    is_hidden: false,
+                });
+            } else {
+                aux_remaining = raw.number_of_aux_symbols;
+                symbols.push(SymtabEntry {
+                    raw,
+                    index,
+                    is_aux: false,
+                    is_hidden: false,
+                });
+            }
+        }
+
+        Ok(Self {
+            arch,
+            data,
+            sections,
+            symbol_table,
+            symbols,
+            is_dynamic,
+        })
     }
 }
 
@@ -666,17 +748,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Coff;
 
     fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
-        Ok(Self::parse_coff_bytes(data, is_dynamic))
+        Self::parse_coff_bytes(data, is_dynamic)
     }
 
-    fn parse(input: &InputBytes<'data>, _args: &CoffArgs) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &CoffArgs) -> Result<Self> {
         let file = Self::parse_bytes(input.data, false)?;
+
+        if file.arch != args.architecture() {
+            bail!(
+                "`{}` has incompatible architecture: {}, expecting {}",
+                input,
+                file.arch,
+                args.architecture(),
+            );
+        }
 
         Ok(file)
     }
 
     fn is_dynamic(&self) -> bool {
-        false
+        self.is_dynamic
     }
 
     fn num_symbols(&self) -> usize {
@@ -990,15 +1081,16 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_hidden(&self) -> bool {
-        todo!()
+        self.is_hidden
     }
 
     fn is_gnu_unique(&self) -> bool {
         todo!()
     }
 
-    fn with_hidden(self, _hidden: bool) -> Self {
-        todo!()
+    fn with_hidden(mut self, hidden: bool) -> Self {
+        self.is_hidden = hidden;
+        self
     }
 }
 
