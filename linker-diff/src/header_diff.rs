@@ -684,6 +684,10 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
                     Some("PIE"),
                 ]),
             ),
+            DT_GNU_FLAGS_1 => (
+                Cow::Borrowed("DT_GNU_FLAGS_1"),
+                Converter::BitFlags(&[Some("UNIQUE")]),
+            ),
             DT_RELACOUNT => {
                 // Ignore sizes for now.
                 continue;
@@ -733,11 +737,6 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             {
                 (Cow::Borrowed("DT_X86_64_PLTENT"), Converter::None)
             }
-            // TODO: DT_GNU_FLAGS_1 once added to `object`
-            object::elf::DynamicTag(0x6ffffdf4) => (
-                Cow::Borrowed("DT_GNU_FLAGS_1"),
-                Converter::BitFlags(&[Some("UNIQUE")]),
-            ),
             other => (
                 Cow::Owned(format!("Unknown (0x{other:x})")),
                 Converter::None,

@@ -90,7 +90,7 @@ nix = { version = "0.31.1", default-features = false, features = [
   "resource",
   "fs",
 ] }
-object = { version = "0.40.0", default-features = false, features = [
+object = { version = "0.41.0", default-features = false, features = [
   # Note that compression is only actually needed for linker-diff
   "compression",
   "elf",
@@ -193,7 +193,7 @@ debug = 0
 
 [workspace.lints.rust]
 ffi_unwind_calls = "warn"
-# We sometimes supress lints that are only on nightly, but don't want to see warnings about these 
+# We sometimes supress lints that are only on nightly, but don't want to see warnings about these
 # supressions on stable.
 unknown_lints = "allow"
 
