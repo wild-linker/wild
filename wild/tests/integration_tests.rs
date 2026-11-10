@@ -5344,6 +5344,9 @@ impl LinkCommand {
 
         command.envs(&config.linker_env);
 
+        // Some tests assert error messages in English and we don't support locales anyway.
+        command.env("LANGUAGE", "C");
+
         let mut link_command = LinkCommand {
             command,
             inputs: inputs.to_vec(),
