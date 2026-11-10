@@ -263,7 +263,7 @@ impl Args {
     }
 }
 
-/// Scans remaining arguments, searching for the **first** emulation argument.
+/// Scans remaining arguments, searching for the **first** supported emulation argument.
 /// Currently skips reading response files.
 fn find_emulation<S, I>(mut input: I) -> Option<Emulation>
 where
@@ -1870,6 +1870,10 @@ mod tests {
 
         let args = Args::new(|| ["wild", "-flavor", "gnu", "-o", "-mi386pep"].into_iter()).unwrap();
         // TODO: this edge-case shouldn't enable Coff.
+        assert_matches!(args, Args::Coff(_));
+
+        let args =
+            Args::new(|| ["wild", "-flavor", "gnu", "-minvalid", "-mi386pep"].into_iter()).unwrap();
         assert_matches!(args, Args::Coff(_));
     }
 }
