@@ -158,8 +158,9 @@ impl Config {
                 "section.plt.got.entsize",
                 "section.plt.entsize",
                 "section.got.plt.entsize",
-                // GNU ld preserves an input .init_array entry size of 0, while Wild
-                // uses the target pointer size (8 on x86-64).
+                // lld keeps the input entry size, using 0 when inputs disagree (e.g. crtbeginS.o has
+                // 8, LLVM-built objects have 0), whereas GNU ld and Wild use 8. Nothing reads
+                // .init_array's entry size at runtime.
                 "section.init_array.entsize",
                 // GNU ld sometimes sets this differently that we do.
                 "section.plt",
