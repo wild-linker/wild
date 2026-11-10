@@ -33,6 +33,7 @@ use crate::symbol_db::Visibility;
 use object::SectionIndex;
 use object::SymbolIndex;
 use object::coff::CoffHeader as _;
+use object::coff::Symbol as _;
 use object::pe::SectionFlags;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -64,9 +65,7 @@ pub(crate) struct SymtabEntry {
 }
 
 pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SectionHeader {}
+pub(crate) type SectionHeader = object::pe::ImageSectionHeader;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelocationType {}
@@ -99,6 +98,9 @@ pub(crate) struct File<'data> {
     pub(crate) arch: Architecture,
     #[debug(skip)]
     pub(crate) data: &'data [u8],
+    // `object` follows COFF and uses 1-based section numbers, this naturally conflicts with
+    // our 0-based section numbering. Currently we offset section indexes in our methods.
+    // TODO: Need to think how to properly solve it.
     pub(crate) sections: object::coff::SectionTable<'data>,
     pub(crate) symbol_table: object::read::coff::SymbolTable<'data>,
     pub(crate) symbols: Vec<SymtabEntry>,
@@ -799,31 +801,39 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_sections(&self) -> usize {
-        todo!()
+        self.sections.len()
     }
 
     fn section_iter(&self) -> core::slice::Iter<'_, SectionHeader> {
-        todo!()
+        self.sections.iter()
     }
 
     fn enumerate_sections(&self) -> impl Iterator<Item = (SectionIndex, &SectionHeader)> {
-        [].into_iter()
+        self.sections
+            .iter()
+            .enumerate()
+            .map(|(i, section)| (SectionIndex(i), section))
     }
 
-    fn section(&self, _index: SectionIndex) -> Result<&SectionHeader> {
-        todo!()
+    fn section(&self, index: SectionIndex) -> Result<&SectionHeader> {
+        Ok(self.sections.section(SectionIndex(index.0 + 1))?)
     }
 
-    fn section_by_name(&self, _name: &str) -> Option<(SectionIndex, &SectionHeader)> {
-        todo!()
+    fn section_by_name(&self, name: &str) -> Option<(SectionIndex, &SectionHeader)> {
+        self.sections
+            .section_by_name(self.symbol_table.strings(), name.as_bytes())
+            .map(|(i, section)| (SectionIndex(i.0 - 1), section))
     }
 
     fn symbol_section(
         &self,
-        _symbol: &SymtabEntry,
+        symbol: &SymtabEntry,
         _index: SymbolIndex,
     ) -> Result<Option<SectionIndex>> {
-        todo!()
+        if symbol.is_aux {
+            return Ok(None);
+        }
+        Ok(symbol.raw.section().map(|i| SectionIndex(i.0 - 1)))
     }
 
     fn symbol_versions(&self) -> &[()] {
@@ -848,8 +858,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn section_name(&self, _index: SectionIndex) -> Result<&'data [u8]> {
-        todo!()
+    fn section_name(&self, index: SectionIndex) -> Result<&'data [u8]> {
+        let section = self.sections.section(SectionIndex(index.0 + 1))?;
+        Ok(section.name(self.symbol_table.strings())?)
     }
 
     fn raw_section_data(&self, _section: &SectionHeader) -> Result<&'data [u8]> {
