@@ -27,6 +27,7 @@ pub(crate) enum FileKind {
     Text,
     LlvmIr,
     GccIr,
+    CoffObject,
 }
 
 impl FileKind {
@@ -81,6 +82,8 @@ impl FileKind {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
             Ok(FileKind::LlvmIr)
+        } else if bytes.starts_with(&object::pe::IMAGE_FILE_MACHINE_AMD64.0.to_le_bytes()) {
+            Ok(FileKind::CoffObject)
         } else if let Some(start) = bytes.get(..4) {
             bail!("Couldn't identify file type starting with {start:x?}");
         } else {
@@ -158,6 +161,7 @@ impl std::fmt::Display for FileKind {
             FileKind::Text => "text",
             FileKind::LlvmIr => "LLVM-IR",
             FileKind::GccIr => "GCC-IR",
+            FileKind::CoffObject => "COFF object",
         };
         std::fmt::Display::fmt(s, f)
     }
