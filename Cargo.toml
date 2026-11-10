@@ -100,7 +100,7 @@ object = { version = "0.40.0", default-features = false, features = [
   "unaligned",
   "archive",
   "names",
-  "coff"
+  "coff",
 ] }
 os_info = { version = "3.1.0", default-features = false }
 paste = { version = "1.0.15", default-features = false }
