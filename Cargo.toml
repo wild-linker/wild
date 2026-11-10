@@ -100,6 +100,7 @@ object = { version = "0.40.0", default-features = false, features = [
   "unaligned",
   "archive",
   "names",
+  "coff"
 ] }
 os_info = { version = "3.1.0", default-features = false }
 paste = { version = "1.0.15", default-features = false }
@@ -193,7 +194,7 @@ debug = 0
 
 [workspace.lints.rust]
 ffi_unwind_calls = "warn"
-# We sometimes supress lints that are only on nightly, but don't want to see warnings about these 
+# We sometimes supress lints that are only on nightly, but don't want to see warnings about these
 # supressions on stable.
 unknown_lints = "allow"
 

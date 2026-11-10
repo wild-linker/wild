@@ -92,6 +92,9 @@ wasm = []
 # Experimental support for linking Mach-O. Currently incomplete.
 macho = []
 
+# Experimental support for Windows targets. Currently incomplete.
+coff = []
+
 # Support for zstd compression and decompression of sections.
 zstd = ["dep:zstd"]
 
