@@ -1113,7 +1113,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn debug_string(&self) -> String {
-        todo!()
+        SymDebug(self).to_string()
     }
 
     fn is_tls(&self) -> bool {
@@ -1152,6 +1152,37 @@ pub(crate) struct DynamicTagValues {}
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues {
     fn lib_name(&self, _input: &InputRef<'data>) -> &'data [u8] {
         todo!()
+    }
+}
+
+struct SymDebug<'data>(pub(crate) &'data SymtabEntry);
+
+impl std::fmt::Display for SymDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sym = self.0;
+
+        // TODO: Make it more sensible for COFF
+        let vis = if sym.is_local() {
+            "Local"
+        } else if sym.is_weak() {
+            "Weak"
+        } else {
+            "Global"
+        };
+
+        let kind = if sym.is_undefined() {
+            "Undefined"
+        } else {
+            match sym.raw.storage_class {
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL => "External",
+                object::pe::IMAGE_SYM_CLASS_STATIC => "Static",
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL_DEF => "ExternalDef",
+                object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL => "WeakExternal",
+                _ => todo!(),
+            }
+        };
+
+        write!(f, "{vis} {kind}")
     }
 }
 

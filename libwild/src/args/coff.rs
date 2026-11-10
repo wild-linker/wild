@@ -173,6 +173,11 @@ impl platform::Args for CoffArgs {
             CoffVariant::Msvc(_) => Architecture::X86_64,
         }
     }
+
+    fn allow_multiple_definitions(&self) -> bool {
+        // TODO: Allowed until COMDAT support is wired up
+        true
+    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
