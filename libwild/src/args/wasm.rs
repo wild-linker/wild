@@ -47,6 +47,7 @@ pub struct WasmArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
+    archive_roots: Vec<String>,
     pub(crate) extra_features: Vec<String>,
     pub(crate) features: Option<Vec<String>>,
     pub(crate) check_features: bool,
@@ -120,6 +121,7 @@ impl Default for WasmArgs {
             check_features: true,
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
+            archive_roots: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
@@ -178,7 +180,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn export_archive_root_names(&self) -> &[String] {
-        &self.export_symbols
+        &self.archive_roots
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -334,6 +336,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Force a symbol to be exported")
         .execute(|args, _modifier_stack, value| {
             let value = value.to_owned();
+            args.archive_roots.push(value.clone());
             args.export_symbols.push(value.clone());
             args.required_export_symbols.push(value);
             Ok(())
@@ -344,7 +347,9 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .long("export-if-defined")
         .help("Export a symbol if it is defined")
         .execute(|args, _modifier_stack, value| {
-            args.export_symbols.push(value.to_owned());
+            let value = value.to_owned();
+            args.archive_roots.push(value.clone());
+            args.export_symbols.push(value);
             Ok(())
         });
 
@@ -564,6 +569,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Allow undefined symbols in the output")
         .execute(|args, _modifier_stack| {
             args.allow_undefined = true;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("undefined")
+        .prefix("u")
+        .help("Force undefined symbol during linking")
+        .execute(|args, _modifier_stack, value| {
+            args.archive_roots.push(value.to_owned());
             Ok(())
         });
 
