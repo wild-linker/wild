@@ -264,7 +264,7 @@ impl Args {
 }
 
 /// Scans remaining arguments, searching for the **first** supported emulation argument.
-/// Currently skips reading response files.
+/// Currently, skips reading response files.
 fn find_emulation<S, I>(mut input: I) -> Option<Emulation>
 where
     S: AsRef<str>,
@@ -1864,7 +1864,7 @@ mod tests {
         let args =
             Args::new(|| ["wild", "-flavor", "gnu", "-m", "elf_x86_64", "-mi386pep"].into_iter())
                 .unwrap();
-        // Technically this should return Coff with MinGW variant, but Coff is still experimental,
+        // Technically, this should return Coff with MinGW variant, but Coff is still experimental,
         // so we don't care that much.
         assert_matches!(args, Args::Elf(_));
 
