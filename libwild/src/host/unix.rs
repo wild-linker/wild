@@ -158,14 +158,14 @@ pub(crate) mod process {
         Ok(match unsafe { libc::fork() } {
             0 => LinkerFork::Child(ParentNotifier { fds }),
             -1 => LinkerFork::Failed,
-            pid => LinkerFork::Parent(wait_for_child_done(&fds, pid)),
+            pid => LinkerFork::Parent(wait_for_child_done(&fds, pid)?),
         })
     }
 
     /// Wait for the child process to signal it is done, by sending a byte on the pipe. In the case
     /// the child crashes, or exits via some path that doesn't send a byte, then the pipe will be
     /// closed and we'll then wait for the subprocess to exit, returning its exit code.
-    fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
+    fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> Result<i32> {
         unsafe {
             // close our sending end of the pipe
             libc::close(fds[1]);
@@ -174,15 +174,28 @@ pub(crate) mod process {
 
             // Wait for child to send a byte via the pipe or for the pipe to be closed.
             let mut response: [u8; 1] = [0u8; 1];
-            if libc::fread(response.as_mut_ptr().cast::<c_void>(), 1, 1, stream) == 1 {
+            let received = libc::fread(response.as_mut_ptr().cast::<c_void>(), 1, 1, stream);
+            libc::fclose(stream);
+            if received == 1 {
                 // Child sent a byte, which indicates that it succeeded and is now shutting down in
                 // the background.
-                0
+                Ok(0)
             } else {
                 // Child closed pipe without sending a byte - get the process exit_status
                 let mut status: libc::c_int = -1i32;
-                libc::waitpid(child_pid, &raw mut status, 0);
-                libc::WEXITSTATUS(status)
+                while libc::waitpid(child_pid, &raw mut status, 0) == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error).context("Failed to wait for linker subprocess");
+                    }
+                }
+                if libc::WIFEXITED(status) {
+                    Ok(libc::WEXITSTATUS(status))
+                } else if libc::WIFSIGNALED(status) {
+                    Ok(128 + libc::WTERMSIG(status))
+                } else {
+                    bail!("Unexpected linker subprocess wait status: {status}")
+                }
             }
         }
     }
@@ -197,6 +210,30 @@ pub(crate) mod process {
                 "Error creating pipe. Errno = {:?}",
                 std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
             ),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::make_pipe;
+        use super::wait_for_child_done;
+        use std::process::Command;
+
+        #[test]
+        fn child_exit_status() {
+            for (script, expected) in [
+                ("exit 0", 0),
+                ("exit 42", 42),
+                ("ulimit -c 0; kill -ABRT $$", 128 + libc::SIGABRT),
+                ("kill -KILL $$", 128 + libc::SIGKILL),
+            ] {
+                let mut child = Command::new("sh").args(["-c", script]).spawn().unwrap();
+                let mut fds = [0; 2];
+                make_pipe(&mut fds).unwrap();
+                let exit_code = wait_for_child_done(&fds, child.id().try_into().unwrap()).unwrap();
+                let _ = child.wait();
+                assert_eq!(exit_code, expected, "{script}");
+            }
         }
     }
 }
