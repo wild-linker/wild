@@ -26,10 +26,13 @@ use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::CommonSymbol;
 use crate::platform::Platform;
+use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
+use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
+use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
 use object::coff::CoffHeader as _;
@@ -521,7 +524,7 @@ impl Platform for Coff {
         _archive_semantics: bool,
         _is_undefined: bool,
     ) -> bool {
-        todo!()
+        true
     }
 
     fn allocate_header_sizes<'data>(
@@ -595,11 +598,11 @@ impl Platform for Coff {
     }
 
     fn raw_symbol_name<'data>(
-        _name_bytes: &'data [u8],
+        name_bytes: &'data [u8],
         _verneed_table: &Self::VerneedTable<'data>,
         _symbol_index: SymbolIndex,
     ) -> Self::RawSymbolName<'data> {
-        todo!()
+        RawSymbolName::parse(name_bytes)
     }
 
     fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
@@ -708,7 +711,8 @@ impl<'data> File<'data> {
         //   indexing
         // - avoid using `object`'s parsing and do it ourselves
         //
-        // The code below implements the first option.
+        // The code below implements the first option. This also gives us a bit of flexibility for
+        // example to nicely handle hidden symbols.
         let symbol_table = header.symbols(data)?;
         let num_symbols = symbol_table.len();
         let mut symbols = Vec::with_capacity(num_symbols);
@@ -773,31 +777,41 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_symbols(&self) -> usize {
-        todo!()
+        self.symbols.len()
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry> {
-        [].into_iter()
+        self.symbols.iter()
     }
 
-    fn symbol(&self, _index: SymbolIndex) -> Result<&SymtabEntry> {
-        todo!()
+    fn symbol(&self, index: SymbolIndex) -> Result<&SymtabEntry> {
+        self.symbols
+            .get(index.0)
+            .ok_or_else(|| crate::error!("Invalid symbol index {index:?}"))
     }
 
-    fn section_size(&self, _section: &SectionHeader) -> Result<u64> {
-        todo!()
+    fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+        let size = u64::from(section.virtual_size.get(LittleEndian));
+        if size == 0 {
+            return Ok(u64::from(section.size_of_raw_data.get(LittleEndian)));
+        }
+        Ok(size)
     }
 
-    fn symbol_name(&self, _symbol: &SymtabEntry) -> Result<&'data [u8]> {
-        todo!()
+    fn symbol_name(&self, symbol: &SymtabEntry) -> Result<&'data [u8]> {
+        if symbol.is_aux {
+            bail!("aux symbol has no name")
+        }
+        let sym = self.symbol_table.symbol(symbol.index)?;
+        Ok(sym.name(self.symbol_table.strings())?)
     }
 
     fn symbol_offset_in_section(
         &self,
-        _symbol: &SymtabEntry,
+        symbol: &SymtabEntry,
         _section_index: SectionIndex,
     ) -> Result<u64> {
-        todo!()
+        Ok(symbol.value())
     }
 
     fn num_sections(&self) -> usize {
@@ -901,7 +915,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn symbol_version_debug(&self, _symbol_index: SymbolIndex) -> Option<String> {
-        todo!()
+        None
     }
 
     fn section_display_name(&self, _index: SectionIndex) -> Cow<'data, str> {
@@ -909,11 +923,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn dynamic_tag_values(&self) -> Option<DynamicTagValues> {
-        todo!()
+        None
     }
 
     fn get_version_names(&self) -> Result<VersionNames> {
-        todo!()
+        Ok(())
     }
 
     fn get_symbol_name_and_version(
@@ -1032,35 +1046,45 @@ impl platform::SectionFlags for SectionFlags {
 
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<CommonSymbol> {
-        todo!()
+        // TODO
+        None
     }
 
     fn is_undefined(&self) -> bool {
-        todo!()
+        !self.is_aux
+            && self.raw.section_number() == object::pe::IMAGE_SYM_UNDEFINED
+            && self.raw.value() == 0
     }
 
     fn is_local(&self) -> bool {
-        todo!()
+        self.is_aux
+            // TODO: this is basically object::read::coff::symbol::CoffSymbol::is_global
+            || !matches!(
+                self.raw.storage_class(),
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL
+                    | object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL
+            )
     }
 
     fn is_absolute(&self) -> bool {
-        todo!()
+        self.is_aux || self.raw.section_number() == object::pe::IMAGE_SYM_ABSOLUTE
     }
 
     fn is_weak(&self) -> bool {
-        todo!()
+        !self.is_aux && self.raw.storage_class == object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL
     }
 
     fn visibility(&self) -> Visibility {
-        todo!()
+        Visibility::Default
     }
 
     fn value(&self) -> u64 {
-        todo!()
+        self.raw.value().into()
     }
 
     fn size(&self) -> u64 {
-        todo!()
+        debug_assert!(self.is_common());
+        self.value()
     }
 
     fn has_name(&self) -> bool {
@@ -1068,7 +1092,8 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_default_strippable(&self, _name: &[u8]) -> bool {
-        todo!()
+        // LLD skips symbols with file and section name. We follow that to make our life easier.
+        self.is_aux || self.raw.has_aux_file_name() || self.raw.has_aux_section()
     }
 
     fn debug_string(&self) -> String {
@@ -1080,7 +1105,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_interposable(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_func(&self) -> bool {
@@ -1088,7 +1113,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_ifunc(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_hidden(&self) -> bool {
@@ -1096,7 +1121,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_gnu_unique(&self) -> bool {
-        todo!()
+        false
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
