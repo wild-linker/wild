@@ -1,6 +1,7 @@
 //#Object:runtime.c
 //#TestRelinkAfterRun:true
 //#WildExtraLinkArgs:--threads=3
+//#InMemoryFileSystem:false
 
 #include "../common/runtime.h"
 
