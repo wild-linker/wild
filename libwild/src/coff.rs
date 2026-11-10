@@ -802,6 +802,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         if symbol.is_aux {
             bail!("aux symbol has no name")
         }
+        // TODO: symbol lookup could be avoided by adding `'data` lifetime to `SymtabEntry`
         let sym = self.symbol_table.symbol(symbol.index)?;
         Ok(sym.name(self.symbol_table.strings())?)
     }
