@@ -6354,6 +6354,7 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut has_seen_alloc_section = false;
     let last_alloc_idx = output_order.custom_layout_last_alloc_index(output_sections);
     let mut current_load_segment_delta: Option<u64> = None;
+    let mut current_load_segment_alignment: Option<Alignment> = None;
     let mut current_region: Option<&'data [u8]> = None;
 
     for (event_idx, event) in output_order.into_iter().enumerate() {
@@ -6415,6 +6416,7 @@ fn compute_layout_sections<'data, P: Platform>(
                         .get(&segment_id)
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
+                    current_load_segment_alignment = Some(segment_alignment);
                     if let Some(addr) = pending_location {
                         // The OrderEvent::SetLocation is ELF-specific only.
                         mem_offset = addr;
@@ -6442,6 +6444,7 @@ fn compute_layout_sections<'data, P: Platform>(
             }
             OrderEvent::SegmentEnd(segment_id) => {
                 if program_segments.is_load_segment(segment_id) {
+                    current_load_segment_alignment = None;
                     current_load_segment_delta = None;
                 }
             }
@@ -6501,45 +6504,52 @@ fn compute_layout_sections<'data, P: Platform>(
                         })
                     })
                     .transpose()?;
-                if let Some(region) = region {
+                if let Some(offset) = section_offset {
+                    let is_top_level = section_info
+                        .location_info
+                        .as_ref()
+                        .is_some_and(|info| info.is_top_level);
+                    if let Some(region) = region {
+                        let min_addr = if is_top_level {
+                            region.origin + region.used
+                        } else {
+                            mem_offset
+                        };
+                        if offset < min_addr || offset > region.origin + region.length {
+                            bail!(
+                                "address 0x{offset:x} of section '{}' is not within region `{}'",
+                                output_sections.display_name(section_id),
+                                String::from_utf8_lossy(section_info.region_name.unwrap()),
+                            );
+                        }
+                    }
+                    if !is_top_level {
+                        let merge_target = output_sections.primary_output_section(section_id);
+                        let section_flags = output_sections.section_flags(merge_target);
+                        if section_flags.is_alloc()
+                            && output_sections.has_data_in_file(merge_target)
+                        {
+                            let new_offset = offset.checked_sub(mem_offset).with_context(|| {
+                                format!(
+                                    "Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"
+                                )
+                            })?;
+                            file_offset += new_offset as usize;
+                        }
+                    }
+                    mem_offset = offset;
+                } else if let Some(region) = region {
                     mem_offset = region.origin + region.used;
                     if current_region != section_info.region_name && is_alloc {
-                        file_offset = args
-                            .loadable_segment_alignment()
-                            .align_modulo(mem_offset, file_offset as u64)
-                            as usize;
+                        let segment_alignment = current_load_segment_alignment
+                            .unwrap_or_else(|| args.loadable_segment_alignment());
+                        file_offset =
+                            segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
                         current_load_segment_delta =
                             Some(mem_offset.saturating_sub(file_offset as u64));
                     }
                 }
                 current_region = section_info.region_name;
-                if let Some(offset) = section_offset {
-                    if let Some(region) = region
-                        && (offset < mem_offset || offset > mem_offset + region.length)
-                    {
-                        bail!(
-                            "address 0x{offset:x} of section '{}' is not within region `{}'",
-                            output_sections.display_name(section_id),
-                            String::from_utf8_lossy(section_info.region_name.unwrap()),
-                        );
-                    }
-                    let merge_target = output_sections.primary_output_section(section_id);
-                    let section_flags = output_sections.section_flags(merge_target);
-                    let is_top_level = section_info
-                        .location_info
-                        .as_ref()
-                        .is_some_and(|info| info.is_top_level);
-                    if (section_id == merge_target || !is_top_level)
-                        && section_flags.is_alloc()
-                        && output_sections.has_data_in_file(merge_target)
-                    {
-                        let new_offset = offset
-                            .checked_sub(mem_offset)
-                            .with_context(|| format!("Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"))?;
-                        file_offset += new_offset as usize;
-                    }
-                    mem_offset = offset;
-                }
 
                 let mut is_first_part = true;
 
