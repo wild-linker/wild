@@ -57,7 +57,7 @@ impl CoffArgs {
         Ok(args)
     }
 
-    fn is_mingw(&self) -> bool {
+    pub(crate) fn is_mingw(&self) -> bool {
         matches!(self.variant, CoffVariant::Mingw(_))
     }
 

@@ -124,13 +124,13 @@ impl Args {
     /// only used to help decide what kind of argument parsing we'll be doing - i.e. what platform
     /// we're linking for. We split into two phases so that the caller can adjust defaults before
     /// the actual parsing occurs.
-    pub fn new<F, S, I>(input: F) -> Result<Self>
+    pub fn new<F, S, I>(input_cb: F) -> Result<Self>
     where
         F: Fn() -> I,
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        let mut input = input();
+        let mut input = input_cb();
 
         let prog_name = input.next().context("Missing argument 0 (program name)")?;
 
@@ -155,7 +155,7 @@ impl Args {
         };
 
         let emulation = matches!(platform, PlatformKind::Elf)
-            .then(|| find_emulation(input))
+            .then(|| find_emulation(input_cb().skip(1)))
             .flatten();
 
         let mut args = match platform {
@@ -1851,5 +1851,25 @@ mod tests {
 
         assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
         assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());
+    }
+
+    #[test]
+    fn test_emulation() {
+        let args = Args::new(|| ["ld.wild", "-m", "i386pep"].into_iter()).unwrap();
+        assert_matches!(args, Args::Coff(coff) if coff.is_mingw());
+
+        let args = Args::new(|| ["wild", "-flavor", "gnu", "-mi386pep"].into_iter()).unwrap();
+        assert_matches!(args, Args::Coff(coff) if coff.is_mingw());
+
+        let args =
+            Args::new(|| ["wild", "-flavor", "gnu", "-m", "elf_x86_64", "-mi386pep"].into_iter())
+                .unwrap();
+        // Technically this should return Coff with MinGW variant, but Coff is still experimental,
+        // so we don't care that much.
+        assert_matches!(args, Args::Elf(_));
+
+        let args = Args::new(|| ["wild", "-flavor", "gnu", "-o", "-mi386pep"].into_iter()).unwrap();
+        // TODO: this edge-case shouldn't enable Coff.
+        assert_matches!(args, Args::Coff(_));
     }
 }
