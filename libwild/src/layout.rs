@@ -6354,6 +6354,7 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut has_seen_alloc_section = false;
     let last_alloc_idx = output_order.custom_layout_last_alloc_index(output_sections);
     let mut current_load_segment_delta: Option<u64> = None;
+    let mut current_region: Option<&'data [u8]> = None;
 
     for (event_idx, event) in output_order.into_iter().enumerate() {
         match event {
@@ -6502,8 +6503,16 @@ fn compute_layout_sections<'data, P: Platform>(
                     .transpose()?;
                 if let Some(region) = region {
                     mem_offset = region.origin + region.used;
+                    if current_region != section_info.region_name && is_alloc {
+                        file_offset = args
+                            .loadable_segment_alignment()
+                            .align_modulo(mem_offset, file_offset as u64)
+                            as usize;
+                        current_load_segment_delta =
+                            Some(mem_offset.saturating_sub(file_offset as u64));
+                    }
                 }
-
+                current_region = section_info.region_name;
                 if let Some(offset) = section_offset {
                     if let Some(region) = region
                         && (offset < mem_offset || offset > mem_offset + region.length)
