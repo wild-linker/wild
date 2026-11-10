@@ -126,9 +126,11 @@ use object::macho::Tool;
 use object::slice_from_bytes_mut;
 use object::write::macho::CodeDirectory;
 use object::write::macho::CodeSignatureEncoder;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
+use rayon::slice::ParallelSliceMut;
 use sha2::Digest;
 use sha2::Sha256;
 use std::mem::offset_of;
@@ -1619,12 +1621,6 @@ fn write_code_signature_hashes(
     let code_signature_section = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);
-    let calculated_hashes: Vec<_> = sized_output.out[..code_signature_section.file_offset]
-        .par_chunks(CS_BLOCK_SIZE)
-        .map(Sha256::digest)
-        .collect();
-    let calculated_hashes = calculated_hashes.into_iter().flatten().collect_vec();
-
     let (signed_data, code_signature) = sized_output
         .out
         .split_at_mut(code_signature_section.file_offset);
@@ -1637,7 +1633,19 @@ fn write_code_signature_hashes(
         .get_mut(hashes_offset..)
         .context("Invalid CODE_SIGNATURE allocation")?;
 
-    hashes.copy_from_slice(&calculated_hashes);
+    ensure!(
+        hashes.len() == signed_data.len().div_ceil(CS_BLOCK_SIZE) * usize::from(CS_HASH_SIZE),
+        "Invalid CODE_SIGNATURE hash allocation"
+    );
+
+    signed_data
+        .par_chunks(CS_BLOCK_SIZE)
+        .zip_eq(hashes.par_chunks_mut(usize::from(CS_HASH_SIZE)))
+        .for_each(|(bytes, hash)| {
+            verbose_timing_phase!("Hash block");
+            hash.copy_from_slice(&Sha256::digest(bytes));
+        });
+
     write_uuid(signed_data, code_signature, hashes_offset, uuid_offset)?;
 
     // Match lld's workaround for the macOS kernel caching signature-verification
