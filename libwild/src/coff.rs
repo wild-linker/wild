@@ -676,14 +676,14 @@ impl Platform for Coff {
 
     fn section_identity<'data>(
         _file: &Self::File<'data>,
-        _name: SectionName<'data>,
+        name: SectionName<'data>,
         _section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
-        todo!()
+        Self::section_identity_from_name(name).unwrap()
     }
 
-    fn section_identity_from_name(_name: SectionName) -> Option<SectionIdentity<Self>> {
-        todo!()
+    fn section_identity_from_name(name: SectionName) -> Option<SectionIdentity<Self>> {
+        Some(SectionIdentity::new(name, ()))
     }
 }
 
@@ -877,17 +877,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(section.name(self.symbol_table.strings())?)
     }
 
-    fn raw_section_data(&self, _section: &SectionHeader) -> Result<&'data [u8]> {
-        todo!()
+    fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        let e = LittleEndian;
+        let ptr = section.pointer_to_raw_data.get(e) as usize;
+        let mut size = section.size_of_raw_data.get(e) as usize;
+        if size == 0 {
+            size = section.virtual_size.get(e) as usize;
+        }
+        Ok(&self.data[ptr..ptr + size])
     }
 
     fn section_data(
         &self,
-        _section: &SectionHeader,
+        section: &SectionHeader,
         _member: &bumpalo_herd::Member<'data>,
         _loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
-        todo!()
+        self.raw_section_data(section)
     }
 
     fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> Result {
@@ -898,8 +904,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(Cow::Borrowed(self.raw_section_data(section)?))
     }
 
-    fn section_alignment(&self, _section: &SectionHeader) -> Result<u64> {
-        todo!()
+    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+        Ok(section.coff_alignment())
     }
 
     fn relocations(
@@ -911,15 +917,19 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn parse_relocations(&self) -> Result<()> {
-        todo!()
+        // TODO: Just so we can forward right now
+        Ok(())
     }
 
     fn symbol_version_debug(&self, _symbol_index: SymbolIndex) -> Option<String> {
         None
     }
 
-    fn section_display_name(&self, _index: SectionIndex) -> Cow<'data, str> {
-        todo!()
+    fn section_display_name(&self, index: SectionIndex) -> Cow<'data, str> {
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn dynamic_tag_values(&self) -> Option<DynamicTagValues> {
@@ -973,7 +983,9 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_MEM_EXECUTE)
     }
 
     fn is_tls(&self) -> bool {
@@ -981,7 +993,8 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_merge_section(&self) -> bool {
-        todo!()
+        // TODO: String merging isn't common on Windows, but we might want to support it one day.
+        false
     }
 
     fn is_strings(&self) -> bool {
@@ -989,19 +1002,22 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn should_retain(&self) -> bool {
-        todo!()
+        false
     }
 
     fn should_exclude(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_LNK_REMOVE)
     }
 
     fn is_group(&self) -> bool {
-        todo!()
+        // TODO: Might be relevant for COMDATs
+        false
     }
 
     fn is_note(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_prog_bits(&self) -> bool {
