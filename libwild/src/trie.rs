@@ -8,7 +8,6 @@ use object::macho;
 use rayon::slice::ParallelSliceMut;
 use std::io::Write;
 use std::ops::Range;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -105,7 +104,7 @@ impl Trie {
 
     /// Prepare exact node offsets without encoding bytes. Terminals must follow the name order
     /// passed to `new`. The prepared trie retains the topology and final values for later encoding.
-    pub(crate) fn prepare(self: &Arc<Self>, terminals: Vec<Terminal>) -> PreparedTrie {
+    pub(crate) fn prepare(self, terminals: Vec<Terminal>) -> PreparedTrie {
         verbose_timing_phase!("Size exports trie");
         PreparedTrie::new(self, terminals)
     }
@@ -225,39 +224,39 @@ impl Trie {
 /// repeating symbol resolution or layout.
 #[derive(Debug, Default)]
 pub(crate) struct PreparedTrie {
-    trie: Arc<Trie>,
+    trie: Trie,
     node_offsets: Vec<usize>,
     terminals: Vec<Terminal>,
     total_size: usize,
 }
 
 impl PreparedTrie {
-    fn new(trie: &Arc<Trie>, terminals: Vec<Terminal>) -> Self {
+    fn new(trie: Trie, terminals: Vec<Terminal>) -> Self {
         debug_assert_eq!(trie.num_symbols, terminals.len());
 
+        let mut child_offset_sizes = vec![1; trie.edges.len()];
         let mut layout = Self {
-            trie: Arc::clone(trie),
             node_offsets: vec![0; trie.nodes.len()],
+            trie,
             terminals,
             total_size: 0,
         };
-        let mut child_offset_sizes = vec![1; trie.edges.len()];
-        layout.layout_until_stable(trie, &mut child_offset_sizes);
+        layout.layout_until_stable(&mut child_offset_sizes);
         layout
     }
 
-    fn layout_until_stable(&mut self, trie: &Trie, child_offset_sizes: &mut [usize]) {
+    fn layout_until_stable(&mut self, child_offset_sizes: &mut [usize]) {
         verbose_timing_phase!("Layout trie");
 
         loop {
             let mut offset = 0;
             for index in 0..self.node_offsets.len() {
                 self.node_offsets[index] = offset;
-                offset += self.node_size(trie, index, child_offset_sizes);
+                offset += self.node_size(index, child_offset_sizes);
             }
 
             let mut changed = false;
-            for (edge, size) in trie.edges.iter().zip(child_offset_sizes.iter_mut()) {
+            for (edge, size) in self.trie.edges.iter().zip(child_offset_sizes.iter_mut()) {
                 let offset_size = uleb128_size(self.node_offsets[edge.child] as u64);
                 if *size != offset_size {
                     *size = offset_size;
@@ -272,8 +271,8 @@ impl PreparedTrie {
         }
     }
 
-    fn node_size(&self, trie: &Trie, node_index: usize, child_offset_sizes: &[usize]) -> usize {
-        let node = &trie.nodes[node_index];
+    fn node_size(&self, node_index: usize, child_offset_sizes: &[usize]) -> usize {
+        let node = &self.trie.nodes[node_index];
         let terminal_size = node.symbol.map_or(0, |index| {
             let symbol = &self.terminals[index];
             symbol.encoded_size()
@@ -282,7 +281,8 @@ impl PreparedTrie {
         uleb128_size(terminal_size as u64)
             + terminal_size
             + 1
-            + trie
+            + self
+                .trie
                 .node_edges(node_index)
                 .zip(&child_offset_sizes[node.first_edge..])
                 .map(|(edge, offset_size)| edge.label.len() + 1 + offset_size)
@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn check(symbols: &mut [Symbol]) {
-        let trie = Arc::new(Trie::new(symbols.iter().map(|symbol| symbol.name)));
+        let trie = Trie::new(symbols.iter().map(|symbol| symbol.name));
         let layout = trie.prepare(symbols.iter().map(Symbol::terminal).collect());
         // The output buffer need not be zeroed, including bytes used as terminators.
         let mut trie = vec![0xa5; layout.encoded_size()];
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_trie() {
-        let trie = Arc::new(Trie::new([]));
+        let trie = Trie::new([]);
         let layout = trie.prepare(Vec::new());
         assert_eq!(layout.encoded_size(), 0);
         layout.encode_into(&mut [], |_| unreachable!()).unwrap();
@@ -566,10 +566,9 @@ mod tests {
     }
 
     #[test]
-    fn topology_reused_with_different_terminals() {
+    fn prepares_different_terminal_values() {
         // Deliberately unsorted, with both a shared prefix and a terminal on an internal node.
         let names: [&[u8]; 3] = [b"_foobar", b"_bar", b"_foo"];
-        let trie = Arc::new(Trie::new(names));
 
         for (addresses, flags) in [
             ([127, 0, 16384], macho::ExportSymbolFlags(0)),
@@ -585,7 +584,7 @@ mod tests {
                     flags,
                 })
                 .collect();
-            let prepared = trie.prepare(terminals);
+            let prepared = Trie::new(names).prepare(terminals);
             let mut encoded = vec![0xa5; prepared.encoded_size()];
             prepared
                 .encode_into(&mut encoded, |index| names[index])

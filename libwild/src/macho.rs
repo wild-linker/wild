@@ -101,7 +101,6 @@ use std::mem::offset_of;
 use std::num::NonZeroU8;
 use std::num::NonZeroU64;
 use std::slice::Iter;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 
@@ -1307,7 +1306,7 @@ impl platform::Platform for MachO {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type FinaliseSizesExt<'data> = FinaliseSizesExt;
-    type LayoutMetadata = Arc<crate::trie::Trie>;
+    type LayoutMetadata = crate::trie::Trie;
     type AddressLayoutExt = AddressLayoutExt;
     type LayoutExt<'data> = LayoutExt;
     type GdbIndexScanResult<'data> = ();
@@ -1375,7 +1374,7 @@ impl platform::Platform for MachO {
 
         let shared_layout = &*layout;
         let (exports_trie, function_starts) = rayon::join(
-            || prepare_exports_trie(shared_layout, &exports_trie),
+            || prepare_exports_trie(shared_layout, exports_trie),
             || prepare_function_starts(shared_layout),
         );
         let exports_trie = exports_trie?;
@@ -1761,7 +1760,7 @@ impl platform::Platform for MachO {
         // Keep definitions followed by reexports in the same input order used for terminals
         // and encoding. The trie stores indexes into these borrowed names.
         let names = ExportNames::new(dynamic_symbol_definitions, &finalise_sizes_ext.reexports);
-        Arc::new(crate::trie::Trie::new(names.iter()))
+        crate::trie::Trie::new(names.iter())
     }
 
     fn resolve_layout_ext<'data>(
@@ -3532,7 +3531,7 @@ fn encode_function_starts(mut addresses: Vec<u64>, image_base: u64) -> Result<Ve
 
 fn prepare_exports_trie(
     layout: &Layout<'_, MachO>,
-    trie: &Arc<crate::trie::Trie>,
+    trie: crate::trie::Trie,
 ) -> Result<crate::trie::PreparedTrie> {
     if !layout.symbol_db.output_kind.needs_dynsym() {
         return Ok(crate::trie::PreparedTrie::default());
