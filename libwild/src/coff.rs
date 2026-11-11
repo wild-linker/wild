@@ -28,6 +28,7 @@ use crate::platform::CommonSymbol;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
+use crate::platform::SectionFlags as _;
 use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
@@ -411,7 +412,9 @@ impl Platform for Coff {
         Self::SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                section_attributes: SectionAttributes {},
+                section_attributes: SectionAttributes {
+                    flags: d.section_flags,
+                },
                 kind: d.kind,
                 min_alignment: alignment::MIN,
                 location_info: None,
@@ -975,11 +978,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        todo!()
+        self.characteristics.get(LittleEndian).is_alloc()
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_MEM_WRITE)
     }
 
     fn is_executable(&self) -> bool {
@@ -993,12 +998,11 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_merge_section(&self) -> bool {
-        // TODO: String merging isn't common on Windows, but we might want to support it one day.
         false
     }
 
     fn is_strings(&self) -> bool {
-        todo!()
+        false
     }
 
     fn should_retain(&self) -> bool {
@@ -1012,7 +1016,6 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_group(&self) -> bool {
-        // TODO: Might be relevant for COMDATs
         false
     }
 
@@ -1021,11 +1024,14 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_prog_bits(&self) -> bool {
-        todo!()
+        // TODO: might be relevant
+        false
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
     }
 
     fn is_null(&self) -> bool {
@@ -1056,7 +1062,7 @@ impl platform::SectionType for SectionType {
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
-        todo!()
+        self.contains(object::pe::IMAGE_SCN_MEM_READ)
     }
 }
 
@@ -1190,52 +1196,58 @@ impl std::fmt::Display for SymDebug<'_> {
 pub(crate) struct ObjectLayoutStateExt {}
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionAttributes {}
+pub(crate) struct SectionAttributes {
+    pub(crate) flags: SectionFlags,
+}
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Coff;
 
-    fn merge(&mut self, _rhs: Self) {
-        todo!()
+    fn merge(&mut self, rhs: Self) {
+        self.flags |= rhs.flags;
     }
 
     fn apply(
         &self,
-        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        _section_id: OutputSectionId,
+        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
+        section_id: OutputSectionId,
     ) {
+        let info = output_sections.section_infos.get_mut(section_id);
+
+        info.section_attributes.flags |= self.flags;
     }
 
     fn is_null(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_alloc(&self) -> bool {
-        todo!()
+        self.flags.is_alloc()
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.flags.contains(object::pe::IMAGE_SCN_MEM_EXECUTE)
     }
 
     fn is_tls(&self) -> bool {
-        todo!()
+        false
     }
 
     fn occupies_only_tls_address_space(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        self.flags.contains(object::pe::IMAGE_SCN_MEM_WRITE)
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        self.flags
+            .contains(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
     }
 
     fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
-        todo!()
+        self.flags
     }
 
     fn ty(&self) -> <Self::Platform as Platform>::SectionType {
@@ -1338,11 +1350,13 @@ impl std::fmt::Display for ProgramSegmentDef {
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static, Coff>,
+    pub(crate) section_flags: SectionFlags,
 }
 
 impl Coff {
     const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
+        section_flags: object::pe::IMAGE_SCN_MEM_READ,
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Coff> {
