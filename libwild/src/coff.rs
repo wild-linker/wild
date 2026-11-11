@@ -338,7 +338,7 @@ impl Platform for Coff {
         _queue: &mut layout::LocalWorkQueue<Self>,
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn load_gc_unit<'data, 'scope, A: Arch<Platform = Self>>(
@@ -432,7 +432,7 @@ impl Platform for Coff {
         'data: 'files,
         'data: 'states,
     {
-        todo!()
+        Ok(())
     }
 
     fn create_layout_ext<'data>(
@@ -440,7 +440,7 @@ impl Platform for Coff {
         _resolutions: &layout::SymbolResolutions<Self>,
         _group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
@@ -471,7 +471,6 @@ impl Platform for Coff {
         _dynamic_symbol_definitions: &mut [layout::DynamicSymbolDefinition<'data, Self>],
         _group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
-        todo!()
     }
 
     fn apply_non_addressable_indexes_epilogue(
@@ -494,7 +493,7 @@ impl Platform for Coff {
         _properties: &Self::LayoutExt<'data>,
         _symbol_db: &SymbolDb<'data, Self>,
     ) -> Result<()> {
-        todo!()
+        Ok(())
     }
 
     fn finalise_sizes_all<'data>(
@@ -511,7 +510,7 @@ impl Platform for Coff {
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[layout::DynamicSymbolDefinition<Self>],
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn is_symbol_non_interposable<'data>(
@@ -544,7 +543,7 @@ impl Platform for Coff {
         _symbol_id: crate::symbol_db::SymbolId,
         _flags: crate::value_flags::ValueFlags,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_resolution(
@@ -562,7 +561,7 @@ impl Platform for Coff {
         _symbol_db: &SymbolDb<'data, Self>,
         _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_internal_symbol(
@@ -582,7 +581,7 @@ impl Platform for Coff {
         _memory_offsets: &mut OutputSectionPartMap<u64>,
         _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> Result<Self::PreludeLayoutExt> {
-        todo!()
+        Ok(())
     }
 
     fn create_resolution(
@@ -667,7 +666,7 @@ impl Platform for Coff {
     fn new_object_layout_state_ext<'data>(
         _input: Self::ResolvedObjectExt<'data>,
     ) -> Self::ObjectLayoutStateExt<'data> {
-        todo!()
+        Self::ObjectLayoutStateExt::default()
     }
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
