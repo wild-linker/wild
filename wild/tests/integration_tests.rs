@@ -31,8 +31,9 @@
 //!
 //! LinkerWorkingDirectory:{path} Sets the linker working directory. Supports `$OUT_DIR`.
 //!
-//! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
-//! such as `-lc` that need to appear after objects that reference them.
+//! PostLinkArgs:... Like LinkArgs, but appended after input objects on the final link. Useful for
+//! archive libraries such as `-lc` that need to appear after objects that reference them. Not
+//! applied when linking an intermediate shared object or relocatable object.
 //!
 //! LinkSoArgs:... Appends additional arguments when linking a shared object. Note that LinkArgs
 //! is still applied. LinkSoArgs is applied after LinkArgs.
@@ -1265,6 +1266,7 @@ impl Linker {
             &linker_args,
             config,
             cross_arch,
+            false,
         )?;
 
         if !command.can_skip() {
@@ -4977,8 +4979,15 @@ impl Linker {
                 .args
                 .extend(config.wild_extra_linker_args.args.iter().cloned());
         }
-        let mut command =
-            LinkCommand::new(self, inputs, &output_path, &linker_args, config, cross_arch)?;
+        let mut command = LinkCommand::new(
+            self,
+            inputs,
+            &output_path,
+            &linker_args,
+            config,
+            cross_arch,
+            true,
+        )?;
         let messages = if command.can_skip() {
             command.read_messages()?
         } else {
@@ -5121,6 +5130,7 @@ impl LinkCommand {
         linker_args: &ArgumentSet,
         config: &Config,
         cross_arch: Option<Architecture>,
+        include_post_args: bool,
     ) -> Result<LinkCommand> {
         let replay_linker = linker;
         // Compiler drivers translate their options into portable linker arguments. Always use
@@ -5289,7 +5299,9 @@ impl LinkCommand {
             }
 
             add_inputs_to_command(config, inputs, &mut command);
-            command.args(&config.post_linker_args.args);
+            if include_post_args {
+                command.args(&config.post_linker_args.args);
+            }
 
             if config.platform == PlatformKind::Elf {
                 ensure!(
