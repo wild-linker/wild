@@ -7605,7 +7605,7 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
             require_address_sized_relocation()?;
         }
 
-        let needs_plt_for_call = classified.rel_size.is_ppc64_branch() && !flags.is_ifunc();
+        let needs_plt_for_call = classified.rel_size.is_ppc64_branch();
 
         if !needs_plt_for_call && section_is_writable && !is_narrow_absolute {
             common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
