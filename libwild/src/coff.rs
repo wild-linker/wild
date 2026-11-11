@@ -274,8 +274,10 @@ impl Platform for Coff {
         output.write(layout, coff_writer::write::<A>)
     }
 
-    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
-        todo!()
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+        Self::SectionAttributes {
+            flags: header.characteristics.get(LittleEndian),
+        }
     }
 
     fn apply_force_keep_sections(
@@ -429,7 +431,7 @@ impl Platform for Coff {
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        &[]
+        &[ProgramSegmentDef {}]
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -442,7 +444,7 @@ impl Platform for Coff {
         _section_id: OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        false
+        true
     }
 
     fn create_linker_defined_symbols(
@@ -514,7 +516,7 @@ impl Platform for Coff {
         _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn new_epilogue_layout<'data>(
@@ -640,15 +642,20 @@ impl Platform for Coff {
     }
 
     fn create_resolution(
-        _flags: crate::value_flags::ValueFlags,
-        _raw_value: u64,
-        _dynamic_symbol_index: Option<std::num::NonZeroU32>,
+        flags: crate::value_flags::ValueFlags,
+        raw_value: u64,
+        dynamic_symbol_index: Option<std::num::NonZeroU32>,
         _memory_offsets: &mut OutputSectionPartMap<u64>,
         _args: &<Self as Platform>::Args,
         _output_kind: crate::OutputKind,
         _is_linker_script_symbol: bool,
     ) -> layout::Resolution<Self> {
-        todo!()
+        layout::Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            flags,
+            format_specific: (),
+        }
     }
 
     fn raw_symbol_name<'data>(
@@ -671,7 +678,7 @@ impl Platform for Coff {
     }
 
     fn build_output_order_and_program_segments<'data>(
-        _custom: &crate::output_section_id::CustomSectionIds,
+        custom: &crate::output_section_id::CustomSectionIds,
         output_kind: crate::output_kind::OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<Vec<OutputSectionId>>,
@@ -692,6 +699,16 @@ impl Platform for Coff {
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::DOS_STUB);
         builder.add_section(output_section_id::NT_HEADER);
+
+        builder.add_sections(&custom.exec);
+
+        builder.add_sections(&custom.ro);
+        builder.add_sections(&custom.data);
+        builder.add_sections(&custom.bss);
+        builder.add_sections(&custom.nonalloc);
+        builder.add_sections(&custom.tbss);
+        builder.add_sections(&custom.tdata);
+
         builder.build()
     }
 
@@ -1376,19 +1393,19 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn always_keep(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_loadable(self) -> bool {
-        todo!()
+        true
     }
 
     fn is_stack(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_tls(self) -> bool {
-        todo!()
+        false
     }
 
     fn order_key(self) -> usize {

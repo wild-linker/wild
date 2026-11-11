@@ -294,7 +294,7 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, object::pe::IMAGE_FILE_MACHINE_AMD64);
     header.file_header.number_of_sections.set(
         e,
-        u16::try_from(header_info.num_output_sections_with_content)?,
+        u16::try_from(header_info.num_output_sections_with_content).unwrap(),
     );
     header
         .file_header
@@ -330,7 +330,8 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                 })
                 .map(|(id, _)| layout.section_layouts.get(id).file_size)
                 .sum::<usize>(),
-        )?,
+        )
+        .unwrap(),
     );
     header.optional_header.size_of_uninitialized_data.set(
         e,
@@ -341,9 +342,14 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                 .filter(|(_, sec)| sec.section_attributes.is_no_bits())
                 .map(|(id, _)| layout.section_layouts.get(id).file_size)
                 .sum::<usize>(),
-        )?,
+        )
+        .unwrap(),
     );
-    header.optional_header.address_of_entry_point.set(e, 0);
+    header.optional_header.address_of_entry_point.set(
+        e,
+        // TODO: Skips a lot of relevant logic compared to ELF counterpart
+        va_to_rva(layout.resolved_entry_symbol_address()?.unwrap(), layout),
+    );
     header.optional_header.base_of_code.set(e, 0);
     header
         .optional_header
@@ -351,12 +357,12 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, layout.args().image_base().unwrap());
     header.optional_header.section_alignment.set(
         e,
-        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+        u32::try_from(layout.args().loadable_segment_alignment().value()).unwrap(),
     );
     // TODO: Wild doesn't support separate memory and file alignment
     header.optional_header.file_alignment.set(
         e,
-        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+        u32::try_from(layout.args().loadable_segment_alignment().value()).unwrap(),
     );
     header
         .optional_header
@@ -385,14 +391,15 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, Default::default());
     header.optional_header.size_of_image.set(
         e,
-        u32::try_from(
+        va_to_rva(
             layout
                 .section_layouts
                 .iter()
                 .map(|(_, sec)| sec.mem_end())
                 .max()
                 .unwrap(),
-        )?,
+            layout,
+        ),
     );
     header.optional_header.size_of_headers.set(
         e,
@@ -406,7 +413,8 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                     .section_layouts
                     .get(output_section_id::NT_HEADER)
                     .file_size,
-        )?,
+        )
+        .unwrap(),
     );
     header.optional_header.check_sum.set(e, Default::default());
     header
@@ -472,4 +480,14 @@ fn fill_section_padding<A: Arch<Platform = Coff>>(
         // A::fill_section_padding(padding, section_info.section_attributes.flags);
         padding.fill(0);
     }
+}
+
+/// Virtual Address to Relative Virtual Address
+fn va_to_rva(address: u64, layout: &CoffLayout) -> u32 {
+    u32::try_from(if let Some(base) = layout.args().image_base() {
+        address - base
+    } else {
+        address
+    })
+    .unwrap()
 }
