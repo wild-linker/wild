@@ -1126,7 +1126,24 @@ pub(crate) trait Platform:
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>);
 
-    fn build_custom_output_order_and_program_segments<'data>(
+    fn build_output_order_with_phdrs_table<'data>(
+        custom: &CustomSectionIds,
+        output_kind: OutputKind,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        _linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
+    ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
+        Ok(Self::build_output_order_and_program_segments(
+            custom,
+            output_kind,
+            output_sections,
+            secondary,
+            location_counters,
+        ))
+    }
+
+    fn build_output_order_with_section_table<'data>(
         custom: &CustomSectionIds,
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,

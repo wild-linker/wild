@@ -6,6 +6,7 @@
 
 //#Config:regions:default
 //#LinkerScript:linker-script-region.ld
+//#MaxFileSize:400000
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.data.ram1,.data.ram2,*]
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.data.ram3,*]
 //#ExpectProgramHeader:LOAD sections=[.data.rom,*]

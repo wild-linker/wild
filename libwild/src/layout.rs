@@ -3785,6 +3785,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
+        if output_order.has_custom_layout()
+            && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID
+        {
+            *keep_sections.get_mut(relro_padding_id) = false;
+        }
+
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
             .raw_range(self.symbol_id_range())
@@ -6350,14 +6356,18 @@ fn compute_layout_sections<'data, P: Platform>(
     // to construct thread local data. However, uninitialized TLS data is assumed to be zero
     // and therefore no copy happens. It would be wasteful to reserve that address in the TLS
     // template, so we don't do it.
-    let mut tls_memsave: Option<u64> = None;
+    let mut tls_memsave: Option<(u64, u64)> = None;
     let mut in_tls = false;
     let mut has_reset_base_address =
-        output_order.has_custom_phdrs() || !output_sections.has_custom_base_address();
+        output_order.has_custom_layout() || !output_sections.has_custom_base_address();
     let mut deferred_nonalloc = Vec::new();
     let mut has_seen_alloc_section = false;
+    let last_alloc_idx = output_order.custom_layout_last_alloc_index(output_sections);
+    let mut current_load_segment_delta: Option<u64> = None;
+    let mut current_load_segment_alignment: Option<Alignment> = None;
+    let mut current_region: Option<&'data [u8]> = None;
 
-    for event in output_order {
+    for (event_idx, event) in output_order.into_iter().enumerate() {
         match event {
             OrderEvent::SetLocation(expr, mut loc, idx) => {
                 if matches!(loc, SymbolLoc::SectionEnd(_)) {
@@ -6416,6 +6426,7 @@ fn compute_layout_sections<'data, P: Platform>(
                         .get(&segment_id)
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
+                    current_load_segment_alignment = Some(segment_alignment);
                     if let Some(addr) = pending_location {
                         // The OrderEvent::SetLocation is ELF-specific only.
                         mem_offset = addr;
@@ -6437,14 +6448,24 @@ fn compute_layout_sections<'data, P: Platform>(
                             &mut lma_offset,
                         );
                     }
+                    current_load_segment_delta =
+                        Some(mem_offset.saturating_sub(file_offset as u64));
                 }
             }
-            OrderEvent::SegmentEnd(_) => {}
+            OrderEvent::SegmentEnd(segment_id) => {
+                if program_segments.is_load_segment(segment_id) {
+                    current_load_segment_alignment = None;
+                    current_load_segment_delta = None;
+                }
+            }
             OrderEvent::Section(section_id) => {
-                let is_alloc = output_sections.section_flags(section_id).is_alloc();
+                let merge_target = output_sections.primary_output_section(section_id);
+                let is_alloc = output_sections.section_flags(merge_target).is_alloc();
                 let is_regular_section = section_id != crate::output_section_id::FILE_HEADER
                     && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let is_deferred = is_regular_section && !is_alloc && !has_seen_alloc_section;
+                let is_deferred = is_regular_section
+                    && !is_alloc
+                    && last_alloc_idx.map_or(!has_seen_alloc_section, |last| event_idx < last);
 
                 if is_regular_section {
                     if is_alloc {
@@ -6468,17 +6489,20 @@ fn compute_layout_sections<'data, P: Platform>(
                     .section_attributes
                     .occupies_only_tls_address_space()
                 {
-                    // Save our current mem_offset as we enter our first nobits TLS section
+                    // Save our current mem_offset and lma_offset as we enter our first nobits TLS
+                    // section
                     if tls_memsave.is_none() {
-                        tls_memsave = Some(mem_offset);
+                        tls_memsave = Some((mem_offset, lma_offset));
                     }
-                } else if let Some(tls_memsave) = tls_memsave.take() {
+                } else if let Some((saved_mem, saved_lma)) = tls_memsave.take() {
                     // Restore offsets when exiting nobits TLS sections
-                    mem_offset = tls_memsave;
+                    mem_offset = saved_mem;
+                    lma_offset = saved_lma;
                 }
 
                 let part_id_range = section_id.part_id_range::<P>();
-                let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
+                let (max_alignment, section_has_data) =
+                    sizes.max_alignment_and_has_data(part_id_range.clone(), output_sections);
                 let region = section_info
                     .region_name
                     .map(|region_name| {
@@ -6490,37 +6514,52 @@ fn compute_layout_sections<'data, P: Platform>(
                         })
                     })
                     .transpose()?;
-                if let Some(region) = region {
-                    mem_offset = region.origin + region.used;
-                }
-
                 if let Some(offset) = section_offset {
-                    if let Some(region) = region
-                        && (offset < mem_offset || offset > mem_offset + region.length)
-                    {
-                        bail!(
-                            "address 0x{offset:x} of section '{}' is not within region `{}'",
-                            output_sections.display_name(section_id),
-                            String::from_utf8_lossy(section_info.region_name.unwrap()),
-                        );
-                    }
-                    let merge_target = output_sections.primary_output_section(section_id);
-                    let section_flags = output_sections.section_flags(merge_target);
                     let is_top_level = section_info
                         .location_info
                         .as_ref()
                         .is_some_and(|info| info.is_top_level);
-                    if (section_id == merge_target || !is_top_level)
-                        && section_flags.is_alloc()
-                        && output_sections.has_data_in_file(merge_target)
-                    {
-                        let new_offset = offset
-                            .checked_sub(mem_offset)
-                            .with_context(|| format!("Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"))?;
-                        file_offset += new_offset as usize;
+                    if let Some(region) = region {
+                        let min_addr = if is_top_level {
+                            region.origin + region.used
+                        } else {
+                            mem_offset
+                        };
+                        if offset < min_addr || offset > region.origin + region.length {
+                            bail!(
+                                "address 0x{offset:x} of section '{}' is not within region `{}'",
+                                output_sections.display_name(section_id),
+                                String::from_utf8_lossy(section_info.region_name.unwrap()),
+                            );
+                        }
+                    }
+                    if !is_top_level {
+                        let merge_target = output_sections.primary_output_section(section_id);
+                        let section_flags = output_sections.section_flags(merge_target);
+                        if section_flags.is_alloc()
+                            && output_sections.has_data_in_file(merge_target)
+                        {
+                            let new_offset = offset.checked_sub(mem_offset).with_context(|| {
+                                format!(
+                                    "Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"
+                                )
+                            })?;
+                            file_offset += new_offset as usize;
+                        }
                     }
                     mem_offset = offset;
+                } else if let Some(region) = region {
+                    mem_offset = region.origin + region.used;
+                    if current_region != section_info.region_name && is_alloc {
+                        let segment_alignment = current_load_segment_alignment
+                            .unwrap_or_else(|| args.loadable_segment_alignment());
+                        file_offset =
+                            segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
+                        current_load_segment_delta =
+                            Some(mem_offset.saturating_sub(file_offset as u64));
+                    }
                 }
+                current_region = section_info.region_name;
 
                 let mut is_first_part = true;
 
@@ -6539,17 +6578,30 @@ fn compute_layout_sections<'data, P: Platform>(
                     let aligned_mem = tls_alignment.align_up(mem_offset);
                     let padding = aligned_mem - mem_offset;
                     mem_offset = aligned_mem;
+                    lma_offset += padding;
                     if output_sections.has_data_in_file(merge_target) {
                         file_offset += padding as usize;
                     }
                 }
                 in_tls = is_tls;
-                lma_offset = mem_offset;
+                if section_offset.is_some() || region.is_some() {
+                    lma_offset = mem_offset;
+                }
 
                 let mut part_sizes = sizes
                     .in_range(part_id_range.clone())
                     .map(|(id, &size)| (id, size))
                     .peekable();
+
+                if section_has_data
+                    && output_sections.has_data_in_file(merge_target)
+                    && !is_deferred
+                    && let Some(delta) = current_load_segment_delta
+                    && section_flags.is_alloc()
+                    && mem_offset >= delta
+                {
+                    file_offset = file_offset.max((mem_offset - delta) as usize);
+                }
 
                 // For sections with only empty parts, make sure we run the loop below at least once
                 // so as to properly initialise the section's layout.
@@ -6571,19 +6623,6 @@ fn compute_layout_sections<'data, P: Platform>(
                         aligned_offset - mem_offset
                     } else {
                         part_size
-                    };
-
-                    // Note, we align up even if our size is zero, otherwise our section will
-                    // start at an unaligned address. We don't however align up for NOBITS
-                    // sections or sections whose file layout is deferred.
-                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
-                        file_offset = alignment.align_up_usize(file_offset);
-                    }
-
-                    let file_size = if output_sections.has_data_in_file(merge_target) {
-                        mem_size as usize
-                    } else {
-                        0
                     };
 
                     let (part_mem_offset, part_lma_offset) = if section_flags.is_alloc() {
@@ -6613,6 +6652,19 @@ fn compute_layout_sections<'data, P: Platform>(
                         (mem_offset, mem_offset)
                     };
 
+                    // Note, we align up even if our size is zero, otherwise our section will
+                    // start at an unaligned address. We don't however align up for NOBITS
+                    // sections or sections whose file layout is deferred.
+                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
+                        file_offset = alignment.align_up_usize(file_offset);
+                    }
+
+                    let file_size = if output_sections.has_data_in_file(merge_target) {
+                        mem_size as usize
+                    } else {
+                        0
+                    };
+
                     let part_file_offset = if is_deferred { 0 } else { file_offset };
                     *part_layout = OutputRecordLayout {
                         file_size,
@@ -6635,12 +6687,13 @@ fn compute_layout_sections<'data, P: Platform>(
                         is_first_part,
                     );
 
-                    if let Some(expr) = section_info
-                        .location_info
-                        .as_ref()
-                        .and_then(|info| info.at_location.as_ref())
+                    if is_first_part
+                        && let Some(expr) = section_info
+                            .location_info
+                            .as_ref()
+                            .and_then(|info| info.at_location.as_ref())
                     {
-                        lma_offset = expression_eval(
+                        let base_lma = expression_eval(
                             expr,
                             &SymbolLoc::None,
                             memory_regions,
@@ -6648,9 +6701,10 @@ fn compute_layout_sections<'data, P: Platform>(
                             &resolved_lc,
                             &laid_out_mem_offsets,
                         )?;
-                        part_layout.lma_offset = lma_offset;
+                        part_layout.lma_offset = base_lma;
                         let section_layout = section_layouts.get_mut(section_id);
-                        section_layout.lma_offset = lma_offset;
+                        section_layout.lma_offset = base_lma;
+                        lma_offset = base_lma + mem_size;
                     }
 
                     is_first_part = false;

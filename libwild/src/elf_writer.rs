@@ -6256,7 +6256,8 @@ fn eh_frame_ptr<C: ElfClass>(layout: &ElfLayout<C>) -> Result<i32> {
     let eh_frame_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME);
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
     i32::try_from(
-        eh_frame_address - (eh_frame_hdr_address + elf::FRAME_POINTER_FIELD_OFFSET as u64),
+        eh_frame_address as i64
+            - (eh_frame_hdr_address + elf::FRAME_POINTER_FIELD_OFFSET as u64) as i64,
     )
     .context(".eh_frame more than 2GB away from .eh_frame_hdr")
 }
