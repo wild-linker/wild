@@ -1270,7 +1270,8 @@ fn load_prelude<'scope, 'data, P: Platform>(
         load_symbol_named(resources, &mut SymbolId::undefined(), name, scope);
     }
 
-    // Wasm `--export` and `--export-if-defined` names are archive roots.
+    // Wasm `--export`, `--export-if-defined`, and `-u` / `--undefined` names are archive
+    // roots. `-u` does not export the symbol or keep it as a GC root.
     for name in resources.symbol_db.args.export_archive_root_names() {
         load_symbol_named(
             resources,
@@ -1821,7 +1822,11 @@ fn resolve_section<'data, P: Platform>(
 
     if part_id == PartId::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
-            identity: P::section_identity(SectionName(section_name), input_section),
+            identity: P::section_identity(
+                obj.common.object,
+                SectionName(section_name),
+                input_section,
+            ),
             alignment,
             index: input_section_index.into(),
         };

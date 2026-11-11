@@ -1,3 +1,5 @@
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
 // This test does stuff with some of the linker-defined symbols. These symbols
 // are generally used by libc.
 

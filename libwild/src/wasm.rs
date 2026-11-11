@@ -150,9 +150,6 @@ pub(crate) mod output_section_id {
 /// Size of a `[Option<u32>; _]` lookup indexed by a standard section id through `data_count`.
 pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = object::wasm::SEC_DATA_COUNT.0 as usize + 1;
 
-/// Default `__table_base` for non-PIC executables.
-const DEFAULT_TABLE_BASE: u32 = 1;
-
 /// Export name of the indirect function table (`--export-table`).
 const INDIRECT_FUNCTION_TABLE_NAME: &str = "__indirect_function_table";
 
@@ -170,9 +167,6 @@ const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
 /// `i32.const 0` for `__tls_base` and GOT slots.
 const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
-
-/// `i32.const 1` for `DEFAULT_TABLE_BASE`.
-const DEFAULT_TABLE_BASE_INIT_EXPR: &[u8] = &[0x41, 0x01];
 
 /// Sentinel for a GC'd Wasm index slot.
 pub(crate) const WASM_DEAD_INDEX: u32 = u32::MAX;
@@ -1352,6 +1346,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) element_functions: Vec<u32>,
     pub(crate) function_table_slots: Vec<u32>,
     pub(crate) memory_base: u32,
+    pub(crate) table_base: u32,
     pub(crate) tls_base: u32,
     pub(crate) shared_memory_tls: bool,
     pub(crate) tls_size: u32,
@@ -1685,6 +1680,24 @@ fn stack_high_after_data(data_end: u32, stack_size: u32) -> Result<u32> {
 fn heap_base_after_data(data_end: u32) -> Result<u32> {
     u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
         .context("Wasm heap base overflow")
+}
+
+fn data_start_address(
+    stack_first: bool,
+    stack_size: u32,
+    global_base: Option<u32>,
+    memory_base: u32,
+) -> Result<u32> {
+    if stack_first {
+        if let Some(base) = global_base {
+            if base < stack_size {
+                bail!("--global-base cannot be less than stack size when --stack-first is used");
+            }
+            return Ok(base);
+        }
+        return Ok(stack_size);
+    }
+    Ok(global_base.unwrap_or(memory_base))
 }
 
 /// Initial `__stack_pointer` value for the chosen stack layout.
@@ -2168,6 +2181,7 @@ impl WasmObjectIndexMap {
         symbols: &[WasmSymbol],
         function_table_slots: &[u32],
         memory_base: u32,
+        table_base: u32,
         tls_base: u32,
     ) -> Result<u32> {
         if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
@@ -2278,7 +2292,7 @@ impl WasmObjectIndexMap {
                         return Ok(0);
                     }
                     let relative = slot
-                        .checked_sub(DEFAULT_TABLE_BASE)
+                        .checked_sub(table_base)
                         .context("Wasm TABLE_INDEX_REL_SLEB relocation out of range")?;
                     Ok(relative)
                 } else {
@@ -5262,7 +5276,7 @@ fn emit_reserved_linker_definitions(
         push_i32_global(
             &mut linker_globals,
             false,
-            Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
+            Cow::Owned(encode_i32_const_u32(layout.table_base)),
         );
     }
     if indices.stack_pointer_global.is_some() {
@@ -6363,16 +6377,18 @@ where
         } else {
             0
         },
+        table_base: symbol_db.args.table_base,
         shared_memory_tls: indices.shared_memory_tls,
         tls_align: u32::from(indices.shared_memory_tls),
         check_features: symbol_db.args.check_features,
         ..WasmLayout::default()
     };
-    let data_start = if stack_first {
-        stack_size
-    } else {
-        layout.memory_base
-    };
+    let data_start = data_start_address(
+        stack_first,
+        stack_size,
+        symbol_db.args.global_base,
+        layout.memory_base,
+    )?;
     let mut memory_cursor = data_start;
     {
         timing_phase!("Merge Wasm object layouts");
@@ -6810,6 +6826,7 @@ fn finalize_indirect_function_table(
     if !needs_table {
         return Ok(());
     }
+    let table_base = layout.table_base;
 
     // Collect output function indices that must appear in the table.
     let mut needed: Vec<u32> = Vec::new();
@@ -6840,7 +6857,6 @@ fn finalize_indirect_function_table(
         }
     }
 
-    // Slot 0 is unused and first function at slot 1. This matches common clang/wasm-ld layout.
     let max_func = layout
         .object_index_maps
         .iter()
@@ -6858,7 +6874,9 @@ fn finalize_indirect_function_table(
 
     let mut element_functions = Vec::with_capacity(needed.len());
     for (i, &func_out) in needed.iter().enumerate() {
-        let slot = i as u32 + 1;
+        let slot = table_base
+            .checked_add(u32::try_from(i).context("too many Wasm indirect functions")?)
+            .context("Wasm indirect function table index overflow")?;
         ensure!(
             (func_out as usize) < slots_by_func.len(),
             "output function index {func_out} out of range for table slots"
@@ -6867,7 +6885,11 @@ fn finalize_indirect_function_table(
         element_functions.push(func_out);
     }
 
-    let mut initial = element_functions.len() as u64 + 1;
+    let mut initial = u64::from(table_base)
+        .checked_add(
+            u64::try_from(element_functions.len()).context("too many Wasm indirect functions")?,
+        )
+        .context("Wasm indirect function table size overflow")?;
     for input in layout_inputs {
         for imp in &input.table_imports {
             initial = initial.max(imp.initial);
@@ -7980,6 +8002,7 @@ impl platform::Platform for Wasm {
     }
 
     fn section_identity<'data>(
+        _file: &Self::File<'data>,
         name: SectionName<'data>,
         _section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {

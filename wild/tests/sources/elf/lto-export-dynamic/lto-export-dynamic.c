@@ -1,4 +1,6 @@
 //#AbstractConfig:default
+// LLD does not support GCC LTO plugins.
+//#ReferenceLinkers:bfd
 //#RequiresLinkerPlugin:true
 //#Compiler:gcc
 //#LinkerDriver:gcc

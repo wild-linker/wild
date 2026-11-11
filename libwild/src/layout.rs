@@ -16,6 +16,7 @@ use crate::error::Context;
 use crate::error::Error;
 use crate::error::MultiErrorBuilder;
 use crate::error::Result;
+use crate::export_list::ExportList;
 use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
@@ -48,6 +49,7 @@ use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
+use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
@@ -336,7 +338,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             sizeof_headers,
         )?;
 
-    if symbol_db.args.should_relax() && A::supports_size_reduction_relaxations() {
+    if symbol_db.args.should_relax()
+        && !symbol_db.args.should_output_partial_object()
+        && A::supports_size_reduction_relaxations()
+    {
         perform_iterative_relaxation::<A>(
             &mut group_states,
             &mut section_part_sizes,
@@ -351,31 +356,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             sizeof_headers,
             &mut resolved_location_counters,
         )?;
-    }
-
-    if let Some((last_section_id, _)) = section_layouts
-        .iter()
-        .max_by_key(|(_, record)| record.file_end())
-    {
-        let last_part_id =
-            PartId::from_usize(last_section_id.part_id_range::<P>().end.as_usize() - 1);
-
-        let extra_file_size = A::Platform::last_part_size_to_extend(
-            &section_part_layouts.get(last_part_id),
-            last_part_id,
-        )?;
-
-        if extra_file_size > 0 {
-            section_part_sizes.increment(last_part_id, extra_file_size as u64);
-
-            let part_layout = section_part_layouts.get_mut(last_part_id);
-            part_layout.file_size += extra_file_size;
-            part_layout.mem_size += extra_file_size as u64;
-
-            let section_layout = section_layouts.get_mut(last_section_id);
-            section_layout.file_size += extra_file_size;
-            section_layout.mem_size += extra_file_size as u64;
-        }
     }
 
     let merged_section_layouts = merge_secondary_parts(&output_sections, &section_layouts);
@@ -527,6 +507,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         erratum_padding: AtomicU64::new(0),
     };
 
+    P::apply_post_resolution_adjustments(&mut layout)?;
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
     P::maybe_only_keep_debug::<A>(&mut layout)?;
     P::validate_layout(&layout)?;
@@ -1849,8 +1830,9 @@ impl<'data, P: Platform> Layout<'data, P> {
         self.symbol_db.args
     }
 
-    /// Rebuilds merged section records and program-header file ranges from the current section file
-    /// offsets, preserving their memory layout.
+    /// Rebuilds merged section records and segment file and memory bounds from the current section
+    /// layouts. Does not change section layouts, update part or group allocations, or update symbol
+    /// resolutions.
     pub(crate) fn refresh_file_layouts(&mut self, file_layout: SegmentFileLayout) -> Result {
         self.merged_section_layouts =
             merge_secondary_parts(&self.output_sections, &self.section_layouts);
@@ -4989,7 +4971,23 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     let address = P::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
-                SectionSlot::InitFunc(..) => SectionResolution::none(),
+                SectionSlot::InitFunc(..) => {
+                    // The section will have been consumed and converted to an initialiser list.
+                    // However, there might be relocations that reference the section. In
+                    // particular, rustc generates symbols.o containing relocations that reference
+                    // every symbol, including symbols that hold pointers to initialisation
+                    // functions. These relocations aren't reachable GC roots, however if we don't
+                    // GC, then we need avoid an error when we encounter those relocations. So we
+                    // need to produce a resolution for the section. It doesn't really matter
+                    // exactly what, so long as it's a resolution that the rest of the linker is
+                    // happy with.
+                    SectionResolution {
+                        address: resources
+                            .section_layouts
+                            .get(output_section_id::FILE_HEADER)
+                            .mem_offset,
+                    }
+                }
                 SectionSlot::CompactUnwind(..) => SectionResolution::none(),
                 _ => SectionResolution::none(),
             };
@@ -5370,6 +5368,21 @@ fn can_export_symbol<P: Platform>(
     )
 }
 
+/// Whether `raw_name` is selected by an export list or `--dynamic-list`.
+pub(crate) fn export_list_matches_symbol<P: Platform>(
+    export_list: &ExportList<'_>,
+    raw_name: &[u8],
+) -> bool {
+    let parsed = P::parse_raw_symbol_name(raw_name);
+    if parsed.is_default()
+        && parsed.version_name().is_some()
+        && export_list.contains_exact(&UnversionedSymbolName::prehashed(parsed.name()))
+    {
+        return true;
+    }
+    export_list.contains(&UnversionedSymbolName::prehashed(raw_name))
+}
+
 pub(crate) fn can_export_global_def<P: Platform>(
     symbol_db: &SymbolDb<P>,
     visibility: Visibility,
@@ -5393,7 +5406,7 @@ pub(crate) fn can_export_global_def<P: Platform>(
     if (mode == ExportSymbolsMode::MatchingExportList || symbol_db.has_restrictive_export_list())
         && let Some(export_list) = &symbol_db.export_list
         && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
-        && !export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+        && !export_list_matches_symbol::<P>(export_list, symbol_name.bytes())
     {
         return false;
     }

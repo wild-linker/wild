@@ -2,6 +2,8 @@
 // section with TLS flag. This is necessary to fully stress the linker.
 
 //#Config:default
+// LLD does not support TLS common symbols.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-z now
 //#Mode:dynamic
 //#Shared:runtime.c

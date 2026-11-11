@@ -1,4 +1,9 @@
 //#AbstractConfig:default
+// LLD uses lea for defined symbols and leaves undefined-weak GOT loads unrelaxed.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-non-pie
+// Retain sections referenced through __start / __stop with either linker.
+//#LinkArgs:-z nostart-stop-gc
 //#Object:runtime.c
 //#Object:dead_start_stop.c
 //#ExpectSym: dot1 section=".dot"

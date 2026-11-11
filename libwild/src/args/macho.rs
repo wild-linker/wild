@@ -30,6 +30,7 @@ pub struct MachOArgs {
     pub(crate) framework_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
+    pub(crate) function_starts: bool,
     pub(crate) headerpad_max_install_names: bool,
     pub(crate) entry: String,
     pub(crate) dylib: bool,
@@ -38,6 +39,7 @@ pub struct MachOArgs {
     pub(crate) compatibility_version: SemanticVersion,
     pub(crate) rpaths: Vec<String>,
     pub(crate) export_list_paths: Vec<PathBuf>,
+    pub(crate) merge_cstring_literals: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +86,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "dead_strip",
 ];
 
-const IGNORED_FLAGS: &[&str] = &["export_dynamic", "O0", "O1", "O2", "O3"];
+const IGNORED_FLAGS: &[&str] = &["export_dynamic"];
 
 impl MachOArgs {
     pub(crate) fn dylib_install_name(&self) -> &[u8] {
@@ -112,6 +114,7 @@ impl Default for MachOArgs {
             framework_search_path: Vec::new(),
             plugin_path: None,
             dead_strip_dylibs: false,
+            function_starts: true,
             headerpad_max_install_names: false,
             entry: "_main".to_owned(),
             dylib: false,
@@ -120,6 +123,7 @@ impl Default for MachOArgs {
             compatibility_version: SemanticVersion(Version(0)),
             rpaths: Vec::new(),
             export_list_paths: Vec::new(),
+            merge_cstring_literals: true,
         }
     }
 }
@@ -214,8 +218,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_merge_sections(&self) -> bool {
-        // TODO
-        true
+        self.merge_cstring_literals
     }
 
     fn should_output_executable(&self) -> bool {
@@ -430,6 +433,19 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             args.lib_search_path.push(Box::from(Path::new(value)));
             Ok(())
         });
+
+    parser
+        .declare_with_param()
+        .prefix("O")
+        .help("Set the optimization level")
+        .execute(|args, _modifier_stack, value| {
+            ensure!(
+                matches!(value, "0" | "1" | "2" | "3"),
+                "Unsupported optimization level: -O{value}"
+            );
+            args.merge_cstring_literals = value != "0";
+            Ok(())
+        });
     parser
         .declare_with_param()
         .prefix("l")
@@ -480,6 +496,24 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .long("dead_strip_dylibs")
         .execute(|args, _modifier_stack| {
             args.dead_strip_dylibs = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("function_starts")
+        .help("Emit a table of function start addresses (default)")
+        .execute(|args, _modifier_stack| {
+            args.function_starts = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no_function_starts")
+        .help("Do not emit a table of function start addresses")
+        .execute(|args, _modifier_stack| {
+            args.function_starts = false;
             Ok(())
         });
 
@@ -702,5 +736,29 @@ mod tests {
         args.parse(INPUT1.iter(), &crate::fs::OsFileSystem).unwrap();
         input1_assertions(&args);
         assert!(warnings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn optimization_level_controls_string_merging() {
+        for (flag, expected) in [("-O0", false), ("-O1", true), ("-O2", true), ("-O3", true)] {
+            let mut args = MachOArgs::default();
+            args.parse([flag].into_iter(), &crate::fs::OsFileSystem)
+                .unwrap();
+            assert_eq!(args.should_merge_sections(), expected, "flag {flag}");
+        }
+    }
+
+    #[test]
+    fn string_merging_is_enabled_by_default_and_last_optimization_level_wins() {
+        let mut args = MachOArgs::default();
+        assert!(args.should_merge_sections());
+
+        args.parse(["-O1", "-O0"].into_iter(), &crate::fs::OsFileSystem)
+            .unwrap();
+        assert!(!args.should_merge_sections());
+
+        args.parse(["-O0", "-O3"].into_iter(), &crate::fs::OsFileSystem)
+            .unwrap();
+        assert!(args.should_merge_sections());
     }
 }

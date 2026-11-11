@@ -4,8 +4,9 @@
 //#Object:ptr_black_box.c
 //#ReferenceLinkers:bfd,lld
 //#ExpectSym:undefined_tls_address
-// LLD can replace the high TLS offset add with a NOP, which linker-diff doesn't recognize yet.
-//#DiffIgnore:rel.match_failed.R_AARCH64_TLSLE_ADD_TPREL_HI12
+// LLD 23 removes the high-part TLSLE addition when the offset fits in 12 bits.
+// TODO: Implement this relaxation in Wild.
+//#DiffIgnore:rel.missing-opt.R_AARCH64_TLSLE_ADD_TPREL_HI12.ReplaceWithNop.*
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 

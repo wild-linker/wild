@@ -1,4 +1,6 @@
 //#Config:malfunction-no-mov-indirect-to-absolute
+# LLD rejects SHF_MERGE on .data.rel.ro.
+//#ReferenceLinkers:bfd
 //#Malfunction:no-mov-indirect-to-absolute
 //#LinkArgs:-z noexecstack
 //#Object:runtime.c

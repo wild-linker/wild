@@ -29,6 +29,9 @@ pub(crate) const DEFAULT_STACK_SIZE: u32 = 64 * 1024;
 /// Default entry symbol for Wasm command modules.
 pub(crate) const DEFAULT_ENTRY: &str = "_start";
 
+/// Default `--table-base`.
+pub(crate) const DEFAULT_TABLE_BASE: u32 = 1;
+
 /// Default export name for the module's linear memory.
 pub(crate) const DEFAULT_MEMORY_EXPORT_NAME: &str = "memory";
 
@@ -44,6 +47,7 @@ pub struct WasmArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
+    archive_roots: Vec<String>,
     pub(crate) extra_features: Vec<String>,
     pub(crate) features: Option<Vec<String>>,
     pub(crate) check_features: bool,
@@ -62,6 +66,8 @@ pub struct WasmArgs {
     pub(crate) max_memory: Option<u64>,
     pub(crate) no_growable_memory: bool,
     pub(crate) growable_table: bool,
+    pub(crate) global_base: Option<u32>,
+    pub(crate) table_base: u32,
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
@@ -115,6 +121,7 @@ impl Default for WasmArgs {
             check_features: true,
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
+            archive_roots: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
@@ -123,6 +130,8 @@ impl Default for WasmArgs {
             max_memory: None,
             no_growable_memory: false,
             growable_table: false,
+            global_base: None,
+            table_base: DEFAULT_TABLE_BASE,
             shared_memory: false,
             import_memory: None,
             export_memory: None,
@@ -171,7 +180,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn export_archive_root_names(&self) -> &[String] {
-        &self.export_symbols
+        &self.archive_roots
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -327,6 +336,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Force a symbol to be exported")
         .execute(|args, _modifier_stack, value| {
             let value = value.to_owned();
+            args.archive_roots.push(value.clone());
             args.export_symbols.push(value.clone());
             args.required_export_symbols.push(value);
             Ok(())
@@ -337,7 +347,9 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .long("export-if-defined")
         .help("Export a symbol if it is defined")
         .execute(|args, _modifier_stack, value| {
-            args.export_symbols.push(value.to_owned());
+            let value = value.to_owned();
+            args.archive_roots.push(value.clone());
+            args.export_symbols.push(value);
             Ok(())
         });
 
@@ -501,6 +513,40 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare_with_param()
+        .long("global-base")
+        .help("Memory offset at which to place static data")
+        .execute(|args, _modifier_stack, value| {
+            // wasm-ld stores this as an integer defaulting to 0, then treats 0 as unset.
+            let base = parse_number(value)?;
+            args.global_base =
+                if base == 0 {
+                    None
+                } else {
+                    Some(u32::try_from(base).with_context(|| {
+                        format!("--global-base is too large for Wasm32: {base}")
+                    })?)
+                };
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("table-base")
+        .help("Table offset at which to place address-taken functions")
+        .execute(|args, _modifier_stack, value| {
+            // wasm-ld treats 0 as unset, then uses 1 so slot 0 stays the null function.
+            let base = parse_number(value)?;
+            args.table_base = if base == 0 {
+                DEFAULT_TABLE_BASE
+            } else {
+                u32::try_from(base)
+                    .with_context(|| format!("--table-base is too large for Wasm32: {base}"))?
+            };
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("initial-heap")
         .help("Initial heap size in bytes, in addition to static data and the stack")
         .execute(|args, _modifier_stack, value| {
@@ -523,6 +569,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Allow undefined symbols in the output")
         .execute(|args, _modifier_stack| {
             args.allow_undefined = true;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("undefined")
+        .prefix("u")
+        .help("Force undefined symbol during linking")
+        .execute(|args, _modifier_stack, value| {
+            args.archive_roots.push(value.to_owned());
             Ok(())
         });
 
@@ -616,6 +672,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
     parser
         .declare()
         .long("strip-debug")
+        .short("S")
         .help("Strip debug info")
         .execute(|args, _modifier_stack| {
             args.strip_debug = true;

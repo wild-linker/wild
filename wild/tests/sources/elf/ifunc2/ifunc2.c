@@ -6,10 +6,18 @@
 //#RequiresGlibc:true
 
 //#Config:pie:default
+//#SkipArch:loongarch64
 //#CompArgs:-fpie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now
 //#LinkArgs:-pie
+
+//#Config:pie-loongarch64:pie
+//#Arch:loongarch64
+// LLD 21 produces crashing LoongArch IFUNC binaries, including static libc users.
+// TODO: Remove the LoongArch BFD-only configurations once the oldest supported LLD is 22;
+// these cases pass with LLD 22.
+//#ReferenceLinkers:bfd
 
 int exit_code = 2;
 

@@ -158,6 +158,10 @@ impl Config {
                 "section.plt.got.entsize",
                 "section.plt.entsize",
                 "section.got.plt.entsize",
+                // lld keeps the input entry size, using 0 when inputs disagree (e.g. crtbeginS.o has
+                // 8, LLVM-built objects have 0), whereas GNU ld and Wild use 8. Nothing reads
+                // .init_array's entry size at runtime.
+                "section.init_array.entsize",
                 // GNU ld sometimes sets this differently that we do.
                 "section.plt",
                 "section.plt.alignment",
@@ -179,6 +183,8 @@ impl Config {
                 GOT_PLT_SECTION_NAME_STR,
                 // We don't currently produce a separate .plt.sec section.
                 "section.plt.sec",
+                // We align .gnu.version_r to 8, like GNU ld. lld uses 4.
+                "section.gnu.version_r.alignment",
                 // Different hash values due to different implementations.
                 ".dynamic.DT_HASH",
                 // Different hash values due to different implementations.

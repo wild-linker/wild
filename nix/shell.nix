@@ -19,5 +19,8 @@ pkgs.mkShell {
     gppWrapper
   ];
 
-  env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
+  env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+    pkgs.stdenv.cc.cc.lib
+    pkgs.llvmPackages_20.llvm.lib
+  ];
 }

@@ -91,6 +91,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:retain-symbols-file
+// LLD retains local symbols with --retain-symbols-file.
+//#ReferenceLinkers:bfd
 //#Object:runtime.c
 //#LinkArgs:--retain-symbols-file ./link_args.retain
 //#ExpectSym:_start

@@ -6,6 +6,7 @@
   callPackage,
   path,
   lld,
+  llvm,
   clang,
   clang-tools,
   taplo,
@@ -80,6 +81,8 @@ craneLib.buildPackage (
 
     env.LD_LIBRARY_PATH = lib.makeLibraryPath [
       stdenv.cc.cc.lib
+      # Clang's plugin lookup can return only "LLVMgold.so".
+      llvm.lib
     ];
 
     # Do the install check instead just as a smoke-tests that Wild

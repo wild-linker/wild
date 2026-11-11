@@ -1,4 +1,6 @@
 /*
+// LLD (22.1.2) does something different here.
+//#ReferenceLinkers:bfd
 //#Arch: aarch64
 //#LinkArgs: -nostdlib -static
 */

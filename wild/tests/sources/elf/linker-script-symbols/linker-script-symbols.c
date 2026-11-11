@@ -1,4 +1,6 @@
 //#Config:default
+// LLD treats -dT as a replacement script instead of augmenting the default layout.
+//#ReferenceLinkers:bfd
 //#AugmentLinkerScript:script.ld
 //#Object:runtime.c
 //#NoSection:.rodata

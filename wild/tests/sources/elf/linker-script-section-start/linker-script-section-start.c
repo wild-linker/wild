@@ -1,3 +1,7 @@
+// This script relies on GNU orphan placement and segment permissions for execution.
+// TODO: Make the script's segment permissions and page boundaries explicit while preserving
+// its address assertions, then restore LLD coverage.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-section-start.ld
 //#Object:runtime.c
 //#DiffIgnore:segment.LOAD.RW.alignment

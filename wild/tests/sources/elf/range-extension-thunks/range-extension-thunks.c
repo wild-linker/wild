@@ -26,7 +26,6 @@
 //#ReferenceLinkers:lld
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.iplt
-//#DiffIgnore:section.gnu.version_r.alignment
 // On Ubuntu 24.04, lld ends up setting the INFO flag for .rela.dyn.
 //#DiffIgnore:section.rela.dyn.flags
 //#DiffIgnore:section.data

@@ -63,10 +63,8 @@ pub(crate) fn check_system_settings() -> Result {
     let no_turbo = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
     let boost_enabled = if boost.try_exists()? {
         read_setting(boost)? != 0
-    } else if no_turbo.try_exists()? {
-        read_setting(no_turbo)? == 0
     } else {
-        false
+        no_turbo.try_exists()? && read_setting(no_turbo)? == 0
     };
     if boost_enabled {
         bail!(

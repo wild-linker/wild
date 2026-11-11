@@ -1,3 +1,5 @@
+// LLD does not support TLS common symbols.
+//#ReferenceLinkers:bfd
 //#CompArgs:-fcommon
 //#Object:common-shared-1.c
 //#LinkArgs:-shared -z now

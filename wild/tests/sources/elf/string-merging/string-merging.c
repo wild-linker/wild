@@ -27,6 +27,8 @@
 //#RelrCount:1
 
 //#Config:export_merged_str_dyn:default
+// LLD garbage-collects individual merge pieces; this checks GNU whole-section retention.
+//#ReferenceLinkers:bfd
 //#Mode:dynamic
 //#Shared:force-dynamic-linking.c
 //#LinkArgs:--export-dynamic-symbol s1w -z now

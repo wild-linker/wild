@@ -1,4 +1,6 @@
 //#Config:section-start
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.dynamic-non-pie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now -Wl,--section-start=.foo=0x1000000 -no-pie
 //#ExpectSym:foo address=0x1000000

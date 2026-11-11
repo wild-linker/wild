@@ -1,3 +1,5 @@
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
 // Tests that library search order is directory-first, with shared objects preferred only within
 // each directory.
 

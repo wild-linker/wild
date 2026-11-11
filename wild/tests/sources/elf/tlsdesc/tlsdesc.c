@@ -1,6 +1,9 @@
 // TODO: remove DiffIgnore for asm.* once relaxations are supported
 
 //#AbstractConfig:default
+// LLD 23 removes the high-part TLSLE addition when the offset fits in 12 bits.
+// TODO: Implement this relaxation in Wild.
+//#DiffIgnore:rel.missing-opt.R_AARCH64_TLSLE_ADD_TPREL_HI12.ReplaceWithNop.*
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
@@ -51,8 +54,8 @@
 //#CompArgs:-mtls-dialect=desc
 //#CompSoArgs:-mtls-dialect=desc
 //#SkipArch: x86_64,riscv64,loongarch64,ppc64le
-//#CompArgs:-fPIE
-//#CompSoArgs:-fPIE
+//#CompArgs:-fPIC
+//#CompSoArgs:-fPIC
 //#LinkArgs:-pie
 
 //#AbstractConfig:clang-tls-desc-base:gcc-tls-desc-base
@@ -75,6 +78,8 @@
 //#Arch: x86_64
 
 //#Config:clang-tls-desc-shared:clang-tls-desc-shared-base
+// LLD represents _TLS_MODULE_BASE_ as absolute zero rather than a TLS symbol.
+//#DiffIgnore:rel.extra-symbol._TLS_MODULE_BASE_
 //#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#CompSoArgs:-mtls-dialect=gnu2 -fPIC

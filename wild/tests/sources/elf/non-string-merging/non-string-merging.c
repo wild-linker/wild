@@ -2,6 +2,8 @@
 // the same memory.
 
 //#AbstractConfig:default
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.*
 //#Object:non_string_merging1.s
 //#Object:non_string_merging2.s
 //#Object:runtime.c

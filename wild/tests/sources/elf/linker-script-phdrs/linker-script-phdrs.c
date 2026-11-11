@@ -38,6 +38,8 @@
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,.rodata,.dynamic,*]
 
 //#Config:no-load:default
+// This configuration checks GNU PHDRS validation that LLD does not implement.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-no-load.ld
 //#ExpectErrorWild:Missing LOAD PHDR in linker script
 
@@ -59,10 +61,14 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-hdr-only-load.ld
 
 //#Config:discontinuous-hdr:default
+// This configuration checks GNU PHDRS validation that LLD does not implement.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-discontinuous-hdr.ld
 //#ExpectError:PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them
 
 //#Config:non-load-with-headers:default
+// This configuration checks GNU PHDRS validation that LLD does not implement.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-non-load-hdr.ld
 //#ExpectError:(?i-u)non-load segment [0-9]+ includes file header and/or program header
 

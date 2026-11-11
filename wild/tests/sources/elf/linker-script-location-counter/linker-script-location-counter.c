@@ -1,4 +1,6 @@
 //#Config:default
+// LLD interprets these location-counter expressions as absolute, not section-relative.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-location-counter.ld
 //#LinkerScript:linker-script-location-counter-2.ld
 //#LinkerScript:linker-script-location-counter-3.ld
@@ -9,6 +11,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:phdrs
+// LLD interprets these location-counter expressions as absolute, not section-relative.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-location-counter-phdrs.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
@@ -17,6 +21,10 @@
 //#LinkArgs:-no-pie
 
 //#Config:single_location_counter
+// This script relies on GNU orphan placement and segment permissions for execution.
+// TODO: Give single_location_counter, section_sizeof, lc_after_section, and object_symbol_offset
+// portable segment permissions and page boundaries, then restore LLD coverage for those cases.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-single-location-counter.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
@@ -28,6 +36,8 @@
 //#LinkArgs:--no-gc-sections
 
 //#Config:section_sizeof
+// This script relies on GNU orphan placement and segment permissions for execution.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-section-sizeof.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
@@ -38,11 +48,13 @@
 //#Config:underflow
 //#Object:runtime.c
 //#LinkerScript:linker-script-location-counter-underflow.ld
-//#ExpectError:(?i-u)cannot move location counter backwards
+//#ExpectError:(?i-u)(cannot move location counter backwards|unable to move location counter)
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
 
 //#Config:lc_after_section
+// This script relies on GNU orphan placement and segment permissions for execution.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-lc-after-section.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
@@ -53,6 +65,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:symbols
+// LLD interprets these location-counter expressions as absolute, not section-relative.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-location-counter-symbols.ld
 //#LinkArgs:--defsym=offset4=0x300
 //#Object:runtime.c
@@ -72,6 +86,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:object_symbol_offset
+// This script relies on GNU orphan placement and segment permissions for execution.
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-object-symbol-offset.ld
 //#Object:runtime.c
 //#Object:object-symbol-prefix.c

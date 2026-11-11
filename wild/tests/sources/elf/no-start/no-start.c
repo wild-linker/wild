@@ -4,6 +4,8 @@
 //#ExpectEntry:this_is_the_entry_point
 
 //#Config:no-gc:default
+// LLD uses a zero entry point instead of falling back to the start of .text.
+//#ReferenceLinkers:bfd
 //#LinkArgs:-z now --no-gc-sections
 //#DiffIgnore: segment.LOAD.RW.alignment
 //#CompArgs:-fPIE

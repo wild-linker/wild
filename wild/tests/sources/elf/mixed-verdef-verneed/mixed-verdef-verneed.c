@@ -1,3 +1,4 @@
+//#LinkArgs:--undefined-version
 // Makes sure that having both verdef and verneed doesn't cause problems.
 
 //#Mode:dynamic

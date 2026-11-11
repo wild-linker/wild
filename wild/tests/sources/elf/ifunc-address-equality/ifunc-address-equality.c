@@ -10,6 +10,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:pic:no-pie
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
 // Wild currently uses an extra PLT indirection.
 //#DiffIgnore:rel.extra-got-plt-got
 //#CompArgs:-fPIC

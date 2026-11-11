@@ -2,6 +2,7 @@
 //#Object:runtime.c
 
 //#Config:malfunction-elf-incorrect-type:default
+//#ReferenceLinkers:bfd
 //#Malfunction:elf-incorrect-type
 //#Arch:x86_64
 //#CompArgs:-fPIE

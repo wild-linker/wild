@@ -1,3 +1,5 @@
+// Wild and BFD use an absolute move where LLD uses a PC-relative lea.
+//#DiffIgnore:rel.different-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).MovIndirectToLea.static-non-pie
 // Test that linker-defined symbols with PROVIDE semantics don't conflict with user-defined symbols
 //#Object:runtime.c
 //#DiffIgnore:section.data
