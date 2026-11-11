@@ -69,6 +69,8 @@ pub(crate) struct SymtabEntry {
     is_hidden: bool,
 }
 
+pub(crate) type DosHeader = object::pe::ImageDosHeader;
+
 pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
 pub(crate) type SectionHeader = object::pe::ImageSectionHeader;
 
@@ -531,13 +533,14 @@ impl Platform for Coff {
 
     fn allocate_header_sizes<'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
-        _sizes: &mut OutputSectionPartMap<u64>,
+        sizes: &mut OutputSectionPartMap<u64>,
         _header_info: &layout::HeaderInfo,
         _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
     ) {
+        sizes.increment(crate::part_id::FILE_HEADER, size_of::<DosHeader>() as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1368,6 +1371,7 @@ impl Coff {
 
         defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
             kind: Self::primary_section(b""),
+            section_flags: object::pe::IMAGE_SCN_LNK_REMOVE,
             ..Self::DEFAULT_DEFS
         };
 

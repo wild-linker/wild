@@ -3,9 +3,11 @@
 use crate::OutputFileData;
 use crate::bail;
 use crate::coff::Coff;
+use crate::coff::DosHeader;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
+use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
@@ -22,6 +24,8 @@ use crate::output_trace::TraceOutput;
 use crate::platform::Arch;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use object::LittleEndian;
+use object::from_bytes_mut;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
@@ -194,13 +198,44 @@ fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
 
 fn write_prelude<A: Arch<Platform = Coff>>(
     _prelude: &PreludeLayout<Coff>,
-    _buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     _table_writer: &mut TableWriter<'_, '_>,
-    _layout: &CoffLayout,
+    layout: &CoffLayout,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
+    let dos_header: &mut DosHeader = from_bytes_mut(buffers.get_mut(crate::part_id::FILE_HEADER))
+        .map_err(|_| insufficient_allocation("DOS header"))?
+        .0;
+    populate_dos_header::<A>(layout, dos_header);
+
     Ok(())
+}
+
+fn populate_dos_header<A: Arch<Platform = Coff>>(_layout: &CoffLayout, header: &mut DosHeader) {
+    let e = LittleEndian;
+    header.e_magic.set(e, object::pe::IMAGE_DOS_SIGNATURE);
+    header.e_cblp.set(e, Default::default());
+    header.e_cp.set(e, Default::default());
+    header.e_crlc.set(e, Default::default());
+    header.e_cparhdr.set(
+        e,
+        u16::try_from(size_of::<DosHeader>() / u16::BITS as usize).unwrap(),
+    );
+    header.e_minalloc.set(e, Default::default());
+    header.e_maxalloc.set(e, Default::default());
+    header.e_ss.set(e, Default::default());
+    header.e_sp.set(e, Default::default());
+    header.e_csum.set(e, Default::default());
+    header.e_ip.set(e, Default::default());
+    header.e_cs.set(e, Default::default());
+    header.e_lfarlc.set(e, Default::default());
+    header.e_ovno.set(e, Default::default());
+    header.e_res = [0.into(); 4];
+    header.e_oemid.set(e, Default::default());
+    header.e_oeminfo.set(e, Default::default());
+    header.e_res2 = [0.into(); 10];
+    header.e_lfanew.set(e, 0_u32);
 }
 
 fn write_epilogue<A: Arch<Platform = Coff>>(
