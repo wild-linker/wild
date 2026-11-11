@@ -3906,7 +3906,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             if !resources.symbol_db.args.should_output_partial_object() {
                 // Always keep the program headers segment even though we don't emit any sections in
                 // it.
-                keep_segments[0] = true;
+                keep_segments.get_mut(0).replace(&mut true);
             }
             keep_segments
         };

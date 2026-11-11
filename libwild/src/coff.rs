@@ -380,11 +380,11 @@ impl Platform for Coff {
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        todo!()
+        &[]
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        todo!()
+        &[]
     }
 
     fn program_segment_should_include_section(
@@ -393,7 +393,7 @@ impl Platform for Coff {
         _section_id: OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        todo!()
+        false
     }
 
     fn create_linker_defined_symbols(
