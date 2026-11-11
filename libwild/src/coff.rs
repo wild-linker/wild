@@ -71,8 +71,25 @@ pub(crate) struct SymtabEntry {
 }
 
 pub(crate) type DosHeader = object::pe::ImageDosHeader;
+pub(crate) type NtHeader = object::pe::ImageNtHeaders64;
 pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
 pub(crate) type SectionHeader = object::pe::ImageSectionHeader;
+
+// `object` currently skips directory entries, so the sizes are off. This might change in the
+// future.
+pub(crate) const SIZE_OF_DIRECTORY_ENTRIES: usize =
+    object::pe::IMAGE_NUMBEROF_DIRECTORY_ENTRIES * size_of::<object::pe::ImageDataDirectory>();
+const _: () = assert!(SIZE_OF_DIRECTORY_ENTRIES == 128);
+pub(crate) const SIZE_OF_OPTIONAL_HEADER64: usize =
+    size_of::<object::pe::ImageOptionalHeader64>() + SIZE_OF_DIRECTORY_ENTRIES;
+const _: () = assert!(
+    SIZE_OF_OPTIONAL_HEADER64
+        == size_of::<object::pe::ImageOptionalHeader64>() + SIZE_OF_DIRECTORY_ENTRIES
+);
+pub(crate) const SIZE_OF_NT_HEADERS64: usize = size_of::<NtHeader>() + SIZE_OF_DIRECTORY_ENTRIES;
+const _: () = assert!(
+    SIZE_OF_NT_HEADERS64 == size_of::<object::pe::ImageNtHeaders64>() + SIZE_OF_DIRECTORY_ENTRIES
+);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelocationType {}
@@ -84,6 +101,7 @@ pub(crate) struct Coff;
 #[derive(Clone, Copy)]
 enum SinglePartSectionId {
     DosStub = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    NtHeader,
 
     // Must be last.
     Count,
@@ -106,6 +124,7 @@ pub(crate) mod part_id {
     use crate::part_id::PartId;
 
     pub(crate) const DOS_STUB: PartId = SinglePartSectionId::DosStub.part_id();
+    pub(crate) const NT_HEADER: PartId = SinglePartSectionId::NtHeader.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -113,6 +132,7 @@ pub(crate) mod output_section_id {
     use crate::output_section_id::OutputSectionId;
 
     pub(crate) const DOS_STUB: OutputSectionId = SinglePartSectionId::DosStub.output_section_id();
+    pub(crate) const NT_HEADER: OutputSectionId = SinglePartSectionId::NtHeader.output_section_id();
 }
 
 #[derive(derive_more::Debug)]
@@ -198,6 +218,7 @@ impl Platform for Coff {
     const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] = &[
         crate::output_section_id::FILE_HEADER,
         output_section_id::DOS_STUB,
+        output_section_id::NT_HEADER,
     ];
 
     type File<'data> = File<'data>;
@@ -559,6 +580,7 @@ impl Platform for Coff {
     ) {
         sizes.increment(crate::part_id::FILE_HEADER, size_of::<DosHeader>() as u64);
         sizes.increment(part_id::DOS_STUB, DOS_STUB.len() as u64);
+        sizes.increment(part_id::NT_HEADER, SIZE_OF_NT_HEADERS64 as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -660,6 +682,7 @@ impl Platform for Coff {
 
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::DOS_STUB);
+        builder.add_section(output_section_id::NT_HEADER);
         builder.build()
     }
 
@@ -1046,8 +1069,9 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_prog_bits(&self) -> bool {
-        // TODO: might be relevant
-        false
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_CNT_INITIALIZED_DATA)
     }
 
     fn is_no_bits(&self) -> bool {
@@ -1394,6 +1418,7 @@ impl Coff {
 
         defs[crate::output_section_id::FILE_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::DOS_STUB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::NT_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs
     };
 }

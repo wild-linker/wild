@@ -5,6 +5,7 @@ use crate::bail;
 use crate::coff;
 use crate::coff::Coff;
 use crate::coff::DosHeader;
+use crate::coff::output_section_id;
 use crate::coff::part_id;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -15,6 +16,7 @@ use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
+use crate::layout::HeaderInfo;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::PreludeLayout;
@@ -24,6 +26,8 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::platform::Arch;
+use crate::platform::Args as _;
+use crate::platform::SectionAttributes;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::LittleEndian;
@@ -200,7 +204,7 @@ fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
 }
 
 fn write_prelude<A: Arch<Platform = Coff>>(
-    _prelude: &PreludeLayout<Coff>,
+    prelude: &PreludeLayout<Coff>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     _table_writer: &mut TableWriter<'_, '_>,
     layout: &CoffLayout,
@@ -218,10 +222,18 @@ fn write_prelude<A: Arch<Platform = Coff>>(
             .0;
     write_dos_stub::<A>(dos_stub);
 
+    let (nt_header, data_directory_bytes): (&mut coff::NtHeader, _) =
+        from_bytes_mut(buffers.get_mut(part_id::NT_HEADER))
+            .map_err(|_| insufficient_allocation("NT header"))?;
+    populate_nt_header::<A>(layout, &prelude.header_info, nt_header)?;
+    // TODO: `object` doesn't include this in `coff::NtHeader`, so just wipe remaining bytes for
+    // now.
+    data_directory_bytes.fill(0);
+
     Ok(())
 }
 
-fn populate_dos_header<A: Arch<Platform = Coff>>(_layout: &CoffLayout, header: &mut DosHeader) {
+fn populate_dos_header<A: Arch<Platform = Coff>>(layout: &CoffLayout, header: &mut DosHeader) {
     let e = LittleEndian;
     header.e_magic.set(e, object::pe::IMAGE_DOS_SIGNATURE);
     header.e_cblp.set(e, Default::default());
@@ -244,11 +256,193 @@ fn populate_dos_header<A: Arch<Platform = Coff>>(_layout: &CoffLayout, header: &
     header.e_oemid.set(e, Default::default());
     header.e_oeminfo.set(e, Default::default());
     header.e_res2 = [0.into(); 10];
-    header.e_lfanew.set(e, 0_u32);
+    header.e_lfanew.set(
+        e,
+        u32::try_from(
+            layout
+                .section_layouts
+                .get(output_section_id::NT_HEADER)
+                .file_offset,
+        )
+        .unwrap(),
+    );
 }
 
 fn write_dos_stub<A: Arch<Platform = Coff>>(mut bytes: &mut [u8]) {
     bytes.write_bytes(coff::DOS_STUB);
+}
+
+fn populate_nt_header<A: Arch<Platform = Coff>>(
+    layout: &CoffLayout,
+    header_info: &HeaderInfo,
+    header: &mut coff::NtHeader,
+) -> Result {
+    let output_kind = layout.symbol_db.output_kind;
+    let mut characteristics =
+        object::pe::IMAGE_FILE_EXECUTABLE_IMAGE | object::pe::IMAGE_FILE_LARGE_ADDRESS_AWARE;
+    if output_kind.is_shared_object() {
+        characteristics |= object::pe::IMAGE_FILE_DLL;
+    }
+    let e = LittleEndian;
+
+    header.signature.set(e, object::pe::IMAGE_NT_SIGNATURE);
+
+    // File header
+    header
+        .file_header
+        .machine
+        .set(e, object::pe::IMAGE_FILE_MACHINE_AMD64);
+    header.file_header.number_of_sections.set(
+        e,
+        u16::try_from(header_info.num_output_sections_with_content)?,
+    );
+    header
+        .file_header
+        .time_date_stamp
+        .set(e, Default::default());
+    header.file_header.pointer_to_symbol_table.set(e, 0);
+    header.file_header.number_of_symbols.set(e, 0);
+    header
+        .file_header
+        .size_of_optional_header
+        .set(e, coff::SIZE_OF_OPTIONAL_HEADER64 as u16);
+    header.file_header.characteristics.set(e, characteristics);
+
+    // Optional header
+    header
+        .optional_header
+        .magic
+        .set(e, object::pe::IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+    header.optional_header.major_linker_version = 14;
+    header.optional_header.minor_linker_version = 0;
+    header.optional_header.size_of_code.set(e, 0);
+    // TOOD: Add `is_prog_bits` helper
+    header.optional_header.size_of_initialized_data.set(
+        e,
+        u32::try_from(
+            layout
+                .output_sections
+                .ids_with_info()
+                .filter(|(_, sec)| {
+                    sec.section_attributes
+                        .flags
+                        .contains(object::pe::IMAGE_SCN_CNT_INITIALIZED_DATA)
+                })
+                .map(|(id, _)| layout.section_layouts.get(id).file_size)
+                .sum::<usize>(),
+        )?,
+    );
+    header.optional_header.size_of_uninitialized_data.set(
+        e,
+        u32::try_from(
+            layout
+                .output_sections
+                .ids_with_info()
+                .filter(|(_, sec)| sec.section_attributes.is_no_bits())
+                .map(|(id, _)| layout.section_layouts.get(id).file_size)
+                .sum::<usize>(),
+        )?,
+    );
+    header.optional_header.address_of_entry_point.set(e, 0);
+    header.optional_header.base_of_code.set(e, 0);
+    header
+        .optional_header
+        .image_base
+        .set(e, layout.args().image_base().unwrap());
+    header.optional_header.section_alignment.set(
+        e,
+        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+    );
+    // TODO: Wild doesn't support separate memory and file alignment
+    header.optional_header.file_alignment.set(
+        e,
+        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+    );
+    header
+        .optional_header
+        .major_operating_system_version
+        .set(e, 6);
+    header
+        .optional_header
+        .minor_operating_system_version
+        .set(e, Default::default());
+    header
+        .optional_header
+        .major_image_version
+        .set(e, Default::default());
+    header
+        .optional_header
+        .minor_image_version
+        .set(e, Default::default());
+    header.optional_header.major_subsystem_version.set(e, 6);
+    header
+        .optional_header
+        .minor_subsystem_version
+        .set(e, Default::default());
+    header
+        .optional_header
+        .win32_version_value
+        .set(e, Default::default());
+    header.optional_header.size_of_image.set(
+        e,
+        u32::try_from(
+            layout
+                .section_layouts
+                .iter()
+                .map(|(_, sec)| sec.mem_end())
+                .max()
+                .unwrap(),
+        )?,
+    );
+    header.optional_header.size_of_headers.set(
+        e,
+        u32::try_from(
+            // TODO: this is wrong, doesn't match alignment requirements
+            layout
+                .section_layouts
+                .get(output_section_id::DOS_STUB)
+                .file_size
+                + layout
+                    .section_layouts
+                    .get(output_section_id::NT_HEADER)
+                    .file_size,
+        )?,
+    );
+    header.optional_header.check_sum.set(e, Default::default());
+    header
+        .optional_header
+        .subsystem
+        .set(e, object::pe::IMAGE_SUBSYSTEM_WINDOWS_CUI);
+    header
+        .optional_header
+        .dll_characteristics
+        .set(e, Default::default());
+    header
+        .optional_header
+        .size_of_stack_reserve
+        .set(e, Default::default());
+    header
+        .optional_header
+        .size_of_stack_commit
+        .set(e, Default::default());
+    header
+        .optional_header
+        .size_of_heap_reserve
+        .set(e, Default::default());
+    header
+        .optional_header
+        .size_of_heap_commit
+        .set(e, Default::default());
+    header
+        .optional_header
+        .loader_flags
+        .set(e, Default::default());
+    header.optional_header.number_of_rva_and_sizes.set(
+        e,
+        u32::try_from(object::pe::IMAGE_NUMBEROF_DIRECTORY_ENTRIES).unwrap(),
+    );
+
+    Ok(())
 }
 
 fn write_epilogue<A: Arch<Platform = Coff>>(
