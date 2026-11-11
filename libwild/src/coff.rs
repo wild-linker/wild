@@ -26,12 +26,17 @@ use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::CommonSymbol;
 use crate::platform::Platform;
+use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
+use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
+use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
+use object::coff::CoffHeader as _;
+use object::coff::Symbol as _;
 use object::pe::SectionFlags;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -55,10 +60,15 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SymtabEntry {}
+pub(crate) struct SymtabEntry {
+    pub(crate) raw: object::pe::ImageSymbol,
+    pub(crate) index: SymbolIndex,
+    pub(crate) is_aux: bool,
+    is_hidden: bool,
+}
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SectionHeader {}
+pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
+pub(crate) type SectionHeader = object::pe::ImageSectionHeader;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelocationType {}
@@ -88,8 +98,16 @@ const COFF_NUM_BUILT_IN_SECTIONS: usize =
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
+    pub(crate) arch: Architecture,
     #[debug(skip)]
-    pub(crate) _data: &'data [u8],
+    pub(crate) data: &'data [u8],
+    // `object` follows COFF and uses 1-based section numbers, this naturally conflicts with
+    // our 0-based section numbering. Currently we offset section indexes in our methods.
+    // TODO: Need to think how to properly solve it.
+    pub(crate) sections: object::coff::SectionTable<'data>,
+    pub(crate) symbol_table: object::read::coff::SymbolTable<'data>,
+    pub(crate) symbols: Vec<SymtabEntry>,
+    is_dynamic: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -506,7 +524,7 @@ impl Platform for Coff {
         _archive_semantics: bool,
         _is_undefined: bool,
     ) -> bool {
-        todo!()
+        true
     }
 
     fn allocate_header_sizes<'data>(
@@ -580,11 +598,11 @@ impl Platform for Coff {
     }
 
     fn raw_symbol_name<'data>(
-        _name_bytes: &'data [u8],
+        name_bytes: &'data [u8],
         _verneed_table: &Self::VerneedTable<'data>,
         _symbol_index: SymbolIndex,
     ) -> Self::RawSymbolName<'data> {
-        todo!()
+        RawSymbolName::parse(name_bytes)
     }
 
     fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
@@ -622,7 +640,20 @@ impl Platform for Coff {
     }
 
     fn default_symtab_entry() -> Self::SymtabEntry {
-        todo!()
+        // TODO: Might need to tinker the defaults
+        SymtabEntry {
+            raw: object::pe::ImageSymbol {
+                name: [0; 8],
+                value: Default::default(),
+                section_number: Default::default(),
+                typ: Default::default(),
+                storage_class: Default::default(),
+                number_of_aux_symbols: 0,
+            },
+            index: SymbolIndex(0),
+            is_aux: false,
+            is_hidden: false,
+        }
     }
 
     type GdbIndexScanResult<'data> = ();
@@ -645,20 +676,77 @@ impl Platform for Coff {
 
     fn section_identity<'data>(
         _file: &Self::File<'data>,
-        _name: SectionName<'data>,
+        name: SectionName<'data>,
         _section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
-        todo!()
+        Self::section_identity_from_name(name).unwrap()
     }
 
-    fn section_identity_from_name(_name: SectionName) -> Option<SectionIdentity<Self>> {
-        todo!()
+    fn section_identity_from_name(name: SectionName) -> Option<SectionIdentity<Self>> {
+        Some(SectionIdentity::new(name, ()))
     }
 }
 
 impl<'data> File<'data> {
-    fn parse_coff_bytes(data: &'data [u8], _is_dynamic: bool) -> Self {
-        Self { _data: data }
+    fn parse_coff_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+        let mut offset = 0;
+        let header = CoffFileHeader::parse(data, &mut offset)?;
+        let arch = match header.machine() {
+            object::pe::IMAGE_FILE_MACHINE_AMD64 => Architecture::X86_64,
+            _ => bail!("Unsupported architecture: {:?}", header.machine()),
+        };
+
+        let sections = header.sections(data, offset)?;
+
+        // This is a bit of a hack.
+        // Wild needs dense symbol list, but COFF stores symbols along with zero or more of their
+        // aux symbols.
+        //
+        // `object` crate handles that by densely storing symbols and their aux records, and
+        // reflects that in indexes. However, its iterators return only the "real" symbols.
+        //
+        // This causes Wild's own indexing to fall apart. To fix that we can either:
+        // - store symbols and aux records a separate symbols, to retain `object`'s indexing
+        // - store symbols only and create map between to convert between our and `object`'s
+        //   indexing
+        // - avoid using `object`'s parsing and do it ourselves
+        //
+        // The code below implements the first option. This also gives us a bit of flexibility for
+        // example to nicely handle hidden symbols.
+        let symbol_table = header.symbols(data)?;
+        let num_symbols = symbol_table.len();
+        let mut symbols = Vec::with_capacity(num_symbols);
+        let mut aux_remaining = 0;
+        for i in 0..num_symbols {
+            let raw = *symbol_table.symbol(SymbolIndex(i))?;
+            let index = SymbolIndex(i);
+            if aux_remaining > 0 {
+                aux_remaining -= 1;
+                symbols.push(SymtabEntry {
+                    raw,
+                    index,
+                    is_aux: true,
+                    is_hidden: false,
+                });
+            } else {
+                aux_remaining = raw.number_of_aux_symbols;
+                symbols.push(SymtabEntry {
+                    raw,
+                    index,
+                    is_aux: false,
+                    is_hidden: false,
+                });
+            }
+        }
+
+        Ok(Self {
+            arch,
+            data,
+            sections,
+            symbol_table,
+            symbols,
+            is_dynamic,
+        })
     }
 }
 
@@ -666,73 +754,100 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Coff;
 
     fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
-        Ok(Self::parse_coff_bytes(data, is_dynamic))
+        Self::parse_coff_bytes(data, is_dynamic)
     }
 
-    fn parse(input: &InputBytes<'data>, _args: &CoffArgs) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &CoffArgs) -> Result<Self> {
         let file = Self::parse_bytes(input.data, false)?;
+
+        if file.arch != args.architecture() {
+            bail!(
+                "`{}` has incompatible architecture: {}, expecting {}",
+                input,
+                file.arch,
+                args.architecture(),
+            );
+        }
 
         Ok(file)
     }
 
     fn is_dynamic(&self) -> bool {
-        false
+        self.is_dynamic
     }
 
     fn num_symbols(&self) -> usize {
-        todo!()
+        self.symbols.len()
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry> {
-        [].into_iter()
+        self.symbols.iter()
     }
 
-    fn symbol(&self, _index: SymbolIndex) -> Result<&SymtabEntry> {
-        todo!()
+    fn symbol(&self, index: SymbolIndex) -> Result<&SymtabEntry> {
+        self.symbols
+            .get(index.0)
+            .ok_or_else(|| crate::error!("Invalid symbol index {index:?}"))
     }
 
-    fn section_size(&self, _section: &SectionHeader) -> Result<u64> {
-        todo!()
+    fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+        let size = u64::from(section.virtual_size.get(LittleEndian));
+        if size == 0 {
+            return Ok(u64::from(section.size_of_raw_data.get(LittleEndian)));
+        }
+        Ok(size)
     }
 
-    fn symbol_name(&self, _symbol: &SymtabEntry) -> Result<&'data [u8]> {
-        todo!()
+    fn symbol_name(&self, symbol: &SymtabEntry) -> Result<&'data [u8]> {
+        if symbol.is_aux {
+            bail!("aux symbol has no name")
+        }
+        let sym = self.symbol_table.symbol(symbol.index)?;
+        Ok(sym.name(self.symbol_table.strings())?)
     }
 
     fn symbol_offset_in_section(
         &self,
-        _symbol: &SymtabEntry,
+        symbol: &SymtabEntry,
         _section_index: SectionIndex,
     ) -> Result<u64> {
-        todo!()
+        Ok(symbol.value())
     }
 
     fn num_sections(&self) -> usize {
-        todo!()
+        self.sections.len()
     }
 
     fn section_iter(&self) -> core::slice::Iter<'_, SectionHeader> {
-        todo!()
+        self.sections.iter()
     }
 
     fn enumerate_sections(&self) -> impl Iterator<Item = (SectionIndex, &SectionHeader)> {
-        [].into_iter()
+        self.sections
+            .iter()
+            .enumerate()
+            .map(|(i, section)| (SectionIndex(i), section))
     }
 
-    fn section(&self, _index: SectionIndex) -> Result<&SectionHeader> {
-        todo!()
+    fn section(&self, index: SectionIndex) -> Result<&SectionHeader> {
+        Ok(self.sections.section(SectionIndex(index.0 + 1))?)
     }
 
-    fn section_by_name(&self, _name: &str) -> Option<(SectionIndex, &SectionHeader)> {
-        todo!()
+    fn section_by_name(&self, name: &str) -> Option<(SectionIndex, &SectionHeader)> {
+        self.sections
+            .section_by_name(self.symbol_table.strings(), name.as_bytes())
+            .map(|(i, section)| (SectionIndex(i.0 - 1), section))
     }
 
     fn symbol_section(
         &self,
-        _symbol: &SymtabEntry,
+        symbol: &SymtabEntry,
         _index: SymbolIndex,
     ) -> Result<Option<SectionIndex>> {
-        todo!()
+        if symbol.is_aux {
+            return Ok(None);
+        }
+        Ok(symbol.raw.section().map(|i| SectionIndex(i.0 - 1)))
     }
 
     fn symbol_versions(&self) -> &[()] {
@@ -757,21 +872,28 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn section_name(&self, _index: SectionIndex) -> Result<&'data [u8]> {
-        todo!()
+    fn section_name(&self, index: SectionIndex) -> Result<&'data [u8]> {
+        let section = self.sections.section(SectionIndex(index.0 + 1))?;
+        Ok(section.name(self.symbol_table.strings())?)
     }
 
-    fn raw_section_data(&self, _section: &SectionHeader) -> Result<&'data [u8]> {
-        todo!()
+    fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        let e = LittleEndian;
+        let ptr = section.pointer_to_raw_data.get(e) as usize;
+        let mut size = section.size_of_raw_data.get(e) as usize;
+        if size == 0 {
+            size = section.virtual_size.get(e) as usize;
+        }
+        Ok(&self.data[ptr..ptr + size])
     }
 
     fn section_data(
         &self,
-        _section: &SectionHeader,
+        section: &SectionHeader,
         _member: &bumpalo_herd::Member<'data>,
         _loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
-        todo!()
+        self.raw_section_data(section)
     }
 
     fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> Result {
@@ -782,8 +904,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(Cow::Borrowed(self.raw_section_data(section)?))
     }
 
-    fn section_alignment(&self, _section: &SectionHeader) -> Result<u64> {
-        todo!()
+    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+        Ok(section.coff_alignment())
     }
 
     fn relocations(
@@ -795,23 +917,27 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn parse_relocations(&self) -> Result<()> {
-        todo!()
+        // TODO: Just so we can forward right now
+        Ok(())
     }
 
     fn symbol_version_debug(&self, _symbol_index: SymbolIndex) -> Option<String> {
-        todo!()
+        None
     }
 
-    fn section_display_name(&self, _index: SectionIndex) -> Cow<'data, str> {
-        todo!()
+    fn section_display_name(&self, index: SectionIndex) -> Cow<'data, str> {
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn dynamic_tag_values(&self) -> Option<DynamicTagValues> {
-        todo!()
+        None
     }
 
     fn get_version_names(&self) -> Result<VersionNames> {
-        todo!()
+        Ok(())
     }
 
     fn get_symbol_name_and_version(
@@ -857,7 +983,9 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_MEM_EXECUTE)
     }
 
     fn is_tls(&self) -> bool {
@@ -865,7 +993,8 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_merge_section(&self) -> bool {
-        todo!()
+        // TODO: String merging isn't common on Windows, but we might want to support it one day.
+        false
     }
 
     fn is_strings(&self) -> bool {
@@ -873,19 +1002,22 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn should_retain(&self) -> bool {
-        todo!()
+        false
     }
 
     fn should_exclude(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_LNK_REMOVE)
     }
 
     fn is_group(&self) -> bool {
-        todo!()
+        // TODO: Might be relevant for COMDATs
+        false
     }
 
     fn is_note(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_prog_bits(&self) -> bool {
@@ -930,35 +1062,45 @@ impl platform::SectionFlags for SectionFlags {
 
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<CommonSymbol> {
-        todo!()
+        // TODO
+        None
     }
 
     fn is_undefined(&self) -> bool {
-        todo!()
+        !self.is_aux
+            && self.raw.section_number() == object::pe::IMAGE_SYM_UNDEFINED
+            && self.raw.value() == 0
     }
 
     fn is_local(&self) -> bool {
-        todo!()
+        self.is_aux
+            // TODO: this is basically object::read::coff::symbol::CoffSymbol::is_global
+            || !matches!(
+                self.raw.storage_class(),
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL
+                    | object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL
+            )
     }
 
     fn is_absolute(&self) -> bool {
-        todo!()
+        self.is_aux || self.raw.section_number() == object::pe::IMAGE_SYM_ABSOLUTE
     }
 
     fn is_weak(&self) -> bool {
-        todo!()
+        !self.is_aux && self.raw.storage_class == object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL
     }
 
     fn visibility(&self) -> Visibility {
-        todo!()
+        Visibility::Default
     }
 
     fn value(&self) -> u64 {
-        todo!()
+        self.raw.value().into()
     }
 
     fn size(&self) -> u64 {
-        todo!()
+        debug_assert!(self.is_common());
+        self.value()
     }
 
     fn has_name(&self) -> bool {
@@ -966,11 +1108,12 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_default_strippable(&self, _name: &[u8]) -> bool {
-        todo!()
+        // LLD skips symbols with file and section name. We follow that to make our life easier.
+        self.is_aux || self.raw.has_aux_file_name() || self.raw.has_aux_section()
     }
 
     fn debug_string(&self) -> String {
-        todo!()
+        SymDebug(self).to_string()
     }
 
     fn is_tls(&self) -> bool {
@@ -978,7 +1121,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_interposable(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_func(&self) -> bool {
@@ -986,19 +1129,20 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_ifunc(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_hidden(&self) -> bool {
-        todo!()
+        self.is_hidden
     }
 
     fn is_gnu_unique(&self) -> bool {
-        todo!()
+        false
     }
 
-    fn with_hidden(self, _hidden: bool) -> Self {
-        todo!()
+    fn with_hidden(mut self, hidden: bool) -> Self {
+        self.is_hidden = hidden;
+        self
     }
 }
 
@@ -1008,6 +1152,37 @@ pub(crate) struct DynamicTagValues {}
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues {
     fn lib_name(&self, _input: &InputRef<'data>) -> &'data [u8] {
         todo!()
+    }
+}
+
+struct SymDebug<'data>(pub(crate) &'data SymtabEntry);
+
+impl std::fmt::Display for SymDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sym = self.0;
+
+        // TODO: Make it more sensible for COFF
+        let vis = if sym.is_local() {
+            "Local"
+        } else if sym.is_weak() {
+            "Weak"
+        } else {
+            "Global"
+        };
+
+        let kind = if sym.is_undefined() {
+            "Undefined"
+        } else {
+            match sym.raw.storage_class {
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL => "External",
+                object::pe::IMAGE_SYM_CLASS_STATIC => "Static",
+                object::pe::IMAGE_SYM_CLASS_EXTERNAL_DEF => "ExternalDef",
+                object::pe::IMAGE_SYM_CLASS_WEAK_EXTERNAL => "WeakExternal",
+                _ => todo!(),
+            }
+        };
+
+        write!(f, "{vis} {kind}")
     }
 }
 
