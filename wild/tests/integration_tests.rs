@@ -8163,7 +8163,6 @@ fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Re
 }
 
 fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
-    const CS_BLOCK_SIZE: usize = 4096;
     const CS_HASH_SIZE: usize = 32;
 
     let object::File::MachO64(file) = obj else {
@@ -8201,10 +8200,6 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .context("Invalid UUID size")?;
 
     let code_signature_offset = usize::try_from(code_signature.dataoff.get(e))?;
-    let hashes_size = code_signature_offset
-        .div_ceil(CS_BLOCK_SIZE)
-        .checked_mul(CS_HASH_SIZE)
-        .context("Invalid code signature hashes size")?;
     let code_signature_end = code_signature_offset
         .checked_add(usize::try_from(code_signature.datasize.get(e))?)
         .context("Invalid code signature size")?;
@@ -8219,13 +8214,22 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         "Code signature length differs from its allocation"
     );
 
-    let mut checked_directory = false;
+    let mut signature_layout = None;
     for blob in parsed_signature.blobs() {
         if let Some(directory) = blob?.code_directory()? {
             let header = directory.header();
             ensure!(
+                matches!(header.page_size, 12 | 14),
+                "Unsupported code signature page size"
+            );
+            let block_size = 1usize << header.page_size;
+            let hashes_size = code_signature_offset
+                .div_ceil(block_size)
+                .checked_mul(CS_HASH_SIZE)
+                .context("Invalid code signature hashes size")?;
+            ensure!(
                 header.n_code_slots.get(object::BigEndian) as usize
-                    == code_signature_offset.div_ceil(CS_BLOCK_SIZE),
+                    == code_signature_offset.div_ceil(block_size),
                 "Code signature page count does not match its final offset"
             );
             ensure!(
@@ -8237,10 +8241,10 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
                     == header.length.get(object::BigEndian) as usize,
                 "Code directory size does not match its page count"
             );
-            checked_directory = true;
+            signature_layout = Some((block_size, hashes_size));
         }
     }
-    ensure!(checked_directory, "Missing code directory");
+    let (block_size, hashes_size) = signature_layout.context("Missing code directory")?;
 
     let hashes_start = code_signature_data
         .len()
@@ -8250,7 +8254,7 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .get(..code_signature_offset)
         .context("Invalid code signature offset")?;
     let final_hashes = signed_data
-        .chunks(CS_BLOCK_SIZE)
+        .chunks(block_size)
         .flat_map(Sha256::digest)
         .collect_vec();
     ensure!(
@@ -8265,7 +8269,7 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .context("UUID range overlaps code signature")?
         .fill(0);
     let zero_uuid_hashes = zero_uuid_data
-        .chunks(CS_BLOCK_SIZE)
+        .chunks(block_size)
         .flat_map(Sha256::digest)
         .collect_vec();
     let mut zero_uuid_signature = code_signature_data.to_vec();

@@ -258,7 +258,7 @@ pub(crate) const CS_CODE_DIRECTORY_SIZE: u64 = (size_of::<macho::CsCodeDirectory
     + size_of::<macho::CsCodeDirectoryV3>()
     + size_of::<macho::CsCodeDirectoryV4>()) as u64;
 pub(crate) const CS_HEADERS_SIZE: u64 = CS_BLOB_HEADERS_SIZE + CS_CODE_DIRECTORY_SIZE;
-pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 12;
+pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 14;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 // SHA-256 is being used
 pub(crate) const CS_HASH_SIZE: u8 = 32;
@@ -3557,30 +3557,31 @@ mod tests {
 
     #[test]
     fn place_exports_across_signature_page_boundary() {
+        let page = CS_BLOCK_SIZE;
         for (exports_size, function_starts_size, symtab_offset, signature_offset, pages) in [
-            (0, 0, 0x1000, 0x1030, 2),
-            (127, 0, 0x1080, 0x10b0, 2),
+            (0, 0, page, page + 0x30, 2),
+            (127, 0, page + 0x80, page + 0xb0, 2),
             // Closest 16-byte-aligned signature offsets below, at and above a page boundary.
-            (0xfc0, 0, 0x1fc0, 0x1ff0, 2),
-            (0xfd0, 0, 0x1fd0, 0x2000, 2),
-            (0xfe0, 0, 0x1fe0, 0x2010, 3),
-            (127, 8, 0x1088, 0x10b0, 2),
-            (0xfc0, 8, 0x1fc8, 0x1ff0, 2),
-            (0xfd0, 8, 0x1fd8, 0x2000, 2),
-            (0xfe0, 8, 0x1fe8, 0x2010, 3),
-            (0, 0x1008, 0x2008, 0x2030, 3),
+            (page - 0x40, 0, 2 * page - 0x40, 2 * page - 0x10, 2),
+            (page - 0x30, 0, 2 * page - 0x30, 2 * page, 2),
+            (page - 0x20, 0, 2 * page - 0x20, 2 * page + 0x10, 3),
+            (127, 8, page + 0x88, page + 0xb0, 2),
+            (page - 0x40, 8, 2 * page - 0x38, 2 * page - 0x10, 2),
+            (page - 0x30, 8, 2 * page - 0x28, 2 * page, 2),
+            (page - 0x20, 8, 2 * page - 0x18, 2 * page + 0x10, 3),
+            (0, page + 8, 2 * page + 8, 2 * page + 0x30, 3),
         ] {
             let mut sections = OutputSectionMap::with_size(SinglePartSectionId::Count as usize);
             let mut parts = OutputSectionPartMap::default();
             let signature_header_size = CS_HEADERS_SIZE as usize + 16;
             for (id, offset, size, alignment) in [
-                (EXPORTS_TRIE, 0x1000, 0, alignment::MIN),
-                (FUNCTION_STARTS, 0x1000, 0, alignment::USIZE),
-                (SYMTAB_GLOBAL, 0x1000, 32, alignment::USIZE),
-                (STRTAB, 0x1020, 7, alignment::MIN),
+                (EXPORTS_TRIE, page, 0, alignment::MIN),
+                (FUNCTION_STARTS, page, 0, alignment::USIZE),
+                (SYMTAB_GLOBAL, page, 32, alignment::USIZE),
+                (STRTAB, page + 0x20, 7, alignment::MIN),
                 (
                     CODE_SIGNATURE,
-                    0x1030,
+                    page + 0x30,
                     signature_header_size,
                     Alignment {
                         exponent: CS_SECTION_ALIGNMENT_EXP,
