@@ -1,5 +1,6 @@
 pub(crate) mod alignment;
 pub(crate) mod coff;
+pub(crate) mod coff_writer;
 pub(crate) mod coff_x86_64;
 pub use args::Args;
 pub(crate) mod arch;

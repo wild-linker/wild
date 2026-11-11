@@ -4,6 +4,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::coff::CoffArgs;
 use crate::bail;
+use crate::coff_writer;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
@@ -226,11 +227,10 @@ impl Platform for Coff {
     type VerneedTable<'data> = VerneedTable<'data>;
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
-        _output: &crate::file_writer::Output<F>,
-        _layout: &layout::Layout<'data, Self>,
+        output: &crate::file_writer::Output<F>,
+        layout: &layout::Layout<'data, Self>,
     ) -> Result {
-        // output.write(layout, coff_writer::write::<A>)
-        todo!()
+        output.write(layout, coff_writer::write::<A>)
     }
 
     fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
