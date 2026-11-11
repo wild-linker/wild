@@ -176,32 +176,6 @@ pub trait OutputFileData: Send {
 ///         Ok(path.to_path_buf())
 ///     }
 ///
-///     fn rename_file(&self, path: &Path, new_path: &Path) -> libwild::error::Result<()> {
-///         let mut guard = self.files.lock().unwrap();
-///         let Some(data) = guard.remove(&path.to_path_buf()) else {
-///             return Err(std::io::Error::new(
-///                 std::io::ErrorKind::NotFound,
-///                 "no such in-memory file",
-///             )
-///             .into());
-///         };
-///         guard.insert(new_path.to_path_buf(), data);
-///
-///         Ok(())
-///     }
-///
-///     fn remove_file(&self, path: &Path) -> libwild::error::Result<()> {
-///         Ok(self
-///             .files
-///             .lock()
-///             .unwrap()
-///             .remove(&path.to_path_buf())
-///             .map(|_| ())
-///             .ok_or_else(|| {
-///                 std::io::Error::new(std::io::ErrorKind::NotFound, "no such in-memory file")
-///             })?)
-///     }
-///
 ///     fn create_output(
 ///         &self,
 ///         path: Arc<Path>,
@@ -310,12 +284,6 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Resolves symbolic links and returns the canonical absolute path.
     fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
-
-    /// Removes a file.
-    fn remove_file(&self, path: &Path) -> Result<()>;
-
-    /// Rename an existing file to a new path.
-    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()>;
 
     /// Creates the sized random-access output.
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output>;
@@ -459,19 +427,12 @@ impl FileSystem for OsFileSystem {
         Ok(std::path::absolute(path)?)
     }
 
-    fn remove_file(&self, path: &Path) -> Result<()> {
-        Ok(std::fs::remove_file(path)?)
-    }
-
-    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()> {
-        Ok(std::fs::rename(path, new_path)?)
-    }
-
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output> {
         let mut open_options = std::fs::OpenOptions::new();
 
         match options.file_replacement_mode {
             FileReplacementMode::UnlinkAndReplace => {
+                delete_old_output(&path);
                 open_options.truncate(true);
             }
             FileReplacementMode::UpdateInPlace | FileReplacementMode::UpdateInPlaceWithFallback => {
@@ -589,6 +550,22 @@ impl FileSystem for OsFileSystem {
         let file = File::create(path)?;
         (&file).write_all(bytes)?;
         Ok(())
+    }
+}
+
+fn delete_old_output(path: &Path) {
+    if rayon::current_num_threads() > 1 {
+        let renamed_old_file = path.with_extension("delete");
+        if std::fs::rename(path, &renamed_old_file).is_ok() {
+            // Unlinking large files can be slow, so continue linking while it's deleted.
+            rayon::spawn(move || {
+                crate::verbose_timing_phase!("Delete old output");
+                let _ = std::fs::remove_file(renamed_old_file);
+            });
+        }
+    } else {
+        crate::timing_phase!("Delete old output");
+        let _ = std::fs::remove_file(path);
     }
 }
 

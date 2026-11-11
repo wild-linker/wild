@@ -30,7 +30,6 @@ use std::sync::Arc;
 
 pub struct Output<F: FileSystem> {
     path: Arc<Path>,
-    background_deletion: bool,
     config: OutputConfig,
     file_system: Arc<F>,
 }
@@ -95,7 +94,6 @@ impl<F: FileSystem> Output<F> {
         Output {
             path: args.output().clone(),
             file_system,
-            background_deletion: args.common().available_threads.get() > 1,
             config: OutputConfig {
                 file_replacement_mode,
                 should_write_trace: args.common().write_trace,
@@ -131,9 +129,6 @@ impl<F: FileSystem> Output<F> {
 
     fn create_file(&self, file_size: u64) -> Result<SizedOutput<F::Output>> {
         timing_phase!("Create output file");
-        if self.config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace {
-            delete_old_output(&self.file_system, &self.path, self.background_deletion);
-        }
         SizedOutput::new(&self.file_system, &self.path, self.config, file_size)
     }
 }
@@ -157,27 +152,6 @@ fn default_file_replacement_mode<P: Platform>(
     }
 
     P::DEFAULT_FILE_REPLACEMENT_MODE
-}
-
-fn delete_old_output<F: FileSystem>(file_system: &Arc<F>, path: &Path, background: bool) {
-    timing_phase!("Delete old output");
-    if background {
-        // Rename the old output so we can create its replacement while deleting it. Deleting can
-        // take a while for large files.
-        let renamed_old_file = path.with_extension("delete");
-        if file_system.rename_file(path, &renamed_old_file).is_ok() {
-            let file_system = Arc::clone(file_system);
-            rayon::spawn(move || {
-                let _ = file_system.remove_file(&renamed_old_file);
-                // Note, we don't currently signal when we've finished deleting the file. Based on
-                // experiments run on Linux 6.9.3, if we exit while an unlink syscall is in progress
-                // on a separate thread, Linux will wait for it to complete before terminating the
-                // process.
-            });
-        }
-    } else {
-        let _ = file_system.remove_file(path);
-    }
 }
 
 impl<O: OutputFileData> SizedOutput<O> {
