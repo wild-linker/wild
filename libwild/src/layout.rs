@@ -793,6 +793,10 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
         return Ok(());
     };
 
+    let Some(mode) = defsym_default_export_mode(symbol_db) else {
+        return Ok(());
+    };
+
     let symbol_id_range = prelude.symbol_id_range;
     for (index, def_info) in prelude
         .internal_symbols
@@ -800,14 +804,18 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
         .iter()
         .enumerate()
     {
-        if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
+        if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) || def_info.name.is_empty() {
             continue;
         }
 
         let symbol_id = symbol_id_range.offset_to_id(index);
         let flags = per_symbol_flags.flags_for_symbol(symbol_id);
-        if !symbol_db.is_canonical(symbol_id)
-            || !prelude_defsym_is_default_export(symbol_db, def_info.name, flags)
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
+        if !can_export_global_def(symbol_db, visibility, symbol_id, flags, mode)
             || dynamic_symbol_definitions
                 .iter()
                 .any(|def| def.symbol_id == symbol_id)
@@ -821,31 +829,16 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     Ok(())
 }
 
-fn prelude_defsym_is_default_export<P: Platform>(
-    symbol_db: &SymbolDb<P>,
-    name: &[u8],
-    flags: ValueFlags,
-) -> bool {
-    if name.is_empty() || flags.is_downgraded_to_local() {
-        return false;
+fn defsym_default_export_mode<P: Platform>(symbol_db: &SymbolDb<P>) -> Option<ExportSymbolsMode> {
+    if symbol_db.output_kind.is_shared_object()
+        || symbol_db.args.should_export_all_dynamic_symbols()
+    {
+        Some(ExportSymbolsMode::All)
+    } else if symbol_db.export_list.is_some() {
+        Some(ExportSymbolsMode::MatchingExportList)
+    } else {
+        None
     }
-
-    let export_globals = symbol_db.output_kind.is_shared_object()
-        || symbol_db.args.should_export_all_dynamic_symbols();
-    if export_globals {
-        if symbol_db.has_restrictive_export_list()
-            && let Some(export_list) = &symbol_db.export_list
-            && !export_list_matches_symbol::<P>(export_list, name)
-        {
-            return false;
-        }
-        return true;
-    }
-
-    symbol_db
-        .export_list
-        .as_ref()
-        .is_some_and(|export_list| export_list_matches_symbol::<P>(export_list, name))
 }
 
 pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
@@ -1458,20 +1451,35 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         symbol_id: SymbolId,
         resources: &GraphResources<'data, '_, P>,
     ) -> Result {
-        if !resources.symbol_db.output_kind.needs_dynsym()
-            || !self.symbol_id_range.contains(symbol_id)
-        {
+        if !resources.symbol_db.output_kind.needs_dynsym() {
             return Ok(());
+        }
+        if !self.symbol_id_range.contains(symbol_id) {
+            bail!(
+                "Tried to export {} from the prelude, which does not define it",
+                resources.symbol_debug(symbol_id)
+            );
         }
 
         let def_info =
             &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
-        if def_info.name.is_empty() || def_info.symbol.is_hidden() {
+        if def_info.name.is_empty() {
             return Ok(());
         }
 
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
         let flags = resources.per_symbol_flags.flags_for_symbol(symbol_id);
-        if !resources.symbol_db.is_canonical(symbol_id) || flags.is_downgraded_to_local() {
+        if !can_export_global_def(
+            resources.symbol_db,
+            visibility,
+            symbol_id,
+            flags,
+            ExportSymbolsMode::All,
+        ) {
             return Ok(());
         }
 
