@@ -27,6 +27,7 @@ use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::CommonSymbol;
+use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
@@ -365,32 +366,40 @@ impl Platform for Coff {
     }
 
     fn gc_unit_for_symbol<'data>(
-        _object: &Self::File<'data>,
-        _symbol: &Self::SymtabEntry,
-        _symbol_index: object::SymbolIndex,
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
+        symbol_index: object::SymbolIndex,
     ) -> Result<Option<Self::GcUnit>> {
-        todo!()
+        Ok(object
+            .symbol_section(symbol, symbol_index)?
+            .map(SectionGcUnit::new))
     }
 
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _scope: &rayon::Scope<'scope>,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
     ) -> Result {
-        Ok(())
+        object.activate_section_gc::<A>(common, resources, queue, scope)
     }
 
     fn load_gc_unit<'data, 'scope, A: Arch<Platform = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _unit: Self::GcUnit,
-        _scope: &rayon::Scope<'scope>,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        object.handle_section_load_request::<A>(
+            common,
+            resources,
+            queue,
+            unit.section_index(),
+            scope,
+        )
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
@@ -402,7 +411,7 @@ impl Platform for Coff {
         _section_index: SectionIndex,
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn create_dynamic_symbol_definition<'data>(
