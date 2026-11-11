@@ -117,11 +117,25 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     output_kind: OutputKind,
 }
 
-/// Encodes the order of output sections and the start and end of each program segment. This struct
-/// is intended to be used by iterating over it.
+/// Encodes output sections and program segment boundaries in the order used for address layout.
+/// Iterating over this struct yields those events.
 #[derive(Debug)]
 pub(crate) struct OutputOrder<'data> {
+    /// Logical layout order of sections, segment boundaries, and location assignments,
+    /// incorporating linker-script ordering.
     events: Vec<OrderEvent<'data>>,
+
+    /// Order of section contents in the file. Follows logical section order except that deferred
+    /// non-alloc sections are placed last, so changes to their sizes do not affect the placement
+    /// of alloc sections.
+    file_order: Vec<OutputSectionId>,
+
+    /// Index of the first deferred section in `file_order`, or its length if none.
+    deferred_file_start: usize,
+
+    /// Whether each output section is deferred to the end.
+    file_layout_deferred: OutputSectionMap<bool>,
+
     num_location_counters: usize,
     has_custom_phdrs: bool,
     has_custom_layout: bool,
@@ -466,17 +480,21 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             }
         }
 
-        (
-            OutputOrder {
-                events: self.events,
-                num_location_counters: self.location_counters.len(),
-                has_custom_phdrs: self.has_custom_phdrs,
-                has_custom_layout: self.has_custom_layout,
-                custom_phdrs_include_headers: self.custom_phdrs_include_headers,
-                first_section: self.first_section,
-            },
-            self.program_segments,
-        )
+        let mut order = OutputOrder {
+            events: self.events,
+            file_order: Vec::new(),
+            deferred_file_start: 0,
+            file_layout_deferred: self.output_sections.new_section_map(),
+            num_location_counters: self.location_counters.len(),
+            has_custom_phdrs: self.has_custom_phdrs,
+            has_custom_layout: self.has_custom_layout,
+            custom_phdrs_include_headers: self.custom_phdrs_include_headers,
+            first_section: self.first_section,
+        };
+
+        order.init_file_order(self.output_sections);
+
+        (order, self.program_segments)
     }
 }
 
@@ -1328,23 +1346,64 @@ impl<'data> OutputOrder<'data> {
             .as_ref()
     }
 
-    pub(crate) fn custom_layout_last_alloc_index<P: Platform>(
-        &self,
-        output_sections: &OutputSections<'data, P>,
-    ) -> Option<usize> {
-        if !self.has_custom_layout() {
-            return None;
-        }
-        self.into_iter().rposition(|event| {
-            if let OrderEvent::Section(section_id) = event {
-                let is_regular = section_id != FILE_HEADER
-                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let merge_target = output_sections.primary_output_section(section_id);
-                is_regular && output_sections.section_flags(merge_target).is_alloc()
-            } else {
-                false
+    pub(crate) fn file_order(&self) -> &[OutputSectionId] {
+        &self.file_order
+    }
+
+    pub(crate) fn deferred_file_sections(&self) -> &[OutputSectionId] {
+        &self.file_order[self.deferred_file_start..]
+    }
+
+    pub(crate) fn is_file_layout_deferred(&self, section_id: OutputSectionId) -> bool {
+        *self.file_layout_deferred.get(section_id)
+    }
+
+    fn init_file_order<P: Platform>(&mut self, output_sections: &OutputSections<'data, P>) {
+        let is_regular =
+            |id| id != FILE_HEADER && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id);
+
+        let is_alloc = |id| {
+            output_sections
+                .section_flags(output_sections.primary_output_section(id))
+                .is_alloc()
+        };
+
+        let last_alloc_idx = if self.has_custom_layout {
+            self.events.iter().rposition(|event| {
+                matches!(event, OrderEvent::Section(id) if is_regular(*id) && is_alloc(*id))
+            })
+        } else {
+            None
+        };
+
+        let mut deferred = Vec::new();
+        let mut seen_alloc = false;
+
+        for (event_idx, event) in self.events.iter().enumerate() {
+            let OrderEvent::Section(id) = *event else {
+                continue;
+            };
+
+            let regular = is_regular(id);
+            let alloc = is_alloc(id);
+
+            if regular && alloc {
+                seen_alloc = true;
             }
-        })
+
+            let defer =
+                regular && !alloc && last_alloc_idx.map_or(!seen_alloc, |last| event_idx < last);
+            *self.file_layout_deferred.get_mut(id) = defer;
+
+            if defer {
+                deferred.push(id);
+            } else {
+                self.file_order.push(id);
+            }
+        }
+
+        self.deferred_file_start = self.file_order.len();
+        self.file_order.extend(deferred);
     }
 
     pub(crate) fn display<'a, P: Platform>(
