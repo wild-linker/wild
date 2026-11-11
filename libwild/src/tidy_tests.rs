@@ -138,7 +138,11 @@ fn check_toml_format() -> Result {
             out.push_str(&stderr);
         }
 
-        bail!("TOML format check failed:\n{out}\nRun `taplo format` to fix it.");
+        if let Some(1) = taplo_out.status.code() {
+            bail!("TOML format check failed:\n{out}\nRun `taplo format` to fix it.");
+        } else {
+            bail!("`taplo` failed ({}):\n{out}", taplo_out.status);
+        }
     }
 
     Ok(())
