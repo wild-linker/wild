@@ -2,8 +2,10 @@
 
 use crate::OutputFileData;
 use crate::bail;
+use crate::coff;
 use crate::coff::Coff;
 use crate::coff::DosHeader;
+use crate::coff::part_id;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
@@ -26,6 +28,7 @@ use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::LittleEndian;
 use object::from_bytes_mut;
+use object::write::WritableBuffer;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
@@ -209,6 +212,12 @@ fn write_prelude<A: Arch<Platform = Coff>>(
         .0;
     populate_dos_header::<A>(layout, dos_header);
 
+    let dos_stub: &mut [u8; coff::DOS_STUB.len()] =
+        from_bytes_mut(buffers.get_mut(part_id::DOS_STUB))
+            .map_err(|_| insufficient_allocation("DOS stub"))?
+            .0;
+    write_dos_stub::<A>(dos_stub);
+
     Ok(())
 }
 
@@ -236,6 +245,10 @@ fn populate_dos_header<A: Arch<Platform = Coff>>(_layout: &CoffLayout, header: &
     header.e_oeminfo.set(e, Default::default());
     header.e_res2 = [0.into(); 10];
     header.e_lfanew.set(e, 0_u32);
+}
+
+fn write_dos_stub<A: Arch<Platform = Coff>>(mut bytes: &mut [u8]) {
+    bytes.write_bytes(coff::DOS_STUB);
 }
 
 fn write_epilogue<A: Arch<Platform = Coff>>(
