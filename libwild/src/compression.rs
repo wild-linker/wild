@@ -10,7 +10,6 @@ use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::Layout;
 use crate::layout::assign_section_file_range;
-use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
@@ -477,41 +476,9 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     timing_phase!("Update file offsets post-compression");
 
-    let last_alloc_idx = layout
-        .output_order
-        .custom_layout_last_alloc_index(&layout.output_sections);
-
-    let mut deferred_nonalloc = Vec::new();
-    let mut section_ids = Vec::new();
-    let mut seen_alloc = false;
-
-    for (event_idx, event) in layout.output_order.into_iter().enumerate() {
-        if let OrderEvent::Section(section_id) = event {
-            let is_regular = section_id != crate::output_section_id::FILE_HEADER
-                && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-            let merge_target = layout.output_sections.primary_output_section(section_id);
-            let is_alloc = layout
-                .output_sections
-                .section_flags(merge_target)
-                .is_alloc();
-            if is_regular && is_alloc {
-                seen_alloc = true;
-            }
-            if is_regular
-                && !is_alloc
-                && last_alloc_idx.map_or(!seen_alloc, |last| event_idx < last)
-            {
-                deferred_nonalloc.push(section_id);
-            } else {
-                section_ids.push(section_id);
-            }
-        }
-    }
-    section_ids.extend(deferred_nonalloc);
-
     let mut cursor = 0usize;
     let mut resized = false;
-    for section_id in section_ids {
+    for &section_id in layout.output_order.file_order() {
         let merge_target = layout.output_sections.primary_output_section(section_id);
         let is_alloc = layout
             .output_sections
