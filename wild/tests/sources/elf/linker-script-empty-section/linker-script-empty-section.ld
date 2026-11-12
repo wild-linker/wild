@@ -19,7 +19,7 @@ SECTIONS {
     .empty_1 0x408000 : {
         empty_1_start = .;
         *(.empty_1)
-    }
+    } :NONE
 
     .eh_frame : {
         *(.eh_frame)
@@ -29,6 +29,11 @@ SECTIONS {
     .data : {
         KEEP(*(.data))
     } :data
+
+    .bss : {
+        KEEP(*(.bss))
+    } :data
+
     .empty_2 0x418000 : {
         empty_2_start = .;
         *(.empty_2)
