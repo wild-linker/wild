@@ -1,6 +1,5 @@
 //#AbstractConfig:default
 // LLD leaves R_X86_64_GOTPCREL loads unrelaxed.
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.*
 //#DiffIgnore:section.tdata.alignment
 // We include some more archive members than what other linkers do (#162).
 //#DiffIgnore:debug_info.missing_unit

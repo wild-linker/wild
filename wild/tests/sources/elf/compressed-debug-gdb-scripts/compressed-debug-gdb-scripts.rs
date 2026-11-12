@@ -1,6 +1,5 @@
 //#AbstractConfig:default
 // LLD leaves R_X86_64_GOTPCREL loads unrelaxed.
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.dynamic-pie
 //#ExpectSection:.debug_gdb_scripts
 //#DiffIgnore:section.debug_*
 // Ignore extra .dynsym entries emitted by older GNU ld versions. See #2258
