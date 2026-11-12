@@ -166,7 +166,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     P::finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     let mut dynamic_symbol_definitions =
-        merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
+        merge_dynamic_symbol_definitions(&group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     create_canonical_plt_entries(
         &group_states,
@@ -726,6 +726,7 @@ fn finalise_all_sizes<'data, P: Platform>(
 fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
 ) -> Result<Vec<DynamicSymbolDefinition<'data, P>>> {
     timing_phase!("Merge dynamic symbol definitions");
 
@@ -737,6 +738,7 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     append_prelude_defsym_dynamic_symbols(
         group_states,
         symbol_db,
+        per_symbol_flags,
         &mut dynamic_symbol_definitions,
     )?;
 
@@ -777,38 +779,66 @@ fn create_canonical_plt_entries<'data, P: Platform>(
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
     dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data, P>>,
 ) -> Result {
-    if symbol_db.output_kind.needs_dynsym()
-        && let Some(first_group) = group_states.first()
-        && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
+    if !symbol_db.output_kind.needs_dynsym() {
+        return Ok(());
+    }
+
+    let Some(first_group) = group_states.first() else {
+        return Ok(());
+    };
+    let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first() else {
+        return Ok(());
+    };
+
+    let Some(mode) = defsym_default_export_mode(symbol_db) else {
+        return Ok(());
+    };
+
+    let symbol_id_range = prelude.symbol_id_range;
+    for (index, def_info) in prelude
+        .internal_symbols
+        .symbol_definitions
+        .iter()
+        .enumerate()
     {
-        let symbol_id_range = prelude.symbol_id_range;
-        for (index, def_info) in prelude
-            .internal_symbols
-            .symbol_definitions
-            .iter()
-            .enumerate()
-        {
-            if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
-                continue;
-            }
-
-            let symbol_id = symbol_id_range.offset_to_id(index);
-            if !symbol_db.is_canonical(symbol_id)
-                || dynamic_symbol_definitions
-                    .iter()
-                    .any(|def| def.symbol_id == symbol_id)
-            {
-                continue;
-            }
-
-            dynamic_symbol_definitions
-                .push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
+        if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) || def_info.name.is_empty() {
+            continue;
         }
+
+        let symbol_id = symbol_id_range.offset_to_id(index);
+        let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
+        if !can_export_global_def(symbol_db, visibility, symbol_id, flags, mode)
+            || dynamic_symbol_definitions
+                .iter()
+                .any(|def| def.symbol_id == symbol_id)
+        {
+            continue;
+        }
+
+        dynamic_symbol_definitions.push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
     }
 
     Ok(())
+}
+
+fn defsym_default_export_mode<P: Platform>(symbol_db: &SymbolDb<P>) -> Option<ExportSymbolsMode> {
+    if symbol_db.output_kind.is_shared_object()
+        || symbol_db.args.should_export_all_dynamic_symbols()
+    {
+        Some(ExportSymbolsMode::All)
+    } else if symbol_db.export_list.is_some() {
+        Some(ExportSymbolsMode::MatchingExportList)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
@@ -1409,6 +1439,57 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'
         _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
+        Ok(())
+    }
+}
+
+impl<'data, P: Platform> PreludeLayoutState<'data, P> {
+    /// Export a prelude symbol because a linked shared object references it.
+    fn export_dynamic(
+        &self,
+        common: &mut CommonGroupState<'data, P>,
+        symbol_id: SymbolId,
+        resources: &GraphResources<'data, '_, P>,
+    ) -> Result {
+        if !resources.symbol_db.output_kind.needs_dynsym() {
+            return Ok(());
+        }
+        if !self.symbol_id_range.contains(symbol_id) {
+            bail!(
+                "Tried to export {} from the prelude, which does not define it",
+                resources.symbol_debug(symbol_id)
+            );
+        }
+
+        let def_info =
+            &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
+        if def_info.name.is_empty() {
+            return Ok(());
+        }
+
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
+        let flags = resources.per_symbol_flags.flags_for_symbol(symbol_id);
+        if !can_export_global_def(
+            resources.symbol_db,
+            visibility,
+            symbol_id,
+            flags,
+            ExportSymbolsMode::All,
+        ) {
+            return Ok(());
+        }
+
+        let old_flags = resources
+            .per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+        if !old_flags.needs_export_dynamic() {
+            export_dynamic(common, symbol_id, resources.symbol_db)?;
+        }
         Ok(())
     }
 }
@@ -3151,6 +3232,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 FileLayoutState::LinkerScript(state) => SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 ),
+                FileLayoutState::Prelude(state) => {
+                    state.export_dynamic(common, symbol_id, resources)
+                }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
                     // export a dynamic symbol.
