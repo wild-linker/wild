@@ -7,9 +7,11 @@ use crate::coff::Coff;
 use crate::coff::DosHeader;
 use crate::coff::output_section_id;
 use crate::coff::part_id;
+use crate::debug_assert_bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
+use crate::file_writer::excessive_allocation;
 use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
@@ -21,6 +23,7 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::SyntheticSymbolsLayout;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -30,6 +33,7 @@ use crate::platform::Args as _;
 use crate::platform::SectionAttributes;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
 use object::from_bytes_mut;
 use object::write::WritableBuffer;
@@ -37,6 +41,10 @@ use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
 use std::sync::atomic::Ordering::Relaxed;
+
+// TODO: audit unwraps in this file. They are much more helpful for the development phase compared
+// to bare `?`, but we want to get rid of user facing ones before `coff` feature is enabled by
+// default.
 
 type CoffLayout<'data> = Layout<'data, Coff>;
 
@@ -158,7 +166,8 @@ fn write_file<'data, A: Arch<Platform = Coff>>(
 }
 
 struct TableWriter<'layout, 'out> {
-    _phantom: std::marker::PhantomData<(&'layout (), &'out ())>,
+    section_headers: &'out mut [coff::SectionHeader],
+    _phantom: std::marker::PhantomData<&'layout ()>,
 }
 
 impl<'layout, 'out> TableWriter<'layout, 'out> {
@@ -169,14 +178,29 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Self::new(buffers)
     }
 
-    fn new(_buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> TableWriter<'layout, 'out> {
+    fn new(buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> TableWriter<'layout, 'out> {
         TableWriter {
+            section_headers: slice_from_all_bytes_mut(buffers.take(part_id::SECTION_HEADERS)),
             _phantom: std::marker::PhantomData,
         }
     }
 
-    /// Checks that we used all the entries that we requested during layout.
-    fn validate_empty(&self, _mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+    fn take_section_header(&mut self) -> Result<&'out mut coff::SectionHeader> {
+        self.section_headers
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation("section headers"))
+    }
+
+    /// Checks that we used all of the entries that we requested during layout.
+    fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.section_headers.is_empty() {
+            return Err(excessive_allocation(
+                "section headers",
+                size_of_val(self.section_headers) as u64,
+                mem_sizes.get(part_id::SECTION_HEADERS),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -206,7 +230,7 @@ fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
 fn write_prelude<A: Arch<Platform = Coff>>(
     prelude: &PreludeLayout<Coff>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    _table_writer: &mut TableWriter<'_, '_>,
+    table_writer: &mut TableWriter<'_, '_>,
     layout: &CoffLayout,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
@@ -229,6 +253,8 @@ fn write_prelude<A: Arch<Platform = Coff>>(
     // TODO: `object` doesn't include this in `coff::NtHeader`, so just wipe remaining bytes for
     // now.
     data_directory_bytes.fill(0);
+
+    write_section_headers(table_writer, layout)?;
 
     Ok(())
 }
@@ -294,7 +320,7 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, object::pe::IMAGE_FILE_MACHINE_AMD64);
     header.file_header.number_of_sections.set(
         e,
-        u16::try_from(header_info.num_output_sections_with_content)?,
+        u16::try_from(header_info.num_output_sections_with_content).unwrap(),
     );
     header
         .file_header
@@ -330,7 +356,8 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                 })
                 .map(|(id, _)| layout.section_layouts.get(id).file_size)
                 .sum::<usize>(),
-        )?,
+        )
+        .unwrap(),
     );
     header.optional_header.size_of_uninitialized_data.set(
         e,
@@ -341,9 +368,14 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                 .filter(|(_, sec)| sec.section_attributes.is_no_bits())
                 .map(|(id, _)| layout.section_layouts.get(id).file_size)
                 .sum::<usize>(),
-        )?,
+        )
+        .unwrap(),
     );
-    header.optional_header.address_of_entry_point.set(e, 0);
+    header.optional_header.address_of_entry_point.set(
+        e,
+        // TODO: Skips a lot of relevant logic compared to ELF counterpart
+        va_to_rva(layout.resolved_entry_symbol_address()?.unwrap(), layout),
+    );
     header.optional_header.base_of_code.set(e, 0);
     header
         .optional_header
@@ -351,12 +383,12 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, layout.args().image_base().unwrap());
     header.optional_header.section_alignment.set(
         e,
-        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+        u32::try_from(layout.args().loadable_segment_alignment().value()).unwrap(),
     );
     // TODO: Wild doesn't support separate memory and file alignment
     header.optional_header.file_alignment.set(
         e,
-        u32::try_from(layout.args().loadable_segment_alignment().value())?,
+        u32::try_from(layout.args().loadable_segment_alignment().value()).unwrap(),
     );
     header
         .optional_header
@@ -385,14 +417,15 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .set(e, Default::default());
     header.optional_header.size_of_image.set(
         e,
-        u32::try_from(
+        va_to_rva(
             layout
                 .section_layouts
                 .iter()
                 .map(|(_, sec)| sec.mem_end())
                 .max()
                 .unwrap(),
-        )?,
+            layout,
+        ),
     );
     header.optional_header.size_of_headers.set(
         e,
@@ -406,7 +439,8 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
                     .section_layouts
                     .get(output_section_id::NT_HEADER)
                     .file_size,
-        )?,
+        )
+        .unwrap(),
     );
     header.optional_header.check_sum.set(e, Default::default());
     header
@@ -457,6 +491,104 @@ fn write_epilogue<A: Arch<Platform = Coff>>(
     Ok(())
 }
 
+fn write_section_headers(table_writer: &mut TableWriter<'_, '_>, layout: &CoffLayout) -> Result {
+    let output_sections = &layout.output_sections;
+
+    let mut order = layout.output_order.into_iter().peekable();
+
+    while let Some(event) = order.next() {
+        let OrderEvent::Section(section_id) = event else {
+            continue;
+        };
+
+        let section_layout = layout.merged_section_layouts.get(section_id);
+
+        if output_sections
+            .output_index_of_section(section_id)
+            .is_none()
+        {
+            continue;
+        }
+
+        while let Some(OrderEvent::Section(next_section_id)) = order.peek()
+            && let Some(primary_id) = output_sections.merge_target(*next_section_id)
+        {
+            debug_assert_bail!(
+                primary_id == section_id,
+                "Section order mismatch {} != {}",
+                output_sections.section_debug(primary_id),
+                output_sections.section_debug(section_id),
+            );
+            order.next();
+        }
+
+        let name = layout.output_sections.name(section_id).with_context(|| {
+            format!(
+                "Missing name for section {}",
+                layout.output_sections.section_debug(section_id)
+            )
+        })?;
+        let mut name_bytes = [0u8; 8];
+        if name.len() > 8
+            && layout
+                .output_sections
+                .section_flags(section_id)
+                .contains(object::pe::IMAGE_SCN_MEM_DISCARDABLE)
+        {
+            eprintln!(
+                "Long section names are not supported yet, section name for `{name}` will be truncated"
+            );
+        }
+        let byte_count = name.len().min(name_bytes.len());
+        name_bytes[..byte_count].copy_from_slice(&name.bytes()[..byte_count]);
+
+        let entry = table_writer.take_section_header()?;
+        entry.name = name_bytes;
+        entry
+            .virtual_size
+            .set(LittleEndian, section_layout.mem_size.try_into()?);
+        entry
+            .virtual_address
+            .set(LittleEndian, va_to_rva(section_layout.mem_offset, layout));
+        let (size_of_raw_data, pointer_to_raw_data) =
+            if output_sections.has_data_in_file(section_id) {
+                (
+                    section_layout
+                        .alignment
+                        .align_up(section_layout.file_size as u64)
+                        .try_into()?,
+                    section_layout.file_offset.try_into()?,
+                )
+            } else {
+                (0, 0)
+            };
+        entry.size_of_raw_data.set(LittleEndian, size_of_raw_data);
+        entry
+            .pointer_to_raw_data
+            .set(LittleEndian, pointer_to_raw_data);
+        entry
+            .pointer_to_relocations
+            .set(LittleEndian, Default::default());
+        entry
+            .pointer_to_linenumbers
+            .set(LittleEndian, Default::default());
+        entry
+            .number_of_relocations
+            .set(LittleEndian, Default::default());
+        entry
+            .number_of_linenumbers
+            .set(LittleEndian, Default::default());
+        entry.characteristics.set(
+            LittleEndian,
+            layout
+                .output_sections
+                .section_flags(section_id)
+                .without(object::pe::SectionFlags(object::pe::IMAGE_SCN_ALIGN_MASK)),
+        );
+    }
+    Ok(())
+}
+
 fn fill_section_padding<A: Arch<Platform = Coff>>(
     padding: &mut [u8],
     section_info: &SectionOutputInfo<Coff>,
@@ -472,4 +604,14 @@ fn fill_section_padding<A: Arch<Platform = Coff>>(
         // A::fill_section_padding(padding, section_info.section_attributes.flags);
         padding.fill(0);
     }
+}
+
+/// Virtual Address to Relative Virtual Address
+fn va_to_rva(address: u64, layout: &CoffLayout) -> u32 {
+    u32::try_from(if let Some(base) = layout.args().image_base() {
+        address - base
+    } else {
+        address
+    })
+    .unwrap()
 }
