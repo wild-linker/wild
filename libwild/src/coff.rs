@@ -103,6 +103,7 @@ pub(crate) struct Coff;
 enum SinglePartSectionId {
     DosStub = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
     NtHeader,
+    SectionHeaders,
 
     // Must be last.
     Count,
@@ -126,6 +127,7 @@ pub(crate) mod part_id {
 
     pub(crate) const DOS_STUB: PartId = SinglePartSectionId::DosStub.part_id();
     pub(crate) const NT_HEADER: PartId = SinglePartSectionId::NtHeader.part_id();
+    pub(crate) const SECTION_HEADERS: PartId = SinglePartSectionId::SectionHeaders.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -134,6 +136,8 @@ pub(crate) mod output_section_id {
 
     pub(crate) const DOS_STUB: OutputSectionId = SinglePartSectionId::DosStub.output_section_id();
     pub(crate) const NT_HEADER: OutputSectionId = SinglePartSectionId::NtHeader.output_section_id();
+    pub(crate) const SECTION_HEADERS: OutputSectionId =
+        SinglePartSectionId::SectionHeaders.output_section_id();
 }
 
 #[derive(derive_more::Debug)]
@@ -220,6 +224,7 @@ impl Platform for Coff {
         crate::output_section_id::FILE_HEADER,
         output_section_id::DOS_STUB,
         output_section_id::NT_HEADER,
+        output_section_id::SECTION_HEADERS,
     ];
 
     type File<'data> = File<'data>;
@@ -583,7 +588,7 @@ impl Platform for Coff {
     fn allocate_header_sizes<'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
-        _header_info: &layout::HeaderInfo,
+        header_info: &layout::HeaderInfo,
         _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
@@ -592,6 +597,7 @@ impl Platform for Coff {
         sizes.increment(crate::part_id::FILE_HEADER, size_of::<DosHeader>() as u64);
         sizes.increment(part_id::DOS_STUB, DOS_STUB.len() as u64);
         sizes.increment(part_id::NT_HEADER, SIZE_OF_NT_HEADERS64 as u64);
+        sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -699,6 +705,7 @@ impl Platform for Coff {
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::DOS_STUB);
         builder.add_section(output_section_id::NT_HEADER);
+        builder.add_section(output_section_id::SECTION_HEADERS);
 
         builder.add_sections(&custom.exec);
 
@@ -1445,6 +1452,8 @@ impl Coff {
         defs[crate::output_section_id::FILE_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::DOS_STUB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::NT_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::SECTION_HEADERS.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+
         defs
     };
 }
@@ -1454,6 +1463,11 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
+
+fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    object::pe::IMAGE_SIZEOF_SECTION_HEADER as u64
+        * u64::from(header_info.num_output_sections_with_content)
+}
 
 impl SinglePartSectionId {
     const fn part_id(self) -> PartId {
