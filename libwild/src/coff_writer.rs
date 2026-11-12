@@ -316,7 +316,7 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
     header.optional_header.major_linker_version = 14;
     header.optional_header.minor_linker_version = 0;
     header.optional_header.size_of_code.set(e, 0);
-    // TOOD: Add `is_prog_bits` helper
+    // TODO: Add `is_prog_bits` helper
     header.optional_header.size_of_initialized_data.set(
         e,
         u32::try_from(
