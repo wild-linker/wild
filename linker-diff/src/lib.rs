@@ -226,6 +226,11 @@ impl Config {
                 // because it's marked as NON_INTERPOSABLE. GNU ld keeps the GOT-relative access.
                 // Both are correct, but Wild's approach is more optimized.
                 "rel.extra-opt.R_X86_64_REX_GOTPCRELX.MovIndirectToLea.static-*",
+                // rustc emits plain GOTPCREL rather than GOTPCRELX. Wild still relaxes a 64-bit
+                // `mov` through a plain GOTPCREL to a `lea` when the symbol is non-interposable
+                // and its address is known, whereas GNU ld only relaxes GOTPCRELX. Both are
+                // correct.
+                "rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.*",
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
                 // GNU ld sometimes applies relaxations that we don't yet.
