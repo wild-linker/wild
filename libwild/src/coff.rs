@@ -36,6 +36,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
 use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
@@ -327,6 +328,7 @@ impl Platform for Coff {
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         Self::SectionAttributes {
             flags: header.characteristics.get(LittleEndian),
+            is_null: header.is_null(),
         }
     }
 
@@ -532,6 +534,7 @@ impl Platform for Coff {
             .map(|d| SectionOutputInfo {
                 section_attributes: SectionAttributes {
                     flags: d.section_flags,
+                    is_null: d.is_header,
                 },
                 kind: d.kind,
                 min_alignment: d.min_alignment,
@@ -1225,7 +1228,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_null(&self) -> bool {
-        todo!()
+        self.raw_name().is_empty()
     }
 }
 
@@ -1388,6 +1391,7 @@ pub(crate) struct ObjectLayoutStateExt {}
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct SectionAttributes {
     pub(crate) flags: SectionFlags,
+    pub(crate) is_null: bool,
 }
 
 impl platform::SectionAttributes for SectionAttributes {
@@ -1408,7 +1412,7 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_null(&self) -> bool {
-        false
+        self.is_null
     }
 
     fn is_alloc(&self) -> bool {
@@ -1542,6 +1546,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static, Coff>,
     pub(crate) section_flags: SectionFlags,
     pub(crate) min_alignment: Alignment,
+    pub(crate) is_header: bool,
 }
 
 impl Coff {
@@ -1549,11 +1554,13 @@ impl Coff {
         kind: Self::primary_section(&[]),
         section_flags: object::pe::IMAGE_SCN_MEM_READ,
         min_alignment: alignment::PE_SECTION_ALIGNMENT,
+        is_header: false,
     };
     const DEFAULT_HEADER_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
-        section_flags: object::pe::IMAGE_SCN_MEM_READ.with(object::pe::IMAGE_SCN_LNK_REMOVE),
+        section_flags: object::pe::IMAGE_SCN_MEM_READ,
         min_alignment: alignment::MIN,
+        is_header: true,
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Coff> {
