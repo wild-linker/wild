@@ -10,8 +10,10 @@ use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
+use crate::layout::HandlerData as _;
 use crate::layout::Resolution;
 use crate::layout::SectionGcUnit;
+use crate::layout::SymbolCopyInfo;
 use crate::layout_rules;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
@@ -72,6 +74,8 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
     }
 }
 
+// TODO: Not really a symtab entry right now, we have additional fields to make early iterations
+// easier.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SymtabEntry {
     pub(crate) raw: object::pe::ImageSymbol,
@@ -110,6 +114,8 @@ enum SinglePartSectionId {
     DosStub = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
     NtHeader,
     SectionHeaders,
+    Symtab,
+    Strtab,
 
     // Must be last.
     Count,
@@ -139,6 +145,8 @@ pub(crate) mod part_id {
     pub(crate) const DOS_STUB: PartId = SinglePartSectionId::DosStub.part_id();
     pub(crate) const NT_HEADER: PartId = SinglePartSectionId::NtHeader.part_id();
     pub(crate) const SECTION_HEADERS: PartId = SinglePartSectionId::SectionHeaders.part_id();
+    pub(crate) const SYMTAB: PartId = SinglePartSectionId::Symtab.part_id();
+    pub(crate) const STRTAB: PartId = SinglePartSectionId::Strtab.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -150,6 +158,8 @@ pub(crate) mod output_section_id {
     pub(crate) const NT_HEADER: OutputSectionId = SinglePartSectionId::NtHeader.output_section_id();
     pub(crate) const SECTION_HEADERS: OutputSectionId =
         SinglePartSectionId::SectionHeaders.output_section_id();
+    pub(crate) const SYMTAB: OutputSectionId = SinglePartSectionId::Symtab.output_section_id();
+    pub(crate) const STRTAB: OutputSectionId = SinglePartSectionId::Strtab.output_section_id();
 
     pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
     pub(crate) const RDATA: OutputSectionId = RegularSectionId::Rdata.output_section_id();
@@ -250,6 +260,7 @@ impl Platform for Coff {
     const RODATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::RDATA);
     const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
     const BSS_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::BSS);
+    const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
 
@@ -258,6 +269,7 @@ impl Platform for Coff {
         output_section_id::DOS_STUB,
         output_section_id::NT_HEADER,
         output_section_id::SECTION_HEADERS,
+        output_section_id::SYMTAB,
     ];
 
     type File<'data> = File<'data>;
@@ -354,9 +366,13 @@ impl Platform for Coff {
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _resources: &layout::GraphResources<'data, 'scope, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &layout::GraphResources<'data, 'scope, Self>,
     ) {
+        if !resources.symbol_db.args.should_strip_all() {
+            // The first 4 bytes in string table specify its size.
+            common.allocate(part_id::STRTAB, size_of::<u32>() as u64);
+        }
     }
 
     fn finalise_sizes_dynamic<'data>(
@@ -665,21 +681,63 @@ impl Platform for Coff {
     }
 
     fn allocate_object_symtab_space<'data>(
-        _state: &layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _symbol_db: &SymbolDb<'data, Self>,
-        _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        symbol_db: &SymbolDb<'data, Self>,
+        per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
+        let mut num_sym = 0;
+        let mut strings_size = 0;
+        for ((sym_index, sym), flags) in state
+            .object
+            .enumerate_symbols()
+            .zip(per_symbol_flags.range(state.symbol_id_range()))
+            .filter(|((_, sym), _)| !sym.is_aux)
+        {
+            let symbol_id = state.symbol_id_range.input_to_id(sym_index);
+            if let Some(info) = SymbolCopyInfo::new(
+                state.object,
+                sym_index,
+                sym,
+                symbol_id,
+                symbol_db,
+                flags.get(),
+                &state.sections,
+            ) {
+                // TODO: check if applicable
+                // If we've decided to emit the symbol even though it's not referenced (because it's
+                // in a section we're emitting), then make sure we have a resolution for it.
+                flags.fetch_or(ValueFlags::DIRECT);
+                num_sym += 1;
+                if info.name.len() > 8 {
+                    strings_size += info.name.len() + 1;
+                }
+            }
+        }
+        let entry_size = object::pe::IMAGE_SIZEOF_SYMBOL as u64;
+        common.allocate(part_id::SYMTAB, num_sym * entry_size);
+        common.allocate(part_id::STRTAB, strings_size as u64);
         Ok(())
     }
 
     fn allocate_internal_symbol(
-        _symbol_id: crate::symbol_db::SymbolId,
-        _def_info: &InternalSymDefInfo<Self>,
-        _sizes: &mut OutputSectionPartMap<u64>,
-        _symbol_db: &SymbolDb<Self>,
+        symbol_id: crate::symbol_db::SymbolId,
+        def_info: &InternalSymDefInfo<Self>,
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<Self>,
     ) -> Result {
-        todo!()
+        if def_info.symbol.is_hidden() {
+            return Ok(());
+        }
+        let symtab_part = part_id::SYMTAB;
+        sizes.increment(symtab_part, object::pe::IMAGE_SIZEOF_SYMBOL as u64);
+        let symbol_name = symbol_db.symbol_name(symbol_id)?;
+        let symbol_name = symbol_name.bytes();
+        if symbol_name.len() > 8 {
+            sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
+        }
+
+        Ok(())
     }
 
     fn allocate_prelude(_common: &mut layout::CommonGroupState<Self>, _symbol_db: &SymbolDb<Self>) {
@@ -765,6 +823,9 @@ impl Platform for Coff {
         builder.add_sections(&custom.nonalloc);
         builder.add_sections(&custom.tbss);
         builder.add_sections(&custom.tdata);
+
+        builder.add_section(output_section_id::SYMTAB);
+        builder.add_section(output_section_id::STRTAB);
 
         builder.build()
     }
@@ -1506,6 +1567,8 @@ impl Coff {
         defs[output_section_id::DOS_STUB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::NT_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::SECTION_HEADERS.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::SYMTAB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::STRTAB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
 
         // Start of regular sections
         defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
