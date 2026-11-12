@@ -5663,11 +5663,11 @@ impl SymbolOutputInfos {
         if addr == SYMBOL_ADDRESS_UNRESOLVED {
             return None;
         }
+        let flags = per_symbol_flags.flags_for_symbol(symbol_id);
         Some(RelaxSymbolInfo {
             output_address: addr,
-            is_interposable: per_symbol_flags
-                .flags_for_symbol(symbol_id)
-                .is_interposable(),
+            is_interposable: flags.is_interposable(),
+            is_ifunc: flags.is_ifunc(),
         })
     }
 }

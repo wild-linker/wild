@@ -392,6 +392,8 @@ pub(crate) struct RelaxSymbolInfo {
     pub output_address: u64,
     /// Whether the symbol may be interposed at runtime.
     pub is_interposable: bool,
+    /// `STT_GNU_IFUNC`. The resolved address is the resolver, not a direct branch target.
+    pub is_ifunc: bool,
 }
 
 /// Information about the previous relocation, used for pair-based relaxations.
