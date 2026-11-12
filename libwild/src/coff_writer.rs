@@ -42,6 +42,10 @@ use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
 use std::sync::atomic::Ordering::Relaxed;
 
+// TODO: audit unwraps in this file. They are much more helpful for the development phase compared
+// to bare `?`, but we want to get rid of user facing ones before `coff` feature is enabled by
+// default.
+
 type CoffLayout<'data> = Layout<'data, Coff>;
 
 pub(crate) fn write<'data, A: Arch<Platform = Coff>>(
