@@ -7,7 +7,6 @@
 //#Shared:rdyn1.rs
 
 //#Config:default:default-base
-// LLD leaves R_X86_64_GOTPCREL loads unrelaxed.
 //#CompArgs:-C debuginfo=2
 //#CompSoArgs:-C debuginfo=2
 

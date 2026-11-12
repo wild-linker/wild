@@ -1,4 +1,3 @@
-// LLD leaves R_X86_64_GOTPCREL loads unrelaxed.
 // Loading GOT+4 reads the upper half of a pointer, not symbol_address+4.
 //#Arch:x86_64
 //#Compiler:gcc
