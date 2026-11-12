@@ -534,6 +534,10 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter, test_config: &TestConf
             continue;
         }
 
+        if platform == PlatformKind::MinGW && !cfg!(feature = "coff") {
+            continue;
+        }
+
         if platform == PlatformKind::Wasm && !cfg!(feature = "wasm") {
             continue;
         }
