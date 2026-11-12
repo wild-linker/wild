@@ -4,10 +4,12 @@ use crate::OutputFileData;
 use crate::bail;
 use crate::coff;
 use crate::coff::Coff;
+use crate::coff::CoffRelocation;
 use crate::coff::DosHeader;
 use crate::coff::output_section_id;
 use crate::coff::part_id;
 use crate::debug_assert_bail;
+use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
@@ -22,21 +24,32 @@ use crate::layout::HeaderInfo;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
+use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
 use crate::platform::ObjectFile as _;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence as _;
 use crate::platform::SectionAttributes;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
+use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use crate::timing_phase;
+use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
 use object::from_bytes_mut;
@@ -44,6 +57,7 @@ use object::write::WritableBuffer;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
+use std::fmt::Display;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 
@@ -242,10 +256,26 @@ fn write_object_section<'data, A: Arch<Platform = Coff>>(
     section: Section,
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    _trace: &TraceOutput,
+    trace: &TraceOutput,
 ) -> Result {
-    let _out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
+    let out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
 
+    let relocations = object.relocations(section_index)?;
+    apply_relocations::<A, CoffRelocation, _>(
+        object,
+        out,
+        section_index,
+        relocations.rel_iter(),
+        layout,
+        trace,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to apply relocations in section `{}` of {}",
+            object.object.section_display_name(section_index),
+            object.input
+        )
+    })?;
     Ok(())
 }
 
@@ -292,13 +322,287 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Coff>>(
         Ok(&mut [])
     }
 }
-
-fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
-    _syn: &SyntheticSymbolsLayout<Coff>,
-    _table_writer: &mut TableWriter<'_, '_>,
-    _layout: &CoffLayout<'data>,
+fn apply_relocations<
+    'data,
+    A: Arch<Platform = Coff>,
+    R: Relocation<Platform = Coff>,
+    I: Iterator<Item = R>,
+>(
+    object: &ObjectLayout<'data, Coff>,
+    out: &mut [u8],
+    section_index: object::SectionIndex,
+    relocations: I,
+    layout: &CoffLayout<'data>,
+    trace: &TraceOutput,
 ) -> Result {
-    verbose_timing_phase!("Write synthetic symbols");
+    let section_address = object.section_resolutions[section_index.0]
+        .address()
+        .context("Attempted to apply relocations to a section that we didn't load")?;
+
+    let mut relocation_count = 0;
+
+    for rel in relocations {
+        relocation_count += 1;
+
+        let offset_in_section = rel.offset();
+
+        apply_relocation::<A, R>(
+            object,
+            offset_in_section,
+            &rel,
+            section_address,
+            layout,
+            out,
+            trace,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to apply {} at offset 0x{offset_in_section:x}",
+                display_relocation::<A, R>(object, &rel, layout)
+            )
+        })?;
+    }
+
+    layout
+        .relocation_statistics
+        .get(
+            object
+                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                .output_section_id::<Coff>(),
+        )
+        .fetch_add(relocation_count, Relaxed);
+    Ok(())
+}
+
+fn display_relocation<'a, 'data, A: Arch<Platform = Coff>, R: Relocation>(
+    object: &'a ObjectLayout<'data, Coff>,
+    rel: &'a R,
+    layout: &'a CoffLayout<'data>,
+) -> DisplayRelocation<'a, 'data, A, R> {
+    DisplayRelocation::<'a, 'data, A, R> {
+        rel,
+        symbol_db: &layout.symbol_db,
+        per_symbol_flags: &layout.per_symbol_flags,
+        object,
+        phantom: std::marker::PhantomData,
+    }
+}
+
+struct DisplayRelocation<'a, 'data, A: Arch<Platform = Coff>, R: Relocation> {
+    rel: &'a R,
+    symbol_db: &'a SymbolDb<'data, Coff>,
+    per_symbol_flags: &'a PerSymbolFlags,
+    object: &'a ObjectLayout<'data, Coff>,
+    phantom: std::marker::PhantomData<A>,
+}
+
+impl<'a, 'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Coff>> Display
+    for DisplayRelocation<'a, 'data, A, R>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "relocation of type {} to ",
+            A::rel_type_to_string(self.rel.raw_type())
+        )?;
+        match self.rel.symbol() {
+            None => write!(f, "absolute")?,
+            Some(local_symbol_index) => {
+                let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
+                write!(
+                    f,
+                    "{}",
+                    self.symbol_db
+                        .symbol_debug(self.per_symbol_flags, symbol_id)
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+struct RelocationResolution {
+    resolution: Resolution<Coff>,
+    local_symbol_id: SymbolId,
+    flags: ValueFlags,
+}
+
+#[inline(always)]
+fn get_resolution<'data, R: Relocation>(
+    rel: &R,
+    object_layout: &ObjectLayout<'data, Coff>,
+    layout: &CoffLayout<'data>,
+) -> Result<RelocationResolution> {
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let flags = layout.flags_for_symbol(local_symbol_id);
+    let resolution = layout
+        .symbol_resolution_with_flags(local_symbol_id, flags)
+        .or_else(|| {
+            section_index.and_then(|section_index| {
+                let section_address =
+                    object_layout.section_resolutions[section_index.0].address()?;
+                let output_offset = platform::Symbol::value(sym);
+
+                Some(Resolution {
+                    raw_value: section_address + output_offset,
+                    dynamic_symbol_index: None,
+                    flags: ValueFlags::empty(),
+                    format_specific: Default::default(),
+                })
+            })
+        })
+        .with_context(|| {
+            format!(
+                "Missing resolution for: {}",
+                layout.symbol_debug(local_symbol_id)
+            )
+        })?;
+    Ok(RelocationResolution {
+        resolution,
+        local_symbol_id,
+        flags,
+    })
+}
+
+#[inline(always)]
+fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Coff>>(
+    object_layout: &ObjectLayout<'data, Coff>,
+    offset_in_section: u64,
+    rel: &R,
+    section_address: u64,
+    layout: &CoffLayout<'data>,
+    out: &mut [u8],
+    trace: &TraceOutput,
+) -> Result<()> {
+    let place = section_address + offset_in_section;
+    let _span = tracing::trace_span!(
+        "relocation",
+        address = place,
+        address_hex = %HexU64::new(place)
+    )
+    .entered();
+
+    let r_type = rel.raw_type();
+    let rel_info = A::relocation_from_raw(rel.raw_type())?;
+    ensure!(
+        rel_info.implicit_addend,
+        "PE/COFF relocations always have implicit addend"
+    );
+    let mut addend = rel.addend() as u64;
+    // TODO: Copied from macho and is also similar to `adjust_value_based_on_content`. Perhaps
+    // candidate for a deduplication?
+    {
+        let RelocationSize::ByteSize(byte_size @ (4 | 8)) = rel_info.size else {
+            bail!(
+                "Unexpected relocation size for implicit addend read: {}",
+                rel_info.size
+            );
+        };
+        let byte_size = usize::from(byte_size);
+        let bytes = out
+            .get(offset_in_section as usize..)
+            .and_then(|bytes| bytes.get(..byte_size))
+            .context("implicit addend read extends beyond section data")?;
+        let mut buffer = [0u8; 8];
+        buffer[..byte_size].copy_from_slice(bytes);
+        let field = match byte_size {
+            4 => i64::from(i32::from_le_bytes(bytes.try_into()?)) as u64,
+            8 => u64::from_le_bytes(bytes.try_into()?),
+            _ => todo!(),
+        };
+        addend = addend.wrapping_add(field);
+    }
+
+    match rel_info.kind {
+        RelocationKind::None => return Ok(()),
+        RelocationKind::Relative if rel.symbol().is_none() => {
+            if layout.symbol_db.output_kind.is_position_independent() {
+                bail!(
+                    "relocation of type {} to absolute address cannot be used in \
+                    position-independent output; recompile with -fPIC",
+                    rel.raw_type()
+                );
+            }
+            let place = section_address + offset_in_section;
+            let value = (rel.addend() as u64).wrapping_sub(place);
+            rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+            return Ok(());
+        }
+        RelocationKind::Absolute
+            if layout.symbol_db.output_kind.is_shared_object()
+                && A::is_disallowed_in_shared_object(r_type) =>
+        {
+            bail!(
+                "relocation type {} cannot be used when making a shared object; \
+                 recompile with -fPIC",
+                A::rel_type_to_string(r_type)
+            );
+        }
+        _ => {}
+    }
+    let RelocationResolution {
+        resolution,
+        local_symbol_id,
+        flags,
+    } = get_resolution(rel, object_layout, layout)?;
+    let reject_dynamic_direct = layout.symbol_db.output_kind.is_position_independent()
+        || A::relocation_from_raw(r_type)?.kind == RelocationKind::TpOff;
+    if reject_dynamic_direct
+        && (flags.is_interposable() || flags.is_dynamic())
+        && !flags.needs_copy_relocation()
+        && !flags.needs_plt()
+        && A::is_disallowed_for_interposable_symbols(r_type)
+    {
+        bail!(
+            "relocation {} cannot be used against symbol; recompile with -fPIC",
+            A::rel_type_to_string(r_type)
+        );
+    }
+    let rel_info = A::relocation_from_raw(r_type)?;
+
+    let value = match rel_info.kind {
+        // TODO: This reuses ELF code which doesn't fit well here. Create COFF's own code in linker
+        // utils.
+        RelocationKind::Absolute if r_type == object::pe::IMAGE_REL_AMD64_ADDR32NB => {
+            let without_base = addend.wrapping_sub(layout.args().image_base().unwrap());
+            resolution.value_with_addend(without_base as i64)
+        }
+        RelocationKind::Absolute => resolution.value_with_addend(addend as i64),
+        RelocationKind::Relative => {
+            // TODO: Handle undefined weak
+            let symbol_plus_addend = resolution.value_with_addend(addend as i64);
+            symbol_plus_addend.wrapping_sub(place)
+        }
+        RelocationKind::None => 0,
+        _ => {
+            unreachable!()
+        }
+    };
+
+    let offset_in_section = offset_in_section as usize;
+
+    trace.emit(place, || {
+        format!(
+            "relocation applied flags={flags},\n\
+                rel_kind={rel_kind:?},\n\
+                value=0x{value:x}, symbol_name={symbol_name}",
+            rel_kind = rel_info.kind,
+            symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
+        )
+    });
+    tracing::trace!(
+            %flags,
+            ?rel_info.kind,
+            %rel_info.size,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relocation applied");
+
+    rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
 
     Ok(())
 }
@@ -331,6 +635,16 @@ fn write_prelude<A: Arch<Platform = Coff>>(
     data_directory_bytes.fill(0);
 
     write_section_headers(table_writer, layout)?;
+
+    Ok(())
+}
+
+fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
+    _syn: &SyntheticSymbolsLayout<Coff>,
+    _table_writer: &mut TableWriter<'_, '_>,
+    _layout: &CoffLayout<'data>,
+) -> Result {
+    verbose_timing_phase!("Write synthetic symbols");
 
     Ok(())
 }

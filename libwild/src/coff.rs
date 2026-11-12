@@ -10,6 +10,7 @@ use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
+use crate::layout::Resolution;
 use crate::layout::SectionGcUnit;
 use crate::layout_rules;
 use crate::layout_rules::SectionKind;
@@ -31,11 +32,13 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
+use crate::platform::RelocationSequence as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
+use crate::value_flags::ValueFlags;
 use linker_utils::coff::secnames::BSS_SECTION_NAME;
 use linker_utils::coff::secnames::DATA_SECTION_NAME;
 use linker_utils::coff::secnames::RDATA_SECTION_NAME;
@@ -45,6 +48,8 @@ use object::SectionIndex;
 use object::SymbolIndex;
 use object::coff::CoffHeader as _;
 use object::coff::Symbol as _;
+use object::pe::ImageRelocation;
+use object::pe::RelocationType;
 use object::pe::SectionFlags;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -95,9 +100,6 @@ pub(crate) const SIZE_OF_NT_HEADERS64: usize = size_of::<NtHeader>() + SIZE_OF_D
 const _: () = assert!(
     SIZE_OF_NT_HEADERS64 == size_of::<object::pe::ImageNtHeaders64>() + SIZE_OF_DIRECTORY_ENTRIES
 );
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RelocationType {}
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Coff;
@@ -170,11 +172,13 @@ pub(crate) struct File<'data> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct CoffRelocation {}
+pub(crate) struct CoffRelocation {
+    raw: ImageRelocation,
+}
 
 impl CoffRelocation {
-    pub(crate) fn new() -> Self {
-        Self {}
+    pub(crate) fn new(raw: ImageRelocation) -> Self {
+        Self { raw }
     }
 }
 
@@ -183,24 +187,33 @@ impl Relocation for CoffRelocation {
     type Platform = Coff;
 
     fn symbol(&self) -> Option<SymbolIndex> {
-        todo!()
+        Some(self.raw.symbol())
     }
 
     fn raw_type(&self) -> RelocationType {
-        todo!()
+        self.raw.typ.get(LittleEndian)
     }
 
     fn offset(&self) -> u64 {
-        todo!()
+        self.raw.virtual_address.get(LittleEndian).into()
     }
 
+    // TODO: this is a bit abused to handle bias for some of AMD64 relocations
     fn addend(&self) -> i64 {
-        todo!()
+        match self.raw_type() {
+            object::pe::IMAGE_REL_AMD64_REL32 => -4,
+            object::pe::IMAGE_REL_AMD64_REL32_1 => -5,
+            object::pe::IMAGE_REL_AMD64_REL32_2 => -6,
+            object::pe::IMAGE_REL_AMD64_REL32_3 => -7,
+            object::pe::IMAGE_REL_AMD64_REL32_4 => -8,
+            object::pe::IMAGE_REL_AMD64_REL32_5 => -9,
+            _ => 0,
+        }
     }
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct RelocationList<'data>(&'data [()]);
+pub(crate) struct RelocationList<'data>(&'data [ImageRelocation]);
 
 impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
     fn num_relocations(&self) -> usize {
@@ -212,7 +225,7 @@ impl<'data> platform::RelocationSequence<'data> for RelocationList<'data> {
     type Rel = CoffRelocation;
 
     fn rel_iter(&self) -> impl Iterator<Item = CoffRelocation> {
-        self.0.iter().copied().map(|_| CoffRelocation::new())
+        self.0.iter().copied().map(CoffRelocation::new)
     }
 
     fn subsequence(&self, range: std::ops::Range<usize>) -> Self {
@@ -430,14 +443,27 @@ impl Platform for Coff {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        _state: &mut layout::ObjectLayoutState<'data, Self>,
+        state: &mut layout::ObjectLayoutState<'data, Self>,
         _common: &mut layout::CommonGroupState<'data, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         _section: layout::Section,
-        _section_index: SectionIndex,
-        _scope: &rayon::Scope<'scope>,
+        section_index: SectionIndex,
+        scope: &rayon::Scope<'scope>,
     ) -> Result {
+        for relocation in state.relocations(section_index)?.rel_iter() {
+            let local_symbol_id = state
+                .symbol_id_range
+                .input_to_id(relocation.symbol().unwrap());
+            let symbol_id = resources.symbol_db.definition(local_symbol_id);
+
+            let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+            let previous_flags = atomic_flags.fetch_or(ValueFlags::DIRECT);
+
+            if !previous_flags.has_resolution() {
+                queue.send_symbol_request::<A>(symbol_id, resources, scope);
+            }
+        }
         Ok(())
     }
 
@@ -1015,12 +1041,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(section.coff_alignment())
     }
 
-    fn relocations(
-        &self,
-        _index: SectionIndex,
-        _relocations: &(),
-    ) -> Result<RelocationList<'data>> {
-        todo!()
+    fn relocations(&self, index: SectionIndex, _relocations: &()) -> Result<RelocationList<'data>> {
+        let section = self.section(index)?;
+        let raw = section.coff_relocations(self.data)?;
+        Ok(RelocationList(raw))
     }
 
     fn parse_relocations(&self) -> Result<()> {
@@ -1506,6 +1530,14 @@ impl Coff {
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
+
+impl Resolution<Coff> {
+    #[inline(always)]
+    pub(crate) fn value_with_addend(&self, addend: i64) -> u64 {
+        // TODO: ELF has some optimisation that while unlikely, might apply here.
+        self.raw_value.wrapping_add(addend as u64)
+    }
+}
 
 // TODO: Most of them could use exact match, but that needs to be verified.
 const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[

@@ -1,2 +1,3 @@
 //#LinkArgs:--entry entry
-int entry() { return 42; }
+int foo = 42;
+int entry() { return foo; }
