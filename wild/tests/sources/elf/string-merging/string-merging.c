@@ -16,7 +16,6 @@
 
 //#Config:merge_strings_no_relax:merge_strings
 //#CompArgs:-Wa,-mrelax-relocations=no
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.static-non-pie
 
 //#Config:merge_strings_pie:merge_strings
 //#Mode:dynamic
