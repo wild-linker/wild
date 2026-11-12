@@ -200,6 +200,10 @@
 //! the binary can import its exports. Use this to supply a shared memory and check that a store in
 //! one module is visible in the other. May be repeated. `filename` is resolved like WasmRunner.
 //!
+//! InMemoryFileSystem:{bool} Defaults to true. Only affects linking when libwild is used directly.
+//! Uses a custom FileSystem implementation. Set WILD_TEST_IN_MEMORY_FS=0 to disable this for all
+//! tests.
+//!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
@@ -427,6 +431,7 @@
 //! mem-size=N: Type: Integer. Asserts the mem size of the segment.
 
 mod external_tests;
+mod test_file_system;
 
 use bitflags::bitflags;
 use gimli::Reader as _;
@@ -1594,6 +1599,7 @@ struct Config {
     wild_extra_linker_args: ArgumentSet,
     linker_env: HashMap<String, String>,
     linker_working_directory: Option<String>,
+    in_memory_file_system: bool,
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
@@ -2514,6 +2520,7 @@ impl Config {
             wild_extra_linker_args: ArgumentSet::empty(),
             linker_env: Default::default(),
             linker_working_directory: None,
+            in_memory_file_system: true,
             diff_ignore: Default::default(),
             reference_linkers: None,
             section_equiv: Default::default(),
@@ -3102,6 +3109,7 @@ fn process_directive(
         "DiffEnabled" => config.should_diff = arg.parse()?,
         "DiffMatchAny" => config.diff_match_any = arg.parse()?,
         "RunEnabled" => config.should_run = arg.parse()?,
+        "InMemoryFileSystem" => config.in_memory_file_system = arg.parse()?,
         "RunDynSym" => {
             config.run_dyn_sym = if arg.is_empty() {
                 None
@@ -3411,8 +3419,7 @@ impl ProgramInputs {
             let _ = std::fs::remove_file(linker.output_path(self.name(), config));
         }
 
-        let link_output =
-            linker.link_with_output_reuse(self.name(), &inputs, config, cross_arch)?;
+        let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
         if config.test_output_to_dev_null {
             let temp_dir = tempfile::tempdir()?;
@@ -4925,44 +4932,6 @@ fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 impl Linker {
-    /// As for `link`, but on Mac, the old output file might be kept, but only if the linker first
-    /// produced an identical file. Reusing the old file allows a cache hit on whatever virus
-    /// scanning macOS is doing.
-    fn link_with_output_reuse(
-        &self,
-        basename: &str,
-        inputs: &[LinkerInput],
-        config: &Config,
-        cross_arch: Option<Architecture>,
-    ) -> Result<LinkOutput> {
-        let output_path = self.output_path(basename, config);
-        let preserve_output = cfg!(target_os = "macos")
-            && self.is_wild()
-            && config.platform == PlatformKind::MachO
-            && std::fs::symlink_metadata(&output_path)
-                .is_ok_and(|metadata| metadata.file_type().is_file());
-
-        if !preserve_output {
-            return self.link(basename, inputs, config, cross_arch);
-        }
-
-        let saved_dir = tempfile::tempdir_in(output_path.parent().unwrap())?;
-        let saved_path = saved_dir.path().join("previous-output");
-        std::fs::rename(&output_path, &saved_path)?;
-
-        let link_output = self.link(basename, inputs, config, cross_arch)?;
-
-        let old_content = std::fs::read(&saved_path)?;
-        if std::fs::read(&output_path).is_ok_and(|new_content| new_content == old_content)
-            && std::fs::metadata(&output_path)?.permissions()
-                == std::fs::metadata(&saved_path)?.permissions()
-        {
-            std::fs::rename(&saved_path, &output_path)?;
-        }
-
-        Ok(link_output)
-    }
-
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
     fn link(
@@ -4991,7 +4960,7 @@ impl Linker {
         let messages = if command.can_skip() {
             command.read_messages()?
         } else {
-            let messages = command.run(config)?;
+            let messages = command.run_with_output_reuse(config)?;
             command.write_messages(&messages)?;
             command.write_input_hashes()?;
             messages
@@ -5382,6 +5351,81 @@ impl LinkCommand {
         Ok(link_command)
     }
 
+    fn runs_in_process(&self, config: &Config) -> bool {
+        self.linker.is_wild()
+            && self.invocation_mode == LinkerInvocationMode::Direct
+            && config.driver_mode.is_none()
+            && config.can_use_wild_in_process()
+    }
+
+    fn uses_in_memory_file_system(&self, config: &Config) -> bool {
+        self.runs_in_process(config)
+            && config.in_memory_file_system
+            && std::env::var("WILD_TEST_IN_MEMORY_FS").as_deref() != Ok("0")
+    }
+
+    fn run_internal(
+        &self,
+        config: &Config,
+        file_system: impl libwild::FileSystem,
+    ) -> Result<LinkerMessages> {
+        let args = self
+            .command
+            .get_args()
+            .map(|a| a.to_str())
+            .collect::<Option<Vec<&str>>>()
+            .context("Linker args must be valid utf-8")?;
+        let get_args = || std::iter::once("wild").chain(args.iter().copied());
+        let mut parsed_args = libwild::Args::new(get_args)?;
+        parsed_args.set_version("integration-test");
+        let warnings = Arc::new(Mutex::new(String::new()));
+        parsed_args.on_warning({
+            let warnings = warnings.clone();
+            Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
+        });
+        parsed_args.parse(get_args, &file_system)?;
+
+        // This call is expected to error for all but the first call.
+        let _ = libwild::setup_tracing(&parsed_args);
+        libwild::run_with_file_system(parsed_args, file_system)
+            .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
+
+        let warnings = warnings.lock().unwrap();
+        self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
+        Ok(LinkerMessages {
+            stdout: String::new(),
+            stderr: warnings.clone(),
+        })
+    }
+
+    // Retaining identical files avoids repeated macOS virus scans for links using the OS
+    // filesystem.
+    fn run_with_output_reuse(&mut self, config: &Config) -> Result<LinkerMessages> {
+        let preserve_output = cfg!(target_os = "macos")
+            && self.linker.is_wild()
+            && config.platform == PlatformKind::MachO
+            && !config.test_relink_after_run
+            && !self.uses_in_memory_file_system(config)
+            && std::fs::symlink_metadata(&self.output_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+        if !preserve_output {
+            return self.run(config);
+        }
+
+        let saved_dir = tempfile::tempdir_in(self.output_path.parent().unwrap())?;
+        let saved_path = saved_dir.path().join("previous-output");
+        std::fs::rename(&self.output_path, &saved_path)?;
+        let messages = self.run(config)?;
+        let old_content = std::fs::read(&saved_path)?;
+        if std::fs::read(&self.output_path).is_ok_and(|new_content| new_content == old_content)
+            && std::fs::metadata(&self.output_path)?.permissions()
+                == std::fs::metadata(&saved_path)?.permissions()
+        {
+            std::fs::rename(&saved_path, &self.output_path)?;
+        }
+        Ok(messages)
+    }
+
     fn run(&mut self, config: &Config) -> Result<LinkerMessages> {
         if let Some(mode) = config.driver_mode {
             match mode {
@@ -5389,43 +5433,17 @@ impl LinkCommand {
             }
         }
 
-        // If we're linking with wild and we're going to be invoking the linker directly, then just
-        // use libwild as a library. This is marginally faster, since we avoid the process startup
-        // costs. It also allows us to exercise wild as a library. We still exercise wild from the
-        // command-line via the shell-script-based tests.
-        if self.linker.is_wild()
-            && self.invocation_mode == LinkerInvocationMode::Direct
-            && config.can_use_wild_in_process()
-        {
-            let args = self
-                .command
-                .get_args()
-                .map(|a| a.to_str())
-                .collect::<Option<Vec<&str>>>()
-                .context("Linker args must be valid utf-8")?;
-
-            let get_args = || std::iter::once("wild").chain(args.iter().copied());
-            let mut parsed_args = libwild::Args::new(get_args)?;
-            parsed_args.set_version("integration-test");
-            let warnings = Arc::new(Mutex::new(String::new()));
-            parsed_args.on_warning({
-                let warnings = warnings.clone();
-                Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
-            });
-            parsed_args.parse(get_args, &libwild::OsFileSystem)?;
-
-            // This call is expected to error for all but the first call.
-            let _ = libwild::setup_tracing(&parsed_args);
-            libwild::run(parsed_args)
-                .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
-
-            let warnings = warnings.lock().unwrap();
-            self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
-
-            return Ok(LinkerMessages {
-                stdout: String::new(),
-                stderr: warnings.clone(),
-            });
+        if self.runs_in_process(config) {
+            return if self.uses_in_memory_file_system(config) {
+                let file_system = test_file_system::TestFileSystem::default();
+                let messages = self.run_internal(config, file_system.clone()).context(
+                    "Rerun with WILD_TEST_IN_MEMORY_FS=0 to retain files from a failed link",
+                )?;
+                file_system.persist()?;
+                Ok(messages)
+            } else {
+                self.run_internal(config, libwild::OsFileSystem)
+            };
         }
 
         let output = self
