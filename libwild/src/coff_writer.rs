@@ -22,6 +22,7 @@ use crate::layout::HeaderInfo;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::Section;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::SectionOutputInfo;
@@ -30,7 +31,10 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::platform::Arch;
 use crate::platform::Args as _;
+use crate::platform::ObjectFile as _;
 use crate::platform::SectionAttributes;
+use crate::platform::SectionHeader as _;
+use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use linker_utils::utils::slice_from_all_bytes_mut;
@@ -41,6 +45,7 @@ use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
 use std::sync::atomic::Ordering::Relaxed;
+use tracing::debug_span;
 
 // TODO: audit unwraps in this file. They are much more helpful for the development phase compared
 // to bare `?`, but we want to get rid of user facing ones before `coff` feature is enabled by
@@ -207,14 +212,85 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
 fn write_object<'data, A: Arch<Platform = Coff>>(
     object: &ObjectLayout<'data, Coff>,
-    _buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     _table_writer: &mut TableWriter,
-    _layout: &CoffLayout<'data>,
-    _trace: &TraceOutput,
+    layout: &CoffLayout<'data>,
+    trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
+    let _span = debug_span!("write_file", filename = %object.input).entered();
+    let _file_span = layout.args().common().trace_span_for_file(object.file_id);
+
+    for (i, sec) in object.sections.iter().enumerate() {
+        let section_index = object::SectionIndex(i);
+
+        match sec {
+            SectionSlot::Loaded(sec) => {
+                write_object_section::<A>(object, layout, *sec, section_index, buffers, trace)?;
+            }
+            _ => (),
+        }
+    }
+
     Ok(())
+}
+
+fn write_object_section<'data, A: Arch<Platform = Coff>>(
+    object: &ObjectLayout<'data, Coff>,
+    layout: &CoffLayout<'data>,
+    section: Section,
+    section_index: object::SectionIndex,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    _trace: &TraceOutput,
+) -> Result {
+    let _out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
+
+    Ok(())
+}
+
+fn write_section_raw<'out, 'data, A: Arch<Platform = Coff>>(
+    object: &ObjectLayout<'data, Coff>,
+    layout: &CoffLayout,
+    sec: Section,
+    section_index: object::SectionIndex,
+    buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+) -> Result<&'out mut [u8]> {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    if layout
+        .output_sections
+        .has_data_in_file(part_id.output_section_id::<Coff>())
+    {
+        let section_buffer = buffers.get_mut(part_id);
+        let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
+        if section_buffer.len() < allocation_size {
+            bail!(
+                "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+                object.object.section_display_name(section_index),
+                allocation_size,
+                section_buffer.len()
+            );
+        }
+        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
+        let object_section = object.object.section(section_index)?;
+        if object_section.is_no_bits() {
+            return Ok(out);
+        }
+
+        let section_info = layout
+            .output_sections
+            .output_info(part_id.output_section_id::<Coff>());
+        let section_size = object.object.section_size(object_section)?;
+        let section_size = section_size as usize;
+        object
+            .object
+            .copy_section_data(object_section, &mut out[..section_size])?;
+        fill_section_padding::<A>(&mut out[section_size..], section_info);
+
+        Ok(&mut out[..section_size])
+    } else {
+        Ok(&mut [])
+    }
 }
 
 fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(

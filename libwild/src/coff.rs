@@ -977,8 +977,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.raw_section_data(section)
     }
 
-    fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> Result {
-        todo!()
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+        let bytes = self.raw_section_data(section)?;
+        out.copy_from_slice(bytes);
+        Ok(())
     }
 
     fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
@@ -1439,7 +1441,7 @@ impl Coff {
     };
     const DEFAULT_HEADER_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
-        section_flags: object::pe::IMAGE_SCN_LNK_REMOVE,
+        section_flags: object::pe::IMAGE_SCN_MEM_READ.with(object::pe::IMAGE_SCN_LNK_REMOVE),
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Coff> {
