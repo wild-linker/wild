@@ -5,6 +5,7 @@
 //#Object:runtime.c
 //#LinkerScript:linker-script-empty-section.ld
 //#ReferenceLinkers:bfd,lld
+//#ExpectSym:empty_0_start address=0x4000b0
 //#ExpectSym:empty_1_start address=0x408000
 //#ExpectSym:empty_2_start address=0x418000
 //#NoSection:.empty_7
@@ -12,9 +13,11 @@
 
 //#Config:flags:default
 //#ReferenceLinkers:lld
+//#ExpectSection:.empty_0 type=1,flags=A
 //#ExpectSection:.empty_1 type=1,flags=A
 //#ExpectSection:.empty_2 type=1,flags=WA
 //#ExpectSection:.empty_3 type=1,flags=W
+//#ExpectSym:empty_3_start address=0x0
 //#ExpectSection:.empty_4 type=8,flags=WA
 //#SkipArch:riscv64,x86_64
 

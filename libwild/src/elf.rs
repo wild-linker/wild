@@ -3489,7 +3489,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         output_sections: &mut OutputSections<'data, Self>,
         must_keep_sections: &OutputSectionMap<bool>,
     ) {
-        let mut current_flags = SectionFlags::default();
+        let mut current_flags = shf::ALLOC;
 
         for script in linker_scripts {
             for &section_id in &script.parsed.ordered_sections {

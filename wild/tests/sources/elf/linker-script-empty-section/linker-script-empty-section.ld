@@ -7,7 +7,13 @@ PHDRS {
 
 SECTIONS {
     . = 0x400000 + SIZEOF_HEADERS;
-    .text : {
+    .empty_0 : {
+        empty_0_start = .;
+        *(.empty_0)
+    }
+
+    . = ALIGN(0x10000);
+    .text 0x404000 : {
         *(.text)
     } :text
     .empty_1 0x408000 : {
