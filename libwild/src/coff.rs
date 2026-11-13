@@ -1608,6 +1608,9 @@ impl Coff {
         };
         defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
             kind: Self::primary_section(BSS_SECTION_NAME),
+            section_flags: object::pe::IMAGE_SCN_MEM_READ
+                .with(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
+                .with(object::pe::IMAGE_SCN_MEM_WRITE),
             ..Self::DEFAULT_DEFS
         };
 
