@@ -297,6 +297,8 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
     let mut raw_deltas = Vec::new();
     let mut min_unrelaxed_margin: Option<u64> = None;
     let mut prev_call: Option<(u64, object::SymbolIndex, i64)> = None;
+    // Bytes this pass has already decided to delete before the relocation under consideration.
+    let mut new_cumulative_delta = 0u64;
 
     for rel in relocations {
         match rel.raw_type() {
@@ -319,10 +321,20 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
                     });
                     let pc = section_output_address + call_output_offset;
                     let distance = info.output_address as i64 + addend - pc as i64;
-                    if distance_fits_b26(distance) {
-                        raw_deltas.push((call_offset, 4));
+                    // `info.output_address` is from the previous layout, so bytes deleted before
+                    // this call in the current pass are not in it yet. Add them to a forward
+                    // distance, which can grow by that much. A backward branch only gets closer.
+                    let forward_shift = i64::try_from(new_cumulative_delta).unwrap_or(i64::MAX);
+                    let checked_distance = if distance >= 0 {
+                        distance.saturating_add(forward_shift)
                     } else {
-                        let margin = b26_margin(distance);
+                        distance
+                    };
+                    if distance_fits_b26(checked_distance) {
+                        raw_deltas.push((call_offset, 4));
+                        new_cumulative_delta += 4;
+                    } else {
+                        let margin = b26_margin(checked_distance);
                         min_unrelaxed_margin = Some(
                             min_unrelaxed_margin.map_or(margin, |current| current.min(margin)),
                         );
