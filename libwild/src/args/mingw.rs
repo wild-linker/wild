@@ -14,7 +14,7 @@ pub const SILENTLY_IGNORED_FLAGS: &[&str] = &[];
 
 pub const IGNORED_FLAGS: &[&str] = &[];
 
-pub const IGNORED_NO_VALUE_FLAGS: &[&str] = &[];
+pub const IGNORED_NO_VALUE_FLAGS: &[&str] = &["gc-sections"];
 
 pub(super) fn is_ignored_flag(flag: &str) -> bool {
     IGNORED_FLAGS.contains(&flag)
@@ -157,6 +157,16 @@ pub(super) fn setup_argument_parser() -> ArgumentParser<CoffArgs> {
         .help("Load plugin")
         .execute(|args, _modifier_stack, value| {
             args.warn_unsupported(&format!("--plugin {value}"))?;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("entry")
+        .short("e")
+        .help("Set the entry point")
+        .execute(|args, _modifier_stack, value| {
+            args.entry = Some(value.to_owned());
             Ok(())
         });
 

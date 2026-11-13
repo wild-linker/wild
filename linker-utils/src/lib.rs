@@ -1,5 +1,6 @@
 pub mod aarch64;
 pub mod bit_misc;
+pub mod coff;
 pub mod elf;
 pub mod loongarch64;
 pub mod ppc64;

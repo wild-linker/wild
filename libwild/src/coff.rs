@@ -36,6 +36,10 @@ use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
+use linker_utils::coff::secnames::BSS_SECTION_NAME;
+use linker_utils::coff::secnames::DATA_SECTION_NAME;
+use linker_utils::coff::secnames::RDATA_SECTION_NAME;
+use linker_utils::coff::secnames::TEXT_SECTION_NAME;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
@@ -112,6 +116,11 @@ enum SinglePartSectionId {
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum RegularSectionId {
+    Text,
+    Rdata,
+    Data,
+    Bss,
+
     // Must be last.
     Count,
 }
@@ -131,6 +140,7 @@ pub(crate) mod part_id {
 }
 
 pub(crate) mod output_section_id {
+    use super::RegularSectionId;
     use super::SinglePartSectionId;
     use crate::output_section_id::OutputSectionId;
 
@@ -138,6 +148,11 @@ pub(crate) mod output_section_id {
     pub(crate) const NT_HEADER: OutputSectionId = SinglePartSectionId::NtHeader.output_section_id();
     pub(crate) const SECTION_HEADERS: OutputSectionId =
         SinglePartSectionId::SectionHeaders.output_section_id();
+
+    pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
+    pub(crate) const RDATA: OutputSectionId = RegularSectionId::Rdata.output_section_id();
+    pub(crate) const DATA: OutputSectionId = RegularSectionId::Data.output_section_id();
+    pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
 }
 
 #[derive(derive_more::Debug)]
@@ -217,6 +232,11 @@ impl<'data> platform::RelocationSequence<'data> for RelocationList<'data> {
 impl Platform for Coff {
     const NUM_SINGLE_PART_SECTIONS: u32 = COFF_NUM_SINGLE_PART_SECTIONS;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = COFF_NUM_BUILT_IN_REGULAR_SECTIONS;
+
+    const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
+    const RODATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::RDATA);
+    const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
+    const BSS_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::BSS);
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
 
@@ -472,7 +492,7 @@ impl Platform for Coff {
                     flags: d.section_flags,
                 },
                 kind: d.kind,
-                min_alignment: alignment::MIN,
+                min_alignment: d.min_alignment,
                 location_info: None,
                 secondary_order: None,
                 region_name: None,
@@ -707,10 +727,14 @@ impl Platform for Coff {
         builder.add_section(output_section_id::NT_HEADER);
         builder.add_section(output_section_id::SECTION_HEADERS);
 
+        builder.add_section(output_section_id::TEXT);
         builder.add_sections(&custom.exec);
 
+        builder.add_section(output_section_id::RDATA);
         builder.add_sections(&custom.ro);
+        builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::BSS);
         builder.add_sections(&custom.bss);
         builder.add_sections(&custom.nonalloc);
         builder.add_sections(&custom.tbss);
@@ -977,8 +1001,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.raw_section_data(section)
     }
 
-    fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> Result {
-        todo!()
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+        let bytes = self.raw_section_data(section)?;
+        out.copy_from_slice(bytes);
+        Ok(())
     }
 
     fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
@@ -1430,16 +1456,19 @@ impl std::fmt::Display for ProgramSegmentDef {
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static, Coff>,
     pub(crate) section_flags: SectionFlags,
+    pub(crate) min_alignment: Alignment,
 }
 
 impl Coff {
     const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
         section_flags: object::pe::IMAGE_SCN_MEM_READ,
+        min_alignment: alignment::PE_SECTION_ALIGNMENT,
     };
     const DEFAULT_HEADER_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
-        section_flags: object::pe::IMAGE_SCN_LNK_REMOVE,
+        section_flags: object::pe::IMAGE_SCN_MEM_READ.with(object::pe::IMAGE_SCN_LNK_REMOVE),
+        min_alignment: alignment::MIN,
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Coff> {
@@ -1454,13 +1483,37 @@ impl Coff {
         defs[output_section_id::NT_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
         defs[output_section_id::SECTION_HEADERS.as_usize()] = Self::DEFAULT_HEADER_DEFS;
 
+        // Start of regular sections
+        defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TEXT_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RDATA_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DATA_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(BSS_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+
         defs
     };
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
-const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[];
+// TODO: Most of them could use exact match, but that needs to be verified.
+const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
+    SectionRule::prefix_section(".text".as_bytes(), output_section_id::TEXT),
+    SectionRule::prefix_section(".rdata".as_bytes(), output_section_id::RDATA),
+    SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
+    SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
+];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
 
@@ -1476,6 +1529,12 @@ impl SinglePartSectionId {
 
     const fn output_section_id(self) -> OutputSectionId {
         OutputSectionId::from_u32(self as u32)
+    }
+}
+
+impl RegularSectionId {
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(COFF_NUM_SINGLE_PART_SECTIONS).offset(self as usize)
     }
 }
 
