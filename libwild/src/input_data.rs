@@ -1363,14 +1363,6 @@ mod tests {
             Ok(path.to_owned())
         }
 
-        fn remove_file(&self, _path: &Path) -> Result<()> {
-            unreachable!()
-        }
-
-        fn rename_file(&self, _path: &Path, _new_path: &Path) -> Result<()> {
-            unreachable!()
-        }
-
         fn create_output(&self, _path: Arc<Path>, _options: OutputOptions) -> Result<Self::Output> {
             unreachable!()
         }

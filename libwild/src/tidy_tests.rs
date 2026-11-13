@@ -28,7 +28,7 @@ fn check_sources_format() -> Result {
             .flatten()
             .flat_map(|entry| {
                 let path = entry.path();
-                if path.is_dir() {
+                if !path.is_symlink() && path.is_dir() {
                     collect_files(&path, extensions)
                 } else if path.is_file()
                     && path
@@ -99,6 +99,7 @@ fn check_sources_format() -> Result {
 
 #[test]
 fn check_toml_format() -> Result {
+    use std::path::PathBuf;
     use std::process::Command;
     use std::process::Stdio;
 
@@ -111,12 +112,50 @@ fn check_toml_format() -> Result {
         return Ok(());
     }
 
+    fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result {
+        for entry in
+            read_dir(dir).with_context(|| format!("Failed to read directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+
+            if file_type.is_dir() {
+                let file_name = entry.file_name();
+                let Some(file_name) = file_name.to_str() else {
+                    continue;
+                };
+
+                if file_name.starts_with('.')
+                    || ["target", "build", "external_test_suites"].contains(&file_name)
+                {
+                    continue;
+                }
+
+                collect_files(&path, files)?;
+            } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
+    // Note, we find .toml files ourselves rather than using a taplo.toml because taplo doesn't
+    // provide any way to not traverse symlinks and will in fact traverse symlinks indefinitely if
+    // they point back to a parent. Wine, which we use for Windows tests creates such symlinks.
+    let mut files = Vec::new();
+    collect_files(root, &mut files)?;
+    files.sort();
+    assert!(!files.is_empty());
 
     let taplo_out = Command::new("taplo")
         .arg("format")
+        .arg("--no-auto-config")
         .arg("--check")
         .arg("--diff")
+        .args(&files)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -138,7 +177,18 @@ fn check_toml_format() -> Result {
             out.push_str(&stderr);
         }
 
-        bail!("TOML format check failed:\n{out}\nRun `taplo format` to fix it.");
+        if let Some(1) = taplo_out.status.code() {
+            let paths = files
+                .iter()
+                .map(|path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            bail!(
+                "TOML format check failed:\n{out}\nRun `taplo format --no-auto-config {paths}` to fix it."
+            );
+        } else {
+            bail!("`taplo` failed ({}):\n{out}", taplo_out.status);
+        }
     }
 
     Ok(())

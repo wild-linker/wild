@@ -1417,13 +1417,10 @@ pub(crate) fn demangle_symbol_name(name: &str, demangle: bool) -> Cow<'_, str> {
     if !demangle {
         return Cow::Borrowed(name);
     }
-    //TODO(wasm): Remove this ad hoc code using itanium-demangle v0.2.0.
-    let parsed = symbolic_common::Name::from(name);
-    if parsed.detect_language() != symbolic_common::Language::Rust
-        && let Some(demangled) = itanium_demangle::demangle_owned(name)
-    {
+    if let Some(demangled) = itanium_demangle::demangle_owned(name) {
         return Cow::Owned(demangled);
     }
+    let parsed = symbolic_common::Name::from(name);
     match parsed.try_demangle(symbolic_demangle::DemangleOptions::name_only()) {
         Cow::Owned(demangled) => Cow::Owned(demangled),
         Cow::Borrowed(_) => Cow::Borrowed(name),
@@ -3343,6 +3340,7 @@ fn report_disallowed_unresolved_imports<'data>(
             }
 
             let is_unresolved = match sym.kind {
+                object::wasm::SYM_TYPE_FUNCTION if symbol_db.args.import_undefined => false,
                 object::wasm::SYM_TYPE_FUNCTION => {
                     let idx = sym.index as usize;
                     input

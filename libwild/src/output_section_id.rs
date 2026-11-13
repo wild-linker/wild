@@ -32,6 +32,7 @@ use crate::platform::Args;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
 use crate::platform::SectionAttributes as _;
+use crate::platform::SectionFlags as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::timing_phase;
@@ -116,13 +117,28 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     output_kind: OutputKind,
 }
 
-/// Encodes the order of output sections and the start and end of each program segment. This struct
-/// is intended to be used by iterating over it.
+/// Encodes output sections and program segment boundaries in the order used for address layout.
+/// Iterating over this struct yields those events.
 #[derive(Debug)]
 pub(crate) struct OutputOrder<'data> {
+    /// Logical layout order of sections, segment boundaries, and location assignments,
+    /// incorporating linker-script ordering.
     events: Vec<OrderEvent<'data>>,
+
+    /// Order of section contents in the file. Follows logical section order except that deferred
+    /// non-alloc sections are placed last, so changes to their sizes do not affect the placement
+    /// of alloc sections.
+    file_order: Vec<OutputSectionId>,
+
+    /// Index of the first deferred section in `file_order`, or its length if none.
+    deferred_file_start: usize,
+
+    /// Whether each output section is deferred to the end.
+    file_layout_deferred: OutputSectionMap<bool>,
+
     num_location_counters: usize,
     has_custom_phdrs: bool,
+    has_custom_layout: bool,
     custom_phdrs_include_headers: bool,
     first_section: Option<OutputSectionId>,
 }
@@ -148,6 +164,7 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     output_kind: OutputKind,
     has_custom_phdrs: bool,
+    has_custom_layout: bool,
     custom_phdrs_include_headers: bool,
     location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
     last_location_counter: Option<LocationCounterIndex>,
@@ -174,11 +191,16 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             secondary,
             output_kind,
             has_custom_phdrs,
+            has_custom_layout: has_custom_phdrs,
             custom_phdrs_include_headers: false,
             location_counters,
             last_location_counter: location_counters.last().map(|_| 0),
             first_section: None,
         }
+    }
+
+    pub(crate) fn num_location_counters(&self) -> usize {
+        self.location_counters.len()
     }
 
     pub(crate) fn emit_location_counters_up_to(&mut self, lc_end: LocationCounterIndex) {
@@ -251,7 +273,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 .push(OrderEvent::SetSectionAddress(location.clone()));
         }
 
-        if !self.has_custom_phdrs
+        if !self.has_custom_layout
             && let Some(ref loc_info) = section_info.location_info
         {
             let (lc_start, lc_stop) = loc_info.location_counters;
@@ -437,6 +459,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         self.custom_phdrs_include_headers = has_custom_headers;
     }
 
+    pub(crate) fn set_has_custom_layout(&mut self, has_custom_layout: bool) {
+        self.has_custom_layout = has_custom_layout;
+    }
+
     pub(crate) fn build(mut self) -> (OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>) {
         if let Some(lc) = self.last_location_counter {
             self.emit_location_counters(lc, self.location_counters.len());
@@ -454,16 +480,21 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             }
         }
 
-        (
-            OutputOrder {
-                events: self.events,
-                num_location_counters: self.location_counters.len(),
-                has_custom_phdrs: self.has_custom_phdrs,
-                custom_phdrs_include_headers: self.custom_phdrs_include_headers,
-                first_section: self.first_section,
-            },
-            self.program_segments,
-        )
+        let mut order = OutputOrder {
+            events: self.events,
+            file_order: Vec::new(),
+            deferred_file_start: 0,
+            file_layout_deferred: self.output_sections.new_section_map(),
+            num_location_counters: self.location_counters.len(),
+            has_custom_phdrs: self.has_custom_phdrs,
+            has_custom_layout: self.has_custom_layout,
+            custom_phdrs_include_headers: self.custom_phdrs_include_headers,
+            first_section: self.first_section,
+        };
+
+        order.init_file_order(self.output_sections);
+
+        (order, self.program_segments)
     }
 }
 
@@ -512,7 +543,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns the ID of the primary output section for the supplied section ID.
     pub(crate) fn primary_output_section(&self, section_id: OutputSectionId) -> OutputSectionId {
-        self.merge_target(section_id).unwrap_or(section_id)
+        let id = self.merge_target(section_id).unwrap_or(section_id);
+        if !id.is_custom::<P>()
+            && let Some(identity) = self.identity(id)
+            && let Some(custom_id) = self.custom_identity_to_id(identity)
+        {
+            custom_id
+        } else {
+            id
+        }
     }
 
     /// Returns the ID of the section that the specified section should be merged into, if any, or
@@ -756,6 +795,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             location: Some(loc),
             at_location: None,
             is_top_level: true,
+            from_script: false,
         });
 
         let section_id = self.get_or_create_named_section(
@@ -766,6 +806,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             None,
             Vec::new(),
             None,
+            false,
         );
 
         if section_id.is_regular::<P>() {
@@ -798,6 +839,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                         location: Some(linker_script::Expression::Number(address)),
                         at_location: None,
                         is_top_level: true,
+                        from_script: false,
                     });
                 }
             }
@@ -813,10 +855,11 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         fill: Option<[u8; 4]>,
         phdrs: Vec<&'data [u8]>,
         attributes: Option<&linker_script::SectionAttributes>,
+        replace: bool,
     ) -> OutputSectionId {
         let mut resolved_id = None;
         if !self.output_kind.is_partial_link()
-            && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
+            && let Some(builtin_id) = (0..num_built_in_sections::<P>())
                 .map(OutputSectionId::from_usize)
                 .find(|&bid| self.identity(bid) == Some(identity))
         {
@@ -824,23 +867,35 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
 
         let output_id = match self.custom_by_identity.entry(identity) {
-            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
+            hashbrown::hash_map::Entry::Occupied(e) => {
+                if replace {
+                    return Self::create_primary_section(
+                        &mut self.section_infos,
+                        identity,
+                        min_alignment,
+                        region_name,
+                        location_info,
+                        fill,
+                        phdrs,
+                        attributes,
+                    );
+                }
+                *e.get()
+            }
             hashbrown::hash_map::Entry::Vacant(e) => {
                 if let Some(builtin_id) = resolved_id {
                     *e.insert(builtin_id)
                 } else {
-                    let new_id = self.section_infos.add_new(SectionOutputInfo {
-                        kind: SectionKind::Primary(identity),
-                        section_attributes: attributes.map_or_default(|attr| {
-                            P::apply_linker_script_attributes(attr, Default::default())
-                        }),
+                    let new_id = Self::create_primary_section(
+                        &mut self.section_infos,
+                        identity,
                         min_alignment,
-                        location_info: location_info.cloned(),
-                        secondary_order: None,
                         region_name,
+                        location_info,
                         fill,
                         phdrs,
-                    });
+                        attributes,
+                    );
                     return *e.insert(new_id);
                 }
             }
@@ -849,8 +904,22 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         let info = self.section_infos.get_mut(output_id);
         info.min_alignment = info.min_alignment.max(min_alignment);
         info.region_name = region_name.or(info.region_name);
-        if location_info.is_some() {
-            info.location_info = location_info.cloned();
+        if let Some(loc) = location_info {
+            if let Some(existing) = info.location_info.as_mut() {
+                if loc.location.is_some() {
+                    existing.location = loc.location.clone();
+                }
+                if loc.at_location.is_some() {
+                    existing.at_location = loc.at_location.clone();
+                }
+                if loc.from_script {
+                    existing.location_counters = loc.location_counters;
+                    existing.is_top_level = loc.is_top_level;
+                    existing.from_script = true;
+                }
+            } else {
+                info.location_info = Some(loc.clone());
+            }
         }
         info.fill = fill.or(info.fill);
         if !phdrs.is_empty() {
@@ -861,6 +930,29 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         });
 
         output_id
+    }
+
+    fn create_primary_section(
+        section_infos: &mut OutputSectionMap<SectionOutputInfo<'data, P>>,
+        identity: SectionIdentity<'data, P>,
+        min_alignment: Alignment,
+        region_name: Option<&'data [u8]>,
+        location_info: Option<&SectionLocationInfo<'data>>,
+        fill: Option<[u8; 4]>,
+        phdrs: Vec<&'data [u8]>,
+        attributes: Option<&linker_script::SectionAttributes>,
+    ) -> OutputSectionId {
+        section_infos.add_new(SectionOutputInfo {
+            kind: SectionKind::Primary(identity),
+            section_attributes: attributes
+                .map_or_default(|attr| P::apply_linker_script_attributes(attr, Default::default())),
+            min_alignment,
+            location_info: location_info.cloned(),
+            secondary_order: None,
+            region_name,
+            fill,
+            phdrs,
+        })
     }
 
     pub(crate) fn add_secondary_section(
@@ -941,9 +1033,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
         timing_phase!("Compute output order");
 
-        let has_custom_phdrs = linker_scripts
-            .iter()
-            .any(|s| !s.parsed.program_headers.is_empty());
+        let mut has_custom_phdrs = false;
+        let mut has_section_table = false;
+        for script in linker_scripts {
+            has_custom_phdrs |= !script.parsed.program_headers.is_empty();
+            has_section_table |= !script.parsed.ordered_sections.is_empty();
+            if has_custom_phdrs && has_section_table {
+                break;
+            }
+        }
+        let has_custom_layout = has_custom_phdrs || has_section_table;
 
         let mut custom = CustomSectionIds::default();
 
@@ -959,16 +1058,22 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 return;
             }
 
-            if has_custom_phdrs {
-                if !info.phdrs.is_empty() {
+            if has_custom_layout {
+                if (has_custom_phdrs && !info.phdrs.is_empty())
+                    || info.location_info.as_ref().is_some_and(|l| l.from_script)
+                {
                     return;
                 }
 
-                if id == FILE_HEADER || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id) {
+                if id == FILE_HEADER
+                    || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id)
+                    || Some(id) == P::RELRO_PADDING_SECTION_ID
+                {
                     return;
                 } else if id.as_usize() < num_built_in_sections::<P>()
                     && let Some(identity) = self.identity(id)
-                    && self.custom_identity_to_id(identity).is_some()
+                    && let Some(custom_id) = self.custom_identity_to_id(identity)
+                    && custom_id != id
                 {
                     return;
                 }
@@ -977,7 +1082,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
 
             let attr = info.section_attributes;
-            if attr.is_executable() {
+            if !attr.is_alloc() {
+                custom.nonalloc.push(id);
+            } else if attr.is_executable() {
                 custom.exec.push(id);
             } else if attr.is_tls() {
                 if attr.is_no_bits() {
@@ -986,11 +1093,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                     custom.tdata.push(id);
                 }
             } else if !attr.is_writable() {
-                if attr.is_alloc() {
-                    custom.ro.push(id);
-                } else {
-                    custom.nonalloc.push(id);
-                }
+                custom.ro.push(id);
             } else if attr.is_no_bits() {
                 custom.bss.push(id);
             } else {
@@ -999,7 +1102,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         });
 
         if has_custom_phdrs {
-            P::build_custom_output_order_and_program_segments(
+            P::build_output_order_with_phdrs_table(
+                &custom,
+                output_kind,
+                self,
+                &secondary,
+                linker_scripts,
+                location_counters,
+            )
+        } else if has_section_table {
+            P::build_output_order_with_section_table(
                 &custom,
                 output_kind,
                 self,
@@ -1166,6 +1278,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 None,
                 Vec::new(),
                 None,
+                false,
             )
         };
         add_name("ro");
@@ -1213,6 +1326,10 @@ impl<'data> OutputOrder<'data> {
         self.has_custom_phdrs
     }
 
+    pub(crate) fn has_custom_layout(&self) -> bool {
+        self.has_custom_layout
+    }
+
     pub(crate) fn custom_phdrs_include_headers(&self) -> bool {
         self.custom_phdrs_include_headers
     }
@@ -1227,6 +1344,66 @@ impl<'data> OutputOrder<'data> {
             .as_ref()?
             .location
             .as_ref()
+    }
+
+    pub(crate) fn file_order(&self) -> &[OutputSectionId] {
+        &self.file_order
+    }
+
+    pub(crate) fn deferred_file_sections(&self) -> &[OutputSectionId] {
+        &self.file_order[self.deferred_file_start..]
+    }
+
+    pub(crate) fn is_file_layout_deferred(&self, section_id: OutputSectionId) -> bool {
+        *self.file_layout_deferred.get(section_id)
+    }
+
+    fn init_file_order<P: Platform>(&mut self, output_sections: &OutputSections<'data, P>) {
+        let is_regular =
+            |id| id != FILE_HEADER && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id);
+
+        let is_alloc = |id| {
+            output_sections
+                .section_flags(output_sections.primary_output_section(id))
+                .is_alloc()
+        };
+
+        let last_alloc_idx = if self.has_custom_layout {
+            self.events.iter().rposition(|event| {
+                matches!(event, OrderEvent::Section(id) if is_regular(*id) && is_alloc(*id))
+            })
+        } else {
+            None
+        };
+
+        let mut deferred = Vec::new();
+        let mut seen_alloc = false;
+
+        for (event_idx, event) in self.events.iter().enumerate() {
+            let OrderEvent::Section(id) = *event else {
+                continue;
+            };
+
+            let regular = is_regular(id);
+            let alloc = is_alloc(id);
+
+            if regular && alloc {
+                seen_alloc = true;
+            }
+
+            let defer =
+                regular && !alloc && last_alloc_idx.map_or(!seen_alloc, |last| event_idx < last);
+            *self.file_layout_deferred.get_mut(id) = defer;
+
+            if defer {
+                deferred.push(id);
+            } else {
+                self.file_order.push(id);
+            }
+        }
+
+        self.deferred_file_start = self.file_order.len();
+        self.file_order.extend(deferred);
     }
 
     pub(crate) fn display<'a, P: Platform>(
@@ -1330,6 +1507,7 @@ pub(crate) struct SectionLocationInfo<'data> {
     pub(crate) location: Option<Expression<'data>>,
     pub(crate) at_location: Option<Expression<'data>>,
     pub(crate) is_top_level: bool,
+    pub(crate) from_script: bool,
 }
 
 pub(crate) const fn num_built_in_sections<P: Platform>() -> usize {

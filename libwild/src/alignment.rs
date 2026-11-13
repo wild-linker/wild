@@ -45,6 +45,9 @@ pub(crate) const STACK_ALIGNMENT: Alignment = Alignment { exponent: 4 };
 pub(crate) const MACHO_PAGE_ALIGNMENT: Alignment = Alignment { exponent: 14 };
 pub(crate) const MACHO_PAGE_ALIGNMENT_VALUE: u64 = MACHO_PAGE_ALIGNMENT.value();
 
+// PE/COFF specific
+pub(crate) const PE_SECTION_ALIGNMENT: Alignment = Alignment { exponent: 12 };
+
 impl Alignment {
     pub(crate) fn new(raw: u64) -> Result<Self> {
         if !raw.is_power_of_two() {

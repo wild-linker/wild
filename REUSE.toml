@@ -49,7 +49,6 @@ path = [
   "nix/**",
   "rust-toolchain.toml",
   "rustfmt.toml",
-  "taplo.toml",
   "test-config-ci.toml",
   "test-config.toml.sample",
   "tests/**",

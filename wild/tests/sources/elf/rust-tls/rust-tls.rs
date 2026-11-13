@@ -2,8 +2,6 @@
 // LLD 23 removes the high-part TLSLE addition when the offset fits in 12 bits.
 // TODO: Implement this relaxation in Wild.
 //#DiffIgnore:rel.missing-opt.R_AARCH64_TLSLE_ADD_TPREL_HI12.ReplaceWithNop.*
-// LLD leaves R_X86_64_GOTPCREL loads unrelaxed.
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCREL.MovIndirectToLea.dynamic-pie
 //#RequiresNightlyRustc:true
 // TODO: Investigate the following differences, which show up on risc-v
 //#DiffIgnore:dynsym.*

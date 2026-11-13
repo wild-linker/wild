@@ -4,6 +4,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::coff::CoffArgs;
 use crate::bail;
+use crate::coff_writer;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
@@ -21,17 +22,24 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::CommonSymbol;
+use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
+use crate::platform::SectionFlags as _;
 use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
+use linker_utils::coff::secnames::BSS_SECTION_NAME;
+use linker_utils::coff::secnames::DATA_SECTION_NAME;
+use linker_utils::coff::secnames::RDATA_SECTION_NAME;
+use linker_utils::coff::secnames::TEXT_SECTION_NAME;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
@@ -67,8 +75,26 @@ pub(crate) struct SymtabEntry {
     is_hidden: bool,
 }
 
+pub(crate) type DosHeader = object::pe::ImageDosHeader;
+pub(crate) type NtHeader = object::pe::ImageNtHeaders64;
 pub(crate) type CoffFileHeader = object::pe::ImageFileHeader;
 pub(crate) type SectionHeader = object::pe::ImageSectionHeader;
+
+// `object` currently skips directory entries, so the sizes are off. This might change in the
+// future.
+pub(crate) const SIZE_OF_DIRECTORY_ENTRIES: usize =
+    object::pe::IMAGE_NUMBEROF_DIRECTORY_ENTRIES * size_of::<object::pe::ImageDataDirectory>();
+const _: () = assert!(SIZE_OF_DIRECTORY_ENTRIES == 128);
+pub(crate) const SIZE_OF_OPTIONAL_HEADER64: usize =
+    size_of::<object::pe::ImageOptionalHeader64>() + SIZE_OF_DIRECTORY_ENTRIES;
+const _: () = assert!(
+    SIZE_OF_OPTIONAL_HEADER64
+        == size_of::<object::pe::ImageOptionalHeader64>() + SIZE_OF_DIRECTORY_ENTRIES
+);
+pub(crate) const SIZE_OF_NT_HEADERS64: usize = size_of::<NtHeader>() + SIZE_OF_DIRECTORY_ENTRIES;
+const _: () = assert!(
+    SIZE_OF_NT_HEADERS64 == size_of::<object::pe::ImageNtHeaders64>() + SIZE_OF_DIRECTORY_ENTRIES
+);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelocationType {}
@@ -79,14 +105,22 @@ pub(crate) struct Coff;
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum SinglePartSectionId {
-    Count = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    DosStub = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    NtHeader,
+    SectionHeaders,
+
     // Must be last.
-    // Count,
+    Count,
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum RegularSectionId {
+    Text,
+    Rdata,
+    Data,
+    Bss,
+
     // Must be last.
     Count,
 }
@@ -95,6 +129,31 @@ const COFF_NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
 const COFF_NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
 const COFF_NUM_BUILT_IN_SECTIONS: usize =
     COFF_NUM_SINGLE_PART_SECTIONS as usize + COFF_NUM_BUILT_IN_REGULAR_SECTIONS;
+
+pub(crate) mod part_id {
+    use super::SinglePartSectionId;
+    use crate::part_id::PartId;
+
+    pub(crate) const DOS_STUB: PartId = SinglePartSectionId::DosStub.part_id();
+    pub(crate) const NT_HEADER: PartId = SinglePartSectionId::NtHeader.part_id();
+    pub(crate) const SECTION_HEADERS: PartId = SinglePartSectionId::SectionHeaders.part_id();
+}
+
+pub(crate) mod output_section_id {
+    use super::RegularSectionId;
+    use super::SinglePartSectionId;
+    use crate::output_section_id::OutputSectionId;
+
+    pub(crate) const DOS_STUB: OutputSectionId = SinglePartSectionId::DosStub.output_section_id();
+    pub(crate) const NT_HEADER: OutputSectionId = SinglePartSectionId::NtHeader.output_section_id();
+    pub(crate) const SECTION_HEADERS: OutputSectionId =
+        SinglePartSectionId::SectionHeaders.output_section_id();
+
+    pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
+    pub(crate) const RDATA: OutputSectionId = RegularSectionId::Rdata.output_section_id();
+    pub(crate) const DATA: OutputSectionId = RegularSectionId::Data.output_section_id();
+    pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
+}
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -174,10 +233,19 @@ impl Platform for Coff {
     const NUM_SINGLE_PART_SECTIONS: u32 = COFF_NUM_SINGLE_PART_SECTIONS;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = COFF_NUM_BUILT_IN_REGULAR_SECTIONS;
 
+    const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
+    const RODATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::RDATA);
+    const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
+    const BSS_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::BSS);
+
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
 
-    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] =
-        &[crate::output_section_id::FILE_HEADER];
+    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] = &[
+        crate::output_section_id::FILE_HEADER,
+        output_section_id::DOS_STUB,
+        output_section_id::NT_HEADER,
+        output_section_id::SECTION_HEADERS,
+    ];
 
     type File<'data> = File<'data>;
     type FileFlags = u32;
@@ -225,15 +293,16 @@ impl Platform for Coff {
     type VerneedTable<'data> = VerneedTable<'data>;
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
-        _output: &crate::file_writer::Output<F>,
-        _layout: &layout::Layout<'data, Self>,
+        output: &crate::file_writer::Output<F>,
+        layout: &layout::Layout<'data, Self>,
     ) -> Result {
-        // output.write(layout, coff_writer::write::<A>)
-        todo!()
+        output.write(layout, coff_writer::write::<A>)
     }
 
-    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
-        todo!()
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+        Self::SectionAttributes {
+            flags: header.characteristics.get(LittleEndian),
+        }
     }
 
     fn apply_force_keep_sections(
@@ -324,32 +393,40 @@ impl Platform for Coff {
     }
 
     fn gc_unit_for_symbol<'data>(
-        _object: &Self::File<'data>,
-        _symbol: &Self::SymtabEntry,
-        _symbol_index: object::SymbolIndex,
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
+        symbol_index: object::SymbolIndex,
     ) -> Result<Option<Self::GcUnit>> {
-        todo!()
+        Ok(object
+            .symbol_section(symbol, symbol_index)?
+            .map(SectionGcUnit::new))
     }
 
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _scope: &rayon::Scope<'scope>,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        object.activate_section_gc::<A>(common, resources, queue, scope)
     }
 
     fn load_gc_unit<'data, 'scope, A: Arch<Platform = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _unit: Self::GcUnit,
-        _scope: &rayon::Scope<'scope>,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        object.handle_section_load_request::<A>(
+            common,
+            resources,
+            queue,
+            unit.section_index(),
+            scope,
+        )
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
@@ -361,7 +438,7 @@ impl Platform for Coff {
         _section_index: SectionIndex,
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn create_dynamic_symbol_definition<'data>(
@@ -379,11 +456,11 @@ impl Platform for Coff {
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        todo!()
+        &[ProgramSegmentDef {}]
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        todo!()
+        &[]
     }
 
     fn program_segment_should_include_section(
@@ -392,7 +469,7 @@ impl Platform for Coff {
         _section_id: OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        todo!()
+        true
     }
 
     fn create_linker_defined_symbols(
@@ -411,9 +488,11 @@ impl Platform for Coff {
         Self::SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                section_attributes: SectionAttributes {},
+                section_attributes: SectionAttributes {
+                    flags: d.section_flags,
+                },
                 kind: d.kind,
-                min_alignment: alignment::MIN,
+                min_alignment: d.min_alignment,
                 location_info: None,
                 secondary_order: None,
                 region_name: None,
@@ -432,7 +511,7 @@ impl Platform for Coff {
         'data: 'files,
         'data: 'states,
     {
-        todo!()
+        Ok(())
     }
 
     fn create_layout_ext<'data>(
@@ -440,7 +519,7 @@ impl Platform for Coff {
         _resolutions: &layout::SymbolResolutions<Self>,
         _group_layouts: &[layout::GroupLayout<'data, Self>],
     ) -> Result<Self::LayoutExt<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
@@ -462,7 +541,7 @@ impl Platform for Coff {
         _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn new_epilogue_layout<'data>(
@@ -471,7 +550,6 @@ impl Platform for Coff {
         _dynamic_symbol_definitions: &mut [layout::DynamicSymbolDefinition<'data, Self>],
         _group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
-        todo!()
     }
 
     fn apply_non_addressable_indexes_epilogue(
@@ -494,7 +572,7 @@ impl Platform for Coff {
         _properties: &Self::LayoutExt<'data>,
         _symbol_db: &SymbolDb<'data, Self>,
     ) -> Result<()> {
-        todo!()
+        Ok(())
     }
 
     fn finalise_sizes_all<'data>(
@@ -511,7 +589,7 @@ impl Platform for Coff {
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[layout::DynamicSymbolDefinition<Self>],
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn is_symbol_non_interposable<'data>(
@@ -529,13 +607,17 @@ impl Platform for Coff {
 
     fn allocate_header_sizes<'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
-        _sizes: &mut OutputSectionPartMap<u64>,
-        _header_info: &layout::HeaderInfo,
+        sizes: &mut OutputSectionPartMap<u64>,
+        header_info: &layout::HeaderInfo,
         _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
     ) {
+        sizes.increment(crate::part_id::FILE_HEADER, size_of::<DosHeader>() as u64);
+        sizes.increment(part_id::DOS_STUB, DOS_STUB.len() as u64);
+        sizes.increment(part_id::NT_HEADER, SIZE_OF_NT_HEADERS64 as u64);
+        sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -544,7 +626,7 @@ impl Platform for Coff {
         _symbol_id: crate::symbol_db::SymbolId,
         _flags: crate::value_flags::ValueFlags,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_resolution(
@@ -562,7 +644,7 @@ impl Platform for Coff {
         _symbol_db: &SymbolDb<'data, Self>,
         _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_internal_symbol(
@@ -582,19 +664,24 @@ impl Platform for Coff {
         _memory_offsets: &mut OutputSectionPartMap<u64>,
         _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> Result<Self::PreludeLayoutExt> {
-        todo!()
+        Ok(())
     }
 
     fn create_resolution(
-        _flags: crate::value_flags::ValueFlags,
-        _raw_value: u64,
-        _dynamic_symbol_index: Option<std::num::NonZeroU32>,
+        flags: crate::value_flags::ValueFlags,
+        raw_value: u64,
+        dynamic_symbol_index: Option<std::num::NonZeroU32>,
         _memory_offsets: &mut OutputSectionPartMap<u64>,
         _args: &<Self as Platform>::Args,
         _output_kind: crate::OutputKind,
         _is_linker_script_symbol: bool,
     ) -> layout::Resolution<Self> {
-        todo!()
+        layout::Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            flags,
+            format_specific: (),
+        }
     }
 
     fn raw_symbol_name<'data>(
@@ -617,7 +704,7 @@ impl Platform for Coff {
     }
 
     fn build_output_order_and_program_segments<'data>(
-        _custom: &crate::output_section_id::CustomSectionIds,
+        custom: &crate::output_section_id::CustomSectionIds,
         output_kind: crate::output_kind::OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<Vec<OutputSectionId>>,
@@ -636,6 +723,23 @@ impl Platform for Coff {
         );
 
         builder.add_section(crate::output_section_id::FILE_HEADER);
+        builder.add_section(output_section_id::DOS_STUB);
+        builder.add_section(output_section_id::NT_HEADER);
+        builder.add_section(output_section_id::SECTION_HEADERS);
+
+        builder.add_section(output_section_id::TEXT);
+        builder.add_sections(&custom.exec);
+
+        builder.add_section(output_section_id::RDATA);
+        builder.add_sections(&custom.ro);
+        builder.add_section(output_section_id::DATA);
+        builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::BSS);
+        builder.add_sections(&custom.bss);
+        builder.add_sections(&custom.nonalloc);
+        builder.add_sections(&custom.tbss);
+        builder.add_sections(&custom.tdata);
+
         builder.build()
     }
 
@@ -667,7 +771,7 @@ impl Platform for Coff {
     fn new_object_layout_state_ext<'data>(
         _input: Self::ResolvedObjectExt<'data>,
     ) -> Self::ObjectLayoutStateExt<'data> {
-        todo!()
+        Self::ObjectLayoutStateExt::default()
     }
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
@@ -802,6 +906,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         if symbol.is_aux {
             bail!("aux symbol has no name")
         }
+        // TODO: symbol lookup could be avoided by adding `'data` lifetime to `SymtabEntry`
         let sym = self.symbol_table.symbol(symbol.index)?;
         Ok(sym.name(self.symbol_table.strings())?)
     }
@@ -896,8 +1001,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.raw_section_data(section)
     }
 
-    fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> Result {
-        todo!()
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+        let bytes = self.raw_section_data(section)?;
+        out.copy_from_slice(bytes);
+        Ok(())
     }
 
     fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
@@ -975,11 +1082,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        todo!()
+        self.characteristics.get(LittleEndian).is_alloc()
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_MEM_WRITE)
     }
 
     fn is_executable(&self) -> bool {
@@ -993,12 +1102,11 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_merge_section(&self) -> bool {
-        // TODO: String merging isn't common on Windows, but we might want to support it one day.
         false
     }
 
     fn is_strings(&self) -> bool {
-        todo!()
+        false
     }
 
     fn should_retain(&self) -> bool {
@@ -1012,7 +1120,6 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_group(&self) -> bool {
-        // TODO: Might be relevant for COMDATs
         false
     }
 
@@ -1021,11 +1128,15 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_prog_bits(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_CNT_INITIALIZED_DATA)
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        self.characteristics
+            .get(LittleEndian)
+            .contains(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
     }
 
     fn is_null(&self) -> bool {
@@ -1056,7 +1167,7 @@ impl platform::SectionType for SectionType {
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
-        todo!()
+        self.contains(object::pe::IMAGE_SCN_MEM_READ)
     }
 }
 
@@ -1190,52 +1301,58 @@ impl std::fmt::Display for SymDebug<'_> {
 pub(crate) struct ObjectLayoutStateExt {}
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionAttributes {}
+pub(crate) struct SectionAttributes {
+    pub(crate) flags: SectionFlags,
+}
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Coff;
 
-    fn merge(&mut self, _rhs: Self) {
-        todo!()
+    fn merge(&mut self, rhs: Self) {
+        self.flags |= rhs.flags;
     }
 
     fn apply(
         &self,
-        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        _section_id: OutputSectionId,
+        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
+        section_id: OutputSectionId,
     ) {
+        let info = output_sections.section_infos.get_mut(section_id);
+
+        info.section_attributes.flags |= self.flags;
     }
 
     fn is_null(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_alloc(&self) -> bool {
-        todo!()
+        self.flags.is_alloc()
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.flags.contains(object::pe::IMAGE_SCN_MEM_EXECUTE)
     }
 
     fn is_tls(&self) -> bool {
-        todo!()
+        false
     }
 
     fn occupies_only_tls_address_space(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        self.flags.contains(object::pe::IMAGE_SCN_MEM_WRITE)
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        self.flags
+            .contains(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
     }
 
     fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
-        todo!()
+        self.flags
     }
 
     fn ty(&self) -> <Self::Platform as Platform>::SectionType {
@@ -1309,19 +1426,19 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn always_keep(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_loadable(self) -> bool {
-        todo!()
+        true
     }
 
     fn is_stack(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_tls(self) -> bool {
-        todo!()
+        false
     }
 
     fn order_key(self) -> usize {
@@ -1338,11 +1455,20 @@ impl std::fmt::Display for ProgramSegmentDef {
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static, Coff>,
+    pub(crate) section_flags: SectionFlags,
+    pub(crate) min_alignment: Alignment,
 }
 
 impl Coff {
     const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
+        section_flags: object::pe::IMAGE_SCN_MEM_READ,
+        min_alignment: alignment::PE_SECTION_ALIGNMENT,
+    };
+    const DEFAULT_HEADER_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
+        kind: Self::primary_section(&[]),
+        section_flags: object::pe::IMAGE_SCN_MEM_READ.with(object::pe::IMAGE_SCN_LNK_REMOVE),
+        min_alignment: alignment::MIN,
     };
 
     const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Coff> {
@@ -1352,8 +1478,26 @@ impl Coff {
     pub(crate) const SECTION_DEFINITIONS: [BuiltInSectionDetails; COFF_NUM_BUILT_IN_SECTIONS] = {
         let mut defs = [Self::DEFAULT_DEFS; COFF_NUM_BUILT_IN_SECTIONS];
 
-        defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-            kind: Self::primary_section(b""),
+        defs[crate::output_section_id::FILE_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::DOS_STUB.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::NT_HEADER.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+        defs[output_section_id::SECTION_HEADERS.as_usize()] = Self::DEFAULT_HEADER_DEFS;
+
+        // Start of regular sections
+        defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TEXT_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RDATA_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DATA_SECTION_NAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(BSS_SECTION_NAME),
             ..Self::DEFAULT_DEFS
         };
 
@@ -1363,6 +1507,42 @@ impl Coff {
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
-const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[];
+// TODO: Most of them could use exact match, but that needs to be verified.
+const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
+    SectionRule::prefix_section(".text".as_bytes(), output_section_id::TEXT),
+    SectionRule::prefix_section(".rdata".as_bytes(), output_section_id::RDATA),
+    SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
+    SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
+];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
+
+fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    object::pe::IMAGE_SIZEOF_SECTION_HEADER as u64
+        * u64::from(header_info.num_output_sections_with_content)
+}
+
+impl SinglePartSectionId {
+    const fn part_id(self) -> PartId {
+        PartId::from_u32(self as u32)
+    }
+
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(self as u32)
+    }
+}
+
+impl RegularSectionId {
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(COFF_NUM_SINGLE_PART_SECTIONS).offset(self as usize)
+    }
+}
+
+// The "This program cannot be run in MS-DOS mode." message. There is no good way to combine raw
+// bytes (assembly) with readable text without involving additional dependencies.
+pub(crate) const DOS_STUB: &[u8] = &[
+    0x0e, 0x1f, 0xba, 0x0e, 0x00, 0xb4, 0x09, 0xcd, 0x21, 0xb8, 0x01, 0x4c, 0xcd, 0x21, 0x54, 0x68,
+    0x69, 0x73, 0x20, 0x70, 0x72, 0x6f, 0x67, 0x72, 0x61, 0x6d, 0x20, 0x63, 0x61, 0x6e, 0x6e, 0x6f,
+    0x74, 0x20, 0x62, 0x65, 0x20, 0x72, 0x75, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x44, 0x4f, 0x53, 0x20,
+    0x6d, 0x6f, 0x64, 0x65, 0x2e, 0x24, 0x00, 0x00,
+];

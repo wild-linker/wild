@@ -31,8 +31,9 @@
 //!
 //! LinkerWorkingDirectory:{path} Sets the linker working directory. Supports `$OUT_DIR`.
 //!
-//! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
-//! such as `-lc` that need to appear after objects that reference them.
+//! PostLinkArgs:... Like LinkArgs, but appended after input objects on the final link. Useful for
+//! archive libraries such as `-lc` that need to appear after objects that reference them. Not
+//! applied when linking an intermediate shared object or relocatable object.
 //!
 //! LinkSoArgs:... Appends additional arguments when linking a shared object. Note that LinkArgs
 //! is still applied. LinkSoArgs is applied after LinkArgs.
@@ -198,6 +199,10 @@
 //! WasmPreload:{name}={filename} Instantiates `filename` under `name` before the linked binary, so
 //! the binary can import its exports. Use this to supply a shared memory and check that a store in
 //! one module is visible in the other. May be repeated. `filename` is resolved like WasmRunner.
+//!
+//! InMemoryFileSystem:{bool} Defaults to true. Only affects linking when libwild is used directly.
+//! Uses a custom FileSystem implementation. Set WILD_TEST_IN_MEMORY_FS=0 to disable this for all
+//! tests.
 //!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
@@ -426,6 +431,7 @@
 //! mem-size=N: Type: Integer. Asserts the mem size of the segment.
 
 mod external_tests;
+mod test_file_system;
 
 use bitflags::bitflags;
 use gimli::Reader as _;
@@ -513,13 +519,22 @@ fn main() -> Result<std::process::ExitCode> {
 fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter, test_config: &TestConfig) -> Result {
     let host_arch = get_host_architecture();
 
-    for platform in [PlatformKind::Elf, PlatformKind::MachO, PlatformKind::Wasm] {
+    for platform in [
+        PlatformKind::Elf,
+        PlatformKind::MinGW,
+        PlatformKind::MachO,
+        PlatformKind::Wasm,
+    ] {
         // Right now, the Mach-O provided Clang and the ld linker do not support the ELF format.
         if platform == PlatformKind::Elf && cfg!(target_os = "macos") {
             continue;
         }
 
         if platform == PlatformKind::MachO && !cfg!(feature = "macho") {
+            continue;
+        }
+
+        if platform == PlatformKind::MinGW && !cfg!(feature = "coff") {
             continue;
         }
 
@@ -1265,6 +1280,7 @@ impl Linker {
             &linker_args,
             config,
             cross_arch,
+            false,
         )?;
 
         if !command.can_skip() {
@@ -1428,6 +1444,7 @@ impl Architecture {
                 }
             }
             PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
+            PlatformKind::MinGW => format!("{}-w64-mingw32", self.triple_arch()),
             PlatformKind::Wasm => "wasm32".to_owned(),
         }
     }
@@ -1592,6 +1609,7 @@ struct Config {
     wild_extra_linker_args: ArgumentSet,
     linker_env: HashMap<String, String>,
     linker_working_directory: Option<String>,
+    in_memory_file_system: bool,
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
@@ -1703,6 +1721,7 @@ enum Mode {
 enum PlatformKind {
     Elf,
     MachO,
+    MinGW,
     Wasm,
 }
 
@@ -2512,6 +2531,7 @@ impl Config {
             wild_extra_linker_args: ArgumentSet::empty(),
             linker_env: Default::default(),
             linker_working_directory: None,
+            in_memory_file_system: true,
             diff_ignore: Default::default(),
             reference_linkers: None,
             section_equiv: Default::default(),
@@ -3100,6 +3120,7 @@ fn process_directive(
         "DiffEnabled" => config.should_diff = arg.parse()?,
         "DiffMatchAny" => config.diff_match_any = arg.parse()?,
         "RunEnabled" => config.should_run = arg.parse()?,
+        "InMemoryFileSystem" => config.in_memory_file_system = arg.parse()?,
         "RunDynSym" => {
             config.run_dyn_sym = if arg.is_empty() {
                 None
@@ -3409,8 +3430,7 @@ impl ProgramInputs {
             let _ = std::fs::remove_file(linker.output_path(self.name(), config));
         }
 
-        let link_output =
-            linker.link_with_output_reuse(self.name(), &inputs, config, cross_arch)?;
+        let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
         if config.test_output_to_dev_null {
             let temp_dir = tempfile::tempdir()?;
@@ -3777,6 +3797,12 @@ impl LinkOutput {
                 c.arg(format!("LD_LIBRARY_PATH={}", extra_lib_paths.join(":")));
             }
 
+            c.arg(&self.binary);
+            c
+        } else if self.command.config.platform == PlatformKind::MinGW {
+            // TODO: move this away to avoid harming single test run time
+            prepare_wine();
+            let mut c = Command::new("wine");
             c.arg(&self.binary);
             c
         } else {
@@ -4290,6 +4316,11 @@ fn get_c_compiler(
             "gcc" | "g++",
             CLanguage::Cpp,
         ) => Ok(format!("{}-g++", arch.cross_triplet())),
+        // TODO: This is ad-hoc
+        (_, "x86_64-w64-mingw32-gcc", lang) => Ok(match lang {
+            CLanguage::C => "x86_64-w64-mingw32-gcc".to_string(),
+            CLanguage::Cpp => "x86_64-w64-mingw32-g++".to_string(),
+        }),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
 }
@@ -4414,6 +4445,8 @@ fn build_obj(
 
             if config.platform == PlatformKind::MachO {
                 command.arg("-mmacosx-version-min=11.0");
+            } else if config.platform == PlatformKind::MinGW {
+                command.args(["-ffreestanding", "-mno-stack-arg-probe"]);
             }
         }
         CompilerKind::Rust => {
@@ -4923,44 +4956,6 @@ fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 impl Linker {
-    /// As for `link`, but on Mac, the old output file might be kept, but only if the linker first
-    /// produced an identical file. Reusing the old file allows a cache hit on whatever virus
-    /// scanning macOS is doing.
-    fn link_with_output_reuse(
-        &self,
-        basename: &str,
-        inputs: &[LinkerInput],
-        config: &Config,
-        cross_arch: Option<Architecture>,
-    ) -> Result<LinkOutput> {
-        let output_path = self.output_path(basename, config);
-        let preserve_output = cfg!(target_os = "macos")
-            && self.is_wild()
-            && config.platform == PlatformKind::MachO
-            && std::fs::symlink_metadata(&output_path)
-                .is_ok_and(|metadata| metadata.file_type().is_file());
-
-        if !preserve_output {
-            return self.link(basename, inputs, config, cross_arch);
-        }
-
-        let saved_dir = tempfile::tempdir_in(output_path.parent().unwrap())?;
-        let saved_path = saved_dir.path().join("previous-output");
-        std::fs::rename(&output_path, &saved_path)?;
-
-        let link_output = self.link(basename, inputs, config, cross_arch)?;
-
-        let old_content = std::fs::read(&saved_path)?;
-        if std::fs::read(&output_path).is_ok_and(|new_content| new_content == old_content)
-            && std::fs::metadata(&output_path)?.permissions()
-                == std::fs::metadata(&saved_path)?.permissions()
-        {
-            std::fs::rename(&saved_path, &output_path)?;
-        }
-
-        Ok(link_output)
-    }
-
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
     fn link(
@@ -4977,12 +4972,19 @@ impl Linker {
                 .args
                 .extend(config.wild_extra_linker_args.args.iter().cloned());
         }
-        let mut command =
-            LinkCommand::new(self, inputs, &output_path, &linker_args, config, cross_arch)?;
+        let mut command = LinkCommand::new(
+            self,
+            inputs,
+            &output_path,
+            &linker_args,
+            config,
+            cross_arch,
+            true,
+        )?;
         let messages = if command.can_skip() {
             command.read_messages()?
         } else {
-            let messages = command.run(config)?;
+            let messages = command.run_with_output_reuse(config)?;
             command.write_messages(&messages)?;
             command.write_input_hashes()?;
             messages
@@ -5121,6 +5123,7 @@ impl LinkCommand {
         linker_args: &ArgumentSet,
         config: &Config,
         cross_arch: Option<Architecture>,
+        include_post_args: bool,
     ) -> Result<LinkCommand> {
         let replay_linker = linker;
         // Compiler drivers translate their options into portable linker arguments. Always use
@@ -5260,6 +5263,13 @@ impl LinkCommand {
                                 command.arg("11.0");
                             }
                         }
+                        PlatformKind::MinGW => {
+                            command.arg("-m");
+                            // TODO: `arch` doesn't support platforms other than ELF
+                            // .arg(arch.emulation_name());
+                            command.arg("i386pep");
+                            command.arg("--gc-sections");
+                        }
                         PlatformKind::Wasm => {
                             let primary_wat = config
                                 .test_src_dir
@@ -5289,7 +5299,9 @@ impl LinkCommand {
             }
 
             add_inputs_to_command(config, inputs, &mut command);
-            command.args(&config.post_linker_args.args);
+            if include_post_args {
+                command.args(&config.post_linker_args.args);
+            }
 
             if config.platform == PlatformKind::Elf {
                 ensure!(
@@ -5370,6 +5382,81 @@ impl LinkCommand {
         Ok(link_command)
     }
 
+    fn runs_in_process(&self, config: &Config) -> bool {
+        self.linker.is_wild()
+            && self.invocation_mode == LinkerInvocationMode::Direct
+            && config.driver_mode.is_none()
+            && config.can_use_wild_in_process()
+    }
+
+    fn uses_in_memory_file_system(&self, config: &Config) -> bool {
+        self.runs_in_process(config)
+            && config.in_memory_file_system
+            && std::env::var("WILD_TEST_IN_MEMORY_FS").as_deref() != Ok("0")
+    }
+
+    fn run_internal(
+        &self,
+        config: &Config,
+        file_system: impl libwild::FileSystem,
+    ) -> Result<LinkerMessages> {
+        let args = self
+            .command
+            .get_args()
+            .map(|a| a.to_str())
+            .collect::<Option<Vec<&str>>>()
+            .context("Linker args must be valid utf-8")?;
+        let get_args = || std::iter::once("wild").chain(args.iter().copied());
+        let mut parsed_args = libwild::Args::new(get_args)?;
+        parsed_args.set_version("integration-test");
+        let warnings = Arc::new(Mutex::new(String::new()));
+        parsed_args.on_warning({
+            let warnings = warnings.clone();
+            Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
+        });
+        parsed_args.parse(get_args, &file_system)?;
+
+        // This call is expected to error for all but the first call.
+        let _ = libwild::setup_tracing(&parsed_args);
+        libwild::run_with_file_system(parsed_args, file_system)
+            .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
+
+        let warnings = warnings.lock().unwrap();
+        self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
+        Ok(LinkerMessages {
+            stdout: String::new(),
+            stderr: warnings.clone(),
+        })
+    }
+
+    // Retaining identical files avoids repeated macOS virus scans for links using the OS
+    // filesystem.
+    fn run_with_output_reuse(&mut self, config: &Config) -> Result<LinkerMessages> {
+        let preserve_output = cfg!(target_os = "macos")
+            && self.linker.is_wild()
+            && config.platform == PlatformKind::MachO
+            && !config.test_relink_after_run
+            && !self.uses_in_memory_file_system(config)
+            && std::fs::symlink_metadata(&self.output_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+        if !preserve_output {
+            return self.run(config);
+        }
+
+        let saved_dir = tempfile::tempdir_in(self.output_path.parent().unwrap())?;
+        let saved_path = saved_dir.path().join("previous-output");
+        std::fs::rename(&self.output_path, &saved_path)?;
+        let messages = self.run(config)?;
+        let old_content = std::fs::read(&saved_path)?;
+        if std::fs::read(&self.output_path).is_ok_and(|new_content| new_content == old_content)
+            && std::fs::metadata(&self.output_path)?.permissions()
+                == std::fs::metadata(&saved_path)?.permissions()
+        {
+            std::fs::rename(&saved_path, &self.output_path)?;
+        }
+        Ok(messages)
+    }
+
     fn run(&mut self, config: &Config) -> Result<LinkerMessages> {
         if let Some(mode) = config.driver_mode {
             match mode {
@@ -5377,43 +5464,17 @@ impl LinkCommand {
             }
         }
 
-        // If we're linking with wild and we're going to be invoking the linker directly, then just
-        // use libwild as a library. This is marginally faster, since we avoid the process startup
-        // costs. It also allows us to exercise wild as a library. We still exercise wild from the
-        // command-line via the shell-script-based tests.
-        if self.linker.is_wild()
-            && self.invocation_mode == LinkerInvocationMode::Direct
-            && config.can_use_wild_in_process()
-        {
-            let args = self
-                .command
-                .get_args()
-                .map(|a| a.to_str())
-                .collect::<Option<Vec<&str>>>()
-                .context("Linker args must be valid utf-8")?;
-
-            let get_args = || std::iter::once("wild").chain(args.iter().copied());
-            let mut parsed_args = libwild::Args::new(get_args)?;
-            parsed_args.set_version("integration-test");
-            let warnings = Arc::new(Mutex::new(String::new()));
-            parsed_args.on_warning({
-                let warnings = warnings.clone();
-                Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
-            });
-            parsed_args.parse(get_args, &libwild::OsFileSystem)?;
-
-            // This call is expected to error for all but the first call.
-            let _ = libwild::setup_tracing(&parsed_args);
-            libwild::run(parsed_args)
-                .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
-
-            let warnings = warnings.lock().unwrap();
-            self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
-
-            return Ok(LinkerMessages {
-                stdout: String::new(),
-                stderr: warnings.clone(),
-            });
+        if self.runs_in_process(config) {
+            return if self.uses_in_memory_file_system(config) {
+                let file_system = test_file_system::TestFileSystem::default();
+                let messages = self.run_internal(config, file_system.clone()).context(
+                    "Rerun with WILD_TEST_IN_MEMORY_FS=0 to retain files from a failed link",
+                )?;
+                file_system.persist()?;
+                Ok(messages)
+            } else {
+                self.run_internal(config, libwild::OsFileSystem)
+            };
         }
 
         let output = self
@@ -5940,6 +6001,7 @@ impl Assertions {
                 self.verify_program_headers(&elf_obj)?;
                 self.verify_section_entry_sizes(&elf_obj)?;
             }
+            object::File::Pe64(_pe_obj) => {}
             _ => bail!("Unsupported object file format"),
         }
 
@@ -8163,7 +8225,6 @@ fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Re
 }
 
 fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
-    const CS_BLOCK_SIZE: usize = 4096;
     const CS_HASH_SIZE: usize = 32;
 
     let object::File::MachO64(file) = obj else {
@@ -8201,10 +8262,6 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .context("Invalid UUID size")?;
 
     let code_signature_offset = usize::try_from(code_signature.dataoff.get(e))?;
-    let hashes_size = code_signature_offset
-        .div_ceil(CS_BLOCK_SIZE)
-        .checked_mul(CS_HASH_SIZE)
-        .context("Invalid code signature hashes size")?;
     let code_signature_end = code_signature_offset
         .checked_add(usize::try_from(code_signature.datasize.get(e))?)
         .context("Invalid code signature size")?;
@@ -8219,13 +8276,22 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         "Code signature length differs from its allocation"
     );
 
-    let mut checked_directory = false;
+    let mut signature_layout = None;
     for blob in parsed_signature.blobs() {
         if let Some(directory) = blob?.code_directory()? {
             let header = directory.header();
             ensure!(
+                matches!(header.page_size, 12 | 14),
+                "Unsupported code signature page size"
+            );
+            let block_size = 1usize << header.page_size;
+            let hashes_size = code_signature_offset
+                .div_ceil(block_size)
+                .checked_mul(CS_HASH_SIZE)
+                .context("Invalid code signature hashes size")?;
+            ensure!(
                 header.n_code_slots.get(object::BigEndian) as usize
-                    == code_signature_offset.div_ceil(CS_BLOCK_SIZE),
+                    == code_signature_offset.div_ceil(block_size),
                 "Code signature page count does not match its final offset"
             );
             ensure!(
@@ -8237,10 +8303,10 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
                     == header.length.get(object::BigEndian) as usize,
                 "Code directory size does not match its page count"
             );
-            checked_directory = true;
+            signature_layout = Some((block_size, hashes_size));
         }
     }
-    ensure!(checked_directory, "Missing code directory");
+    let (block_size, hashes_size) = signature_layout.context("Missing code directory")?;
 
     let hashes_start = code_signature_data
         .len()
@@ -8250,7 +8316,7 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .get(..code_signature_offset)
         .context("Invalid code signature offset")?;
     let final_hashes = signed_data
-        .chunks(CS_BLOCK_SIZE)
+        .chunks(block_size)
         .flat_map(Sha256::digest)
         .collect_vec();
     ensure!(
@@ -8265,7 +8331,7 @@ fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
         .context("UUID range overlaps code signature")?
         .fill(0);
     let zero_uuid_hashes = zero_uuid_data
-        .chunks(CS_BLOCK_SIZE)
+        .chunks(block_size)
         .flat_map(Sha256::digest)
         .collect_vec();
     let mut zero_uuid_signature = code_signature_data.to_vec();
@@ -8666,6 +8732,7 @@ impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let build_features = match self.config.platform {
             PlatformKind::MachO => "--features macho",
+            PlatformKind::MinGW => "--features coff",
             PlatformKind::Wasm => "--features wasm",
             PlatformKind::Elf => "",
         };
@@ -9256,6 +9323,35 @@ fn available_linkers_for_mac() -> Result<LinkerCatalog> {
         available: linkers,
         unavailable: Vec::new(),
     })
+}
+
+fn available_linkers_for_mingw() -> Result<Vec<Linker>> {
+    // BFD support for Windows is *not ideal*, LLD is more sensible reference.
+    let mut linkers = vec![Linker::ThirdParty(ThirdPartyLinker {
+        name: "lld",
+        gcc_name: "lld",
+        path: find_bin(&["ld.lld"])?,
+        cross_paths: find_cross_paths("ld.lld"),
+        direct_args: Vec::new(),
+        enabled_by_default: true,
+    })];
+
+    if let Ok(path) = find_bin(&["x86_64-w64-mingw32-ld.bfd", "x86_64-w64-mingw32-ld"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            // TODO: Rename to "bfd" and get rid of gcc_name.
+            name: "ld",
+            gcc_name: "bfd",
+            path,
+            // cross_paths: find_cross_paths("ld"),
+            cross_paths: HashMap::new(),
+            direct_args: Vec::new(),
+            enabled_by_default: false,
+        }));
+    }
+
+    linkers.push(Linker::Wild);
+
+    Ok(linkers)
 }
 
 fn available_linkers_for_wasm() -> Vec<Linker> {
@@ -9939,13 +10035,14 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => "elf",
             PlatformKind::MachO => "macho",
+            PlatformKind::MinGW => "mingw",
             PlatformKind::Wasm => "wasm",
         }
     }
 
     fn flavor(self) -> &'static str {
         match self {
-            PlatformKind::Elf => "gnu",
+            PlatformKind::Elf | PlatformKind::MinGW => "gnu",
             PlatformKind::MachO => "darwin",
             PlatformKind::Wasm => "wasm",
         }
@@ -9956,7 +10053,7 @@ impl PlatformKind {
     }
 
     fn can_execute_on_host(self) -> bool {
-        self.is_host() || self == PlatformKind::Wasm
+        self.is_host() || self == PlatformKind::MinGW || self == PlatformKind::Wasm
     }
 
     fn diff_supported(self) -> bool {
@@ -9970,6 +10067,10 @@ impl PlatformKind {
                 unavailable: Vec::new(),
             }),
             PlatformKind::MachO => available_linkers_for_mac(),
+            PlatformKind::MinGW => Ok(LinkerCatalog {
+                available: available_linkers_for_mingw()?,
+                unavailable: Vec::new(),
+            }),
             PlatformKind::Wasm => Ok(LinkerCatalog {
                 available: available_linkers_for_wasm(),
                 unavailable: Vec::new(),
@@ -9981,6 +10082,7 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => ALL_ARCHITECTURES,
             PlatformKind::MachO => &[Architecture::AArch64],
+            PlatformKind::MinGW => &[Architecture::X86_64],
             PlatformKind::Wasm => &[Architecture::Wasm32],
         }
     }
@@ -9991,13 +10093,15 @@ impl PlatformKind {
                 // Wild linker uses -znow by default!
                 args: vec!["-z".to_owned(), "now".to_owned()],
             },
-            PlatformKind::MachO | PlatformKind::Wasm => ArgumentSet::empty(),
+            PlatformKind::MachO | PlatformKind::MinGW | PlatformKind::Wasm => ArgumentSet::empty(),
         }
     }
 
     fn default_c_compiler(self) -> &'static str {
         match self {
             PlatformKind::Elf => "gcc",
+            // TODO: This is ad-hoc
+            PlatformKind::MinGW => "x86_64-w64-mingw32-gcc",
             PlatformKind::MachO | PlatformKind::Wasm => "clang",
         }
     }
@@ -10163,4 +10267,28 @@ fn default_llvm_tools_dir() -> PathBuf {
 fn path_to_str(path: &Path) -> Result<&str> {
     path.to_str()
         .with_context(|| format!("Path must be UTF-8: `{}`", path.display()))
+}
+
+// We kill two birds with one stone here: keep wine warm between individual tests and most
+// importantly, avoid ~4s waits on each individual test exit due to Wine's forked process delayed
+// shutdown
+fn prepare_wine() {
+    static PREPARED: OnceLock<()> = OnceLock::new();
+    PREPARED.get_or_init(|| {
+        for cmd in [
+            // keep wine running/warm between tests
+            Command::new("wineserver").arg("--persistent=5"),
+            // create/update prefix; blocks until boot completes
+            &mut Command::new("wineboot"),
+        ] {
+            let _ = cmd
+                // skip Gecko/Mono prompts
+                .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+                .env("WINEDEBUG", "-all")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    });
 }

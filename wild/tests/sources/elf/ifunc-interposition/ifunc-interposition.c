@@ -1,5 +1,4 @@
 //#AbstractConfig:default
-//#SkipArch:ppc64le
 //#RequiresGlibc:true
 //#Mode:dynamic
 //#Object:runtime.c
@@ -17,6 +16,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:got:default
+// ppc64le GCC -fno-plt emits PLT16_HA / PLT16_LO_DS, which are not decoded yet.
+//#SkipArch:ppc64le
 //#CompSoArgs:-fPIC -fno-plt
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie

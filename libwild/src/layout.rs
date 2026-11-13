@@ -166,7 +166,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     P::finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     let mut dynamic_symbol_definitions =
-        merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
+        merge_dynamic_symbol_definitions(&group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     create_canonical_plt_entries(
         &group_states,
@@ -235,6 +235,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         })
         .flatten()
         .collect();
+
+    P::adjust_empty_linker_script_section_flags(
+        &linker_scripts,
+        &mut output_sections,
+        &gc_outputs.must_keep_sections,
+    );
 
     let mut location_counters = Vec::new();
     for script in &linker_scripts {
@@ -726,6 +732,7 @@ fn finalise_all_sizes<'data, P: Platform>(
 fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
 ) -> Result<Vec<DynamicSymbolDefinition<'data, P>>> {
     timing_phase!("Merge dynamic symbol definitions");
 
@@ -737,6 +744,7 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     append_prelude_defsym_dynamic_symbols(
         group_states,
         symbol_db,
+        per_symbol_flags,
         &mut dynamic_symbol_definitions,
     )?;
 
@@ -777,38 +785,66 @@ fn create_canonical_plt_entries<'data, P: Platform>(
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
     dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data, P>>,
 ) -> Result {
-    if symbol_db.output_kind.needs_dynsym()
-        && let Some(first_group) = group_states.first()
-        && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
+    if !symbol_db.output_kind.needs_dynsym() {
+        return Ok(());
+    }
+
+    let Some(first_group) = group_states.first() else {
+        return Ok(());
+    };
+    let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first() else {
+        return Ok(());
+    };
+
+    let Some(mode) = defsym_default_export_mode(symbol_db) else {
+        return Ok(());
+    };
+
+    let symbol_id_range = prelude.symbol_id_range;
+    for (index, def_info) in prelude
+        .internal_symbols
+        .symbol_definitions
+        .iter()
+        .enumerate()
     {
-        let symbol_id_range = prelude.symbol_id_range;
-        for (index, def_info) in prelude
-            .internal_symbols
-            .symbol_definitions
-            .iter()
-            .enumerate()
-        {
-            if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
-                continue;
-            }
-
-            let symbol_id = symbol_id_range.offset_to_id(index);
-            if !symbol_db.is_canonical(symbol_id)
-                || dynamic_symbol_definitions
-                    .iter()
-                    .any(|def| def.symbol_id == symbol_id)
-            {
-                continue;
-            }
-
-            dynamic_symbol_definitions
-                .push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
+        if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) || def_info.name.is_empty() {
+            continue;
         }
+
+        let symbol_id = symbol_id_range.offset_to_id(index);
+        let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
+        if !can_export_global_def(symbol_db, visibility, symbol_id, flags, mode)
+            || dynamic_symbol_definitions
+                .iter()
+                .any(|def| def.symbol_id == symbol_id)
+        {
+            continue;
+        }
+
+        dynamic_symbol_definitions.push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
     }
 
     Ok(())
+}
+
+fn defsym_default_export_mode<P: Platform>(symbol_db: &SymbolDb<P>) -> Option<ExportSymbolsMode> {
+    if symbol_db.output_kind.is_shared_object()
+        || symbol_db.args.should_export_all_dynamic_symbols()
+    {
+        Some(ExportSymbolsMode::All)
+    } else if symbol_db.export_list.is_some() {
+        Some(ExportSymbolsMode::MatchingExportList)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
@@ -1409,6 +1445,57 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'
         _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
+        Ok(())
+    }
+}
+
+impl<'data, P: Platform> PreludeLayoutState<'data, P> {
+    /// Export a prelude symbol because a linked shared object references it.
+    fn export_dynamic(
+        &self,
+        common: &mut CommonGroupState<'data, P>,
+        symbol_id: SymbolId,
+        resources: &GraphResources<'data, '_, P>,
+    ) -> Result {
+        if !resources.symbol_db.output_kind.needs_dynsym() {
+            return Ok(());
+        }
+        if !self.symbol_id_range.contains(symbol_id) {
+            bail!(
+                "Tried to export {} from the prelude, which does not define it",
+                resources.symbol_debug(symbol_id)
+            );
+        }
+
+        let def_info =
+            &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
+        if def_info.name.is_empty() {
+            return Ok(());
+        }
+
+        let visibility = if def_info.symbol.is_hidden() {
+            Visibility::Hidden
+        } else {
+            Visibility::Default
+        };
+        let flags = resources.per_symbol_flags.flags_for_symbol(symbol_id);
+        if !can_export_global_def(
+            resources.symbol_db,
+            visibility,
+            symbol_id,
+            flags,
+            ExportSymbolsMode::All,
+        ) {
+            return Ok(());
+        }
+
+        let old_flags = resources
+            .per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+        if !old_flags.needs_export_dynamic() {
+            export_dynamic(common, symbol_id, resources.symbol_db)?;
+        }
         Ok(())
     }
 }
@@ -3151,6 +3238,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 FileLayoutState::LinkerScript(state) => SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 ),
+                FileLayoutState::Prelude(state) => {
+                    state.export_dynamic(common, symbol_id, resources)
+                }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
                     // export a dynamic symbol.
@@ -3785,6 +3875,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
+        if output_order.has_custom_layout()
+            && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID
+        {
+            *keep_sections.get_mut(relro_padding_id) = false;
+        }
+
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
             .raw_range(self.symbol_id_range())
@@ -3900,7 +3996,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             if !resources.symbol_db.args.should_output_partial_object() {
                 // Always keep the program headers segment even though we don't emit any sections in
                 // it.
-                keep_segments[0] = true;
+                keep_segments.get_mut(0).replace(&mut true);
             }
             keep_segments
         };
@@ -6350,12 +6446,13 @@ fn compute_layout_sections<'data, P: Platform>(
     // to construct thread local data. However, uninitialized TLS data is assumed to be zero
     // and therefore no copy happens. It would be wasteful to reserve that address in the TLS
     // template, so we don't do it.
-    let mut tls_memsave: Option<u64> = None;
+    let mut tls_memsave: Option<(u64, u64)> = None;
     let mut in_tls = false;
     let mut has_reset_base_address =
-        output_order.has_custom_phdrs() || !output_sections.has_custom_base_address();
-    let mut deferred_nonalloc = Vec::new();
-    let mut has_seen_alloc_section = false;
+        output_order.has_custom_layout() || !output_sections.has_custom_base_address();
+    let mut current_load_segment_delta: Option<u64> = None;
+    let mut current_load_segment_alignment: Option<Alignment> = None;
+    let mut current_region: Option<&'data [u8]> = None;
 
     for event in output_order {
         match event {
@@ -6416,6 +6513,7 @@ fn compute_layout_sections<'data, P: Platform>(
                         .get(&segment_id)
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
+                    current_load_segment_alignment = Some(segment_alignment);
                     if let Some(addr) = pending_location {
                         // The OrderEvent::SetLocation is ELF-specific only.
                         mem_offset = addr;
@@ -6437,28 +6535,29 @@ fn compute_layout_sections<'data, P: Platform>(
                             &mut lma_offset,
                         );
                     }
+                    current_load_segment_delta =
+                        Some(mem_offset.saturating_sub(file_offset as u64));
                 }
             }
-            OrderEvent::SegmentEnd(_) => {}
+            OrderEvent::SegmentEnd(segment_id) => {
+                if program_segments.is_load_segment(segment_id) {
+                    current_load_segment_alignment = None;
+                    current_load_segment_delta = None;
+                }
+            }
             OrderEvent::Section(section_id) => {
-                let is_alloc = output_sections.section_flags(section_id).is_alloc();
+                let merge_target = output_sections.primary_output_section(section_id);
+                let is_alloc = output_sections.section_flags(merge_target).is_alloc();
                 let is_regular_section = section_id != crate::output_section_id::FILE_HEADER
                     && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-                let is_deferred = is_regular_section && !is_alloc && !has_seen_alloc_section;
+                let is_deferred = output_order.is_file_layout_deferred(section_id);
 
-                if is_regular_section {
-                    if is_alloc {
-                        has_seen_alloc_section = true;
-                        if !has_reset_base_address {
-                            if let Some(header_start) = header_start_mem_offset {
-                                mem_offset = base_address;
-                                file_offset = (base_address - header_start) as usize;
-                            }
-                            has_reset_base_address = true;
-                        }
-                    } else if is_deferred {
-                        deferred_nonalloc.push(section_id);
+                if is_regular_section && is_alloc && !has_reset_base_address {
+                    if let Some(header_start) = header_start_mem_offset {
+                        mem_offset = base_address;
+                        file_offset = (base_address - header_start) as usize;
                     }
+                    has_reset_base_address = true;
                 }
 
                 let section_info = output_sections.output_info(section_id);
@@ -6468,17 +6567,20 @@ fn compute_layout_sections<'data, P: Platform>(
                     .section_attributes
                     .occupies_only_tls_address_space()
                 {
-                    // Save our current mem_offset as we enter our first nobits TLS section
+                    // Save our current mem_offset and lma_offset as we enter our first nobits TLS
+                    // section
                     if tls_memsave.is_none() {
-                        tls_memsave = Some(mem_offset);
+                        tls_memsave = Some((mem_offset, lma_offset));
                     }
-                } else if let Some(tls_memsave) = tls_memsave.take() {
+                } else if let Some((saved_mem, saved_lma)) = tls_memsave.take() {
                     // Restore offsets when exiting nobits TLS sections
-                    mem_offset = tls_memsave;
+                    mem_offset = saved_mem;
+                    lma_offset = saved_lma;
                 }
 
                 let part_id_range = section_id.part_id_range::<P>();
-                let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
+                let (max_alignment, section_has_data) =
+                    sizes.max_alignment_and_has_data(part_id_range.clone(), output_sections);
                 let region = section_info
                     .region_name
                     .map(|region_name| {
@@ -6490,37 +6592,52 @@ fn compute_layout_sections<'data, P: Platform>(
                         })
                     })
                     .transpose()?;
-                if let Some(region) = region {
-                    mem_offset = region.origin + region.used;
-                }
-
                 if let Some(offset) = section_offset {
-                    if let Some(region) = region
-                        && (offset < mem_offset || offset > mem_offset + region.length)
-                    {
-                        bail!(
-                            "address 0x{offset:x} of section '{}' is not within region `{}'",
-                            output_sections.display_name(section_id),
-                            String::from_utf8_lossy(section_info.region_name.unwrap()),
-                        );
-                    }
-                    let merge_target = output_sections.primary_output_section(section_id);
-                    let section_flags = output_sections.section_flags(merge_target);
                     let is_top_level = section_info
                         .location_info
                         .as_ref()
                         .is_some_and(|info| info.is_top_level);
-                    if (section_id == merge_target || !is_top_level)
-                        && section_flags.is_alloc()
-                        && output_sections.has_data_in_file(merge_target)
-                    {
-                        let new_offset = offset
-                            .checked_sub(mem_offset)
-                            .with_context(|| format!("Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"))?;
-                        file_offset += new_offset as usize;
+                    if let Some(region) = region {
+                        let min_addr = if is_top_level {
+                            region.origin + region.used
+                        } else {
+                            mem_offset
+                        };
+                        if offset < min_addr || offset > region.origin + region.length {
+                            bail!(
+                                "address 0x{offset:x} of section '{}' is not within region `{}'",
+                                output_sections.display_name(section_id),
+                                String::from_utf8_lossy(section_info.region_name.unwrap()),
+                            );
+                        }
+                    }
+                    if !is_top_level {
+                        let merge_target = output_sections.primary_output_section(section_id);
+                        let section_flags = output_sections.section_flags(merge_target);
+                        if section_flags.is_alloc()
+                            && output_sections.has_data_in_file(merge_target)
+                        {
+                            let new_offset = offset.checked_sub(mem_offset).with_context(|| {
+                                format!(
+                                    "Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"
+                                )
+                            })?;
+                            file_offset += new_offset as usize;
+                        }
                     }
                     mem_offset = offset;
+                } else if let Some(region) = region {
+                    mem_offset = region.origin + region.used;
+                    if current_region != section_info.region_name && is_alloc {
+                        let segment_alignment = current_load_segment_alignment
+                            .unwrap_or_else(|| args.loadable_segment_alignment());
+                        file_offset =
+                            segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
+                        current_load_segment_delta =
+                            Some(mem_offset.saturating_sub(file_offset as u64));
+                    }
                 }
+                current_region = section_info.region_name;
 
                 let mut is_first_part = true;
 
@@ -6539,17 +6656,30 @@ fn compute_layout_sections<'data, P: Platform>(
                     let aligned_mem = tls_alignment.align_up(mem_offset);
                     let padding = aligned_mem - mem_offset;
                     mem_offset = aligned_mem;
+                    lma_offset += padding;
                     if output_sections.has_data_in_file(merge_target) {
                         file_offset += padding as usize;
                     }
                 }
                 in_tls = is_tls;
-                lma_offset = mem_offset;
+                if section_offset.is_some() || region.is_some() {
+                    lma_offset = mem_offset;
+                }
 
                 let mut part_sizes = sizes
                     .in_range(part_id_range.clone())
                     .map(|(id, &size)| (id, size))
                     .peekable();
+
+                if section_has_data
+                    && output_sections.has_data_in_file(merge_target)
+                    && !is_deferred
+                    && let Some(delta) = current_load_segment_delta
+                    && section_flags.is_alloc()
+                    && mem_offset >= delta
+                {
+                    file_offset = file_offset.max((mem_offset - delta) as usize);
+                }
 
                 // For sections with only empty parts, make sure we run the loop below at least once
                 // so as to properly initialise the section's layout.
@@ -6571,19 +6701,6 @@ fn compute_layout_sections<'data, P: Platform>(
                         aligned_offset - mem_offset
                     } else {
                         part_size
-                    };
-
-                    // Note, we align up even if our size is zero, otherwise our section will
-                    // start at an unaligned address. We don't however align up for NOBITS
-                    // sections or sections whose file layout is deferred.
-                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
-                        file_offset = alignment.align_up_usize(file_offset);
-                    }
-
-                    let file_size = if output_sections.has_data_in_file(merge_target) {
-                        mem_size as usize
-                    } else {
-                        0
                     };
 
                     let (part_mem_offset, part_lma_offset) = if section_flags.is_alloc() {
@@ -6613,6 +6730,19 @@ fn compute_layout_sections<'data, P: Platform>(
                         (mem_offset, mem_offset)
                     };
 
+                    // Note, we align up even if our size is zero, otherwise our section will
+                    // start at an unaligned address. We don't however align up for NOBITS
+                    // sections or sections whose file layout is deferred.
+                    if output_sections.has_data_in_file(merge_target) && !is_deferred {
+                        file_offset = alignment.align_up_usize(file_offset);
+                    }
+
+                    let file_size = if output_sections.has_data_in_file(merge_target) {
+                        mem_size as usize
+                    } else {
+                        0
+                    };
+
                     let part_file_offset = if is_deferred { 0 } else { file_offset };
                     *part_layout = OutputRecordLayout {
                         file_size,
@@ -6635,12 +6765,13 @@ fn compute_layout_sections<'data, P: Platform>(
                         is_first_part,
                     );
 
-                    if let Some(expr) = section_info
-                        .location_info
-                        .as_ref()
-                        .and_then(|info| info.at_location.as_ref())
+                    if is_first_part
+                        && let Some(expr) = section_info
+                            .location_info
+                            .as_ref()
+                            .and_then(|info| info.at_location.as_ref())
                     {
-                        lma_offset = expression_eval(
+                        let base_lma = expression_eval(
                             expr,
                             &SymbolLoc::None,
                             memory_regions,
@@ -6648,9 +6779,10 @@ fn compute_layout_sections<'data, P: Platform>(
                             &resolved_lc,
                             &laid_out_mem_offsets,
                         )?;
-                        part_layout.lma_offset = lma_offset;
+                        part_layout.lma_offset = base_lma;
                         let section_layout = section_layouts.get_mut(section_id);
-                        section_layout.lma_offset = lma_offset;
+                        section_layout.lma_offset = base_lma;
+                        lma_offset = base_lma + mem_size;
                     }
 
                     is_first_part = false;
@@ -6673,7 +6805,7 @@ fn compute_layout_sections<'data, P: Platform>(
         }
     }
 
-    for nonalloc_id in deferred_nonalloc {
+    for &nonalloc_id in output_order.deferred_file_sections() {
         let section_layout = section_layouts.get_mut(nonalloc_id);
         file_offset = section_layout.alignment.align_up_usize(file_offset);
         file_offset = assign_section_file_range::<P>(

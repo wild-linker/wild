@@ -15,6 +15,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:dev_null:default
+//#InMemoryFileSystem:false
 //#Object:runtime.c
 //#LinkArgs:-o /dev/null
 //#DiffEnabled:false
@@ -37,6 +38,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:no-mmap-output
+//#InMemoryFileSystem:false
 //#Object:runtime.c
 //#ReferenceLinkers:lld
 //#LinkArgs:--no-mmap-output-file
@@ -44,6 +46,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:fallocate-output
+//#InMemoryFileSystem:false
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--fallocate-output-file
@@ -51,6 +54,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:madvise-huge-pages
+//#InMemoryFileSystem:false
 //#RequiresTransparentHugePages:true
 //#Object:runtime.c
 //#ReferenceLinkers:
@@ -59,6 +63,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:madvise-huge-pages-no-mmap
+//#InMemoryFileSystem:false
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--madvise-huge-pages --no-mmap-output-file
@@ -67,6 +72,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:disable-output-allocation-options
+//#InMemoryFileSystem:false
 //#Object:runtime.c
 //#ReferenceLinkers:
 //#LinkArgs:--no-fallocate-output-file --no-madvise-huge-pages
@@ -114,6 +120,7 @@
 //#LinkArgs:-no-pie
 
 //#Config:write-gc-stats:default
+//#InMemoryFileSystem:false
 //#ReferenceLinkers:
 //#CompArgs:-ffunction-sections
 //#Object:runtime.c

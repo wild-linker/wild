@@ -10,7 +10,6 @@ use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::Layout;
 use crate::layout::assign_section_file_range;
-use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
@@ -477,30 +476,9 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     timing_phase!("Update file offsets post-compression");
 
-    let mut nonalloc_prefix = Vec::new();
-    let mut section_ids = Vec::new();
-    let mut seen_alloc = false;
-
-    for event in &layout.output_order {
-        if let OrderEvent::Section(section_id) = event {
-            let is_regular = section_id != crate::output_section_id::FILE_HEADER
-                && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
-            let is_alloc = layout.output_sections.section_flags(section_id).is_alloc();
-            if is_regular && is_alloc {
-                seen_alloc = true;
-            }
-            if !seen_alloc && is_regular && !is_alloc {
-                nonalloc_prefix.push(section_id);
-            } else {
-                section_ids.push(section_id);
-            }
-        }
-    }
-    section_ids.extend(nonalloc_prefix);
-
     let mut cursor = 0usize;
     let mut resized = false;
-    for section_id in section_ids {
+    for &section_id in layout.output_order.file_order() {
         let merge_target = layout.output_sections.primary_output_section(section_id);
         let is_alloc = layout
             .output_sections
