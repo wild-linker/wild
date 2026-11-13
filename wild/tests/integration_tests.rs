@@ -10152,11 +10152,7 @@ impl Filter {
             return false;
         };
 
-        if self.exact {
-            !filter.starts_with(prefix) && !prefix.starts_with(filter)
-        } else {
-            false
-        }
+        self.exact && !filter.starts_with(prefix) && !prefix.starts_with(filter)
     }
 }
 

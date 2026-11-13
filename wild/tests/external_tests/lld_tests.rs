@@ -74,17 +74,15 @@ fn load_xfail_list() -> &'static Vec<String> {
             .join("external_tests")
             .join("lld_skip_tests.toml");
 
-        fs::read_to_string(&skip_tests_path)
-            .map(|content| {
-                let config: Config =
-                    toml::from_str(&content).expect("Failed to parse lld_skip_tests.toml");
-                config
-                    .skipped_groups
-                    .into_values()
-                    .flat_map(|group| group.tests)
-                    .collect()
-            })
-            .unwrap_or_default()
+        fs::read_to_string(&skip_tests_path).map_or_default(|content| {
+            let config: Config =
+                toml::from_str(&content).expect("Failed to parse lld_skip_tests.toml");
+            config
+                .skipped_groups
+                .into_values()
+                .flat_map(|group| group.tests)
+                .collect()
+        })
     })
 }
 
