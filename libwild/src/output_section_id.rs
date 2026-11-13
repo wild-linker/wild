@@ -91,7 +91,7 @@ pub(crate) struct CustomSectionDetails<'data, P: Platform> {
 pub(crate) struct InitFiniSectionDetail {
     pub(crate) index: InputSectionIndex,
     pub(crate) primary: OutputSectionId,
-    pub(crate) priority: u16,
+    pub(crate) priority: u32,
     pub(crate) alignment: Alignment,
 }
 
@@ -110,7 +110,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
 
     custom_by_identity: HashMap<SectionIdentity<'data, P>, OutputSectionId>,
 
-    init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
+    init_fini_by_priority: HashMap<(OutputSectionId, u32), OutputSectionId>,
 
     rosegment: bool,
 
@@ -288,7 +288,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
 
         let secondaries: &Vec<OutputSectionId> = self.secondary.get(section_id);
         // stable ordering: tie-break by original index
-        let mut keyed: Vec<(u16, OutputSectionId)> = secondaries
+        let mut keyed: Vec<(u32, OutputSectionId)> = secondaries
             .iter()
             .map(|&sid| {
                 // default: put non-initfini after all initfini, and keep their relative order
@@ -296,7 +296,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                     Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
                         priority
                     }
-                    None => u16::MAX,
+                    None => u32::MAX,
                 };
                 (key_pri, sid)
             })
@@ -773,7 +773,7 @@ impl Debug for SectionName<'_> {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SecondaryOrder {
-    InitFini { priority: u16 },
+    InitFini { priority: u32 },
 }
 
 impl<'data, P: Platform> OutputSections<'data, P> {
@@ -1005,7 +1005,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn get_or_create_init_fini_secondary(
         &mut self,
         primary: OutputSectionId,
-        priority: u16,
+        priority: u32,
         min_alignment: Alignment,
     ) -> OutputSectionId {
         let key = (primary, priority);

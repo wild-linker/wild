@@ -114,7 +114,8 @@ impl crate::platform::Arch for CoffX86_64 {
         _section: &<Self::Platform as crate::platform::Platform>::SectionHeader,
         _offset_in_section: u64,
     ) -> crate::error::Result<crate::platform::SourceInfo> {
-        todo!()
+        // TODO: Use DWARF debug info if available, similarly to ELF.
+        Ok(crate::platform::SourceInfo(None))
     }
 
     fn new_relaxation(

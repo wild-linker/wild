@@ -2568,8 +2568,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         rule_builder.prepend_section_rules(LINKER_REPLACED_SECTION_RULES);
     }
 
-    fn init_section_priority(name: &[u8]) -> Option<u16> {
-        init_fini_priority(name)
+    fn init_section_priority(name: &[u8]) -> Option<u32> {
+        init_fini_priority(name).map(|priority| priority.into())
     }
 
     fn validate_input_symbols(symbol_db: &SymbolDb<Self>) -> Result {

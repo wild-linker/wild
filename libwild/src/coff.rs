@@ -470,10 +470,22 @@ impl Platform for Coff {
         scope: &rayon::Scope<'scope>,
     ) -> Result {
         for relocation in state.relocations(section_index)?.rel_iter() {
-            let local_symbol_id = state
-                .symbol_id_range
-                .input_to_id(relocation.symbol().unwrap());
+            let local_symbol_index = relocation.symbol().unwrap();
+            let local_symbol_id = state.symbol_id_range.input_to_id(local_symbol_index);
             let symbol_id = resources.symbol_db.definition(local_symbol_id);
+
+            let mut flags = resources.local_flags_for_symbol(symbol_id);
+            flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+
+            layout::check_for_undefined::<A>(
+                state,
+                state.object.section(section_index)?,
+                relocation.offset(),
+                local_symbol_index,
+                flags,
+                symbol_id,
+                resources,
+            )?;
 
             let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
             let previous_flags = atomic_flags.fetch_or(ValueFlags::DIRECT);
@@ -525,6 +537,10 @@ impl Platform for Coff {
         // The undefined symbol must always be symbol 0.
         symbols
             .add_symbol(InternalSymDefInfo::new(SymbolPlacement::Undefined, b""))
+            .hide();
+
+        symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "__ImageBase")
             .hide();
     }
 
@@ -648,6 +664,10 @@ impl Platform for Coff {
         _is_undefined: bool,
     ) -> bool {
         true
+    }
+
+    fn init_section_priority(name: &[u8]) -> Option<u32> {
+        init_priority(name)
     }
 
     fn allocate_header_sizes<'data>(
@@ -1261,8 +1281,22 @@ impl platform::SectionFlags for SectionFlags {
 
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<CommonSymbol> {
-        // TODO
-        None
+        if self.is_aux
+        // Essentially duplicates what `object::read::CoffSymbol::section()` does to identify Commons
+        || self.raw.section_number() != object::pe::IMAGE_SYM_UNDEFINED
+        || self.raw.storage_class() != object::pe::IMAGE_SYM_CLASS_EXTERNAL
+        || self.raw.value() == 0
+        {
+            return None;
+        }
+
+        // This is convoluted compared to ELF, but matches what LLD does.
+        let alignment = Alignment::new(self.value().next_power_of_two().min(32)).unwrap();
+        let size = alignment.align_up(self.value());
+        let output_section_id = output_section_id::BSS;
+        let part_id = output_section_id.part_id_with_alignment::<Coff>(alignment);
+
+        Some(CommonSymbol { size, part_id })
     }
 
     fn is_undefined(&self) -> bool {
@@ -1592,6 +1626,9 @@ impl Coff {
         };
         defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
             kind: Self::primary_section(BSS_SECTION_NAME),
+            section_flags: object::pe::IMAGE_SCN_MEM_READ
+                .with(object::pe::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
+                .with(object::pe::IMAGE_SCN_MEM_WRITE),
             ..Self::DEFAULT_DEFS
         };
 
@@ -1615,9 +1652,33 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section(".rdata".as_bytes(), output_section_id::RDATA),
     SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
     SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
+    // TODO: This sets `keep`; verify if that's correct
+    // TODO: This sets `keep`; verify if that's correct
+    // Unlike BFD, LLD merges them into RDATA for tighter packing (by avoiding .CRT section), we
+    // follow that.
+    SectionRule::prefix_section_sort(".CRT$".as_bytes(), output_section_id::RDATA),
 ];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
+
+fn init_priority(name: &[u8]) -> Option<u32> {
+    if let Some(pos) = name.iter().position(|&byte| byte == b'$') {
+        return parse_priority_suffix(&name[pos + 1..]);
+    }
+
+    None
+}
+
+pub(crate) fn parse_priority_suffix(suffix: &[u8]) -> Option<u32> {
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+
+    let mut priority_bytes = [0u8; 4];
+    let byte_count = suffix.len();
+    priority_bytes[..byte_count].copy_from_slice(&suffix[..byte_count]);
+    Some(u32::from_be_bytes(priority_bytes))
+}
 
 fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
     object::pe::IMAGE_SIZEOF_SECTION_HEADER as u64

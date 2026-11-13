@@ -962,7 +962,7 @@ pub(crate) trait Platform:
     ) -> bool;
 
     /// Given the name of an init/fini section, returns the sort priority, if any.
-    fn init_section_priority(_name: &[u8]) -> Option<u16> {
+    fn init_section_priority(_name: &[u8]) -> Option<u32> {
         None
     }
 
