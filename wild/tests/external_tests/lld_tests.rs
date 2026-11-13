@@ -54,7 +54,7 @@ pub(crate) fn collect_tests(
             continue;
         }
         let arch = arch.to_string();
-        let emulation = architecture.emulation_name().to_string();
+        let emulation = architecture.elf_emulation_name().to_string();
         let test_config = test_config.clone();
         let test_dir = test_dir.clone();
         let lit_binary = lit_binary.clone();
