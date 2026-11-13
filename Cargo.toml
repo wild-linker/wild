@@ -90,7 +90,7 @@ nix = { version = "0.31.1", default-features = false, features = [
   "resource",
   "fs",
 ] }
-object = { version = "0.40.0", default-features = false, features = [
+object = { version = "0.41.0", default-features = false, features = [
   # Note that compression is only actually needed for linker-diff
   "compression",
   "elf",
