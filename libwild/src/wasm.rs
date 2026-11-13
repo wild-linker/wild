@@ -5598,7 +5598,8 @@ fn encode_init_tls_body(
     let memarg = wasm_encoder::MemArg {
         offset: 0,
         align: 2,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     };
     let mut func = wasm_encoder::Function::new([]);
     let mut ins = func.instructions();
@@ -5660,7 +5661,8 @@ fn encode_init_memory_body(
     let memarg = wasm_encoder::MemArg {
         offset: 0,
         align: 2,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     };
     let mut func = wasm_encoder::Function::new([]);
     let mut ins = func.instructions();
