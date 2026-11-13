@@ -1,2 +1,3 @@
-//#LinkArgs:--entry entry
-int entry() { return 42; }
+//#Object:runtime.c
+int foo = 42;
+int main() { return foo; }

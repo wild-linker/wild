@@ -1,8 +1,13 @@
-use crate::coff;
+use crate::bail;
 use crate::coff::Coff;
 use crate::platform::PreviousRelocationInfo;
+use linker_utils::elf::AllowedRange;
+use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
+use linker_utils::elf::Sign;
 use linker_utils::relaxation::RelocationModifier;
+use object::pe::RelocationType;
 
 pub(crate) struct CoffX86_64;
 
@@ -15,7 +20,7 @@ impl crate::platform::Arch for CoffX86_64 {
 
     fn get_dynamic_relocation_type(
         _relocation: linker_utils::elf::DynamicRelocationKind,
-    ) -> coff::RelocationType {
+    ) -> RelocationType {
         unreachable!()
     }
 
@@ -28,13 +33,63 @@ impl crate::platform::Arch for CoffX86_64 {
     }
 
     fn relocation_from_raw(
-        _r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
+        r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
     ) -> crate::error::Result<RelocationKindInfo> {
-        todo!()
+        let (kind, size, range) = match r_type {
+            object::pe::IMAGE_REL_AMD64_ADDR32NB => (
+                RelocationKind::Absolute,
+                RelocationSize::ByteSize(4),
+                AllowedRange::from_byte_size(4, Sign::Unsigned),
+            ),
+            object::pe::IMAGE_REL_AMD64_ADDR32 => (
+                RelocationKind::Absolute,
+                RelocationSize::ByteSize(4),
+                AllowedRange::from_byte_size(4, Sign::Unsigned),
+            ),
+            object::pe::IMAGE_REL_AMD64_ADDR64 => (
+                RelocationKind::Absolute,
+                RelocationSize::ByteSize(8),
+                AllowedRange::from_byte_size(8, Sign::Unsigned),
+            ),
+            object::pe::IMAGE_REL_AMD64_REL32
+            | object::pe::IMAGE_REL_AMD64_REL32_1
+            | object::pe::IMAGE_REL_AMD64_REL32_2
+            | object::pe::IMAGE_REL_AMD64_REL32_3
+            | object::pe::IMAGE_REL_AMD64_REL32_4
+            | object::pe::IMAGE_REL_AMD64_REL32_5 => (
+                RelocationKind::Relative,
+                RelocationSize::ByteSize(4),
+                AllowedRange::from_byte_size(4, Sign::Signed),
+            ),
+            _ => bail!("Unsupported relocation: {r_type}"),
+        };
+
+        Ok(RelocationKindInfo {
+            kind,
+            size,
+            mask: None,
+            range,
+            alignment: 1,
+            bias: None,
+            thunkable: false,
+            implicit_addend: true,
+        })
     }
 
-    fn rel_type_to_string(_r_type: coff::RelocationType) -> std::borrow::Cow<'static, str> {
-        todo!()
+    fn rel_type_to_string(r_type: RelocationType) -> std::borrow::Cow<'static, str> {
+        // TODO: Implement in linker-utils properly
+        match r_type {
+            object::pe::IMAGE_REL_AMD64_ADDR32NB => "IMAGE_REL_AMD64_ADDR32NB".into(),
+            object::pe::IMAGE_REL_AMD64_ADDR32 => "IMAGE_REL_AMD64_ADDR32".into(),
+            object::pe::IMAGE_REL_AMD64_ADDR64 => "IMAGE_REL_AMD64_ADDR64".into(),
+            object::pe::IMAGE_REL_AMD64_REL32 => "IMAGE_REL_AMD64_REL32".into(),
+            object::pe::IMAGE_REL_AMD64_REL32_1 => "IMAGE_REL_AMD64_REL32_1".into(),
+            object::pe::IMAGE_REL_AMD64_REL32_2 => "IMAGE_REL_AMD64_REL32_2".into(),
+            object::pe::IMAGE_REL_AMD64_REL32_3 => "IMAGE_REL_AMD64_REL32_3".into(),
+            object::pe::IMAGE_REL_AMD64_REL32_4 => "IMAGE_REL_AMD64_REL32_4".into(),
+            object::pe::IMAGE_REL_AMD64_REL32_5 => "IMAGE_REL_AMD64_REL32_5".into(),
+            _ => format!("Unknown x86_64 relocation type 0x{r_type:x}").into(),
+        }
     }
 
     fn tp_offset_start(_layout: &crate::layout::Layout<Self::Platform>) -> u64 {
@@ -49,7 +104,7 @@ impl crate::platform::Arch for CoffX86_64 {
         unreachable!()
     }
 
-    fn high_part_relocations() -> &'static [coff::RelocationType] {
+    fn high_part_relocations() -> &'static [RelocationType] {
         unreachable!()
     }
 
@@ -63,7 +118,7 @@ impl crate::platform::Arch for CoffX86_64 {
     }
 
     fn new_relaxation(
-        _relocation_kind: coff::RelocationType,
+        _relocation_kind: RelocationType,
         _section_bytes: &[u8],
         _offset_in_section: u64,
         _flags: crate::value_flags::ValueFlags,
@@ -73,7 +128,7 @@ impl crate::platform::Arch for CoffX86_64 {
         _sym_addr: u64,
         _section_address: u64,
         _rel_addend: i64,
-        _previous_relocation: Option<PreviousRelocationInfo<coff::RelocationType>>,
+        _previous_relocation: Option<PreviousRelocationInfo<RelocationType>>,
     ) -> Option<Self::Relaxation> {
         None
     }
