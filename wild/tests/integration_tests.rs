@@ -1413,7 +1413,7 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
 ];
 
 impl Architecture {
-    fn emulation_name(self) -> &'static str {
+    fn elf_emulation_name(self) -> &'static str {
         match self {
             Architecture::X86_64 => "elf_x86_64",
             Architecture::AArch64 => "aarch64elf",
@@ -1421,6 +1421,13 @@ impl Architecture {
             Architecture::LoongArch64 => "elf64loongarch",
             Architecture::Ppc64 => "elf64lppc",
             Architecture::Wasm32 => panic!("Wasm has no ELF emulation name"),
+        }
+    }
+
+    fn mingw_emulation_name(self) -> &'static str {
+        match self {
+            Architecture::X86_64 => "i386pep",
+            _ => panic!("Unsupported architecture {self} for MinGW"),
         }
     }
 
@@ -5243,7 +5250,7 @@ impl LinkCommand {
                     match config.platform {
                         PlatformKind::Elf => {
                             if let Some(arch) = cross_arch {
-                                command.arg("-m").arg(arch.emulation_name());
+                                command.arg("-m").arg(arch.elf_emulation_name());
                             }
 
                             match direct_config.mode.unwrap_or_default() {
@@ -5276,10 +5283,7 @@ impl LinkCommand {
                             }
                         }
                         PlatformKind::MinGW => {
-                            command.arg("-m");
-                            // TODO: `arch` doesn't support platforms other than ELF
-                            // .arg(arch.emulation_name());
-                            command.arg("i386pep");
+                            command.arg("-m").arg(arch.mingw_emulation_name());
                             command.arg("--gc-sections");
                         }
                         PlatformKind::Wasm => {
