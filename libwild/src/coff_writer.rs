@@ -21,13 +21,18 @@ use crate::file_writer::split_output_into_sections;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
+use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
+use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
+use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::output_section_id::OrderEvent;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -41,7 +46,9 @@ use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
 use crate::platform::SectionAttributes;
 use crate::platform::SectionHeader as _;
+use crate::platform::Symbol as _;
 use crate::resolution::SectionSlot;
+use crate::sharding::ShardKey as _;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::timing_phase;
@@ -52,7 +59,9 @@ use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationSize;
 use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
+use object::SymbolIndex;
 use object::from_bytes_mut;
+use object::pe::SymbolSection;
 use object::write::WritableBuffer;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
@@ -97,7 +106,8 @@ fn write_file_contents<'data, A: Arch<Platform = Coff>>(
         .try_for_each(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
-            let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
+            let mut table_writer =
+                TableWriter::from_layout(layout, group.strtab_start_offset, &mut buffers);
 
             for file in &group.files {
                 write_file::<A>(
@@ -186,21 +196,32 @@ fn write_file<'data, A: Arch<Platform = Coff>>(
 
 struct TableWriter<'layout, 'out> {
     section_headers: &'out mut [coff::SectionHeader],
-    _phantom: std::marker::PhantomData<&'layout ()>,
+    symbol_table_writer: SymbolTableWriter<'layout, 'out>,
 }
 
 impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn from_layout(
-        _layout: &'layout CoffLayout,
+        layout: &'layout CoffLayout,
+        strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
     ) -> TableWriter<'layout, 'out> {
-        Self::new(buffers)
+        let symbol_table_writer = SymbolTableWriter::new(
+            strtab_start_offset,
+            buffers,
+            &layout.output_sections,
+            &layout.section_layouts,
+        );
+
+        Self::new(buffers, symbol_table_writer)
     }
 
-    fn new(buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> TableWriter<'layout, 'out> {
+    fn new(
+        buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
+        symbol_table_writer: SymbolTableWriter<'layout, 'out>,
+    ) -> TableWriter<'layout, 'out> {
         TableWriter {
             section_headers: slice_from_all_bytes_mut(buffers.take(part_id::SECTION_HEADERS)),
-            _phantom: std::marker::PhantomData,
+            symbol_table_writer,
         }
     }
 
@@ -220,6 +241,210 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             ));
         }
 
+        self.symbol_table_writer.check_exhausted()?;
+
+        Ok(())
+    }
+}
+
+struct SymbolTableWriter<'layout, 'out> {
+    entries: &'out mut [object::pe::ImageSymbol],
+    output_sections: &'layout OutputSections<'layout, Coff>,
+    section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
+    strtab_writer: StrTabWriter<'out>,
+}
+
+impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
+    fn new(
+        start_string_offset: u32,
+        buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
+        output_sections: &'layout OutputSections<'layout, Coff>,
+        section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
+    ) -> Self {
+        let entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB));
+        let strings = buffers.take(part_id::STRTAB);
+        Self {
+            entries,
+            output_sections,
+            section_layouts,
+            strtab_writer: StrTabWriter {
+                next_offset: start_string_offset,
+                out: strings,
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn copy_object_symbol(
+        &mut self,
+        sym: &coff::SymtabEntry,
+        sym_index: SymbolIndex,
+        symbol_id: SymbolId,
+        name: &[u8],
+        object: &ObjectLayout<Coff>,
+        layout: &CoffLayout,
+        value: u64,
+        flags: ValueFlags,
+    ) -> Result {
+        if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+            self.copy_symbol_with_section(
+                sym,
+                symbol_id,
+                name,
+                object,
+                layout,
+                value,
+                flags,
+                section_index,
+            )?
+        } else if sym.is_common() {
+            let section_id = output_section_id::BSS;
+            Some(self.copy_symbol(sym, name, section_id, value, flags)?)
+        } else if sym.is_absolute() {
+            self.copy_absolute_symbol(sym, name, flags)
+                .with_context(|| {
+                    format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
+                })?;
+            return Ok(());
+        } else {
+            bail!("Attempted to output a symtab entry with an unexpected section type")
+        };
+
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn copy_symbol_with_section(
+        &mut self,
+        sym: &coff::SymtabEntry,
+        symbol_id: SymbolId,
+        name: &[u8],
+        object: &ObjectLayout<Coff>,
+        layout: &CoffLayout,
+        value: u64,
+        flags: ValueFlags,
+        section_index: object::SectionIndex,
+    ) -> Result<Option<&mut object::pe::ImageSymbol>> {
+        let section_id = match &object.sections[section_index.0] {
+            SectionSlot::Loaded(_)
+            | SectionSlot::Sorted(_)
+            | SectionSlot::LoadedDebugInfo(_)
+            | SectionSlot::MergeStrings(_) => object
+                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                .output_section_id::<Coff>(),
+            _ => {
+                if layout.symbol_db.is_mapping_symbol(symbol_id) {
+                    return Ok(None);
+                }
+                bail!(
+                    "Tried to copy a symbol in a section we didn't load. {}",
+                    layout.symbol_debug(symbol_id)
+                )
+            }
+        };
+
+        let section_id = layout.output_sections.primary_output_section(section_id);
+        Ok(Some(self.copy_symbol(sym, name, section_id, value, flags)?))
+    }
+
+    #[inline(always)]
+    fn copy_symbol(
+        &mut self,
+        sym: &coff::SymtabEntry,
+        name: &[u8],
+        output_section_id: OutputSectionId,
+        value: u64,
+        flags: ValueFlags,
+    ) -> Result<&mut object::pe::ImageSymbol> {
+        let shndx = self
+            .output_sections
+            .output_index_of_section(output_section_id)
+            .with_context(|| {
+                format!(
+                    "internal error: tried to copy symbol `{}` that's in section {} \
+                     which is not being output",
+                    String::from_utf8_lossy(name),
+                    output_section_id,
+                )
+            })?;
+        // Symbol value is section-relatve
+        let value = u32::try_from(value - self.section_layouts.get(output_section_id).mem_offset)?;
+        self.copy_symbol_shndx(sym, name, shndx as i32, value, flags)
+    }
+
+    #[inline(always)]
+    fn copy_symbol_shndx(
+        &mut self,
+        sym: &coff::SymtabEntry,
+        name: &[u8],
+        shndx: i32,
+        value: u32,
+        // TODO: Do something useful with flags
+        _flags: ValueFlags,
+    ) -> Result<&mut object::pe::ImageSymbol> {
+        let entry = self.define_symbol(
+            // 1-based indexes strike again
+            SymbolSection(shndx + 1),
+            value,
+            name,
+        )?;
+
+        entry.typ = sym.raw.typ;
+        entry.storage_class = sym.raw.storage_class;
+        entry.number_of_aux_symbols = 0;
+        Ok(entry)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn copy_absolute_symbol(
+        &self,
+        _sym: &coff::SymtabEntry,
+        _name: &[u8],
+        _flags: ValueFlags,
+    ) -> Result<&mut object::pe::ImageSymbol> {
+        bail!("Absolute symbols are not supported currently")
+    }
+
+    #[inline(always)]
+    fn define_symbol(
+        &mut self,
+        section: SymbolSection,
+        value: u32,
+        name: &[u8],
+    ) -> Result<&mut object::pe::ImageSymbol> {
+        let entry = self.entries.split_off_first_mut().with_context(|| {
+            format!(
+                "Insufficient symbol table allocated for symbol `{}`",
+                String::from_utf8_lossy(name),
+            )
+        })?;
+        let mut name_bytes = [0u8; 8];
+        if name.len() <= 8 {
+            let byte_count = name.len().min(name_bytes.len());
+            name_bytes[..byte_count].copy_from_slice(&name[..byte_count]);
+        } else {
+            let string_offset = self.strtab_writer.write_str(name);
+            name_bytes[4..].copy_from_slice(&string_offset.to_le_bytes());
+        }
+
+        entry.name = name_bytes;
+        entry.value.set(LittleEndian, value);
+        entry.section_number.set(LittleEndian, section.0 as u16);
+
+        Ok(entry)
+    }
+
+    /// Verifies that we've used up all the space allocated to this writer. i.e. checks that we
+    /// didn't allocate too much or missed writing something that we were supposed to write.
+    fn check_exhausted(&self) -> Result {
+        if !self.entries.is_empty() || !self.strtab_writer.out.is_empty() {
+            bail!(
+                "Didn't use up all allocated symbol table space. entries={} strings={}",
+                self.entries.len(),
+                self.strtab_writer.out.len()
+            );
+        }
+
         Ok(())
     }
 }
@@ -227,7 +452,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 fn write_object<'data, A: Arch<Platform = Coff>>(
     object: &ObjectLayout<'data, Coff>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    _table_writer: &mut TableWriter,
+    table_writer: &mut TableWriter,
     layout: &CoffLayout<'data>,
     trace: &TraceOutput,
 ) -> Result {
@@ -245,6 +470,10 @@ fn write_object<'data, A: Arch<Platform = Coff>>(
             }
             _ => (),
         }
+    }
+
+    if !layout.args().should_strip_all() {
+        write_symbols(object, &mut table_writer.symbol_table_writer, layout)?;
     }
 
     Ok(())
@@ -322,6 +551,53 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Coff>>(
         Ok(&mut [])
     }
 }
+
+fn write_symbols<'data>(
+    object: &ObjectLayout<'data, Coff>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+    layout: &CoffLayout<'data>,
+) -> Result {
+    for (sym, flags) in object
+        .object
+        .symbols
+        .iter()
+        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+        .filter(|(entry, _)| !entry.is_aux)
+    {
+        let sym_index = sym.index;
+        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+
+        if let Some(info) = SymbolCopyInfo::new(
+            object.object,
+            sym_index,
+            sym,
+            symbol_id,
+            &layout.symbol_db,
+            flags.get(),
+            &object.sections,
+        ) {
+            let Some(res) = layout.local_symbol_resolution(symbol_id) else {
+                bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
+            };
+            let symbol_value = res.value_for_symbol_table();
+            symbol_writer
+                .copy_object_symbol(
+                    sym,
+                    sym_index,
+                    symbol_id,
+                    info.name,
+                    object,
+                    layout,
+                    symbol_value,
+                    flags.get(),
+                )
+                .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn apply_relocations<
     'data,
     A: Arch<Platform = Coff>,
@@ -636,15 +912,54 @@ fn write_prelude<A: Arch<Platform = Coff>>(
 
     write_section_headers(table_writer, layout)?;
 
+    if !layout.args().should_strip_all() {
+        write_string_table_header(table_writer, layout)?;
+        write_symbol_table_entries(prelude, &mut table_writer.symbol_table_writer, layout)?;
+    }
+
+    Ok(())
+}
+
+fn write_string_table_header(
+    table_writer: &mut TableWriter<'_, '_>,
+    layout: &Layout<'_, Coff>,
+) -> Result<(), crate::error::Error> {
+    let strtab_size = layout
+        .section_layouts
+        .get(output_section_id::STRTAB)
+        .file_size;
+    table_writer
+        .symbol_table_writer
+        .strtab_writer
+        .write_size_header(u32::try_from(strtab_size)?);
+    Ok(())
+}
+
+fn write_symbol_table_entries(
+    prelude: &PreludeLayout<Coff>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+    layout: &CoffLayout,
+) -> Result {
+    let internal_symbols = &prelude.internal_symbols;
+
+    write_internal_symbols(internal_symbols, layout, symbol_writer)?;
     Ok(())
 }
 
 fn write_synthetic_symbols<'data, A: Arch<Platform = Coff>>(
-    _syn: &SyntheticSymbolsLayout<Coff>,
-    _table_writer: &mut TableWriter<'_, '_>,
-    _layout: &CoffLayout<'data>,
+    syn: &SyntheticSymbolsLayout<Coff>,
+    table_writer: &mut TableWriter<'_, '_>,
+    layout: &CoffLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write synthetic symbols");
+
+    if !layout.args().should_strip_all() {
+        write_internal_symbols(
+            &syn.internal_symbols,
+            layout,
+            &mut table_writer.symbol_table_writer,
+        )?;
+    }
 
     Ok(())
 }
@@ -716,8 +1031,25 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
         .file_header
         .time_date_stamp
         .set(e, Default::default());
-    header.file_header.pointer_to_symbol_table.set(e, 0);
-    header.file_header.number_of_symbols.set(e, 0);
+    header.file_header.pointer_to_symbol_table.set(
+        e,
+        layout
+            .merged_section_layouts
+            .get(output_section_id::SYMTAB)
+            .file_offset
+            .try_into()
+            .unwrap(),
+    );
+    header.file_header.number_of_symbols.set(
+        e,
+        (layout
+            .merged_section_layouts
+            .get(output_section_id::SYMTAB)
+            .file_size
+            / object::pe::IMAGE_SIZEOF_SYMBOL)
+            .try_into()
+            .unwrap(),
+    );
     header
         .file_header
         .size_of_optional_header
@@ -881,6 +1213,78 @@ fn write_epilogue<A: Arch<Platform = Coff>>(
     Ok(())
 }
 
+fn write_internal_symbols(
+    internal_symbols: &InternalSymbols<Coff>,
+    layout: &CoffLayout,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+) -> Result {
+    for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
+        if def_info.name.is_empty() || def_info.symbol.is_hidden() {
+            continue;
+        }
+        let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
+        if !layout.symbol_db.is_canonical(symbol_id) {
+            continue;
+        }
+        let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
+            continue;
+        };
+
+        let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
+
+        // For Redirect, get attributes from the target symbol
+        let (mut shndx, st_type) = if matches!(
+            def_info.placement,
+            crate::parsing::SymbolPlacement::Redirect(_)
+        ) {
+            unreachable!();
+        } else {
+            let shndx = def_info
+                .section_id()
+                .map(|section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .with_context(|| {
+                            format!(
+                                "symbol '{}' in section '{}' that we're not going to output {resolution:?}",
+                                layout.symbol_db.symbol_name_for_display(symbol_id),
+                                layout.output_sections.display_name(section_id)
+                            )
+                        })
+                })
+                .transpose()?
+                .map_or(object::pe::IMAGE_SYM_ABSOLUTE, |i| SymbolSection(i as i32));
+
+            (shndx, def_info.symbol.raw.typ)
+        };
+
+        // 1-based offsets
+        if shndx.0 >= 0 {
+            shndx = SymbolSection(shndx.0 + 1);
+        }
+
+        let address = u32::try_from(
+            resolution.value()
+                - symbol_writer
+                    .section_layouts
+                    .get(def_info.section_id().unwrap())
+                    .mem_offset,
+        )?;
+
+        let entry = symbol_writer
+            .define_symbol(shndx, address, symbol_name.bytes())
+            .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
+
+        entry.typ = st_type;
+        entry.storage_class = def_info.symbol.raw.storage_class;
+        entry.number_of_aux_symbols = 0;
+    }
+    Ok(())
+}
+
 fn write_section_headers(table_writer: &mut TableWriter<'_, '_>, layout: &CoffLayout) -> Result {
     let output_sections = &layout.output_sections;
 
@@ -977,6 +1381,32 @@ fn write_section_headers(table_writer: &mut TableWriter<'_, '_>, layout: &CoffLa
         );
     }
     Ok(())
+}
+
+struct StrTabWriter<'out> {
+    next_offset: u32,
+    out: &'out mut [u8],
+}
+
+// TODO: Copied from elf_writer, could be deduplicated
+impl StrTabWriter<'_> {
+    /// Writes a string to the string table. Returns the offset within the string table at which the
+    /// string was written.
+    fn write_str(&mut self, str: &[u8]) -> u32 {
+        let len_with_terminator = str.len() + 1;
+        let lib_name_out = self.out.split_off_mut(..len_with_terminator).unwrap();
+        lib_name_out[..str.len()].copy_from_slice(str);
+        lib_name_out[str.len()] = 0;
+        let offset = self.next_offset;
+        self.next_offset += len_with_terminator as u32;
+        offset
+    }
+
+    fn write_size_header(&mut self, total_size: u32) {
+        let header = self.out.split_off_mut(..4).unwrap();
+        header.copy_from_slice(&total_size.to_le_bytes());
+        self.next_offset += 4;
+    }
 }
 
 fn fill_section_padding<A: Arch<Platform = Coff>>(
