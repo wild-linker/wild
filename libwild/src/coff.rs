@@ -1277,8 +1277,22 @@ impl platform::SectionFlags for SectionFlags {
 
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<CommonSymbol> {
-        // TODO
-        None
+        if self.is_aux
+        // Essentially duplicates what `object::read::CoffSymbol::section()` does to identify Commons
+        || self.raw.section_number() != object::pe::IMAGE_SYM_UNDEFINED
+        || self.raw.storage_class() != object::pe::IMAGE_SYM_CLASS_EXTERNAL
+        || self.raw.value() == 0
+        {
+            return None;
+        }
+
+        // This is convoluted compared to ELF, but matches what LLD does.
+        let alignment = Alignment::new(self.value().next_power_of_two().min(32)).unwrap();
+        let size = alignment.align_up(self.value());
+        let output_section_id = output_section_id::BSS;
+        let part_id = output_section_id.part_id_with_alignment::<Coff>(alignment);
+
+        Some(CommonSymbol { size, part_id })
     }
 
     fn is_undefined(&self) -> bool {
