@@ -666,6 +666,10 @@ impl Platform for Coff {
         true
     }
 
+    fn init_section_priority(name: &[u8]) -> Option<u32> {
+        init_priority(name)
+    }
+
     fn allocate_header_sizes<'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
@@ -1648,9 +1652,33 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section(".rdata".as_bytes(), output_section_id::RDATA),
     SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
     SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
+    // TODO: This sets `keep`; verify if that's correct
+    // TODO: This sets `keep`; verify if that's correct
+    // Unlike BFD, LLD merges them into RDATA for tighter packing (by avoiding .CRT section), we
+    // follow that.
+    SectionRule::prefix_section_sort(".CRT$".as_bytes(), output_section_id::RDATA),
 ];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
+
+fn init_priority(name: &[u8]) -> Option<u32> {
+    if let Some(pos) = name.iter().position(|&byte| byte == b'$') {
+        return parse_priority_suffix(&name[pos + 1..]);
+    }
+
+    None
+}
+
+pub(crate) fn parse_priority_suffix(suffix: &[u8]) -> Option<u32> {
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+
+    let mut priority_bytes = [0u8; 4];
+    let byte_count = suffix.len();
+    priority_bytes[..byte_count].copy_from_slice(&suffix[..byte_count]);
+    Some(u32::from_be_bytes(priority_bytes))
+}
 
 fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
     object::pe::IMAGE_SIZEOF_SECTION_HEADER as u64
