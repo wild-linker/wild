@@ -77,6 +77,7 @@ pub struct WasmArgs {
     pub(crate) export_dynamic: bool,
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
+    pub(crate) import_undefined: bool,
     pub(crate) allow_multiple_definition: bool,
     pub(crate) strip_debug: bool,
     pub(crate) strip_all: bool,
@@ -139,6 +140,7 @@ impl Default for WasmArgs {
             export_dynamic: false,
             gc_sections: true,
             allow_undefined: false,
+            import_undefined: false,
             allow_multiple_definition: false,
             strip_debug: false,
             strip_all: false,
@@ -569,6 +571,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Allow undefined symbols in the output")
         .execute(|args, _modifier_stack| {
             args.allow_undefined = true;
+            args.import_undefined = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("import-undefined")
+        .help("Turn undefined symbols into imports where possible")
+        .execute(|args, _modifier_stack| {
+            args.import_undefined = true;
             Ok(())
         });
 

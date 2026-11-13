@@ -3505,6 +3505,7 @@ fn report_disallowed_unresolved_imports<'data>(
             }
 
             let is_unresolved = match sym.kind {
+                WasmSymbolKind::Func if symbol_db.args.import_undefined => false,
                 WasmSymbolKind::Func => {
                     let idx = sym.index as usize;
                     input
