@@ -1,6 +1,11 @@
 //! Tests that build and run various test programs then link them and run them. Each test is linked
 //! with both the system linker (ld) and with wild.
 //!
+//! MinGW tests use a Wine prefix under the test build directory (see WILD_TEST_BUILD_DIR).
+//! Initialization is shared across test processes. The server executable is selected from
+//! WINESERVER, then wineserver_path in test-config.toml, then `wineserver` on PATH.
+//! Wine is loaded from the server's directory.
+//!
 //! The test files can contain directives that affect compilation and linking as well as assertions
 //! that are tested by examining the resulting binaries. Directives have the format '//#Directive:
 //! Args'. For WebAssembly Text (`.wat`), the alternate prefix `;;#Directive: Args` is accepted.
@@ -487,6 +492,7 @@ use std::io::Read;
 use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -1686,6 +1692,8 @@ struct TestConfig {
 
     #[serde(default = "default_llvm_tools_dir")]
     llvm_tools_dir: PathBuf,
+
+    wineserver_path: Option<PathBuf>,
 
     #[serde(default = "default_test_binary_timeout")]
     test_binary_timeout: Option<Duration>,
@@ -3800,9 +3808,7 @@ impl LinkOutput {
             c.arg(&self.binary);
             c
         } else if self.command.config.platform == PlatformKind::MinGW {
-            // TODO: move this away to avoid harming single test run time
-            prepare_wine();
-            let mut c = Command::new("wine");
+            let mut c = prepare_wine(&self.command.config.test_config)?.wine_command();
             c.arg(&self.binary);
             c
         } else {
@@ -3835,17 +3841,11 @@ impl LinkOutput {
                 let _ = recv.read_to_end(&mut output);
             });
 
-            if let Some(timeout) = self.command.config.test_config.test_binary_timeout {
-                if let Some(s) = child.wait_timeout(timeout)? {
-                    Ok(s)
-                } else {
-                    child.kill()?;
-                    child.wait()?;
-                    bail!("Binary ran for too long");
-                }
-            } else {
-                Ok(child.wait()?)
-            }
+            wait_for_child(
+                &mut child,
+                self.command.config.test_config.test_binary_timeout,
+            )?
+            .context("Binary ran for too long")
         })?;
 
         let output = String::from_utf8_lossy(&output);
@@ -3882,6 +3882,18 @@ impl LinkOutput {
 
         Ok(())
     }
+}
+
+fn wait_for_child(child: &mut Child, timeout: Option<Duration>) -> Result<Option<ExitStatus>> {
+    let Some(timeout) = timeout else {
+        return Ok(Some(child.wait()?));
+    };
+    let status = child.wait_timeout(timeout)?;
+    if status.is_none() {
+        child.kill()?;
+        child.wait()?;
+    }
+    Ok(status)
 }
 
 /// Attempts to spawn `command`. If that fails due to ETXTBSY, then retries until the timeout is
@@ -10268,26 +10280,116 @@ fn path_to_str(path: &Path) -> Result<&str> {
         .with_context(|| format!("Path must be UTF-8: `{}`", path.display()))
 }
 
+struct WineEnvironment {
+    prefix: PathBuf,
+    server: PathBuf,
+}
+
 // We kill two birds with one stone here: keep wine warm between individual tests and most
 // importantly, avoid ~4s waits on each individual test exit due to Wine's forked process delayed
 // shutdown
-fn prepare_wine() {
-    static PREPARED: OnceLock<()> = OnceLock::new();
-    PREPARED.get_or_init(|| {
-        for cmd in [
-            // keep wine running/warm between tests
-            Command::new("wineserver").arg("--persistent=5"),
-            // create/update prefix; blocks until boot completes
-            &mut Command::new("wineboot"),
-        ] {
-            let _ = cmd
-                // skip Gecko/Mono prompts
-                .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
-                .env("WINEDEBUG", "-all")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    });
+fn prepare_wine(config: &TestConfig) -> Result<&'static WineEnvironment> {
+    static PREPARED: OnceLock<core::result::Result<WineEnvironment, String>> = OnceLock::new();
+    PREPARED
+        .get_or_init(|| initialise_wine(config).map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| error!("Failed to initialize Wine: {e}"))
+}
+
+fn initialise_wine(config: &TestConfig) -> Result<WineEnvironment> {
+    let server = std::env::var_os("WINESERVER")
+        .map(PathBuf::from)
+        .or_else(|| config.wineserver_path.clone())
+        .unwrap_or_else(|| PathBuf::from("wineserver"));
+
+    let server = which::which(&server).with_context(|| {
+        format!(
+            "Cannot find `{}`. Set wineserver_path in test-config.toml or the WINESERVER env var.",
+            server.display()
+        )
+    })?;
+
+    let prefix = build_dir().join("wine");
+    std::fs::create_dir_all(&prefix)?;
+    let prefix = prefix.canonicalize()?;
+    let wine = WineEnvironment { prefix, server };
+
+    let lock_path = build_dir().join("wine.lock");
+
+    let lock = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+
+    // Nextest runs each test in a separate process, so OnceLock alone isn't sufficient.
+    lock.lock()
+        .with_context(|| format!("Failed to lock {}", lock_path.display()))?;
+
+    // Status 2 means another process already started the wineserver.
+    let server_status = run_wine_setup_command(
+        wine.command(&wine.server).arg("--persistent=20"),
+        &[0, 2],
+        config.test_binary_timeout,
+    )?;
+
+    // If the wineserver wasn't already running, then boot it.
+    if server_status.success() {
+        run_wine_setup_command(
+            wine.wine_command().args(["wineboot.exe", "--init"]),
+            &[0],
+            config.test_binary_timeout,
+        )?;
+    }
+
+    Ok(wine)
+}
+
+impl WineEnvironment {
+    fn wine_command(&self) -> Command {
+        self.command(self.server.with_file_name("wine"))
+    }
+
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
+        command
+            .env("WINEPREFIX", &self.prefix)
+            .env("WINESERVER", &self.server)
+            .env("WINEARCH", "win64")
+            .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+            .env("WINEDEBUG", "-all")
+            .stdin(Stdio::null());
+        command
+    }
+}
+
+fn run_wine_setup_command(
+    command: &mut Command,
+    success_codes: &[i32],
+    timeout: Option<Duration>,
+) -> Result<ExitStatus> {
+    // Wine services can outlive this test process, so we need its output to go some place that
+    // won't close when we exit, but where we can also capture it on failure.
+    let log = tempfile::NamedTempFile::new()?;
+
+    let mut child = command
+        .stdout(log.as_file().try_clone()?)
+        .stderr(log.as_file().try_clone()?)
+        .spawn()
+        .with_context(|| format!("Failed to run {command:?}"))?;
+    let status = wait_for_child(&mut child, timeout)?;
+
+    if let Some(status) = status
+        && status
+            .code()
+            .is_some_and(|code| success_codes.contains(&code))
+    {
+        return Ok(status);
+    }
+
+    let output = std::fs::read(log.path())?;
+    let output = String::from_utf8_lossy(&output);
+    let status = status.with_context(|| format!("Wine setup timed out: {command:?}\n{output}"))?;
+
+    bail!("Wine setup failed with {status}: {command:?}\n{output}")
 }
