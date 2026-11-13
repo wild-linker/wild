@@ -538,6 +538,10 @@ impl Platform for Coff {
         symbols
             .add_symbol(InternalSymDefInfo::new(SymbolPlacement::Undefined, b""))
             .hide();
+
+        symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "__ImageBase")
+            .hide();
     }
 
     fn built_in_section_infos<'data>() -> Vec<SectionOutputInfo<'data, Self>> {
