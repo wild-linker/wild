@@ -188,12 +188,17 @@ impl crate::platform::Arch for ElfLoongArch64 {
         true
     }
 
+    fn relaxation_range_depends_on_earlier_shrinks() -> bool {
+        true
+    }
+
     fn collect_relaxation_deltas(
         section_output_address: u64,
         section_bytes: &[u8],
         relocations: RelocationList64,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        earlier_shift: u64,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
             RelocationList64::Rela(rela_list) => collect_relaxation_deltas(
@@ -202,6 +207,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
                 rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                earlier_shift,
             ),
             RelocationList64::Crel(crel_iter) => collect_relaxation_deltas(
                 section_output_address,
@@ -209,6 +215,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
                 crel_iter.flatten().map(ElfCrel::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                earlier_shift,
             ),
         }
     }
@@ -293,6 +300,7 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+    earlier_shift: u64,
 ) -> (Vec<(u64, u32)>, Option<u64>) {
     let mut raw_deltas = Vec::new();
     let mut min_unrelaxed_margin: Option<u64> = None;
@@ -321,10 +329,14 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
                     });
                     let pc = section_output_address + call_output_offset;
                     let distance = info.output_address as i64 + addend - pc as i64;
-                    // `info.output_address` is from the previous layout, so bytes deleted before
-                    // this call in the current pass are not in it yet. Add them to a forward
-                    // distance, which can grow by that much. A backward branch only gets closer.
-                    let forward_shift = i64::try_from(new_cumulative_delta).unwrap_or(i64::MAX);
+                    // Addresses are from the previous layout. `earlier_shift` is bytes deleted at a
+                    // lower address in this pass, which can move this whole section backward.
+                    // `new_cumulative_delta` is the same for deletions earlier in this section. Add
+                    // both to a forward distance, which can grow by that much. A backward branch
+                    // only gets closer.
+                    let forward_shift =
+                        i64::try_from(earlier_shift.saturating_add(new_cumulative_delta))
+                            .unwrap_or(i64::MAX);
                     let checked_distance = if distance >= 0 {
                         distance.saturating_add(forward_shift)
                     } else {

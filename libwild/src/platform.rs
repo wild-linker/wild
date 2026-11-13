@@ -241,12 +241,19 @@ pub(crate) trait Arch: Send + Sync + 'static {
         offset_in_section: u64,
     ) -> Result<SourceInfo>;
 
+    /// Whether a forward branch decided in this pass must allow for bytes deleted at a lower
+    /// address.
+    fn relaxation_range_depends_on_earlier_shrinks() -> bool {
+        false
+    }
+
     fn collect_relaxation_deltas<'data>(
         _section_output_address: u64,
         _section_bytes: &[u8],
         _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        _earlier_shift: u64,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.
