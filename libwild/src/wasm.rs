@@ -32,6 +32,9 @@ use hashbrown::HashSet;
 use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
+use object::Object as _;
+use object::ObjectSection as _;
+use object::ObjectSymbol as _;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::ops::Range;
@@ -46,16 +49,8 @@ use wasmparser::FunctionSectionReader;
 use wasmparser::GlobalSectionReader;
 use wasmparser::GlobalType;
 use wasmparser::ImportSectionReader;
-use wasmparser::KnownCustom;
-use wasmparser::Linking;
 use wasmparser::MemorySectionReader;
 use wasmparser::MemoryType;
-use wasmparser::Parser;
-use wasmparser::Payload;
-use wasmparser::RelocationEntry;
-use wasmparser::RelocationType;
-use wasmparser::SymbolFlags;
-use wasmparser::SymbolInfo;
 use wasmparser::TypeRef;
 use wasmparser::TypeSectionReader;
 
@@ -152,47 +147,11 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::WasmDebug.output_section_id();
 }
 
-/// Magic bytes at the start of every Wasm module.
-pub(crate) const WASM_MAGIC: [u8; 4] = [0x00, b'a', b's', b'm'];
-
-/// Supported Wasm binary format version.
-pub(crate) const WASM_VERSION: u32 = 1;
-
-pub(crate) mod section_id {
-    pub(crate) const TYPE: u8 = 1;
-    pub(crate) const IMPORT: u8 = 2;
-    pub(crate) const FUNCTION: u8 = 3;
-    pub(crate) const TABLE: u8 = 4;
-    pub(crate) const MEMORY: u8 = 5;
-    pub(crate) const GLOBAL: u8 = 6;
-    pub(crate) const EXPORT: u8 = 7;
-    pub(crate) const START: u8 = 8;
-    pub(crate) const ELEMENT: u8 = 9;
-    pub(crate) const CODE: u8 = 10;
-    pub(crate) const DATA: u8 = 11;
-    pub(crate) const DATA_COUNT: u8 = 12;
-    pub(crate) const MAX: u8 = DATA_COUNT;
-}
-
-/// Size of a `[Option<u32>; _]` lookup that can be indexed by any standard section id.
-pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = section_id::MAX as usize + 1;
+/// Size of a `[Option<u32>; _]` lookup indexed by a standard section id through `data_count`.
+pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = object::wasm::SEC_DATA_COUNT.0 as usize + 1;
 
 /// Export name of the indirect function table (`--export-table`).
 const INDIRECT_FUNCTION_TABLE_NAME: &str = "__indirect_function_table";
-
-/// The custom-section name used for the linker metadata.
-pub(crate) const LINKING_SECTION_NAME: &str = "linking";
-
-/// The prefix of every `reloc.*` custom section.
-pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
-
-/// The custom-section name used for the WebAssembly target features.
-pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
-
-/// Feature is used by this object (`+` in the target_features section).
-pub(crate) const TARGET_FEATURE_PREFIX_USED: u8 = b'+';
-/// Feature must not appear in the output (`-` in the target_features section).
-pub(crate) const TARGET_FEATURE_PREFIX_DISALLOWED: u8 = b'-';
 
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
@@ -233,10 +192,7 @@ pub(crate) struct File<'data> {
 
     /// Init functions from the linking section (`InitFuncs`), in input order.
     #[debug(skip)]
-    pub(crate) init_funcs: Vec<WasmInitFunc>,
-
-    #[debug(skip)]
-    pub(crate) reloc_sections: Vec<WasmRelocSection>,
+    pub(crate) init_funcs: Vec<object::wasm::InitFunc>,
 
     /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
@@ -253,12 +209,12 @@ pub(crate) struct File<'data> {
 pub(crate) struct WasmSegmentInfo<'data> {
     pub(crate) name: &'data str,
     pub(crate) alignment: Alignment,
-    pub(crate) flags: wasmparser::SegmentFlags,
+    pub(crate) flags: object::wasm::SegmentFlags,
 }
 
 impl WasmSegmentInfo<'_> {
     fn is_tls(self) -> bool {
-        self.flags.contains(wasmparser::SegmentFlags::TLS)
+        self.flags.contains(object::wasm::SEG_FLAG_TLS)
             || self.name.starts_with(".tdata")
             || self.name.starts_with(".tbss")
     }
@@ -269,15 +225,6 @@ impl WasmSegmentInfo<'_> {
 pub(crate) struct WasmTargetFeature<'data> {
     pub(crate) prefix: u8,
     pub(crate) name: &'data str,
-}
-
-/// A constructor from the linking `InitFuncs` subsection.
-///
-/// `symbol_index` indexes the linking symbol table.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WasmInitFunc {
-    pub(crate) priority: u32,
-    pub(crate) symbol_index: u32,
 }
 
 /// A single section of a Wasm module.
@@ -292,6 +239,8 @@ pub(crate) struct SectionHeader {
     /// For custom sections, the byte range within the input data of the section's name string.
     /// `None` for standard sections, whose canonical name is derived from `id`.
     pub(crate) name_range: Option<Range<u32>>,
+
+    pub(crate) relocations: Vec<object::wasm::Relocation>,
 }
 
 impl SectionHeader {
@@ -301,19 +250,19 @@ impl SectionHeader {
 }
 
 fn standard_section_name(id: u8) -> Option<&'static [u8]> {
-    Some(match id {
-        section_id::TYPE => b"type",
-        section_id::IMPORT => b"import",
-        section_id::FUNCTION => b"function",
-        section_id::TABLE => b"table",
-        section_id::MEMORY => b"memory",
-        section_id::GLOBAL => b"global",
-        section_id::EXPORT => b"export",
-        section_id::START => b"start",
-        section_id::ELEMENT => b"element",
-        section_id::CODE => b"code",
-        section_id::DATA => b"data",
-        section_id::DATA_COUNT => b"data_count",
+    Some(match object::wasm::SectionId(id) {
+        object::wasm::SEC_TYPE => b"type",
+        object::wasm::SEC_IMPORT => b"import",
+        object::wasm::SEC_FUNCTION => b"function",
+        object::wasm::SEC_TABLE => b"table",
+        object::wasm::SEC_MEMORY => b"memory",
+        object::wasm::SEC_GLOBAL => b"global",
+        object::wasm::SEC_EXPORT => b"export",
+        object::wasm::SEC_START => b"start",
+        object::wasm::SEC_ELEMENT => b"element",
+        object::wasm::SEC_CODE => b"code",
+        object::wasm::SEC_DATA => b"data",
+        object::wasm::SEC_DATA_COUNT => b"data_count",
         _ => return None,
     })
 }
@@ -323,8 +272,8 @@ fn standard_section_name(id: u8) -> Option<&'static [u8]> {
 // `SymbolInfo` would have to drop the borrowed strings anyway.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct WasmSymbol {
-    pub(crate) kind: WasmSymbolKind,
-    pub(crate) flags: u32,
+    pub(crate) kind: object::wasm::SymbolKind,
+    pub(crate) flags: object::wasm::SymbolFlags,
     pub(crate) index: u32,
     pub(crate) offset: u32,
     pub(crate) size: u32,
@@ -332,41 +281,25 @@ pub(crate) struct WasmSymbol {
     pub(crate) name_len: u32,
 }
 
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-pub(crate) enum WasmSymbolKind {
-    #[default]
-    Null, // Doesn't correspond to any real wasm symbol kind.
-    Func,
-    Data,
-    Global,
-    Section,
-    Event,
-    Table,
-}
-
 impl WasmSymbol {
-    fn raw_flags(&self) -> SymbolFlags {
-        SymbolFlags::from_bits_truncate(self.flags)
-    }
-
     pub(crate) fn is_undefined(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::UNDEFINED)
+        self.flags.contains(object::wasm::SYM_UNDEFINED)
     }
 
     pub(crate) fn is_weak(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::BINDING_WEAK)
+        self.flags.binding() == object::wasm::SYM_BINDING_WEAK
     }
 
     pub(crate) fn is_local(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::BINDING_LOCAL)
+        self.flags.binding() == object::wasm::SYM_BINDING_LOCAL
     }
 
     pub(crate) fn is_hidden(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::VISIBILITY_HIDDEN)
+        self.flags.visibility() == object::wasm::SYM_VISIBILITY_HIDDEN
     }
 
     pub(crate) fn is_explicit_name(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::EXPLICIT_NAME)
+        self.flags.contains(object::wasm::SYM_EXPLICIT_NAME)
     }
 
     fn has_name(&self) -> bool {
@@ -376,118 +309,6 @@ impl WasmSymbol {
     fn name_range(&self) -> Range<usize> {
         let s = self.name_start as usize;
         s..s + self.name_len as usize
-    }
-}
-
-/// A `reloc.*` custom section header.
-#[derive(Debug, Clone)]
-pub(crate) struct WasmRelocSection {
-    /// Index (into [`File::sections`]) of the section that the relocations apply to.
-    pub(crate) target_section_index: u32,
-    /// Byte range of the section's contents (after the section name) within the module bytes.
-    pub(crate) payload_range: Range<u32>,
-}
-
-impl WasmRelocSection {
-    pub(crate) fn decode_entries(&self, data: &[u8]) -> Result<Vec<WasmRelocation>> {
-        let payload = data
-            .get(self.payload_range.start as usize..self.payload_range.end as usize)
-            .context("Wasm reloc section payload range out of bounds")?;
-        let reader = wasmparser::RelocSectionReader::new(BinaryReader::new(
-            payload,
-            u64::from(self.payload_range.start),
-        ))?;
-        reader
-            .entries()
-            .into_iter()
-            .map(|entry| Ok(WasmRelocation::from_entry(entry?)))
-            .collect()
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmRelocation {
-    /// Wasm relocation type.
-    pub(crate) ty: RelocationType,
-    /// Byte offset within the target section's payload.
-    pub(crate) offset: u32,
-    /// Symbol or type index.
-    pub(crate) index: u32,
-    pub(crate) addend: i64,
-}
-
-macro_rules! define_relocation_type_to_string {
-    ($($variant:ident),* $(,)?) => {
-        pub(crate) const fn relocation_type_to_string(ty: RelocationType) -> &'static str {
-            match ty {
-                $(RelocationType::$variant => stringify!($variant),)*
-            }
-        }
-    };
-}
-
-define_relocation_type_to_string!(
-    FunctionIndexLeb,
-    TableIndexSleb,
-    TableIndexI32,
-    MemoryAddrLeb,
-    MemoryAddrSleb,
-    MemoryAddrI32,
-    TypeIndexLeb,
-    GlobalIndexLeb,
-    FunctionOffsetI32,
-    SectionOffsetI32,
-    EventIndexLeb,
-    MemoryAddrRelSleb,
-    TableIndexRelSleb,
-    GlobalIndexI32,
-    MemoryAddrLeb64,
-    MemoryAddrSleb64,
-    MemoryAddrI64,
-    MemoryAddrRelSleb64,
-    TableIndexSleb64,
-    TableIndexI64,
-    TableNumberLeb,
-    MemoryAddrTlsSleb,
-    FunctionOffsetI64,
-    MemoryAddrLocrelI32,
-    TableIndexRelSleb64,
-    MemoryAddrTlsSleb64,
-    FunctionIndexI32,
-);
-
-impl WasmRelocation {
-    fn from_entry(entry: RelocationEntry) -> Self {
-        Self {
-            ty: entry.ty,
-            offset: entry.offset,
-            index: entry.index,
-            addend: entry.addend,
-        }
-    }
-
-    /// Width in bytes of the slot this relocation overwrites.
-    pub(crate) fn slot_size(&self) -> usize {
-        match self.ty {
-            RelocationType::FunctionIndexLeb
-            | RelocationType::TableIndexSleb
-            | RelocationType::TableIndexRelSleb
-            | RelocationType::MemoryAddrLeb
-            | RelocationType::MemoryAddrSleb
-            | RelocationType::MemoryAddrRelSleb
-            | RelocationType::MemoryAddrTlsSleb
-            | RelocationType::TypeIndexLeb
-            | RelocationType::GlobalIndexLeb
-            | RelocationType::EventIndexLeb
-            | RelocationType::TableNumberLeb => 5,
-            RelocationType::TableIndexI32
-            | RelocationType::MemoryAddrI32
-            | RelocationType::FunctionOffsetI32
-            | RelocationType::SectionOffsetI32
-            | RelocationType::GlobalIndexI32
-            | RelocationType::FunctionIndexI32 => 4,
-            _ => 0,
-        }
     }
 }
 
@@ -581,10 +402,10 @@ pub(crate) struct DebugSectionInput<'data> {
 }
 
 macro_rules! wasm_section_reader {
-    ($($fn_name:ident, $section:ident, $reader:ident;)*) => {
+    ($($fn_name:ident, $id:expr, $reader:ident;)*) => {
         $(
             pub(crate) fn $fn_name(&self) -> Result<Option<$reader<'data>>> {
-                self.standard_section_reader(section_id::$section)
+                self.standard_section_reader($id)
                     .map(|reader| $reader::new(reader).map_err(Into::into))
                     .transpose()
             }
@@ -644,14 +465,14 @@ impl<'data> File<'data> {
     }
 
     wasm_section_reader! {
-        import_section_reader, IMPORT, ImportSectionReader;
-        function_section_reader, FUNCTION, FunctionSectionReader;
-        global_section_reader, GLOBAL, GlobalSectionReader;
-        data_section_reader, DATA, DataSectionReader;
-        code_section_reader, CODE, CodeSectionReader;
-        memory_section_reader, MEMORY, MemorySectionReader;
-        export_section_reader, EXPORT, ExportSectionReader;
-        type_section_reader, TYPE, TypeSectionReader;
+        import_section_reader, object::wasm::SEC_IMPORT.0, ImportSectionReader;
+        function_section_reader, object::wasm::SEC_FUNCTION.0, FunctionSectionReader;
+        global_section_reader, object::wasm::SEC_GLOBAL.0, GlobalSectionReader;
+        data_section_reader, object::wasm::SEC_DATA.0, DataSectionReader;
+        code_section_reader, object::wasm::SEC_CODE.0, CodeSectionReader;
+        memory_section_reader, object::wasm::SEC_MEMORY.0, MemorySectionReader;
+        export_section_reader, object::wasm::SEC_EXPORT.0, ExportSectionReader;
+        type_section_reader, object::wasm::SEC_TYPE.0, TypeSectionReader;
     }
 
     /// Type indices of functions defined in this module (excluding imports), in `function`
@@ -700,7 +521,7 @@ impl<'data> File<'data> {
         let Some(reader) = self.code_section_reader()? else {
             return Ok(Vec::new());
         };
-        let code_payload_start = self.standard_section_index[section_id::CODE as usize]
+        let code_payload_start = self.standard_section_index[object::wasm::SEC_CODE.0 as usize]
             .and_then(|i| self.sections.get(i as usize))
             .map_or(0, |h| h.payload_range.start);
         reader
@@ -808,7 +629,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _section_index: object::SectionIndex,
     ) -> crate::error::Result<u64> {
         Ok(match symbol.kind {
-            WasmSymbolKind::Data => u64::from(symbol.offset),
+            object::wasm::SYM_TYPE_DATA => u64::from(symbol.offset),
             _ => 0,
         })
     }
@@ -965,7 +786,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
         let target = u32::try_from(index.0).unwrap_or(u32::MAX);
-        let entries = decode_relocs_for(self, Some(target))?;
+        let entries = decode_relocs_for(self, Some(target));
         Ok(RelocationList {
             entries,
             _phantom: std::marker::PhantomData,
@@ -1146,7 +967,7 @@ impl platform::Symbol for WasmSymbol {
     }
 
     fn is_absolute(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::ABSOLUTE)
+        self.flags.contains(object::wasm::SYM_ABSOLUTE)
     }
 
     fn is_weak(&self) -> bool {
@@ -1163,7 +984,7 @@ impl platform::Symbol for WasmSymbol {
 
     fn value(&self) -> u64 {
         match self.kind {
-            WasmSymbolKind::Data => u64::from(self.offset),
+            object::wasm::SYM_TYPE_DATA => u64::from(self.offset),
             _ => u64::from(self.index),
         }
     }
@@ -1186,7 +1007,7 @@ impl platform::Symbol for WasmSymbol {
     }
 
     fn is_tls(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::TLS)
+        self.flags.contains(object::wasm::SYM_TLS)
     }
 
     fn is_interposable(&self) -> bool {
@@ -1195,7 +1016,7 @@ impl platform::Symbol for WasmSymbol {
     }
 
     fn is_func(&self) -> bool {
-        self.kind == WasmSymbolKind::Func
+        self.kind == object::wasm::SYM_TYPE_FUNCTION
     }
 
     fn is_ifunc(&self) -> bool {
@@ -1211,12 +1032,11 @@ impl platform::Symbol for WasmSymbol {
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
-        let bit = SymbolFlags::VISIBILITY_HIDDEN.bits();
-        if hidden {
-            self.flags |= bit;
+        self.flags = self.flags.with_visibility(if hidden {
+            object::wasm::SYM_VISIBILITY_HIDDEN
         } else {
-            self.flags &= !bit;
-        }
+            object::wasm::SYM_VISIBILITY_DEFAULT
+        });
         self
     }
 }
@@ -1503,7 +1323,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 
 #[derive(Debug, Default)]
 pub(crate) struct RelocationList<'data> {
-    pub(crate) entries: Vec<WasmRelocation>,
+    pub(crate) entries: Vec<object::wasm::Relocation>,
     _phantom: std::marker::PhantomData<&'data ()>,
 }
 
@@ -1540,8 +1360,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) object_data_layouts: Vec<Vec<WasmDataSegmentLayout<'data>>>,
-    pub(crate) object_code_relocations: Vec<Vec<WasmRelocation>>,
-    pub(crate) object_data_relocations: Vec<Vec<WasmRelocation>>,
+    pub(crate) object_code_relocations: Vec<Vec<object::wasm::Relocation>>,
+    pub(crate) object_data_relocations: Vec<Vec<object::wasm::Relocation>>,
     pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
     pub(crate) per_object_data: Vec<&'data [u8]>,
     pub(crate) code_section_size: u64,
@@ -1645,10 +1465,10 @@ fn collect_target_feature_sets<'data>(
     for input in layout_inputs {
         for feature in input.target_features {
             match feature.prefix {
-                TARGET_FEATURE_PREFIX_USED => {
+                object::wasm::FEATURE_PREFIX_USED => {
                     used.insert(feature.name);
                 }
-                TARGET_FEATURE_PREFIX_DISALLOWED => {
+                object::wasm::FEATURE_PREFIX_DISALLOWED => {
                     disallowed.entry(feature.name).or_insert(input.file_id);
                 }
                 other => {
@@ -1815,7 +1635,7 @@ fn output_data_segment_encoded_size(
 /// Map data-section relocations onto owning segments as ranges into `relocs`.
 fn classify_data_reloc_ranges(
     segments: &[WasmDataSegment<'_>],
-    relocs: &[WasmRelocation],
+    relocs: &[object::wasm::Relocation],
 ) -> Vec<(Range<u32>, u32)> {
     let payload_start_of = |segment: &WasmDataSegment<'_>| -> u32 {
         let data_len = u32::try_from(segment.data.len()).unwrap_or(u32::MAX);
@@ -1829,11 +1649,11 @@ fn classify_data_reloc_ranges(
     for segment in segments {
         let payload_start = payload_start_of(segment);
         let end = segment.section_offset.saturating_add(segment.encoded_size);
-        while i < relocs.len() && relocs[i].offset < payload_start {
+        while i < relocs.len() && relocs[i].r_offset < payload_start {
             i += 1;
         }
         let lo = i;
-        while i < relocs.len() && relocs[i].offset < end {
+        while i < relocs.len() && relocs[i].r_offset < end {
             i += 1;
         }
         out.push((
@@ -1924,10 +1744,10 @@ fn data_segment_is_tls(input: &WasmObjectLayoutInput<'_>, original_index: u32) -
         return info.is_tls();
     }
     input.symbols.iter().any(|sym| {
-        sym.kind == WasmSymbolKind::Data
+        sym.kind == object::wasm::SYM_TYPE_DATA
             && !sym.is_undefined()
             && sym.index == original_index
-            && sym.raw_flags().contains(SymbolFlags::TLS)
+            && sym.flags.contains(object::wasm::SYM_TLS)
     })
 }
 
@@ -2184,7 +2004,7 @@ fn uleb128_len(bytes: &[u8]) -> Result<usize> {
 fn remap_body_data_indices(
     body: &mut WasmFunctionBody<'_>,
     output_indices: &[Option<u32>],
-    relocs: &mut [WasmRelocation],
+    relocs: &mut [object::wasm::Relocation],
 ) -> Result<bool> {
     let mut imms = data_index_immediates(&body.bytes)?;
     if imms.is_empty() {
@@ -2209,7 +2029,7 @@ fn remap_body_data_indices(
 fn apply_data_index_fixups(
     body: &mut WasmFunctionBody<'_>,
     imms: &[DataIndexImm],
-    relocs: &mut [WasmRelocation],
+    relocs: &mut [object::wasm::Relocation],
 ) -> Result {
     let resize = imms
         .iter()
@@ -2247,7 +2067,7 @@ fn apply_data_index_fixups(
     // bytes inserted or removed so that `offset - code_offset` still indexes the rewritten body.
     let code_offset = i64::from(body.code_offset);
     for reloc in relocs.iter_mut() {
-        let rel = i64::from(reloc.offset) - code_offset;
+        let rel = i64::from(reloc.r_offset) - code_offset;
         let mut shift = 0i64;
         for imm in imms {
             let new_len = uleb128_size(u64::from(imm.index)) as i64;
@@ -2256,10 +2076,10 @@ fn apply_data_index_fixups(
             }
         }
         if shift != 0 {
-            let updated = i64::from(reloc.offset)
+            let updated = i64::from(reloc.r_offset)
                 .checked_add(shift)
                 .ok_or_else(|| crate::error!("Wasm relocation offset overflow"))?;
-            reloc.offset = u32::try_from(updated)
+            reloc.r_offset = u32::try_from(updated)
                 .map_err(|_| crate::error!("Wasm relocation offset overflow"))?;
         }
     }
@@ -2269,7 +2089,7 @@ fn apply_data_index_fixups(
 
 fn remap_data_segment_immediates(
     bodies: &mut [WasmFunctionBody<'_>],
-    object_code_relocations: &mut [Vec<WasmRelocation>],
+    object_code_relocations: &mut [Vec<object::wasm::Relocation>],
     object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
 ) -> Result<bool> {
     let output_indices = output_data_segment_indices(object_data_layouts)?;
@@ -2354,88 +2174,93 @@ impl WasmObjectIndexMap {
     /// object.
     pub(crate) fn resolve_reloc(
         &self,
-        reloc: &WasmRelocation,
+        reloc: &object::wasm::Relocation,
         symbols: &[WasmSymbol],
         function_table_slots: &[u32],
         memory_base: u32,
         table_base: u32,
         tls_base: u32,
     ) -> Result<u32> {
-        if reloc.ty == RelocationType::TypeIndexLeb {
-            return remap_wasm_index(&self.type_indices, reloc.index, "type");
+        if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
+            return remap_wasm_index(&self.type_indices, reloc.r_index, "type");
         }
 
         let sym = symbols
-            .get(reloc.index as usize)
-            .with_context(|| format!("relocation symbol index {} out of range", reloc.index))?;
+            .get(reloc.r_index as usize)
+            .with_context(|| format!("relocation symbol index {} out of range", reloc.r_index))?;
 
-        match reloc.ty {
-            RelocationType::FunctionIndexLeb | RelocationType::FunctionIndexI32 => {
+        match reloc.r_type {
+            object::wasm::R_WASM_FUNCTION_INDEX_LEB | object::wasm::R_WASM_FUNCTION_INDEX_I32 => {
                 ensure!(
-                    sym.kind == WasmSymbolKind::Func,
+                    sym.kind == object::wasm::SYM_TYPE_FUNCTION,
                     "R_WASM_FUNCTION_INDEX_* references non-function symbol"
                 );
-                self.output_function_index(reloc.index as usize, sym)
+                self.output_function_index(reloc.r_index as usize, sym)
             }
-            RelocationType::GlobalIndexLeb | RelocationType::GlobalIndexI32 => match sym.kind {
-                WasmSymbolKind::Global => {
-                    remap_wasm_index(&self.global_indices, sym.index, "global")
+            object::wasm::R_WASM_GLOBAL_INDEX_LEB | object::wasm::R_WASM_GLOBAL_INDEX_I32 => {
+                match sym.kind {
+                    object::wasm::SYM_TYPE_GLOBAL => {
+                        remap_wasm_index(&self.global_indices, sym.index, "global")
+                    }
+                    object::wasm::SYM_TYPE_DATA => self
+                        .got_mem_globals
+                        .get(reloc.r_index as usize)
+                        .copied()
+                        .flatten()
+                        .with_context(|| {
+                            format!(
+                                "missing GOT.mem global for data symbol index {}",
+                                reloc.r_index
+                            )
+                        }),
+                    object::wasm::SYM_TYPE_FUNCTION => self
+                        .got_func_globals
+                        .get(reloc.r_index as usize)
+                        .copied()
+                        .flatten()
+                        .with_context(|| {
+                            format!(
+                                "missing GOT.func global for function symbol index {}",
+                                reloc.r_index
+                            )
+                        }),
+                    other => {
+                        bail!("R_WASM_GLOBAL_INDEX_* references unsupported symbol kind {other:?}")
+                    }
                 }
-                WasmSymbolKind::Data => self
-                    .got_mem_globals
-                    .get(reloc.index as usize)
-                    .copied()
-                    .flatten()
-                    .with_context(|| {
-                        format!(
-                            "missing GOT.mem global for data symbol index {}",
-                            reloc.index
-                        )
-                    }),
-                WasmSymbolKind::Func => self
-                    .got_func_globals
-                    .get(reloc.index as usize)
-                    .copied()
-                    .flatten()
-                    .with_context(|| {
-                        format!(
-                            "missing GOT.func global for function symbol index {}",
-                            reloc.index
-                        )
-                    }),
-                other => {
-                    bail!("R_WASM_GLOBAL_INDEX_* references unsupported symbol kind {other:?}")
-                }
-            },
-            RelocationType::TableNumberLeb => {
+            }
+            object::wasm::R_WASM_TABLE_NUMBER_LEB => {
                 ensure!(
-                    sym.kind == WasmSymbolKind::Table,
+                    sym.kind == object::wasm::SYM_TYPE_TABLE,
                     "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
                 );
                 remap_wasm_index(&self.table_indices, sym.index, "table")
             }
-            RelocationType::MemoryAddrLeb
-            | RelocationType::MemoryAddrSleb
-            | RelocationType::MemoryAddrI32
-            | RelocationType::MemoryAddrRelSleb
-            | RelocationType::MemoryAddrTlsSleb => {
+            object::wasm::R_WASM_MEMORY_ADDR_LEB
+            | object::wasm::R_WASM_MEMORY_ADDR_SLEB
+            | object::wasm::R_WASM_MEMORY_ADDR_I32
+            | object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
+            | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB => {
                 ensure!(
-                    sym.kind == WasmSymbolKind::Data,
+                    sym.kind == object::wasm::SYM_TYPE_DATA,
                     "R_WASM_MEMORY_ADDR_* references non-data symbol"
                 );
                 let addr = self
                     .data_addresses
-                    .get(reloc.index as usize)
+                    .get(reloc.r_index as usize)
                     .copied()
                     .with_context(|| {
-                        format!("data address for symbol index {} out of range", reloc.index)
+                        format!(
+                            "data address for symbol index {} out of range",
+                            reloc.r_index
+                        )
                     })?;
-                if reloc.ty == RelocationType::MemoryAddrTlsSleb {
-                    tls_reloc_value(addr, tls_base, reloc.addend)
-                } else if reloc.ty == RelocationType::MemoryAddrRelSleb {
+                if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB {
+                    tls_reloc_value(addr, tls_base, reloc.r_addend)
+                } else if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB {
                     let addr = memory_address_base(addr)?;
                     let relative =
-                        i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.addend;
+                        i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.r_addend;
                     let relative =
                         i32::try_from(relative).context("Wasm REL_SLEB relocation out of range")?;
                     Ok(relative as u32)
@@ -2443,14 +2268,14 @@ impl WasmObjectIndexMap {
                     Ok(memory_address_base(addr)?.unwrap_or(0))
                 }
             }
-            RelocationType::TableIndexSleb
-            | RelocationType::TableIndexI32
-            | RelocationType::TableIndexRelSleb => {
+            object::wasm::R_WASM_TABLE_INDEX_SLEB
+            | object::wasm::R_WASM_TABLE_INDEX_I32
+            | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB => {
                 ensure!(
-                    sym.kind == WasmSymbolKind::Func,
+                    sym.kind == object::wasm::SYM_TYPE_FUNCTION,
                     "R_WASM_TABLE_INDEX_* references non-function symbol"
                 );
-                let func_out = self.output_function_index(reloc.index as usize, sym)?;
+                let func_out = self.output_function_index(reloc.r_index as usize, sym)?;
                 let slot = function_table_slots
                     .get(func_out as usize)
                     .copied()
@@ -2459,7 +2284,7 @@ impl WasmObjectIndexMap {
                     slot != u32::MAX,
                     "function {func_out} has no indirect table slot"
                 );
-                if reloc.ty == RelocationType::TableIndexRelSleb {
+                if reloc.r_type == object::wasm::R_WASM_TABLE_INDEX_REL_SLEB {
                     if slot == 0 {
                         return Ok(0);
                     }
@@ -2471,18 +2296,18 @@ impl WasmObjectIndexMap {
                     Ok(slot)
                 }
             }
-            RelocationType::EventIndexLeb => {
+            object::wasm::R_WASM_EVENT_INDEX_LEB => {
                 bail!("event index relocations are not supported yet");
             }
-            RelocationType::FunctionOffsetI32 => {
+            object::wasm::R_WASM_FUNCTION_OFFSET_I32 => {
                 bail!("function offset relocations are not supported yet");
             }
-            RelocationType::SectionOffsetI32 => {
+            object::wasm::R_WASM_SECTION_OFFSET_I32 => {
                 bail!("section offset relocations are not supported yet");
             }
             other => bail!(
                 "unsupported Wasm relocation type {}",
-                relocation_type_to_string(other)
+                other.name().unwrap_or("unknown")
             ),
         }
     }
@@ -2538,8 +2363,8 @@ pub(crate) struct WasmObjectLayout<'data> {
     func_import_symbol_offsets: Vec<Vec<usize>>,
     global_import_symbol_offsets: Vec<Vec<usize>>,
     relocs_ready: bool,
-    code_relocations: Vec<WasmRelocation>,
-    data_relocations: Vec<WasmRelocation>,
+    code_relocations: Vec<object::wasm::Relocation>,
+    data_relocations: Vec<object::wasm::Relocation>,
     function_bodies: Vec<WasmFunctionBody<'data>>,
     data_segments: Vec<WasmDataSegment<'data>>,
     function_body_spans: Vec<(u32, u32)>,
@@ -2550,8 +2375,8 @@ pub(crate) struct WasmObjectLayout<'data> {
 
 struct DecodedCodeData<'data> {
     ready: bool,
-    code_relocations: Vec<WasmRelocation>,
-    data_relocations: Vec<WasmRelocation>,
+    code_relocations: Vec<object::wasm::Relocation>,
+    data_relocations: Vec<object::wasm::Relocation>,
     function_bodies: Vec<WasmFunctionBody<'data>>,
     data_segments: Vec<WasmDataSegment<'data>>,
 }
@@ -2576,12 +2401,12 @@ impl<'data> WasmObjectLayout<'data> {
                 continue;
             }
             match sym.kind {
-                WasmSymbolKind::Func => {
+                object::wasm::SYM_TYPE_FUNCTION => {
                     if let Some(slots) = func_import_symbol_offsets.get_mut(sym.index as usize) {
                         slots.push(sym_offset);
                     }
                 }
-                WasmSymbolKind::Global => {
+                object::wasm::SYM_TYPE_GLOBAL => {
                     if let Some(slots) = global_import_symbol_offsets.get_mut(sym.index as usize) {
                         slots.push(sym_offset);
                     }
@@ -2634,10 +2459,14 @@ impl<'data> WasmObjectLayout<'data> {
             return Ok(());
         }
 
-        let code_relocations =
-            decode_sorted_relocs_for(file, file.standard_section_index[section_id::CODE as usize])?;
-        let data_relocations =
-            decode_sorted_relocs_for(file, file.standard_section_index[section_id::DATA as usize])?;
+        let code_relocations = decode_sorted_relocs_for(
+            file,
+            file.standard_section_index[object::wasm::SEC_CODE.0 as usize],
+        );
+        let data_relocations = decode_sorted_relocs_for(
+            file,
+            file.standard_section_index[object::wasm::SEC_DATA.0 as usize],
+        );
 
         let function_bodies = file.function_bodies()?;
         let function_body_spans = function_bodies
@@ -2771,43 +2600,45 @@ fn identity_ordinals(n: usize) -> Vec<u32> {
     (0..n as u32).collect()
 }
 
-fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
-    if relocs.windows(2).any(|w| w[0].offset > w[1].offset) {
-        relocs.sort_unstable_by_key(|r| r.offset);
+fn sort_relocations_by_offset(relocs: &mut [object::wasm::Relocation]) {
+    if relocs.windows(2).any(|w| w[0].r_offset > w[1].r_offset) {
+        relocs.sort_unstable_by_key(|r| r.r_offset);
     }
 }
 
 fn decode_relocs_for(
     file: &File<'_>,
     target_section_index: Option<u32>,
-) -> Result<Vec<WasmRelocation>> {
+) -> Vec<object::wasm::Relocation> {
     let Some(target) = target_section_index else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    file.reloc_sections
-        .iter()
-        .find(|s| s.target_section_index == target)
-        .map(|s| s.decode_entries(file.data))
-        .transpose()
-        .map(|opt| opt.unwrap_or_default())
+    file.sections
+        .get(target as usize)
+        .map(|section| section.relocations.clone())
+        .unwrap_or_default()
 }
 
 fn decode_sorted_relocs_for(
     file: &File<'_>,
     target_section_index: Option<u32>,
-) -> Result<Vec<WasmRelocation>> {
-    let mut relocs = decode_relocs_for(file, target_section_index)?;
+) -> Vec<object::wasm::Relocation> {
+    let mut relocs = decode_relocs_for(file, target_section_index);
     sort_relocations_by_offset(&mut relocs);
-    Ok(relocs)
+    relocs
 }
 
-fn reloc_index_range(relocs: &[WasmRelocation], start: u32, end: u32) -> Range<usize> {
-    let lo = relocs.partition_point(|r| r.offset < start);
-    let hi = relocs.partition_point(|r| r.offset < end);
+fn reloc_index_range(relocs: &[object::wasm::Relocation], start: u32, end: u32) -> Range<usize> {
+    let lo = relocs.partition_point(|r| r.r_offset < start);
+    let hi = relocs.partition_point(|r| r.r_offset < end);
     lo..hi
 }
 
-fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[WasmRelocation] {
+fn relocs_in_offset_range(
+    relocs: &[object::wasm::Relocation],
+    start: u32,
+    end: u32,
+) -> &[object::wasm::Relocation] {
     &relocs[reloc_index_range(relocs, start, end)]
 }
 
@@ -2831,21 +2662,21 @@ fn data_segment_span(segment: &WasmDataSegment<'_>) -> Result<(u32, u32)> {
 /// Map a linking symbol to its file-local GC unit, if any.
 fn wasm_gc_unit_for_symbol(file: &File<'_>, symbol: &WasmSymbol) -> Option<WasmGcUnit> {
     match symbol.kind {
-        WasmSymbolKind::Func if symbol.is_undefined() => {
+        object::wasm::SYM_TYPE_FUNCTION if symbol.is_undefined() => {
             Some(WasmGcUnit::FunctionImport(symbol.index))
         }
-        WasmSymbolKind::Func => symbol
+        object::wasm::SYM_TYPE_FUNCTION => symbol
             .index
             .checked_sub(file.num_function_imports)
             .map(WasmGcUnit::DefinedFunction),
-        WasmSymbolKind::Global if symbol.is_undefined() => {
+        object::wasm::SYM_TYPE_GLOBAL if symbol.is_undefined() => {
             Some(WasmGcUnit::GlobalImport(symbol.index))
         }
-        WasmSymbolKind::Global => symbol
+        object::wasm::SYM_TYPE_GLOBAL => symbol
             .index
             .checked_sub(file.num_global_imports)
             .map(WasmGcUnit::DefinedGlobal),
-        WasmSymbolKind::Data if !symbol.is_undefined() => {
+        object::wasm::SYM_TYPE_DATA if !symbol.is_undefined() => {
             Some(WasmGcUnit::DataSegment(symbol.index))
         }
         _ => None,
@@ -2869,13 +2700,13 @@ struct WasmObjectLayoutInput<'data> {
     function_bodies: Vec<WasmFunctionBody<'data>>,
     memories: Vec<MemoryType>,
     unsupported_output: Vec<&'static str>,
-    code_relocations: Vec<WasmRelocation>,
+    code_relocations: Vec<object::wasm::Relocation>,
     data_segments: Vec<WasmDataSegment<'data>>,
     data_segment_original_indices: Vec<u32>,
     segment_infos: &'data [WasmSegmentInfo<'data>],
-    data_relocations: Vec<WasmRelocation>,
+    data_relocations: Vec<object::wasm::Relocation>,
     symbols: &'data [WasmSymbol],
-    init_funcs: &'data [WasmInitFunc],
+    init_funcs: &'data [object::wasm::InitFunc],
     target_features: &'data [WasmTargetFeature<'data>],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
@@ -2960,28 +2791,32 @@ impl<'data> WasmObjectLayoutInput<'data> {
             layout.live_global_import_bits()
         };
 
-        let code_section_index = file.standard_section_index[section_id::CODE as usize];
-        let data_section_index = file.standard_section_index[section_id::DATA as usize];
+        let code_section_index = file.standard_section_index[object::wasm::SEC_CODE.0 as usize];
+        let data_section_index = file.standard_section_index[object::wasm::SEC_DATA.0 as usize];
 
         let (code_relocations_all, data_relocations_all) = if decoded.ready {
             (decoded.code_relocations, decoded.data_relocations)
         } else {
             (
-                decode_sorted_relocs_for(file, code_section_index)?,
-                decode_sorted_relocs_for(file, data_section_index)?,
+                decode_sorted_relocs_for(file, code_section_index),
+                decode_sorted_relocs_for(file, data_section_index),
             )
         };
 
         // TODO(wasm): Relocations targeting `.debug*` are not applied yet. The sections are
         // emitted (see `build_debug_section`), but until their relocations are resolved, the
         // emitted debug info points at stale offsets.
-        let has_unsupported_non_code_relocs = file.reloc_sections.iter().any(|s| {
-            let target = Some(s.target_section_index);
-            if target == code_section_index || target == data_section_index {
-                return false;
-            }
-            !file.section_is_debug(s.target_section_index)
-        });
+        let has_unsupported_non_code_relocs =
+            file.sections.iter().enumerate().any(|(index, section)| {
+                if section.relocations.is_empty() {
+                    return false;
+                }
+                let target = Some(index as u32);
+                if target == code_section_index || target == data_section_index {
+                    return false;
+                }
+                !file.section_is_debug(index as u32)
+            });
 
         let mut unsupported_output = Vec::new();
         if has_unsupported_non_code_relocs {
@@ -2992,10 +2827,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         {
             unsupported_output.push("data relocation");
         }
-        if file.standard_section_index[section_id::TABLE as usize].is_some() {
+        if file.standard_section_index[object::wasm::SEC_TABLE.0 as usize].is_some() {
             unsupported_output.push("table definition");
         }
-        if file.standard_section_index[section_id::START as usize].is_some() {
+        if file.standard_section_index[object::wasm::SEC_START.0 as usize].is_some() {
             unsupported_output.push("start");
         }
         let all_data_segments = if decoded.ready {
@@ -3505,8 +3340,8 @@ fn report_disallowed_unresolved_imports<'data>(
             }
 
             let is_unresolved = match sym.kind {
-                WasmSymbolKind::Func if symbol_db.args.import_undefined => false,
-                WasmSymbolKind::Func => {
+                object::wasm::SYM_TYPE_FUNCTION if symbol_db.args.import_undefined => false,
+                object::wasm::SYM_TYPE_FUNCTION => {
                     let idx = sym.index as usize;
                     input
                         .live_function_imports
@@ -3518,7 +3353,7 @@ fn report_disallowed_unresolved_imports<'data>(
                             .get(idx)
                             .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
                 }
-                WasmSymbolKind::Global => {
+                object::wasm::SYM_TYPE_GLOBAL => {
                     let idx = sym.index as usize;
                     input.live_global_imports.get(idx).copied().unwrap_or(false)
                         && res
@@ -3702,7 +3537,7 @@ fn resolve_cross_object_imports<'data>(
             verbose_timing_phase!("Resolve Wasm object imports");
             let function_resolutions = resolve_import_symbols(
                 input.function_imports.len(),
-                WasmSymbolKind::Func,
+                object::wasm::SYM_TYPE_FUNCTION,
                 input,
                 inputs,
                 symbol_db,
@@ -3710,7 +3545,7 @@ fn resolve_cross_object_imports<'data>(
             )?;
             let global_resolutions = resolve_import_symbols(
                 input.global_imports.len(),
-                WasmSymbolKind::Global,
+                object::wasm::SYM_TYPE_GLOBAL,
                 input,
                 inputs,
                 symbol_db,
@@ -3726,7 +3561,7 @@ fn resolve_cross_object_imports<'data>(
 
 fn resolve_import_symbols<'data>(
     import_count: usize,
-    kind: WasmSymbolKind,
+    kind: object::wasm::SymbolKind,
     input: &WasmObjectLayoutInput<'data>,
     all_inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
@@ -3736,8 +3571,8 @@ fn resolve_import_symbols<'data>(
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
 
     let live_imports = match kind {
-        WasmSymbolKind::Func => input.live_function_imports.as_slice(),
-        WasmSymbolKind::Global => input.live_global_imports.as_slice(),
+        object::wasm::SYM_TYPE_FUNCTION => input.live_function_imports.as_slice(),
+        object::wasm::SYM_TYPE_GLOBAL => input.live_global_imports.as_slice(),
         _ => &[],
     };
 
@@ -3769,8 +3604,8 @@ fn resolve_import_symbols<'data>(
     }
 
     let import_names: Vec<&str> = match kind {
-        WasmSymbolKind::Func => input.function_imports.iter().map(|i| i.name).collect(),
-        WasmSymbolKind::Global => input.global_imports.iter().map(|i| i.name).collect(),
+        object::wasm::SYM_TYPE_FUNCTION => input.function_imports.iter().map(|i| i.name).collect(),
+        object::wasm::SYM_TYPE_GLOBAL => input.global_imports.iter().map(|i| i.name).collect(),
         _ => Vec::new(),
     };
     for (import_idx, name) in import_names.iter().enumerate() {
@@ -3791,7 +3626,7 @@ fn resolve_import_symbols<'data>(
 /// Try to resolve a single undefined import symbol.
 fn resolve_one_import<'data>(
     sym_offset: usize,
-    expected_kind: WasmSymbolKind,
+    expected_kind: object::wasm::SymbolKind,
     input: &WasmObjectLayoutInput<'data>,
     all_inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
@@ -3820,7 +3655,7 @@ fn resolve_one_import<'data>(
         return Ok(ImportResolution::Unresolved);
     }
     match expected_kind {
-        WasmSymbolKind::Func => {
+        object::wasm::SYM_TYPE_FUNCTION => {
             ensure!(
                 def_sym.index >= def_input.function_imports.len() as u32,
                 "defined Wasm function symbol index {} is within import range",
@@ -3831,7 +3666,7 @@ fn resolve_one_import<'data>(
                 local_defined_index: local_defined_function_index(def_input, def_sym)?,
             })
         }
-        WasmSymbolKind::Global => {
+        object::wasm::SYM_TYPE_GLOBAL => {
             ensure!(
                 def_sym.index >= def_input.global_imports.len() as u32,
                 "defined Wasm global symbol index {} is within import range",
@@ -3848,7 +3683,7 @@ fn resolve_one_import<'data>(
 
 fn linker_defined_from_prelude_def(
     def_id: crate::symbol_db::SymbolId,
-    expected_kind: WasmSymbolKind,
+    expected_kind: object::wasm::SymbolKind,
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Option<ImportResolution> {
     let def_info = symbol_db.prelude_symbol_def(def_id)?;
@@ -3863,7 +3698,7 @@ fn linker_defined_from_prelude_def(
 /// Resolve an import name to a prelude platform-specific definition, if present in `SymbolDb`.
 fn linker_defined_import_resolution(
     import_name: &str,
-    expected_kind: WasmSymbolKind,
+    expected_kind: object::wasm::SymbolKind,
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Option<ImportResolution> {
     let symbol_id =
@@ -4151,7 +3986,7 @@ fn pure_weak_function_import_flags(input: &WasmObjectLayoutInput<'_>) -> Vec<boo
     let mut saw_weak = vec![false; n];
     let mut saw_non_weak = vec![false; n];
     for sym in input.symbols {
-        if sym.kind != WasmSymbolKind::Func || !sym.is_undefined() {
+        if sym.kind != object::wasm::SYM_TYPE_FUNCTION || !sym.is_undefined() {
             continue;
         }
         let idx = sym.index as usize;
@@ -4269,7 +4104,7 @@ fn resolve_got_mem_def(
         let def_ok = def_input
             .symbols
             .get(def_off)
-            .is_some_and(|s| s.kind == WasmSymbolKind::Data);
+            .is_some_and(|s| s.kind == object::wasm::SYM_TYPE_DATA);
         ensure!(
             def_ok,
             "GOT.mem for `{}` requires a data symbol in the link",
@@ -4306,24 +4141,24 @@ fn resolve_got_mem_def(
 fn note_undefined_data_from_reloc(
     input: &WasmObjectLayoutInput<'_>,
     symbol_db: &SymbolDb<'_, Wasm>,
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
     seen: &mut HashSet<(String, String)>,
     errors: &mut Vec<(String, String)>,
 ) -> Result {
-    if reloc.ty == RelocationType::TypeIndexLeb {
+    if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
         return Ok(());
     }
-    let Some(sym) = input.symbols.get(reloc.index as usize) else {
+    let Some(sym) = input.symbols.get(reloc.r_index as usize) else {
         return Ok(());
     };
-    if sym.kind != WasmSymbolKind::Data
+    if sym.kind != object::wasm::SYM_TYPE_DATA
         || !sym.is_undefined()
         || sym.is_weak()
         || sym.is_explicit_name()
     {
         return Ok(());
     }
-    let symbol_id = input.symbol_id_range.offset_to_id(reloc.index as usize);
+    let symbol_id = input.symbol_id_range.offset_to_id(reloc.r_index as usize);
     if !symbol_db.is_undefined(symbol_db.definition(symbol_id)) {
         return Ok(());
     }
@@ -4332,7 +4167,7 @@ fn note_undefined_data_from_reloc(
     let Some(name) = wasm_symbol_name_str(input.data, sym) else {
         bail!(
             "{file_display}: undefined symbol with no name (linking symbol index {})",
-            reloc.index
+            reloc.r_index
         );
     };
     if seen.insert((file_display.clone(), name.to_owned())) {
@@ -4389,42 +4224,45 @@ fn scan_object_layout_relocations(
                 &mut undefined_data_errors,
             )?;
         }
-        match reloc.ty {
-            RelocationType::MemoryAddrRelSleb => {
+        match reloc.r_type {
+            object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB => {
                 needs_memory_base = true;
             }
-            RelocationType::TableNumberLeb => {
+            object::wasm::R_WASM_TABLE_NUMBER_LEB => {
                 needs_table = true;
             }
-            RelocationType::TableIndexSleb
-            | RelocationType::TableIndexI32
-            | RelocationType::TableIndexRelSleb => {
-                if reloc.ty == RelocationType::TableIndexRelSleb {
+            object::wasm::R_WASM_TABLE_INDEX_SLEB
+            | object::wasm::R_WASM_TABLE_INDEX_I32
+            | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB => {
+                if reloc.r_type == object::wasm::R_WASM_TABLE_INDEX_REL_SLEB {
                     needs_table_base = true;
                 }
                 needs_table = true;
-                let sym_idx = reloc.index as usize;
+                let sym_idx = reloc.r_index as usize;
                 let Some(sym) = input.symbols.get(sym_idx) else {
-                    bail!("table index relocation symbol {} out of range", reloc.index);
+                    bail!(
+                        "table index relocation symbol {} out of range",
+                        reloc.r_index
+                    );
                 };
                 ensure!(
-                    sym.kind == WasmSymbolKind::Func,
+                    sym.kind == object::wasm::SYM_TYPE_FUNCTION,
                     "R_WASM_TABLE_INDEX_* references non-function symbol"
                 );
                 if table_sym_seen.insert(sym_idx) {
                     table_syms.push(sym_idx);
                 }
             }
-            RelocationType::GlobalIndexLeb | RelocationType::GlobalIndexI32 => {
-                let sym_idx = reloc.index as usize;
+            object::wasm::R_WASM_GLOBAL_INDEX_LEB | object::wasm::R_WASM_GLOBAL_INDEX_I32 => {
+                let sym_idx = reloc.r_index as usize;
                 let Some(sym) = input.symbols.get(sym_idx) else {
                     bail!(
                         "GLOBAL_INDEX relocation symbol index {} out of range",
-                        reloc.index
+                        reloc.r_index
                     );
                 };
                 match sym.kind {
-                    WasmSymbolKind::Data => {
+                    object::wasm::SYM_TYPE_DATA => {
                         let symbol_id = input.symbol_id_range.offset_to_id(sym_idx);
                         let def_id = symbol_db.definition(symbol_id);
                         if got_mem_seen.insert(def_id) {
@@ -4432,7 +4270,7 @@ fn scan_object_layout_relocations(
                         }
                         got_mem_hits.push((sym_idx, def_id));
                     }
-                    WasmSymbolKind::Func => {
+                    object::wasm::SYM_TYPE_FUNCTION => {
                         let symbol_id = input.symbol_id_range.offset_to_id(sym_idx);
                         let def_id = symbol_db.definition(symbol_id);
                         if got_func_seen.insert(def_id) {
@@ -4640,7 +4478,7 @@ fn fill_function_symbol_redirects(
     for (obj_idx, input) in layout_inputs.iter().enumerate() {
         let mut redirects = vec![None; input.symbols.len()];
         for (sym_off, sym) in input.symbols.iter().enumerate() {
-            if sym.kind != WasmSymbolKind::Func || !sym.is_weak() || sym.is_undefined() {
+            if sym.kind != object::wasm::SYM_TYPE_FUNCTION || !sym.is_weak() || sym.is_undefined() {
                 continue;
             }
             let local_id = input.symbol_id_range.offset_to_id(sym_off);
@@ -4654,7 +4492,7 @@ fn fill_function_symbol_redirects(
             };
             let def_input = &layout_inputs[def_obj_idx];
             let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
-            if def_sym.kind != WasmSymbolKind::Func || def_sym.is_undefined() {
+            if def_sym.kind != object::wasm::SYM_TYPE_FUNCTION || def_sym.is_undefined() {
                 continue;
             }
             let Some(&out) = object_index_maps[def_obj_idx]
@@ -4845,7 +4683,7 @@ fn fill_got_func_inits(
             )
         })?;
         ensure!(
-            sym.kind == WasmSymbolKind::Func,
+            sym.kind == object::wasm::SYM_TYPE_FUNCTION,
             "GOT.func symbol is not a function"
         );
         let func_out = layout.object_index_maps[entry.object_index]
@@ -5177,8 +5015,8 @@ fn live_local_types(
         .iter()
         .chain(input.data_relocations.iter())
     {
-        if reloc.ty == RelocationType::TypeIndexLeb {
-            mark_local_type_live(&mut live, reloc.index)?;
+        if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
+            mark_local_type_live(&mut live, reloc.r_index)?;
         }
     }
     Ok(live)
@@ -5381,7 +5219,7 @@ fn collect_sorted_init_function_calls(
         for init in input.init_funcs {
             let sym = &input.symbols[init.symbol_index as usize];
             ensure!(
-                sym.kind == WasmSymbolKind::Func && !sym.is_undefined(),
+                sym.kind == object::wasm::SYM_TYPE_FUNCTION && !sym.is_undefined(),
                 "Wasm init function must be a defined function symbol"
             );
             let ty = function_type_for_symbol(input, sym)?;
@@ -5758,7 +5596,8 @@ fn encode_init_tls_body(
     let memarg = wasm_encoder::MemArg {
         offset: 0,
         align: 2,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     };
     let mut func = wasm_encoder::Function::new([]);
     let mut ins = func.instructions();
@@ -5820,7 +5659,8 @@ fn encode_init_memory_body(
     let memarg = wasm_encoder::MemArg {
         offset: 0,
         align: 2,
-        memory_index: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
     };
     let mut func = wasm_encoder::Function::new([]);
     let mut ins = func.instructions();
@@ -5996,7 +5836,7 @@ fn resolve_entry_function<'data>(
     };
     let def_input = &layout_inputs[def_obj_idx];
     let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
-    if def_sym.is_undefined() || def_sym.kind != WasmSymbolKind::Func {
+    if def_sym.is_undefined() || def_sym.kind != object::wasm::SYM_TYPE_FUNCTION {
         return Err(not_defined());
     }
 
@@ -6114,12 +5954,12 @@ fn ensure_force_exports<'data>(
             .context("invalid UTF-8 in Wasm --export symbol name")?;
 
         match def_sym.kind {
-            WasmSymbolKind::Func => {
+            object::wasm::SYM_TYPE_FUNCTION => {
                 let index =
                     remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
                 push_export(exports, export_name, wasmparser::ExternalKind::Func, index);
             }
-            WasmSymbolKind::Global => {
+            object::wasm::SYM_TYPE_GLOBAL => {
                 let index = remap_wasm_index(&index_map.global_indices, def_sym.index, "global")?;
                 push_export(
                     exports,
@@ -6128,7 +5968,7 @@ fn ensure_force_exports<'data>(
                     index,
                 );
             }
-            WasmSymbolKind::Data => {
+            object::wasm::SYM_TYPE_DATA => {
                 let index = exported_data_global_index(
                     indices,
                     dynamic_data,
@@ -6267,7 +6107,7 @@ fn collect_dynamic_exports<'data>(
                 object_index,
                 symbol_offset,
             };
-            if sym.kind == WasmSymbolKind::Data {
+            if sym.kind == object::wasm::SYM_TYPE_DATA {
                 exports.data.push(export);
             } else {
                 exports.direct.push(export);
@@ -6301,7 +6141,7 @@ fn collect_force_data_exports<'data>(
         let input = &layout_inputs[object_index];
         let symbol_offset = input.symbol_id_range.id_to_offset(def_id);
         let sym = &input.symbols[symbol_offset];
-        if sym.is_undefined() || sym.kind != WasmSymbolKind::Data {
+        if sym.is_undefined() || sym.kind != object::wasm::SYM_TYPE_DATA {
             continue;
         }
         let already = dynamic_exports
@@ -6365,7 +6205,7 @@ fn fill_data_export_global_inits(
             "{what} data symbol `{}` has no address",
             export.name
         );
-        let value = if sym.raw_flags().contains(SymbolFlags::TLS) {
+        let value = if sym.flags.contains(object::wasm::SYM_TLS) {
             tls_reloc_value(addr, layout.tls_base, 0)?
         } else {
             memory_address_base(addr)?.unwrap_or(0)
@@ -6394,11 +6234,11 @@ fn ensure_dynamic_exports<'data>(
         let sym = &layout.per_object_symbols[export.object_index][export.symbol_offset];
         let index_map = &layout.object_index_maps[export.object_index];
         let (kind, index) = match sym.kind {
-            WasmSymbolKind::Func => (
+            object::wasm::SYM_TYPE_FUNCTION => (
                 wasmparser::ExternalKind::Func,
                 index_map.output_function_index(export.symbol_offset, sym)?,
             ),
-            WasmSymbolKind::Global => (
+            object::wasm::SYM_TYPE_GLOBAL => (
                 wasmparser::ExternalKind::Global,
                 remap_wasm_index(&index_map.global_indices, sym.index, "global")?,
             ),
@@ -6922,7 +6762,7 @@ where
     let emit_name = symbol_db.args.emit_stripped_section("name");
     let emit_target_features = symbol_db
         .args
-        .emit_stripped_section(TARGET_FEATURES_SECTION_NAME);
+        .emit_stripped_section(object::wasm::TARGET_FEATURES_SECTION_NAME);
     if emit_name {
         layout.name_inputs = wasm_name_inputs(
             &indices,
@@ -7004,7 +6844,7 @@ fn finalize_indirect_function_table(
                 .get(sym_idx)
                 .with_context(|| format!("table index relocation symbol {sym_idx} out of range"))?;
             ensure!(
-                sym.kind == WasmSymbolKind::Func,
+                sym.kind == object::wasm::SYM_TYPE_FUNCTION,
                 "R_WASM_TABLE_INDEX_* references non-function symbol"
             );
             let func_out = index_map.output_function_index(sym_idx, sym)?;
@@ -7074,36 +6914,36 @@ fn finalize_indirect_function_table(
     Ok(())
 }
 
-fn is_memory_addr_relocation(ty: RelocationType) -> bool {
+fn is_memory_addr_relocation(ty: object::wasm::RelocationType) -> bool {
     matches!(
         ty,
-        RelocationType::MemoryAddrLeb
-            | RelocationType::MemoryAddrSleb
-            | RelocationType::MemoryAddrI32
-            | RelocationType::MemoryAddrRelSleb
-            | RelocationType::MemoryAddrTlsSleb
+        object::wasm::R_WASM_MEMORY_ADDR_LEB
+            | object::wasm::R_WASM_MEMORY_ADDR_SLEB
+            | object::wasm::R_WASM_MEMORY_ADDR_I32
+            | object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
+            | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB
     )
 }
 
-fn is_supported_data_relocation(ty: RelocationType) -> bool {
+fn is_supported_data_relocation(ty: object::wasm::RelocationType) -> bool {
     is_memory_addr_relocation(ty)
         || matches!(
             ty,
-            RelocationType::FunctionIndexI32
-                | RelocationType::FunctionIndexLeb
-                | RelocationType::TableIndexI32
-                | RelocationType::TableIndexSleb
-                | RelocationType::TableNumberLeb
-                | RelocationType::GlobalIndexI32
-                | RelocationType::GlobalIndexLeb
-                | RelocationType::TypeIndexLeb
+            object::wasm::R_WASM_FUNCTION_INDEX_I32
+                | object::wasm::R_WASM_FUNCTION_INDEX_LEB
+                | object::wasm::R_WASM_TABLE_INDEX_I32
+                | object::wasm::R_WASM_TABLE_INDEX_SLEB
+                | object::wasm::R_WASM_TABLE_NUMBER_LEB
+                | object::wasm::R_WASM_GLOBAL_INDEX_I32
+                | object::wasm::R_WASM_GLOBAL_INDEX_LEB
+                | object::wasm::R_WASM_TYPE_INDEX_LEB
         )
 }
 
-fn data_relocations_are_supported(relocs: &[WasmRelocation]) -> bool {
+fn data_relocations_are_supported(relocs: &[object::wasm::Relocation]) -> bool {
     relocs
         .iter()
-        .all(|reloc| is_supported_data_relocation(reloc.ty))
+        .all(|reloc| is_supported_data_relocation(reloc.r_type))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -7137,21 +6977,25 @@ fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
 
 pub(crate) fn deferred_tls_template_pointer(
     index_map: &WasmObjectIndexMap,
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
 ) -> Result<Option<i32>> {
-    let Some(addr) = index_map.data_addresses.get(reloc.index as usize).copied() else {
+    let Some(addr) = index_map
+        .data_addresses
+        .get(reloc.r_index as usize)
+        .copied()
+    else {
         return Ok(None);
     };
     if !matches!(addr, WasmDataAddress::TlsOffset(_)) {
         return Ok(None);
     }
-    if reloc.ty != RelocationType::MemoryAddrI32 {
-        if is_memory_addr_relocation(reloc.ty) {
+    if reloc.r_type != object::wasm::R_WASM_MEMORY_ADDR_I32 {
+        if is_memory_addr_relocation(reloc.r_type) {
             bail!("{SHARED_TLS_TEMPLATE_RELOC_ERROR}");
         }
         return Ok(None);
     }
-    Ok(Some(tls_reloc_value(addr, 0, reloc.addend)? as i32))
+    Ok(Some(tls_reloc_value(addr, 0, reloc.r_addend)? as i32))
 }
 
 fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerFixup>> {
@@ -7176,7 +7020,7 @@ fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerF
                     continue;
                 };
                 let at = reloc
-                    .offset
+                    .r_offset
                     .checked_sub(segment.payload_start)
                     .context("Wasm TLS relocation offset is before the segment payload")?;
                 let dest = segment
@@ -7256,7 +7100,7 @@ fn try_data_symbol_memory_address(
     sym: &WasmSymbol,
 ) -> Result<WasmDataAddress> {
     ensure!(
-        sym.kind == WasmSymbolKind::Data,
+        sym.kind == object::wasm::SYM_TYPE_DATA,
         "memory address relocation references non-data symbol"
     );
     let Some(place) = segment_places.get(sym.index as usize).copied() else {
@@ -7345,15 +7189,15 @@ impl WasmLinkerSymbol {
         }
     }
 
-    fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
+    fn matches_import_kind(self, kind: object::wasm::SymbolKind) -> bool {
         match self {
-            Self::CallCtors | Self::InitTls => kind == WasmSymbolKind::Func,
+            Self::CallCtors | Self::InitTls => kind == object::wasm::SYM_TYPE_FUNCTION,
             Self::MemoryBase
             | Self::TableBase
             | Self::StackPointer
             | Self::TlsBase
             | Self::TlsSize
-            | Self::TlsAlign => kind == WasmSymbolKind::Global,
+            | Self::TlsAlign => kind == object::wasm::SYM_TYPE_GLOBAL,
             Self::DataEnd
             | Self::GlobalBase
             | Self::HeapBase
@@ -7415,7 +7259,7 @@ fn compute_data_addresses(
     {
         let mut data_addresses = vec![WasmDataAddress::Missing; symbols.len()];
         for (sym_idx, sym) in symbols.iter().enumerate() {
-            if sym.kind != WasmSymbolKind::Data {
+            if sym.kind != object::wasm::SYM_TYPE_DATA {
                 continue;
             }
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
@@ -7486,7 +7330,10 @@ fn allocate_wasm_object_index_bases(
 }
 
 /// Assign each body a range into the object's sorted code-relocation list.
-fn classify_code_relocations(bodies: &mut [WasmFunctionBody<'_>], relocs: &[WasmRelocation]) {
+fn classify_code_relocations(
+    bodies: &mut [WasmFunctionBody<'_>],
+    relocs: &[object::wasm::Relocation],
+) {
     if relocs.is_empty() {
         return;
     }
@@ -7495,11 +7342,11 @@ fn classify_code_relocations(bodies: &mut [WasmFunctionBody<'_>], relocs: &[Wasm
     for body in bodies.iter_mut() {
         let body_start = body.code_offset;
         let body_end = body_start + body.bytes.len() as u32;
-        while i < relocs.len() && relocs[i].offset < body_start {
+        while i < relocs.len() && relocs[i].r_offset < body_start {
             i += 1;
         }
         let lo = i;
-        while i < relocs.len() && relocs[i].offset < body_end {
+        while i < relocs.len() && relocs[i].r_offset < body_end {
             i += 1;
         }
         body.reloc_range =
@@ -7542,7 +7389,7 @@ impl platform::Platform for Wasm {
     type RelocationSections = ();
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
-    type RelocationInfo = RelocationType;
+    type RelocationInfo = object::wasm::RelocationType;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
@@ -8009,7 +7856,10 @@ impl platform::Platform for Wasm {
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
     ) {
-        sizes.increment(crate::part_id::FILE_HEADER, (WASM_MAGIC.len() + 4) as u64);
+        sizes.increment(
+            crate::part_id::FILE_HEADER,
+            (object::wasm::MAGIC.len() + 4) as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -8168,70 +8018,68 @@ impl platform::Platform for Wasm {
 
 fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     ensure!(input.len() >= 8, "Wasm module too short");
-    ensure!(input[..4] == WASM_MAGIC, "missing Wasm magic header");
+    ensure!(
+        input[..4] == object::wasm::MAGIC,
+        "missing Wasm magic header"
+    );
     let version = u32_from_slice(&input[4..8]);
     ensure!(
-        version == WASM_VERSION,
+        version == object::wasm::VERSION,
         "unsupported Wasm version {version}"
     );
 
+    let parsed = object::read::wasm::WasmFile::parse(input)
+        .map_err(|err| crate::error!("invalid Wasm module: {err}"))?;
+
     let mut sections: Vec<SectionHeader> = Vec::new();
-    let mut symbols: Vec<WasmSymbol> = Vec::new();
     let mut segment_infos: Vec<WasmSegmentInfo<'data>> = Vec::new();
-    let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
-    let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
+    let mut segment_addresses: Vec<u64> = Vec::new();
     let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
     let mut standard_section_index = [None; STANDARD_SECTION_LOOKUP_LEN];
 
-    for payload in Parser::new(0).parse_all(input) {
-        let payload = payload?;
-        let Some((id, range)) = payload.as_section() else {
+    for section in parsed.sections() {
+        let Some(id) = section.wasm_id() else {
+            // Synthesized data segments follow the real sections.
+            segment_addresses.push(section.address());
+            if let Some(info) = segment_info_from_section(&section)? {
+                segment_infos.push(info);
+            }
             continue;
         };
-
-        let mut name_range: Option<Range<u32>> = None;
-
-        if let Payload::CustomSection(reader) = &payload {
-            let section_name = reader.name();
-            let name_end = reader.data_offset();
-            let name_start = name_end as usize - section_name.len();
-            name_range = Some(name_start as u32..name_end as u32);
-
-            if section_name == LINKING_SECTION_NAME {
-                if let KnownCustom::Linking(linking) = reader.as_known() {
-                    parse_linking_subsections(
-                        input,
-                        &linking,
-                        &mut symbols,
-                        &mut segment_infos,
-                        &mut init_funcs,
-                    )?;
-                }
-            } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
-                if let KnownCustom::Reloc(reloc) = reader.as_known() {
-                    reloc_sections.push(WasmRelocSection {
-                        target_section_index: reloc.section_index(),
-                        payload_range: name_end as u32..range.end as u32,
-                    });
-                }
-            } else if section_name == TARGET_FEATURES_SECTION_NAME {
-                target_features.extend(parse_target_features_payload(reader.data())?);
+        let id = id.0;
+        let (payload_range, name_range) = section_ranges(input, &section)?;
+        if id == object::wasm::SEC_CUSTOM.0 {
+            let name = section
+                .name()
+                .map_err(|err| crate::error!("invalid Wasm section name: {err}"))?;
+            if name == object::wasm::TARGET_FEATURES_SECTION_NAME {
+                let data = section
+                    .data()
+                    .map_err(|err| crate::error!("invalid Wasm target_features section: {err}"))?;
+                target_features.extend(parse_target_features_payload(data)?);
             }
-        } else if (section_id::TYPE..=section_id::MAX).contains(&id) {
+        } else if (object::wasm::SEC_TYPE.0..=object::wasm::SEC_DATA_COUNT.0).contains(&id) {
             standard_section_index[id as usize] = Some(sections.len() as u32);
         }
 
+        let relocations = section.wasm_relocations().to_vec();
+
         sections.push(SectionHeader {
             id,
-            payload_range: range.start as u32..range.end as u32,
+            payload_range,
             name_range,
+            relocations,
         });
     }
 
-    // Backfill names for unnamed undefined function/global symbols from the import section.
-    // The Wasm linking convention allows symbol entries to omit the name when the symbol is
-    // undefined; the canonical name lives in the import entry instead.
-    backfill_unnamed_import_symbols(input, &standard_section_index, &sections, &mut symbols)?;
+    let init_funcs = parsed.wasm_init_funcs().to_vec();
+
+    let mut symbols = Vec::new();
+    for symbol in parsed.symbols() {
+        if let Some(symbol) = wasm_symbol_from_object(input, &symbol, &segment_addresses)? {
+            symbols.push(symbol);
+        }
+    }
 
     let (num_function_imports, num_global_imports) =
         count_function_and_global_imports(input, &standard_section_index, &sections)?;
@@ -8239,16 +8087,17 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         input,
         &standard_section_index,
         &sections,
-        section_id::FUNCTION,
+        object::wasm::SEC_FUNCTION.0,
     )?;
     let num_defined_globals = section_entry_count(
         input,
         &standard_section_index,
         &sections,
-        section_id::GLOBAL,
+        object::wasm::SEC_GLOBAL.0,
     )?;
+    // `WasmFile` exposes one synthesized section per data segment, including passive segments.
     let num_data_segments =
-        section_entry_count(input, &standard_section_index, &sections, section_id::DATA)?;
+        u32::try_from(segment_addresses.len()).context("too many Wasm data segments")?;
 
     Ok(File {
         data: input,
@@ -8257,7 +8106,6 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         symbols,
         segment_infos,
         init_funcs,
-        reloc_sections,
         target_features,
         num_function_imports,
         num_global_imports,
@@ -8272,7 +8120,7 @@ fn count_function_and_global_imports(
     standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
     sections: &[SectionHeader],
 ) -> Result<(u32, u32)> {
-    let Some(section_index) = standard_section_index[section_id::IMPORT as usize] else {
+    let Some(section_index) = standard_section_index[object::wasm::SEC_IMPORT.0 as usize] else {
         return Ok((0, 0));
     };
     let header = sections
@@ -8405,8 +8253,9 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 
     for sym_index in 0..object.object.symbols.len() {
         let sym = &object.object.symbols[sym_index];
-        let flags = SymbolFlags::from_bits_truncate(sym.flags);
-        if !(flags.contains(SymbolFlags::EXPORTED) || flags.contains(SymbolFlags::NO_STRIP)) {
+        if !(sym.flags.contains(object::wasm::SYM_EXPORTED)
+            || sym.flags.contains(object::wasm::SYM_NO_STRIP))
+        {
             continue;
         }
         if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
@@ -8422,7 +8271,7 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
-        if sym.is_weak() && sym.kind == WasmSymbolKind::Func && !sym.is_undefined() {
+        if sym.is_weak() && sym.kind == object::wasm::SYM_TYPE_FUNCTION && !sym.is_undefined() {
             send_wasm_definition_request::<A>(
                 object,
                 init.symbol_index as usize,
@@ -8461,11 +8310,13 @@ fn is_dynamic_export_candidate(
 ) -> bool {
     matches!(
         sym.kind,
-        WasmSymbolKind::Func | WasmSymbolKind::Global | WasmSymbolKind::Data
+        object::wasm::SYM_TYPE_FUNCTION
+            | object::wasm::SYM_TYPE_GLOBAL
+            | object::wasm::SYM_TYPE_DATA
     ) && !sym.is_undefined()
         && !sym.is_local()
         && !sym.is_hidden()
-        && !sym.raw_flags().contains(SymbolFlags::EXPORTED)
+        && !sym.flags.contains(object::wasm::SYM_EXPORTED)
         && symbol_db.is_canonical(symbol_id)
 }
 
@@ -8561,18 +8412,21 @@ fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 
 fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     object: &crate::layout::ObjectLayoutState<'data, Wasm>,
-    reloc: &WasmRelocation,
+    reloc: &object::wasm::Relocation,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
-    if reloc.ty == RelocationType::TypeIndexLeb {
+    if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
         return Ok(());
     }
 
     let file = object.object;
-    let Some(sym) = file.symbols.get(reloc.index as usize).copied() else {
-        bail!("Wasm relocation symbol index {} out of range", reloc.index);
+    let Some(sym) = file.symbols.get(reloc.r_index as usize).copied() else {
+        bail!(
+            "Wasm relocation symbol index {} out of range",
+            reloc.r_index
+        );
     };
 
     if !sym.is_undefined() {
@@ -8580,10 +8434,15 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
 
-        if sym.is_weak() && matches!(sym.kind, WasmSymbolKind::Func | WasmSymbolKind::Data) {
+        if sym.is_weak()
+            && matches!(
+                sym.kind,
+                object::wasm::SYM_TYPE_FUNCTION | object::wasm::SYM_TYPE_DATA
+            )
+        {
             send_wasm_definition_request::<A>(
                 object,
-                reloc.index as usize,
+                reloc.r_index as usize,
                 resources,
                 queue,
                 scope,
@@ -8597,7 +8456,7 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
     }
 
-    send_wasm_definition_request::<A>(object, reloc.index as usize, resources, queue, scope);
+    send_wasm_definition_request::<A>(object, reloc.r_index as usize, resources, queue, scope);
     Ok(())
 }
 
@@ -8653,162 +8512,111 @@ fn name_range_in(data: &[u8], name: &str) -> (u32, u32) {
     (range.start as u32, (range.end - range.start) as u32)
 }
 
-/// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
-/// section entry. In Wasm relocatable objects, undefined symbols in the linking section may
-/// omit their name; the canonical name is carried by the import entry instead.
-fn backfill_unnamed_import_symbols(
-    data: &[u8],
-    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
-    sections: &[SectionHeader],
-    symbols: &mut [WasmSymbol],
-) -> Result {
-    // Collect import names only if there are unnamed undefined symbols that need backfilling.
-    let needs_backfill = symbols.iter().any(|s| {
-        s.is_undefined()
-            && !s.has_name()
-            && matches!(s.kind, WasmSymbolKind::Func | WasmSymbolKind::Global)
-    });
-    if !needs_backfill {
-        return Ok(());
+/// Section id payload and, for a custom section, the name string's file range.
+fn section_ranges(
+    input: &[u8],
+    section: &object::read::wasm::WasmSection<'_, '_>,
+) -> Result<(Range<u32>, Option<Range<u32>>)> {
+    let (data_start, len) = section
+        .file_range()
+        .ok_or_else(|| crate::error!("Wasm section has no file range"))?;
+    let data_end = data_start
+        .checked_add(len)
+        .ok_or_else(|| crate::error!("Wasm section range overflow"))?;
+    let id = section
+        .wasm_id()
+        .ok_or_else(|| crate::error!("Wasm section has no id"))?
+        .0;
+    if id != object::wasm::SEC_CUSTOM.0 {
+        let start = u32::try_from(data_start).context("Wasm section offset exceeds u32")?;
+        let end = u32::try_from(data_end).context("Wasm section end exceeds u32")?;
+        return Ok((start..end, None));
     }
 
-    // Parse the import section to build name lookup tables indexed by function/global import
-    // ordinal.
-    let Some(import_payload) = standard_section_index
-        .get(section_id::IMPORT as usize)
-        .and_then(|idx| idx.as_ref())
-        .and_then(|&idx| sections.get(idx as usize))
-        .and_then(|header| data.get(header.payload_range_usize()))
-    else {
-        return Ok(());
+    let name = section
+        .name()
+        .map_err(|err| crate::error!("invalid Wasm section name: {err}"))?;
+    let (name_range, content_start) = if name.is_empty() {
+        // The name is a single 0 LEB immediately before the payload.
+        let content_start = data_start
+            .checked_sub(1)
+            .context("Wasm custom section name is not inside the module")?;
+        let at = u32::try_from(data_start).context("Wasm section offset exceeds u32")?;
+        (at..at, content_start)
+    } else {
+        let (name_start, name_len) = name_range_in(input, name);
+        if name_len == 0 {
+            bail!("Wasm custom section name is not inside the module");
+        }
+        let leb_len = u32::try_from(uleb128_size(u64::from(name_len)))
+            .context("Wasm custom section name length exceeds u32")?;
+        let content_start = name_start
+            .checked_sub(leb_len)
+            .context("Wasm custom section name is not inside the module")?;
+        let name_end = name_start
+            .checked_add(name_len)
+            .context("Wasm section name offset exceeds u32")?;
+        (name_start..name_end, u64::from(content_start))
     };
-    let import_reader = ImportSectionReader::new(BinaryReader::new(import_payload, 0))?;
-
-    let mut func_import_names: Vec<(u32, u32)> = Vec::new();
-    let mut global_import_names: Vec<(u32, u32)> = Vec::new();
-    for import in import_reader.into_imports() {
-        let import = import?;
-        let name_entry = name_range_in(data, import.name);
-        match import.ty {
-            TypeRef::Func(_) | TypeRef::FuncExact(_) => func_import_names.push(name_entry),
-            TypeRef::Global(_) => global_import_names.push(name_entry),
-            _ => {}
-        }
-    }
-
-    for sym in symbols.iter_mut() {
-        if !sym.is_undefined() || sym.has_name() {
-            continue;
-        }
-        let (start, len) = match sym.kind {
-            WasmSymbolKind::Func => func_import_names
-                .get(sym.index as usize)
-                .copied()
-                .unwrap_or((0, 0)),
-            WasmSymbolKind::Global => global_import_names
-                .get(sym.index as usize)
-                .copied()
-                .unwrap_or((0, 0)),
-            _ => continue,
-        };
-        sym.name_start = start;
-        sym.name_len = len;
-    }
-
-    Ok(())
+    let start = u32::try_from(content_start).context("Wasm section offset exceeds u32")?;
+    let end = u32::try_from(data_end).context("Wasm section end exceeds u32")?;
+    Ok((start..end, Some(name_range)))
 }
 
-fn parse_linking_subsections<'data>(
-    data: &'data [u8],
-    linking: &wasmparser::LinkingSectionReader<'data>,
-    symbols: &mut Vec<WasmSymbol>,
-    segment_infos: &mut Vec<WasmSegmentInfo<'data>>,
-    init_funcs: &mut Vec<WasmInitFunc>,
-) -> Result {
-    let to_name_range = |s: &str| name_range_in(data, s);
-    for sub in linking.subsections() {
-        let sub = sub?;
-        match sub {
-            Linking::SymbolTable(map) => {
-                for sym in map {
-                    symbols.push(wasm_symbol_from_info(sym?, to_name_range));
-                }
-            }
-            Linking::SegmentInfo(map) => {
-                for seg in map {
-                    let seg = seg?;
-                    segment_infos.push(WasmSegmentInfo {
-                        name: seg.name,
-                        alignment: Alignment::from_exponent(seg.alignment)?,
-                        flags: seg.flags,
-                    });
-                }
-            }
-            Linking::InitFuncs(map) => {
-                for init in map {
-                    let init = init?;
-                    init_funcs.push(WasmInitFunc {
-                        priority: init.priority,
-                        symbol_index: init.symbol_index,
-                    });
-                }
-            }
-            // `ComdatInfo` and `Unknown` subsections are not consumed.
-            _ => {}
-        }
-    }
-
-    Ok(())
+fn segment_info_from_section<'data>(
+    section: &object::read::wasm::WasmSection<'data, '_>,
+) -> Result<Option<WasmSegmentInfo<'data>>> {
+    let object::SectionFlags::Wasm { flags } = section.flags() else {
+        return Ok(None);
+    };
+    let name = section
+        .name()
+        .map_err(|err| crate::error!("invalid Wasm data segment name: {err}"))?;
+    Ok(Some(WasmSegmentInfo {
+        name,
+        alignment: Alignment::from_exponent(section.align().trailing_zeros())?,
+        flags,
+    }))
 }
 
-fn wasm_symbol_from_info(
-    info: SymbolInfo<'_>,
-    to_name_range: impl Fn(&str) -> (u32, u32),
-) -> WasmSymbol {
-    let mut sym = WasmSymbol::default();
-    let mut fill_indexed = |kind: WasmSymbolKind, flags: u32, index: u32, name: Option<&str>| {
-        sym.kind = kind;
-        sym.flags = flags;
-        sym.index = index;
-        if let Some(name) = name {
-            let (start, len) = to_name_range(name);
-            sym.name_start = start;
-            sym.name_len = len;
-        }
+fn wasm_symbol_from_object(
+    input: &[u8],
+    symbol: &object::read::wasm::WasmSymbol<'_, '_>,
+    segment_addresses: &[u64],
+) -> Result<Option<WasmSymbol>> {
+    let object::SymbolFlags::Wasm { flags, kind, index } = symbol.flags() else {
+        // Synthetic symbols are not part of the linking symbol table that relocations index.
+        return Ok(None);
     };
-    match info {
-        SymbolInfo::Func { flags, index, name } => {
-            fill_indexed(WasmSymbolKind::Func, flags.bits(), index, name);
-        }
-        SymbolInfo::Data {
-            flags,
-            name,
-            symbol,
-        } => {
-            fill_indexed(WasmSymbolKind::Data, flags.bits(), 0, Some(name));
-            if let Some(def) = symbol {
-                sym.index = def.index;
-                sym.offset = def.offset;
-                sym.size = def.size;
-            }
-        }
-        SymbolInfo::Global { flags, index, name } => {
-            fill_indexed(WasmSymbolKind::Global, flags.bits(), index, name);
-        }
-        SymbolInfo::Section { flags, section } => {
-            sym.kind = WasmSymbolKind::Section;
-            sym.flags = flags.bits();
-            sym.index = section;
-        }
-        SymbolInfo::Event { flags, index, name } => {
-            fill_indexed(WasmSymbolKind::Event, flags.bits(), index, name);
-        }
-        SymbolInfo::Table { flags, index, name } => {
-            fill_indexed(WasmSymbolKind::Table, flags.bits(), index, name);
-        }
-    }
+    let mut out = WasmSymbol {
+        kind,
+        flags,
+        index,
+        ..WasmSymbol::default()
+    };
 
-    sym
+    let skip_name = kind == object::wasm::SYM_TYPE_SECTION
+        || (matches!(
+            kind,
+            object::wasm::SYM_TYPE_EVENT | object::wasm::SYM_TYPE_TABLE
+        ) && flags.contains(object::wasm::SYM_UNDEFINED)
+            && !flags.contains(object::wasm::SYM_EXPLICIT_NAME));
+    if !skip_name {
+        let name = symbol
+            .name()
+            .map_err(|err| crate::error!("invalid Wasm symbol name: {err}"))?;
+        let (start, len) = name_range_in(input, name);
+        out.name_start = start;
+        out.name_len = len;
+    }
+    if kind == object::wasm::SYM_TYPE_DATA && !symbol.is_undefined() {
+        // `address` is the segment address plus the linking offset. Keep the offset.
+        let segment_address = segment_addresses.get(index as usize).copied().unwrap_or(0);
+        let offset = symbol.address().wrapping_sub(segment_address);
+        out.offset = u32::try_from(offset).context("Wasm data symbol offset exceeds u32")?;
+        out.size = u32::try_from(symbol.size()).context("Wasm data symbol size exceeds u32")?;
+    }
+    Ok(Some(out))
 }
 
 impl SinglePartSectionId {
@@ -8887,7 +8695,7 @@ mod tests {
         assert!(
             parsed
                 .iter()
-                .all(|f| f.prefix == TARGET_FEATURE_PREFIX_USED),
+                .all(|f| f.prefix == object::wasm::FEATURE_PREFIX_USED),
             "output must only contain used (+) prefixes"
         );
         parsed.iter().map(|f| f.name.to_owned()).collect()
@@ -8925,20 +8733,20 @@ mod tests {
         // Both objects use sign-ext. Only the first also uses bulk-memory.
         let features_a = [
             WasmTargetFeature {
-                prefix: TARGET_FEATURE_PREFIX_USED,
+                prefix: object::wasm::FEATURE_PREFIX_USED,
                 name: "sign-ext",
             },
             WasmTargetFeature {
-                prefix: TARGET_FEATURE_PREFIX_USED,
+                prefix: object::wasm::FEATURE_PREFIX_USED,
                 name: "bulk-memory",
             },
             WasmTargetFeature {
-                prefix: TARGET_FEATURE_PREFIX_USED,
+                prefix: object::wasm::FEATURE_PREFIX_USED,
                 name: "sign-ext",
             },
         ];
         let features_b = [WasmTargetFeature {
-            prefix: TARGET_FEATURE_PREFIX_USED,
+            prefix: object::wasm::FEATURE_PREFIX_USED,
             name: "sign-ext",
         }];
         let mut records = target_feature_records(1, &features_a);
@@ -8952,11 +8760,11 @@ mod tests {
     #[test]
     fn target_features_errors_when_used_and_disallowed_conflict() {
         let used = [WasmTargetFeature {
-            prefix: TARGET_FEATURE_PREFIX_USED,
+            prefix: object::wasm::FEATURE_PREFIX_USED,
             name: "atomics",
         }];
         let disallowed = [WasmTargetFeature {
-            prefix: TARGET_FEATURE_PREFIX_DISALLOWED,
+            prefix: object::wasm::FEATURE_PREFIX_DISALLOWED,
             name: "atomics",
         }];
         let mut records = target_feature_records(1, &used);
@@ -8979,9 +8787,9 @@ mod tests {
         ];
         let features = parse_target_features_payload(payload).unwrap();
         assert_eq!(features.len(), 2);
-        assert_eq!(features[0].prefix, TARGET_FEATURE_PREFIX_USED);
+        assert_eq!(features[0].prefix, object::wasm::FEATURE_PREFIX_USED);
         assert_eq!(features[0].name, "bulk-memory");
-        assert_eq!(features[1].prefix, TARGET_FEATURE_PREFIX_DISALLOWED);
+        assert_eq!(features[1].prefix, object::wasm::FEATURE_PREFIX_DISALLOWED);
         assert_eq!(features[1].name, "atomics");
     }
 
@@ -9199,7 +9007,7 @@ mod tests {
 
     fn input_with_types(
         types: Vec<FuncType>,
-        data_relocations: Vec<WasmRelocation>,
+        data_relocations: Vec<object::wasm::Relocation>,
     ) -> WasmObjectLayoutInput<'static> {
         let mut input = layout_input_with_features(1, &[]);
         input.types = types;
@@ -9228,11 +9036,11 @@ mod tests {
 
         let with_data_reloc = merge_types_for_input(input_with_types(
             vec![void_ty.clone(), data_only_ty.clone()],
-            vec![WasmRelocation {
-                ty: RelocationType::TypeIndexLeb,
-                offset: 0,
-                index: 1,
-                addend: 0,
+            vec![object::wasm::Relocation {
+                r_type: object::wasm::R_WASM_TYPE_INDEX_LEB,
+                r_offset: 0,
+                r_index: 1,
+                r_addend: 0,
             }],
         ));
         assert_eq!(with_data_reloc.types, [void_ty, data_only_ty]);
