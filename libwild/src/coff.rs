@@ -470,10 +470,22 @@ impl Platform for Coff {
         scope: &rayon::Scope<'scope>,
     ) -> Result {
         for relocation in state.relocations(section_index)?.rel_iter() {
-            let local_symbol_id = state
-                .symbol_id_range
-                .input_to_id(relocation.symbol().unwrap());
+            let local_symbol_index = relocation.symbol().unwrap();
+            let local_symbol_id = state.symbol_id_range.input_to_id(local_symbol_index);
             let symbol_id = resources.symbol_db.definition(local_symbol_id);
+
+            let mut flags = resources.local_flags_for_symbol(symbol_id);
+            flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+
+            layout::check_for_undefined::<A>(
+                state,
+                state.object.section(section_index)?,
+                relocation.offset(),
+                local_symbol_index,
+                flags,
+                symbol_id,
+                resources,
+            )?;
 
             let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
             let previous_flags = atomic_flags.fetch_or(ValueFlags::DIRECT);
@@ -525,6 +537,10 @@ impl Platform for Coff {
         // The undefined symbol must always be symbol 0.
         symbols
             .add_symbol(InternalSymDefInfo::new(SymbolPlacement::Undefined, b""))
+            .hide();
+
+        symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "__ImageBase")
             .hide();
     }
 
