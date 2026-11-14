@@ -164,6 +164,12 @@ use zerocopy::KnownLayout;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
+/// Offset of `__global_pointer$` from the start of data. Currently the offset is 0x800 (2kb) from
+/// the start of DATA, this lets gp reach the first 4 kb of data. This is the same result as GNU ld
+/// for when there is no `.sdata` and the data section is small. GNU ld's default script uses:
+/// `MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));`
+pub(crate) const GLOBAL_POINTER_OFFSET: u64 = 0x800;
+
 /// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
 pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
 
@@ -1499,8 +1505,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         if args.architecture() == Architecture::RiscV64 {
-            symbols.section_start(
+            symbols.section_start_offset(
                 output_section_id::DATA,
+                crate::elf::GLOBAL_POINTER_OFFSET,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
             );
         }
@@ -3333,13 +3340,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             | secnames::GROUP_SECTION_NAME => {
                 return SectionRuleOutcome::Discard;
             }
-            secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
+            secnames::RISCV_ATTRIBUTES_SECTION_NAME => {
+                return SectionRuleOutcome::RiscVAttribute;
+            }
             secnames::ARM_ATTRIBUTES_SECTION_NAME
                 if args.architecture() == Architecture::AArch64 =>
             {
                 return SectionRuleOutcome::AArch64Attribute;
             }
-            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
+            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => {
+                return SectionRuleOutcome::NoteGnuProperty;
+            }
             secnames::NOTE_ABI_TAG_SECTION_NAME => {
                 return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
                     output_section_id::NOTE_ABI_TAG,

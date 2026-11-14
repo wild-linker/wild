@@ -4379,6 +4379,10 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
+        SymbolPlacement::SectionStartOffset(section_id, offset) => {
+            let sec = resources.section_layouts.get(section_id);
+            sec.mem_offset + offset
+        }
         SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
