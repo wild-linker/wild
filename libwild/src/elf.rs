@@ -1365,7 +1365,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         // RISCV_ATTRIBUTES segment.
         let primary_info = output_sections.output_info(merge_target);
         if [sht::NOTE, sht::RISCV_ATTRIBUTES].contains(&section_info.section_attributes.ty) {
-        } else if !section_flags.is_alloc() && primary_info.phdrs == [b"NONE"] {
+        } else if !section_flags.is_alloc()
+            && (primary_info.phdrs.is_empty() || primary_info.phdrs == [b"NONE"])
+        {
             return Ok(());
         } else {
             // All segments should only cover sections that are allocated and have a non-zero
@@ -2783,6 +2785,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         let mut segments_map = HashMap::new();
         let mut ordered_sections = Vec::new();
+        let mut ordered_phdrs = Vec::new();
         let mut segment_entries = Vec::new();
 
         let mut num_phdrs = 0;
@@ -2837,13 +2840,24 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 segments_map.insert(phdr.name, id);
             }
 
+            let mut prev_phdrs = Vec::new();
             for id in &script.parsed.ordered_sections {
                 let info = output_sections.section_infos.get(*id);
-                for phdr in &info.phdrs {
-                    if phdr == b"NONE" {
+                if !info.phdrs.is_empty() {
+                    prev_phdrs = info.phdrs.clone();
+                }
+                let phdrs = if !info.phdrs.is_empty() {
+                    info.phdrs.as_slice()
+                } else if info.section_attributes.is_alloc() {
+                    prev_phdrs.as_slice()
+                } else {
+                    &[]
+                };
+                for phdr in phdrs {
+                    if *phdr == b"NONE" {
                         continue;
                     }
-                    let segment = segments_map.get(phdr).with_context(|| {
+                    let segment = segments_map.get(*phdr).with_context(|| {
                         format!(
                             "Section {} assigned to non-existent phdr `{}`",
                             output_sections.display_name(*id),
@@ -2851,6 +2865,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                         )
                     })?;
                     let entry = &mut segment_entries[segment.as_usize()];
+                    if entry.ptype == pt::LOAD.0 && !info.section_attributes.is_alloc() {
+                        continue;
+                    }
                     entry.is_emitted = true;
                     if !matches!(SegmentType(entry.ptype), pt::LOAD | pt::PHDR)
                         && (entry.has_filehdr || entry.has_phdrs)
@@ -2860,7 +2877,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                             segment.as_usize()
                         );
                     }
-                    if entry.has_explicit_flags {
+                    if entry.has_explicit_flags || !info.section_attributes.is_alloc() {
                         continue;
                     }
                     entry.flags |=
@@ -2868,6 +2885,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     builder.get_segment_mut(*segment).segment_flags |= SegmentFlags(entry.flags);
                 }
                 ordered_sections.push(*id);
+                ordered_phdrs.push(phdrs.to_vec());
             }
         }
 
@@ -2879,13 +2897,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut first_ro: Option<ProgramSegmentId> = None;
 
         for (pos, id) in ordered_sections.iter().enumerate() {
-            let phdrs = &output_sections.section_infos.get(*id).phdrs;
-            for &phdr_name in phdrs {
+            let info = output_sections.section_infos.get(*id);
+            for &phdr_name in &ordered_phdrs[pos] {
                 let Some(id) = segments_map.get(phdr_name) else {
                     continue;
                 };
                 let seg_idx = id.as_usize();
                 let entry = segment_entries[seg_idx];
+                if entry.ptype == pt::LOAD.0 && !info.section_attributes.is_alloc() {
+                    continue;
+                }
                 if entry.ptype == pt::LOAD.0 && first_load.is_none() {
                     first_load = Some(*id);
                 }
