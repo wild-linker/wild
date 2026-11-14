@@ -253,7 +253,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        _section_size: u64,
         _earlier_shift: u64,
+        _address_movement: &mut dyn FnMut(u64) -> u64,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.

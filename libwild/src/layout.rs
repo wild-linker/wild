@@ -6042,8 +6042,35 @@ struct SectionRelaxScan {
     file_idx: usize,
     sec_idx: usize,
     address: u64,
+    part_id: PartId,
+    size: u64,
     raw_deltas: Vec<(u64, u32)>,
     margin: Option<u64>,
+}
+
+/// One input section after its shrink for this pass has been chosen.
+struct PlacedShrink {
+    address: u64,
+    end: u64,
+    base_shift: u64,
+    deltas: Vec<(u64, u32)>,
+}
+
+impl PlacedShrink {
+    /// How far `address` moves back when it falls in this section's content.
+    fn movement_at(&self, address: u64) -> Option<u64> {
+        if address < self.address || address >= self.end {
+            return None;
+        }
+        let offset = address - self.address;
+        let intra = self
+            .deltas
+            .iter()
+            .filter(|(delta_offset, _)| *delta_offset < offset)
+            .map(|(_, bytes)| u64::from(*bytes))
+            .sum::<u64>();
+        Some(self.base_shift.saturating_add(intra))
+    }
 }
 
 fn scan_section_for_relaxation<'data, A: Arch>(
@@ -6056,6 +6083,7 @@ fn scan_section_for_relaxation<'data, A: Arch>(
     file_idx: usize,
     sec_idx: usize,
     earlier_shift: u64,
+    address_movement: &mut dyn FnMut(u64) -> u64,
 ) -> Option<SectionRelaxScan> {
     let FileLayoutState::Object(obj) = &group.files[file_idx] else {
         return None;
@@ -6070,6 +6098,11 @@ fn scan_section_for_relaxation<'data, A: Arch>(
         .copied()
         .flatten()
         .map(|section| section.address)?;
+    let SectionSlot::Loaded(sec) = &obj.sections[sec_idx] else {
+        return None;
+    };
+    let size = sec.size;
+    let part_id = obj.section_part_id(section_index, &symbol_db.section_part_ids);
     let existing_deltas = obj.section_relax_deltas.get(sec_idx);
     let mut resolve_symbol = |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
         let local_id = obj.symbol_id_range.input_to_id(sym_idx);
@@ -6084,40 +6117,27 @@ fn scan_section_for_relaxation<'data, A: Arch>(
         relocs,
         existing_deltas,
         &mut resolve_symbol,
+        size,
         earlier_shift,
+        address_movement,
     );
     Some(SectionRelaxScan {
         group_idx,
         file_idx,
         sec_idx,
         address: sec_output_addr,
+        part_id,
+        size,
         raw_deltas,
         margin,
     })
 }
 
-/// Bytes deleted at a lower address in this pass.
-fn earlier_address_shifts(scans: &[SectionRelaxScan]) -> Vec<u64> {
-    let mut order: Vec<usize> = (0..scans.len()).collect();
-    order.sort_by_key(|&index| scans[index].address);
-    let mut shifts = vec![0u64; scans.len()];
-    let mut prefix = 0u64;
-    let mut carried = 0u64;
-    let mut seen_address = None;
-    for index in order {
-        let address = scans[index].address;
-        if seen_address != Some(address) {
-            carried = prefix;
-            seen_address = Some(address);
-        }
-        shifts[index] = carried;
-        prefix += scans[index]
-            .raw_deltas
-            .iter()
-            .map(|(_, bytes)| u64::from(*bytes))
-            .sum::<u64>();
-    }
-    shifts
+fn movement_in_placed(placed: &[PlacedShrink], address: u64) -> u64 {
+    placed
+        .iter()
+        .find_map(|section| section.movement_at(address))
+        .unwrap_or(0)
 }
 
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
@@ -6195,6 +6215,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
                         file_idx,
                         sec_idx,
                         0,
+                        &mut |_| 0,
                     ) {
                         found.push(scan);
                     }
@@ -6205,23 +6226,76 @@ fn relaxation_scan_pass<'data, A: Arch>(
         .collect();
 
     if A::relaxation_range_depends_on_earlier_shrinks() {
-        let shifts = earlier_address_shifts(&scans);
-        for (scan, shift) in scans.iter_mut().zip(shifts) {
-            if shift == 0 {
-                continue;
+        let mut order: Vec<usize> = (0..scans.len()).collect();
+        order.sort_by_key(|&index| scans[index].address);
+        let mut placed = Vec::<PlacedShrink>::new();
+        // Old and new end of the packed prefix. A section placed exactly at `old_end` moves back
+        // with that prefix, including alignment padding that disappears. A gap means the address
+        // is fixed.
+        let mut chain_old_end: Option<u64> = None;
+        let mut chain_new_end = 0u64;
+        let mut cursor = 0;
+        while cursor < order.len() {
+            let address = scans[order[cursor]].address;
+            let mut group = Vec::new();
+            while cursor < order.len() && scans[order[cursor]].address == address {
+                group.push(order[cursor]);
+                cursor += 1;
             }
-            if let Some(revised) = scan_section_for_relaxation::<A>(
-                &group_states[scan.group_idx],
-                &section_addresses[scan.group_idx][scan.file_idx],
-                &symbol_infos,
-                symbol_db,
-                per_symbol_flags,
-                scan.group_idx,
-                scan.file_idx,
-                scan.sec_idx,
-                shift,
-            ) {
-                *scan = revised;
+            let base_shift = match chain_old_end {
+                Some(old_end) if address == old_end => old_end.saturating_sub(chain_new_end),
+                _ => 0,
+            };
+            let mut max_old_capacity = 0u64;
+            let mut max_new_capacity = 0u64;
+            for index in group {
+                let group_idx = scans[index].group_idx;
+                let file_idx = scans[index].file_idx;
+                let sec_idx = scans[index].sec_idx;
+                if let Some(revised) = scan_section_for_relaxation::<A>(
+                    &group_states[group_idx],
+                    &section_addresses[group_idx][file_idx],
+                    &symbol_infos,
+                    symbol_db,
+                    per_symbol_flags,
+                    group_idx,
+                    file_idx,
+                    sec_idx,
+                    base_shift,
+                    &mut |address| movement_in_placed(&placed, address),
+                ) {
+                    let deleted = revised
+                        .raw_deltas
+                        .iter()
+                        .map(|(_, bytes)| u64::from(*bytes))
+                        .sum::<u64>();
+                    let old_capacity =
+                        Section { size: revised.size }.capacity(revised.part_id, output_sections);
+                    let new_capacity = Section {
+                        size: revised.size.saturating_sub(deleted),
+                    }
+                    .capacity(revised.part_id, output_sections);
+                    max_old_capacity = max_old_capacity.max(old_capacity);
+                    max_new_capacity = max_new_capacity.max(new_capacity);
+                    placed.push(PlacedShrink {
+                        address: revised.address,
+                        end: revised.address.saturating_add(revised.size),
+                        base_shift,
+                        deltas: revised.raw_deltas.clone(),
+                    });
+                    scans[index] = revised;
+                }
+            }
+            let old_end = address.saturating_add(max_old_capacity);
+            let new_end = address
+                .saturating_sub(base_shift)
+                .saturating_add(max_new_capacity);
+            if chain_old_end.is_none_or(|end| address >= end) {
+                chain_old_end = Some(old_end);
+                chain_new_end = new_end;
+            } else {
+                chain_old_end = Some(chain_old_end.unwrap_or(old_end).max(old_end));
+                chain_new_end = chain_new_end.max(new_end);
             }
         }
     }

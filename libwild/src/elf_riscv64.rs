@@ -301,7 +301,9 @@ impl crate::platform::Arch for ElfRiscV64 {
         relocations: RelocationList64,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        _section_size: u64,
         _earlier_shift: u64,
+        _address_movement: &mut dyn FnMut(u64) -> u64,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
             RelocationList64::Rela(rela_list) => collect_relaxation_deltas(
