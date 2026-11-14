@@ -5289,7 +5289,8 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
 
-    let got_relr_n = layout.got_relr_n;
+    let got_relr_n =
+        layout.section_part_layouts.get(part_id::GOT_RELR).mem_size / C::GOT_ENTRY_SIZE;
     if got_relr_n > 0 && !only_keep_debug {
         let got_relr_base = layout
             .section_part_layouts

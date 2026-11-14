@@ -444,7 +444,6 @@ pub(crate) trait Platform:
     const EH_FRAME_SECTION_ID: Option<OutputSectionId> = None;
     const NOTE_GNU_PROPERTY_SECTION_ID: Option<OutputSectionId> = None;
     const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> = None;
-    const GOT_RELR_SECTION_ID: Option<OutputSectionId> = None;
     const GNU_VERSION_SECTION_ID: Option<OutputSectionId> = None;
     const COMMENT_SECTION_ID: Option<OutputSectionId> = None;
     const INTERP_SECTION_ID: Option<OutputSectionId> = None;
