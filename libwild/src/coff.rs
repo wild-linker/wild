@@ -301,6 +301,8 @@ impl Platform for Coff {
     type SymtabShndxEntry = ();
     type ResolvedObjectExt<'data> = ();
     type FinaliseSizesExt<'data> = ();
+    type LayoutMetadata = ();
+    type AddressLayoutExt = ();
     type GcUnit = SectionGcUnit;
     type SectionIdentityExt = ();
     type SymbolVersionIndex = ();
@@ -577,10 +579,8 @@ impl Platform for Coff {
 
     fn create_layout_ext<'data>(
         _finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
-        _resolutions: &layout::SymbolResolutions<Self>,
-        _group_layouts: &[layout::GroupLayout<'data, Self>],
-    ) -> Result<Self::LayoutExt<'data>> {
-        Ok(())
+        _address_layout_ext: Self::AddressLayoutExt,
+    ) -> Self::LayoutExt<'data> {
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(

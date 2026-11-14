@@ -46,7 +46,6 @@ use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
-use crate::timing_phase;
 use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
@@ -1121,7 +1120,7 @@ impl MergedStringStartAddresses {
         starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
         merge_string_sections: &OutputSectionMap<MergedStringsSection>,
     ) -> Self {
-        timing_phase!("Compute merged string section start addresses");
+        verbose_timing_phase!("Compute merged string section start addresses");
 
         let mut addresses = output_sections.new_section_map_with(|| [0; MERGE_STRING_BUCKETS]);
         let internal_start_offsets = starting_mem_offsets_by_group.first().unwrap();

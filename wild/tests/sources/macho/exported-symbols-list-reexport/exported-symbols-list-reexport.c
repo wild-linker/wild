@@ -38,6 +38,13 @@
 //#AugmentLinkerScript:template(-Wl,-exported_symbols_list,$O):multiple.txt
 //#ExpectDynSym:_wild_test_reexport_from_dylib reexport=1
 //#ExpectDynSym:_wild_test_reexport_second reexport=2
+//#ExpectDynSym:_wild_test_reexport_local
+
+// Compare output with one and three threads, including definitions and reexports whose
+// names interleave when sorted by the trie.
+//#Config:multiple-providers-serial:multiple-providers
+//#WildExtraLinkArgs:-Wl,--threads=1
+//#TestUpdateInPlace:true
 
 // Wildcards ignore unused dependency symbols, but re-export matching imports.
 #ifdef IMPORT_SYMBOL

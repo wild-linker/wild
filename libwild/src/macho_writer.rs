@@ -244,7 +244,7 @@ fn write_prelude<'data>(
     let exports_trie = &layout.format_specific.exports_trie;
     let names = crate::macho::ExportNames::new(
         &layout.dynamic_symbol_definitions,
-        &prelude.format_specific.reexports,
+        &layout.format_specific.reexports,
     );
     let out = buffers.get_mut(part_id::EXPORTS_TRIE);
     exports_trie.encode_into(out, |index| names.get(index))?;

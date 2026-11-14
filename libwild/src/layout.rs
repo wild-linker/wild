@@ -115,7 +115,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     symbol_db: SymbolDb<'data, A::Platform>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, A::Platform>>,
-    mut output_sections: OutputSections<'data, P>,
+    output_sections: OutputSections<'data, P>,
 ) -> Result<Layout<'data, A::Platform>> {
     timing_phase!("Layout");
 
@@ -175,7 +175,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &mut dynamic_symbol_definitions,
     )?;
 
-    let mut script_sorted_sections = harvest_and_sort_script_sections(
+    let script_sorted_sections = harvest_and_sort_script_sections(
         &mut group_states,
         &output_sections,
         &symbol_db.section_part_ids,
@@ -196,11 +196,138 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let finalise_sizes_ext =
         P::create_finalise_sizes_ext::<A>(symbol_db.args, &mut group_states, &symbol_db)?;
 
+    // Compute address-independent layout metadata alongside size finalisation, address
+    // assignment and metadata resolution.
+    let (address_layout, layout_metadata) = rayon::join(
+        || {
+            compute_address_layout::<P, A>(
+                &symbol_db,
+                &mut per_symbol_flags,
+                group_states,
+                output_sections,
+                &merged_strings,
+                &dynamic_symbol_definitions,
+                &finalise_sizes_ext,
+                script_sorted_sections,
+                gc_outputs.must_keep_sections,
+                thunk_layout_builder,
+                symbol_info_printer,
+            )
+        },
+        || P::compute_layout_metadata(&dynamic_symbol_definitions, &finalise_sizes_ext),
+    );
+
+    let AddressLayout {
+        format_specific: address_layout_ext,
+        symbol_resolutions,
+        got_relr_n,
+        segment_layouts,
+        section_part_layouts,
+        section_layouts,
+        merged_section_layouts,
+        group_layouts,
+        output_sections,
+        program_segments,
+        output_order,
+        non_addressable_counts,
+        merged_string_start_addresses,
+        thunk_block_addresses,
+        thunk_landing_pad_addresses,
+        thunk_landing_pads,
+        gdb_index_data,
+        script_sorted_sections,
+        partial_link,
+    } = address_layout?;
+
+    let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
+    let num_sections = output_sections.num_sections();
+
+    let format_specific = P::create_layout_ext(finalise_sizes_ext, address_layout_ext);
+
+    let mut layout = Layout {
+        symbol_db,
+        symbol_resolutions,
+        got_relr_n,
+        segment_layouts,
+        section_part_layouts,
+        section_layouts,
+        merged_section_layouts,
+        group_layouts,
+        output_sections,
+        program_segments,
+        output_order,
+        non_addressable_counts,
+        merged_strings,
+        merged_string_start_addresses,
+        has_static_tls: gc_outputs.has_static_tls,
+        has_variant_pcs: gc_outputs.has_variant_pcs,
+        has_textrel: gc_outputs.has_textrel,
+        relocation_statistics,
+        per_symbol_flags,
+        dynamic_symbol_definitions,
+        format_specific,
+        thunk_block_addresses,
+        thunk_landing_pad_addresses,
+        thunk_landing_pads,
+        compressed_debug_sections: OutputSectionMap::with_size(num_sections),
+        gdb_index_data,
+        script_sorted_sections,
+        partial_link,
+        erratum_patches: AtomicU64::new(0),
+        erratum_padding: AtomicU64::new(0),
+    };
+
+    P::apply_post_resolution_adjustments(&mut layout, layout_metadata)?;
+    P::maybe_compress_debug_sections::<A>(&mut layout)?;
+    P::maybe_only_keep_debug::<A>(&mut layout)?;
+    P::validate_layout(&layout)?;
+
+    Ok(layout)
+}
+
+/// Address-dependent layout computed alongside address-independent platform metadata.
+struct AddressLayout<'data, P: Platform> {
+    format_specific: P::AddressLayoutExt,
+    symbol_resolutions: SymbolResolutions<P>,
+    got_relr_n: u64,
+    segment_layouts: SegmentLayouts,
+    section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
+    section_layouts: OutputSectionMap<OutputRecordLayout>,
+    merged_section_layouts: OutputSectionMap<OutputRecordLayout>,
+    group_layouts: Vec<GroupLayout<'data, P>>,
+    output_sections: OutputSections<'data, P>,
+    program_segments: ProgramSegments<P::ProgramSegmentDef>,
+    output_order: OutputOrder<'data>,
+    non_addressable_counts: P::NonAddressableCounts,
+    merged_string_start_addresses: MergedStringStartAddresses,
+    thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
+    thunk_landing_pad_addresses: HashMap<SymbolId, u64>,
+    thunk_landing_pads: crate::thunks::LandingPadPlan,
+    gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
+    script_sorted_sections: Vec<InputSortedSection>,
+    partial_link: PartialLinkSingletons,
+}
+
+fn compute_address_layout<'data, P: Platform, A: Arch<Platform = P>>(
+    symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &mut PerSymbolFlags,
+    mut group_states: Vec<GroupState<'data, P>>,
+    mut output_sections: OutputSections<'data, P>,
+    merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+    dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, P>],
+    finalise_sizes_ext: &P::FinaliseSizesExt<'data>,
+    mut script_sorted_sections: Vec<InputSortedSection>,
+    must_keep_sections: OutputSectionMap<bool>,
+    thunk_layout_builder: Option<ThunkLayoutBuilder>,
+    mut symbol_info_printer: SymbolInfoPrinter,
+) -> Result<AddressLayout<'data, P>> {
+    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
+
     let finalise_sizes_resources = FinaliseSizesResources {
-        dynamic_symbol_definitions: &dynamic_symbol_definitions,
-        symbol_db: &symbol_db,
-        merged_strings: &merged_strings,
-        format_specific: &finalise_sizes_ext,
+        dynamic_symbol_definitions,
+        symbol_db,
+        merged_strings,
+        format_specific: finalise_sizes_ext,
         script_sorted_sections: &script_sorted_sections,
     };
 
@@ -215,10 +342,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
-    symbol_info_printer.update(&symbol_db, &atomic_per_symbol_flags);
+    symbol_info_printer.update(symbol_db, &atomic_per_symbol_flags);
     drop(symbol_info_printer);
 
-    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, &symbol_db)?;
+    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db)?;
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
@@ -239,7 +366,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     P::adjust_empty_linker_script_section_flags(
         &linker_scripts,
         &mut output_sections,
-        &gc_outputs.must_keep_sections,
+        &must_keep_sections,
     );
 
     let mut location_counters = Vec::new();
@@ -264,8 +391,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &mut output_sections,
         &output_order,
         &program_segments,
-        &mut per_symbol_flags,
-        gc_outputs.must_keep_sections,
+        per_symbol_flags,
+        must_keep_sections,
         &finalise_sizes_resources,
         partial_link_plan.as_ref(),
     )?;
@@ -277,8 +404,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let thunk_blocks = thunk_layout_builder.map_or_default(|builder| {
         builder.build(
             &mut group_states,
-            &symbol_db,
-            &per_symbol_flags,
+            symbol_db,
+            per_symbol_flags,
             &output_sections,
             &section_part_sizes,
         )
@@ -288,17 +415,17 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &mut group_states,
         &thunk_blocks,
         &mut section_part_sizes,
-        &symbol_db,
+        symbol_db,
     );
 
     let thunk_landing_pads = A::allocate_thunk_landing_pads(
         &thunk_blocks,
         &mut group_states,
         &mut section_part_sizes,
-        &symbol_db,
-        &per_symbol_flags,
+        symbol_db,
+        per_symbol_flags,
         &output_sections,
-        &finalise_sizes_ext,
+        finalise_sizes_ext,
     )?;
 
     let mut memory_regions = HashMap::new();
@@ -339,7 +466,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             &output_sections,
             &program_segments,
             &output_order,
-            &symbol_db,
+            symbol_db,
             &mut memory_regions,
             sizeof_headers,
         )?;
@@ -356,8 +483,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             &output_sections,
             &program_segments,
             &output_order,
-            &symbol_db,
-            &per_symbol_flags,
+            symbol_db,
+            per_symbol_flags,
             &mut memory_regions,
             sizeof_headers,
             &mut resolved_location_counters,
@@ -388,7 +515,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
         &starting_mem_offsets_by_group,
-        &merged_strings,
+        merged_strings,
     );
 
     assign_addresses_to_sorted_sections(
@@ -415,17 +542,17 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let thunk_landing_pad_addresses_out = Mutex::new(HashMap::<SymbolId, u64>::new());
 
     let resources = FinaliseLayoutResources {
-        symbol_db: &symbol_db,
+        symbol_db,
         output_sections: &output_sections,
         output_order: &output_order,
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
-        merged_strings: &merged_strings,
-        per_symbol_flags: &per_symbol_flags,
-        dynamic_symbol_definitions: &dynamic_symbol_definitions,
+        merged_strings,
+        per_symbol_flags,
+        dynamic_symbol_definitions,
         segment_layouts: &segment_layouts,
         program_segments: &program_segments,
-        format_specific: &finalise_sizes_ext,
+        format_specific: finalise_sizes_ext,
         thunk_blocks: &thunk_blocks,
         thunk_block_addresses: &thunk_block_addresses_out,
         thunk_landing_pads: &thunk_landing_pads,
@@ -454,7 +581,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &mut symbol_resolutions.resolutions,
     );
     update_redirect_resolutions(
-        &symbol_db,
+        symbol_db,
         &mut group_layouts,
         &mut symbol_resolutions.resolutions,
         &output_sections,
@@ -464,7 +591,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &memory_regions,
         &resolved_location_counters,
     )?;
-    crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
+    crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db)?;
 
     let thunk_block_addresses = thunk_block_addresses_out
         .into_iter()
@@ -473,15 +600,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let thunk_landing_pad_addresses = thunk_landing_pad_addresses_out.into_inner().unwrap();
 
-    let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
-
-    let num_sections = output_sections.num_sections();
-
     let format_specific =
-        P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
+        P::resolve_layout_ext(finalise_sizes_ext, &symbol_resolutions, &group_layouts)?;
 
-    let mut layout = Layout {
-        symbol_db,
+    Ok(AddressLayout {
+        format_specific,
         symbol_resolutions,
         got_relr_n,
         segment_layouts,
@@ -493,32 +616,14 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         program_segments,
         output_order,
         non_addressable_counts,
-        merged_strings,
         merged_string_start_addresses,
-        has_static_tls: gc_outputs.has_static_tls,
-        has_variant_pcs: gc_outputs.has_variant_pcs,
-        has_textrel: gc_outputs.has_textrel,
-        relocation_statistics,
-        per_symbol_flags,
-        dynamic_symbol_definitions,
-        format_specific,
         thunk_block_addresses,
         thunk_landing_pad_addresses,
         thunk_landing_pads,
-        compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
         script_sorted_sections,
         partial_link,
-        erratum_patches: AtomicU64::new(0),
-        erratum_padding: AtomicU64::new(0),
-    };
-
-    P::apply_post_resolution_adjustments(&mut layout)?;
-    P::maybe_compress_debug_sections::<A>(&mut layout)?;
-    P::maybe_only_keep_debug::<A>(&mut layout)?;
-    P::validate_layout(&layout)?;
-
-    Ok(layout)
+    })
 }
 
 pub(crate) struct FinaliseSizesResources<'data, 'scope, P: Platform> {
@@ -701,7 +806,7 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
         return;
     }
 
-    timing_phase!("Update dynamic symbol resolutions");
+    verbose_timing_phase!("Update dynamic symbol resolutions");
 
     let Some(FileLayout::Epilogue(epilogue)) = layouts.last().and_then(|g| g.files.last()) else {
         panic!("Epilogue should be the last file");
@@ -721,7 +826,7 @@ fn finalise_all_sizes<'data, P: Platform>(
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
 ) -> Result {
-    timing_phase!("Finalise per-object sizes");
+    verbose_timing_phase!("Finalise per-object sizes");
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
@@ -1836,7 +1941,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     pub(crate) section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
+    dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data, P>],
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
     script_sorted_sections: &'scope [InputSortedSection],
@@ -2240,7 +2345,7 @@ fn compute_start_offsets_by_group<P: Platform>(
     group_states: &[GroupState<P>],
     mut mem_offsets: OutputSectionPartMap<u64>,
 ) -> Vec<OutputSectionPartMap<u64>> {
-    timing_phase!("Compute per-group start offsets");
+    verbose_timing_phase!("Compute per-group start offsets");
 
     group_states
         .iter()
@@ -2255,7 +2360,7 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
     resources: &FinaliseLayoutResources<'_, 'data, P>,
     partial_link_plan: Option<&PartialLinkPlan>,
 ) -> Result<Vec<GroupLayout<'data, P>>> {
-    timing_phase!("Assign symbol addresses");
+    verbose_timing_phase!("Assign symbol addresses");
 
     group_states
         .into_par_iter()
@@ -2329,7 +2434,7 @@ fn compute_segment_layout<'data, P: Platform>(
         alignment: Alignment,
     }
 
-    timing_phase!("Compute segment layouts");
+    verbose_timing_phase!("Compute segment layouts");
 
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(program_segments.len());
@@ -2533,7 +2638,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     resources: &FinaliseSizesResources<'data, '_, P>,
     partial_link_plan: Option<&PartialLinkPlan>,
 ) -> Result<TotalSectionSizes<'data, P>> {
-    timing_phase!("Compute total section sizes");
+    verbose_timing_phase!("Compute total section sizes");
 
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
     for group_state in group_states.iter() {
@@ -2661,7 +2766,7 @@ fn propagate_section_attributes<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     output_sections: &mut OutputSections<P>,
 ) {
-    timing_phase!("Propagate section attributes");
+    verbose_timing_phase!("Propagate section attributes");
 
     for group_state in group_states {
         group_state
@@ -2681,7 +2786,7 @@ fn apply_non_addressable_indexes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
 ) -> Result<P::NonAddressableCounts> {
-    timing_phase!("Apply non-addressable indexes");
+    verbose_timing_phase!("Apply non-addressable indexes");
 
     let mut indexes = P::NonAddressableIndexes::new(symbol_db);
 
@@ -2718,7 +2823,7 @@ fn apply_non_addressable_indexes<'data, P: Platform>(
 fn starting_memory_offsets(
     section_layouts: &OutputSectionPartMap<OutputRecordLayout>,
 ) -> OutputSectionPartMap<u64> {
-    timing_phase!("Compute per-alignment offsets");
+    verbose_timing_phase!("Compute per-alignment offsets");
 
     section_layouts.map(|_, rec| rec.mem_offset)
 }
@@ -3162,11 +3267,6 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
             }
             FileLayoutState::Prelude(s) => {
                 PreludeLayoutState::finalise_sizes(common, resources.merged_strings);
-                P::finalise_sizes_prelude(
-                    s,
-                    &mut common.mem_sizes,
-                    resources.dynamic_symbol_definitions,
-                )?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::SyntheticSymbols(s) => {
@@ -5755,7 +5855,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
     output_sections: &OutputSections<'data, P>,
     address_buf: &mut Vec<u64>,
 ) -> (InputSectionPositions, SymbolOutputInfos) {
-    timing_phase!("Compute section and symbol addresses");
+    verbose_timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
@@ -5889,7 +5989,7 @@ fn compute_selected_symbol_addresses<'data, P: Platform>(
     address_buf: &mut Vec<u64>,
     needed_by_group: &[Vec<SymbolId>],
 ) -> (InputSectionPositions, SymbolOutputInfos) {
-    timing_phase!("Compute section and symbol addresses");
+    verbose_timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
     let section_positions =
         compute_input_section_positions(group_states, mem_offsets, symbol_db, output_sections);
@@ -6056,7 +6156,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
     output_sections: &OutputSections<'data, A::Platform>,
     address_buf: &mut Vec<u64>,
 ) -> (u64, RescanCandidates) {
-    timing_phase!("Relaxation scan pass");
+    verbose_timing_phase!("Relaxation scan pass");
 
     let (section_addresses, symbol_infos) = if let Some(rescan) = prev_rescan {
         let needed = collect_needed_relaxation_symbols::<A>(group_states, rescan, symbol_db);
@@ -6237,7 +6337,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     sizeof_headers: u64,
     resolved_location_counters: &mut Vec<ResolvedLocationCounter>,
 ) -> Result {
-    timing_phase!("Iterative relaxation");
+    verbose_timing_phase!("Iterative relaxation");
 
     let mut rescan_sections: Option<RescanSections> = None;
     let mut address_buf = Vec::new();
@@ -6336,7 +6436,7 @@ fn compute_layout_sections<'data, P: Platform>(
         .max()
         .unwrap_or(alignment::MIN);
 
-    timing_phase!("Layout sections");
+    verbose_timing_phase!("Layout sections");
 
     let mut section_layouts = OutputSectionMap::with_size(output_sections.num_sections());
     let section_positions = OnceCell::new();
@@ -6867,7 +6967,7 @@ fn compute_segment_alignments<'data, P: Platform>(
     args: &P::Args,
     output_sections: &OutputSections<P>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
-    timing_phase!("Computing segment alignments");
+    verbose_timing_phase!("Computing segment alignments");
 
     let mut segment_alignments: HashMap<ProgramSegmentId, Alignment> = HashMap::new();
     let mut active_load_segments: Vec<ProgramSegmentId> = Vec::new();

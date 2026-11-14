@@ -33,7 +33,6 @@ use crate::platform::Platform;
 use crate::platform::SectionAttributes as _;
 use crate::resolution;
 use crate::symbol_db::SymbolId;
-use crate::timing_phase;
 use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
@@ -141,7 +140,7 @@ impl ThunkLayoutBuilder {
         output_sections: &OutputSections<P>,
         section_part_sizes: &OutputSectionPartMap<u64>,
     ) -> Vec<ThunkBlock> {
-        timing_phase!("Build thunk layout");
+        verbose_timing_phase!("Build thunk layout");
 
         let non_primary_text_size =
             self.compute_non_primary_text_size(output_sections, section_part_sizes);

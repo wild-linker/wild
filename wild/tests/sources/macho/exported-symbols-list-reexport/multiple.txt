@@ -1,2 +1,3 @@
 _wild_test_reexport_from_dylib
 _wild_test_reexport_second
+_wild_test_reexport_local
