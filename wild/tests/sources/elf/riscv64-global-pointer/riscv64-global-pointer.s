@@ -1,4 +1,5 @@
 /*
+//#ReferenceLinkers: bfd
 //#Arch: riscv64
 //#CompArgs: -march=rv64gc
 //#LinkArgs: -nostdlib -static --no-relax
