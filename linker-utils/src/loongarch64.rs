@@ -18,6 +18,89 @@ use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 use crate::utils::u64_from_slice;
 
+/// `b` / `bl` displace by a signed 28-bit byte offset and require 4-byte alignment. `2^27` itself
+/// is excluded, so the largest positive displacement is `2^27 - 4`.
+pub const B26_MIN: i64 = -(1 << 27);
+pub const B26_MAX: i64 = (1 << 27) - 4;
+
+const PCADDU18I_MASK: u32 = 0xfe00_0000;
+const PCADDU18I_OPCODE: u32 = 0x1e00_0000;
+const JIRL_MASK: u32 = 0xfc00_0000;
+const JIRL_OPCODE: u32 = 0x4c00_0000;
+const B_INSN: u32 = 0x5000_0000;
+const BL_INSN: u32 = 0x5400_0000;
+
+#[inline]
+#[must_use]
+pub fn distance_fits_b26(distance: i64) -> bool {
+    distance & 3 == 0 && (B26_MIN..=B26_MAX).contains(&distance)
+}
+
+/// How far `distance` sits outside the `b`/`bl` window.
+#[must_use]
+pub fn b26_margin(distance: i64) -> u64 {
+    if distance & 3 != 0 {
+        return u64::MAX;
+    }
+    if distance > B26_MAX {
+        (distance - B26_MAX) as u64
+    } else if distance < B26_MIN {
+        (B26_MIN - distance) as u64
+    } else {
+        0
+    }
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let word = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes(word.try_into().unwrap()))
+}
+
+fn is_jirl(insn: u32) -> bool {
+    insn & JIRL_MASK == JIRL_OPCODE
+}
+
+fn is_pcaddu18i(insn: u32) -> bool {
+    insn & PCADDU18I_MASK == PCADDU18I_OPCODE
+}
+
+#[must_use]
+pub fn relaxable_call36_pair(bytes: &[u8], offset: usize) -> bool {
+    let Some(pcaddu18i) = read_u32(bytes, offset) else {
+        return false;
+    };
+    let Some(jirl) = read_u32(bytes, offset + 4) else {
+        return false;
+    };
+    if !is_pcaddu18i(pcaddu18i) || !is_jirl(jirl) {
+        return false;
+    }
+    let scratch = pcaddu18i & 0x1f;
+    let jirl_rj = (jirl >> 5) & 0x1f;
+    let jirl_rd = jirl & 0x1f;
+    scratch == jirl_rj && (jirl_rd == 0 || jirl_rd == 1)
+}
+
+/// Whether the relaxed `call36` should be `bl` rather than `b`.
+#[must_use]
+pub fn call36_becomes_bl(bytes: &[u8], offset: usize) -> bool {
+    let Some(insn) = read_u32(bytes, offset) else {
+        return true;
+    };
+    let rd = if is_jirl(insn) {
+        insn & 0x1f
+    } else if let Some(next) = read_u32(bytes, offset + 4)
+        && is_jirl(next)
+    {
+        next & 0x1f
+    } else {
+        // No `jirl` in range. `call36` writes `$ra`; `tail36` writes some other scratch.
+        insn & 0x1f
+    };
+    rd == 1
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -25,6 +108,9 @@ pub enum RelaxationKind {
 
     /// Replace with nop
     ReplaceWithNop,
+
+    /// Rewrite `pcaddu18i` + `jirl` into `b` or `bl`.
+    Call36ToBranch,
 }
 
 impl RelaxationKind {
@@ -37,12 +123,26 @@ impl RelaxationKind {
                     0x03, 0x40, 0x0, 0x0, // nop
                 ]);
             }
+            RelaxationKind::Call36ToBranch => {
+                if offset + 4 > section_bytes.len() {
+                    return;
+                }
+                let opcode = if call36_becomes_bl(section_bytes, offset) {
+                    BL_INSN
+                } else {
+                    B_INSN
+                };
+                section_bytes[offset..offset + 4].copy_from_slice(&opcode.to_le_bytes());
+            }
         }
     }
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        match self {
+            RelaxationKind::Call36ToBranch => RelocationModifier::SkipNextRelocation,
+            RelaxationKind::NoOp | RelaxationKind::ReplaceWithNop => RelocationModifier::Normal,
+        }
     }
 }
 
