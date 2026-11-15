@@ -1670,7 +1670,7 @@ fn init_priority(name: &[u8]) -> Option<u32> {
 }
 
 pub(crate) fn parse_priority_suffix(suffix: &[u8]) -> Option<u32> {
-    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_uppercase()) {
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_alphabetic()) {
         return None;
     }
 
