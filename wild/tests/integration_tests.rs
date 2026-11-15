@@ -8570,6 +8570,7 @@ fn dynamic_tag_name(
         DT_PREINIT_ARRAY => "DT_PREINIT_ARRAY",
         DT_PREINIT_ARRAYSZ => "DT_PREINIT_ARRAYSZ",
         DT_FLAGS_1 => "DT_FLAGS_1",
+        DT_GNU_FLAGS_1 => "DT_GNU_FLAGS_1",
         DT_GNU_HASH => "DT_GNU_HASH",
         // TODO: Use the constants from `object` once available.
         DynamicTag(0x70000000) if architecture == object::Architecture::X86_64 => "DT_X86_64_PLT",
@@ -8585,8 +8586,6 @@ fn dynamic_tag_name(
         DT_VERDEFNUM => "DT_VERDEFNUM",
         DT_VERNEED => "DT_VERNEED",
         DT_VERNEEDNUM => "DT_VERNEEDNUM",
-        // TODO: DT_GNU_FLAGS_1 once added to `object`
-        object::elf::DynamicTag(0x6ffffdf4) => "DT_GNU_FLAGS_1",
         _ => return None,
     })
 }
