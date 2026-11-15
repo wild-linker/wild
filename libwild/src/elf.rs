@@ -181,7 +181,7 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
             linker.link_for_arch::<Elf64, crate::elf_aarch64::ElfAArch64>(args)
         }
         crate::arch::Architecture::RiscV64 => {
-            linker.link_for_arch::<Elf64, crate::elf_riscv64::ElfRiscV64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_riscv::ElfRiscV64>(args)
         }
         crate::arch::Architecture::LoongArch64 => {
             linker.link_for_arch::<Elf64, crate::elf_loongarch64::ElfLoongArch64>(args)

@@ -21,10 +21,10 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
-use linker_utils::riscv64::JAL_RANGE;
-use linker_utils::riscv64::RelaxationKind;
-use linker_utils::riscv64::distance_fits_jal;
-use linker_utils::riscv64::relocation_type_from_raw;
+use linker_utils::riscv::JAL_RANGE;
+use linker_utils::riscv::RelaxationKind;
+use linker_utils::riscv::distance_fits_jal;
+use linker_utils::riscv::relocation_type_from_raw;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
 
@@ -60,7 +60,7 @@ impl crate::platform::Arch for ElfRiscV64 {
 
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
-        linker_utils::riscv64::relocation_type_from_raw(r_type).with_context(|| {
+        linker_utils::riscv::relocation_type_from_raw(r_type).with_context(|| {
             format!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
