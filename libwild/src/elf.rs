@@ -1363,11 +1363,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         // The .riscv.attributes section is non-alloc but is expected to be put into a
         // RISCV_ATTRIBUTES segment.
-        let primary_info = output_sections.output_info(merge_target);
         if [sht::NOTE, sht::RISCV_ATTRIBUTES].contains(&section_info.section_attributes.ty) {
-        } else if !section_flags.is_alloc()
-            && (primary_info.phdrs.is_empty() || primary_info.phdrs == [b"NONE"])
-        {
+        } else if !section_flags.is_alloc() {
             return Ok(());
         } else {
             // All segments should only cover sections that are allocated and have a non-zero
@@ -2865,7 +2862,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                         )
                     })?;
                     let entry = &mut segment_entries[segment.as_usize()];
-                    if entry.ptype == pt::LOAD.0 && !info.section_attributes.is_alloc() {
+                    if !info.section_attributes.is_alloc() {
                         continue;
                     }
                     entry.is_emitted = true;
@@ -2904,7 +2901,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 };
                 let seg_idx = id.as_usize();
                 let entry = segment_entries[seg_idx];
-                if entry.ptype == pt::LOAD.0 && !info.section_attributes.is_alloc() {
+                if !info.section_attributes.is_alloc() {
                     continue;
                 }
                 if entry.ptype == pt::LOAD.0 && first_load.is_none() {

@@ -2444,7 +2444,7 @@ fn compute_segment_layout<'data, P: Platform>(
                         }
 
                         if !section_flags.is_alloc()
-                            && program_segments.is_load_segment(rec.segment_id)
+                            && Some(section_id) != P::RISCV_ATTRIBUTES_SECTION_ID
                         {
                             continue;
                         }
