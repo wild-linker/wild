@@ -1,4 +1,5 @@
 use crate::bail;
+use crate::elf::ElfClass;
 use crate::error::Result;
 use object::elf::EM_AARCH64;
 use object::elf::EM_LOONGARCH;
@@ -17,17 +18,19 @@ pub(crate) enum Architecture {
     Unsupported,
 }
 
-impl TryFrom<object::elf::Machine> for Architecture {
-    type Error = crate::error::Error;
-
-    fn try_from(arch: object::elf::Machine) -> Result<Self, Self::Error> {
-        match arch {
-            EM_X86_64 => Ok(Self::X86_64),
-            EM_AARCH64 => Ok(Self::AArch64),
-            EM_RISCV => Ok(Self::RiscV64),
-            EM_LOONGARCH => Ok(Self::LoongArch64),
-            EM_PPC64 => Ok(Self::Ppc64),
-            _ => bail!("Unsupported architecture: 0x{:x}", arch),
+impl Architecture {
+    pub(crate) fn new<C: ElfClass>(machine: object::elf::Machine) -> Result<Self> {
+        if C::ADDRESS_SIZE == 8 {
+            match machine {
+                EM_X86_64 => Ok(Self::X86_64),
+                EM_AARCH64 => Ok(Self::AArch64),
+                EM_RISCV => Ok(Self::RiscV64),
+                EM_LOONGARCH => Ok(Self::LoongArch64),
+                EM_PPC64 => Ok(Self::Ppc64),
+                _ => bail!("Unsupported 64-bit architecture: 0x{:x}", machine),
+            }
+        } else {
+            bail!("Unsupported architecture: 0x{:x}", machine)
         }
     }
 }
