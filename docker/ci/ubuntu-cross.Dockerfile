@@ -10,6 +10,7 @@ RUN eatmydata apt-get update \
         binutils-mingw-w64-x86-64 \
         binutils-powerpc64le-linux-gnu \
         binutils-riscv64-linux-gnu \
+        clang-18 \
         g++-aarch64-linux-gnu \
         g++-loongarch64-linux-gnu \
         g++-mingw-w64-x86-64 \
@@ -20,6 +21,8 @@ RUN eatmydata apt-get update \
         gcc-mingw-w64-x86-64 \
         gcc-powerpc64le-linux-gnu \
         gcc-riscv64-linux-gnu \
+        lld-18 \
+        llvm-18-dev \
         qemu-user \
         wine64 \
     && apt-get clean \
