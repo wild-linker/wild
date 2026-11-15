@@ -79,6 +79,7 @@ pub struct WasmArgs {
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
     pub(crate) import_undefined: bool,
+    pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definition: bool,
     pub(crate) strip_debug: bool,
     pub(crate) strip_all: bool,
@@ -123,6 +124,10 @@ impl WasmArgs {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+
+    pub(crate) fn report_unresolved_symbols(&self) -> bool {
+        self.error_unresolved_symbols && !self.allow_undefined
+    }
 }
 
 impl Default for WasmArgs {
@@ -155,6 +160,7 @@ impl Default for WasmArgs {
             gc_sections: true,
             allow_undefined: false,
             import_undefined: false,
+            error_unresolved_symbols: true,
             allow_multiple_definition: false,
             strip_debug: false,
             strip_all: false,
@@ -615,6 +621,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Turn undefined symbols into imports where possible")
         .execute(|args, _modifier_stack| {
             args.import_undefined = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("error-unresolved-symbols")
+        .help("Report unresolved symbols as errors")
+        .execute(|args, _modifier_stack| {
+            args.error_unresolved_symbols = true;
             Ok(())
         });
 

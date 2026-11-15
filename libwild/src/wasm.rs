@@ -3330,7 +3330,7 @@ fn report_disallowed_unresolved_imports<'data>(
     resolutions: &[ObjectImportResolutions],
     symbol_db: &SymbolDb<'data, Wasm>,
 ) -> Result {
-    if symbol_db.args.allow_undefined {
+    if !symbol_db.args.report_unresolved_symbols() {
         return Ok(());
     }
 
@@ -4316,7 +4316,7 @@ fn scan_layout_relocations(
 ) -> Result<LayoutRelocScan> {
     timing_phase!("Scan Wasm layout relocations");
 
-    let check_undefined_data = !symbol_db.args.allow_undefined;
+    let check_undefined_data = symbol_db.args.report_unresolved_symbols();
     let object_scans: Vec<Result<ObjectRelocScan>> = layout_inputs
         .par_iter()
         .map(|input| scan_object_layout_relocations(input, symbol_db, check_undefined_data))
