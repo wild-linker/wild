@@ -1,6 +1,6 @@
 PHDRS {
-    text PT_LOAD FILEHDR PHDRS;
-    data PT_LOAD;
+    text PT_LOAD FLAGS(5) FILEHDR PHDRS;
+    data PT_LOAD FLAGS(6);
 }
 
 SECTIONS {
