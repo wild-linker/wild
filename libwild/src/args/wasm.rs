@@ -84,6 +84,7 @@ pub struct WasmArgs {
     pub(crate) strip_all: bool,
     /// Section names passed to `--keep-section`.
     pub(crate) keep_sections: Vec<String>,
+    pub(crate) soname: Option<String>,
 }
 
 impl WasmArgs {
@@ -110,6 +111,17 @@ impl WasmArgs {
     /// `.debug_*` and other custom sections are not preserved by this list.
     pub(crate) fn emit_stripped_section(&self, name: &str) -> bool {
         !self.strip_all || self.keep_sections.iter().any(|kept| kept == name)
+    }
+
+    pub(crate) fn module_name(&self) -> String {
+        if let Some(name) = &self.soname {
+            return name.clone();
+        }
+        self.common
+            .output
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -147,6 +159,7 @@ impl Default for WasmArgs {
             strip_debug: false,
             strip_all: false,
             keep_sections: Vec::new(),
+            soname: None,
         }
     }
 }
@@ -264,6 +277,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .execute(|args, _modifier_stack, value| {
             args.common_mut().save_dir.handle_output(value);
             args.common.output = Arc::from(Path::new(value));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("soname")
+        .help("Set the module name in the generated name section")
+        .execute(|args, _modifier_stack, value| {
+            // An empty value is unset. The name section then uses the output filename.
+            args.soname = (!value.is_empty()).then(|| value.to_owned());
             Ok(())
         });
 

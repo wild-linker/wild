@@ -1390,6 +1390,8 @@ pub(crate) enum WasmGotMemSource<'data> {
 
 #[derive(Debug, Default)]
 pub(crate) struct WasmNameInputs<'data> {
+    // `--soname` when set, otherwise the output filename.
+    pub(crate) module_name: String,
     pub(crate) demangle: bool,
     pub(crate) memory_base_global: Option<u32>,
     pub(crate) table_base_global: Option<u32>,
@@ -6005,6 +6007,7 @@ fn wasm_name_inputs<'data>(
     got_func: &GotFunc,
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     demangle: bool,
+    module_name: String,
 ) -> WasmNameInputs<'data> {
     let got_mem_sources = got_mem
         .entries
@@ -6038,6 +6041,7 @@ fn wasm_name_inputs<'data>(
         })
         .collect();
     WasmNameInputs {
+        module_name,
         demangle,
         memory_base_global: indices.memory_base_global,
         table_base_global: indices.table_base_global,
@@ -6778,6 +6782,7 @@ where
             got_func,
             &layout_inputs,
             symbol_db.args.common().demangle,
+            symbol_db.args.module_name(),
         );
     }
     layout.target_feature_inputs = layout_inputs

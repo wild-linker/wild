@@ -150,6 +150,9 @@
 //!   initial=N: Asserts the table minimum.
 //!   max=N: Asserts the table maximum.
 //!   max=none: Asserts the table has no maximum.
+//!
+//! ExpectModuleName:{name} (Wasm) Asserts the `name` section's module name. `$OUTPUT` is the
+//! output file's filename, which is used when `--soname` is omitted or empty.
 
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
@@ -1173,6 +1176,62 @@ impl WasmModuleInfo {
             table.initial
         );
         Ok(())
+    }
+
+    fn read_module_name(&self) -> Result<Option<String>> {
+        for payload in wasmparser::Parser::new(0).parse_all(&self.bytes) {
+            let wasmparser::Payload::CustomSection(reader) =
+                payload.with_context(|| format!("Invalid Wasm module {}", self.path.display()))?
+            else {
+                continue;
+            };
+            if reader.name() != "name" {
+                continue;
+            }
+            let wasmparser::KnownCustom::Name(names) = reader.as_known() else {
+                bail!(
+                    "Custom section `name` in {} is not a name section",
+                    self.path.display()
+                );
+            };
+            for subsection in names {
+                let subsection = subsection
+                    .with_context(|| format!("Invalid name section in {}", self.path.display()))?;
+                if let wasmparser::Name::Module { name, .. } = subsection {
+                    return Ok(Some(name.to_owned()));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn ensure_module_name(
+        &self,
+        expected: Option<&ExpectedModuleName>,
+        linker_name: &str,
+    ) -> Result {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let expected_name = match expected {
+            ExpectedModuleName::Literal(name) => name.as_str(),
+            ExpectedModuleName::OutputFileName => self
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("Wasm output path has no UTF-8 filename")?,
+        };
+        match self.read_module_name()? {
+            Some(name) if name == expected_name => Ok(()),
+            Some(name) => bail!(
+                "Expected module name `{expected_name}` in {linker_name} output ({}), found `{name}`",
+                self.path.display()
+            ),
+            None => bail!(
+                "Expected module name `{expected_name}` in {linker_name} output ({}), found none",
+                self.path.display()
+            ),
+        }
     }
 }
 
@@ -2305,6 +2364,8 @@ struct Assertions {
     expected_func_type_count: Option<usize>,
     /// Wasm: required maximum of the single defined funcref table.
     expected_table_maximum: Option<ExpectedTableMaximum>,
+    /// Wasm: required `name` section module name.
+    expected_module_name: Option<ExpectedModuleName>,
 
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
@@ -2336,6 +2397,13 @@ struct ExpectedSectionBytes {
     section_name: String,
     expected_bytes: Vec<u8>,
     match_range: Option<Range<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExpectedModuleName {
+    Literal(String),
+    /// The output file's filename.
+    OutputFileName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3129,6 +3197,22 @@ fn process_directive(
                 "Duplicate ExpectTable"
             );
             config.assertions.expected_table_maximum = Some(maximum);
+        }
+        "ExpectModuleName" => {
+            ensure!(
+                config.assertions.expected_module_name.is_none(),
+                "Duplicate ExpectModuleName"
+            );
+            let name = arg.trim();
+            config.assertions.expected_module_name = Some(if name == "$OUTPUT" {
+                ExpectedModuleName::OutputFileName
+            } else {
+                ensure!(
+                    !name.is_empty(),
+                    "ExpectModuleName requires a name or $OUTPUT"
+                );
+                ExpectedModuleName::Literal(name.to_owned())
+            });
         }
         "ExpectTableImport" => {
             // module/name [initial=<n>,max=<n>|none]
@@ -6273,6 +6357,7 @@ impl Assertions {
             expected_table_import: self.expected_table_import.clone(),
             expected_func_type_count: self.expected_func_type_count,
             expected_table_maximum: self.expected_table_maximum,
+            expected_module_name: self.expected_module_name.clone(),
             ..Default::default()
         };
         ensure!(
@@ -6309,6 +6394,7 @@ impl Assertions {
         info.ensure_memory_import(self.expected_memory_import.as_ref(), linker_name)?;
         info.ensure_table_import(self.expected_table_import.as_ref(), linker_name)?;
         info.ensure_table(self.expected_table_maximum, linker_name)?;
+        info.ensure_module_name(self.expected_module_name.as_ref(), linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
