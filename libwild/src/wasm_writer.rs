@@ -639,6 +639,9 @@ pub(crate) fn build_import_section(imports: &[OutputImport<'_>]) -> Result<Impor
             OutputImportEntity::Memory(ty) => {
                 wasm_encoder::EntityType::Memory(convert_memory_type(ty))
             }
+            OutputImportEntity::Table(ty) => {
+                wasm_encoder::EntityType::Table(convert_table_type(ty)?)
+            }
         };
         section.import(import.module, import.name, entity);
     }
@@ -670,18 +673,7 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
 pub(crate) fn build_table_section(tables: &[wasmparser::TableType]) -> Result<TableSection> {
     let mut section = TableSection::new();
     for &table in tables {
-        ensure!(
-            table.element_type.is_func_ref(),
-            "only funcref tables are supported (got {:?})",
-            table.element_type
-        );
-        section.table(wasm_encoder::TableType {
-            element_type: wasm_encoder::RefType::FUNCREF,
-            minimum: table.initial,
-            maximum: table.maximum,
-            table64: table.table64,
-            shared: table.shared,
-        });
+        section.table(convert_table_type(table)?);
     }
     Ok(section)
 }
@@ -730,6 +722,7 @@ pub(crate) enum OutputImportEntity {
     Function { type_index: u32 },
     Global(wasmparser::GlobalType),
     Memory(wasmparser::MemoryType),
+    Table(wasmparser::TableType),
 }
 
 #[derive(Debug, Clone)]
@@ -772,6 +765,21 @@ fn convert_global_type(t: wasmparser::GlobalType) -> Result<wasm_encoder::Global
         val_type: convert_val_type(t.content_type)?,
         mutable: t.mutable,
         shared: t.shared,
+    })
+}
+
+fn convert_table_type(table: wasmparser::TableType) -> Result<wasm_encoder::TableType> {
+    ensure!(
+        table.element_type.is_func_ref(),
+        "only funcref tables are supported (got {:?})",
+        table.element_type
+    );
+    Ok(wasm_encoder::TableType {
+        element_type: wasm_encoder::RefType::FUNCREF,
+        minimum: table.initial,
+        maximum: table.maximum,
+        table64: table.table64,
+        shared: table.shared,
     })
 }
 
@@ -1062,7 +1070,7 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
                     set_name_first_wins(&mut global_names, next_global_import, import.name);
                     next_global_import += 1;
                 }
-                OutputImportEntity::Memory(_) => {}
+                OutputImportEntity::Memory(_) | OutputImportEntity::Table(_) => {}
             }
         }
 

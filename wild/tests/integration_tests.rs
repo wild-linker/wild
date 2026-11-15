@@ -144,6 +144,12 @@
 //!
 //! ExpectTable:max=initial|max=none (Wasm) Asserts the output has one defined funcref table.
 //! max=initial requires its maximum to equal its initial size. max=none requires no maximum.
+//!
+//! ExpectTableImport:{module}/{name} [properties] (Wasm) Asserts the output imports exactly one
+//! funcref table, with this module and field name. Optional comma-separated properties:
+//!   initial=N: Asserts the table minimum.
+//!   max=N: Asserts the table maximum.
+//!   max=none: Asserts the table has no maximum.
 
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
@@ -667,6 +673,7 @@ struct WasmModuleInfo {
     memories: Vec<wasmparser::MemoryType>,
     memory_imports: Vec<(String, String, wasmparser::MemoryType)>,
     tables: Vec<wasmparser::TableType>,
+    table_imports: Vec<(String, String, wasmparser::TableType)>,
 }
 
 fn i32_const_from_expr(expr: &wasmparser::ConstExpr<'_>) -> Option<i32> {
@@ -695,6 +702,7 @@ impl WasmModuleInfo {
         let mut memories = Vec::new();
         let mut memory_imports = Vec::new();
         let mut tables = Vec::new();
+        let mut table_imports = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -736,6 +744,13 @@ impl WasmModuleInfo {
                                 import.module.to_owned(),
                                 import.name.to_owned(),
                                 memory,
+                            ));
+                        }
+                        if let wasmparser::TypeRef::Table(table) = import.ty {
+                            table_imports.push((
+                                import.module.to_owned(),
+                                import.name.to_owned(),
+                                table,
                             ));
                         }
                     }
@@ -819,6 +834,7 @@ impl WasmModuleInfo {
             memories,
             memory_imports,
             tables,
+            table_imports,
         })
     }
 
@@ -1037,6 +1053,64 @@ impl WasmModuleInfo {
                 actual.maximum == Some(max),
                 "Expected memory import `{}/{}` max={max} page(s) in {linker_name} output ({}), \
                  found max={:?}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.maximum
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_table_import(
+        &self,
+        expected: Option<&ExpectedTableImport>,
+        linker_name: &str,
+    ) -> Result {
+        let Some(exp) = expected else {
+            return Ok(());
+        };
+        ensure!(
+            self.table_imports.len() == 1,
+            "Expected exactly one table import `{}/{}` in {linker_name} output ({}), found {}",
+            exp.module,
+            exp.name,
+            self.path.display(),
+            self.table_imports.len()
+        );
+        let (module, name, actual) = &self.table_imports[0];
+        ensure!(
+            module == &exp.module && name == &exp.name,
+            "Expected table import `{}/{}` in {linker_name} output ({}), found `{module}/{name}`",
+            exp.module,
+            exp.name,
+            self.path.display()
+        );
+        ensure!(
+            actual.element_type.is_func_ref() && !actual.shared && !actual.table64,
+            "Expected a funcref table import in {linker_name} output ({}), found {actual:?}",
+            self.path.display()
+        );
+        if let Some(initial) = exp.assertions.initial {
+            ensure!(
+                actual.initial == initial,
+                "Expected table import `{}/{}` initial={initial} in {linker_name} output ({}), \
+                 found {}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.initial
+            );
+        }
+        if let Some(max) = exp.assertions.max {
+            let expected_max = match max {
+                TableImportMax::None => None,
+                TableImportMax::Limit(limit) => Some(limit),
+            };
+            ensure!(
+                actual.maximum == expected_max,
+                "Expected table import `{}/{}` max={expected_max:?} in {linker_name} output ({}), \
+                 found {:?}",
                 exp.module,
                 exp.name,
                 self.path.display(),
@@ -2225,6 +2299,8 @@ struct Assertions {
     expect_shared_memory: bool,
     /// Wasm: require the linear memory to be imported as `module/name`.
     expected_memory_import: Option<ExpectedMemoryImport>,
+    /// Wasm: require exactly one funcref table import.
+    expected_table_import: Option<ExpectedTableImport>,
     /// Wasm: total number of function types in the type section.
     expected_func_type_count: Option<usize>,
     /// Wasm: required maximum of the single defined funcref table.
@@ -2275,6 +2351,62 @@ struct ExpectedMemoryImport {
     module: String,
     name: String,
     assertions: MemoryImportAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedTableImport {
+    module: String,
+    name: String,
+    assertions: TableImportAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TableImportAssertions {
+    initial: Option<u64>,
+    max: Option<TableImportMax>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableImportMax {
+    None,
+    Limit(u64),
+}
+
+impl TableImportAssertions {
+    fn parse(props: &str) -> Result<Self> {
+        let mut assertions = Self::default();
+        if props.is_empty() {
+            return Ok(assertions);
+        }
+        for prop in props.split(',') {
+            let prop = prop.trim();
+            if prop.is_empty() {
+                continue;
+            }
+            let (key, value) = prop.split_once('=').with_context(|| {
+                format!("ExpectTableImport property requires key=value, got `{prop}`")
+            })?;
+            match key.trim() {
+                "initial" => {
+                    assertions.initial =
+                        Some(value.trim().parse().with_context(|| {
+                            format!("Invalid ExpectTableImport initial `{value}`")
+                        })?);
+                }
+                "max" => {
+                    assertions.max =
+                        Some(match value.trim() {
+                            "none" => TableImportMax::None,
+                            other => TableImportMax::Limit(other.parse().with_context(|| {
+                                format!("Invalid ExpectTableImport max `{other}`")
+                            })?),
+                        });
+                }
+                other => bail!("Unknown ExpectTableImport property `{other}`"),
+            }
+        }
+        Ok(assertions)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2997,6 +3129,26 @@ fn process_directive(
                 "Duplicate ExpectTable"
             );
             config.assertions.expected_table_maximum = Some(maximum);
+        }
+        "ExpectTableImport" => {
+            // module/name [initial=<n>,max=<n>|none]
+            let arg = arg.trim();
+            let (path, props) = arg
+                .split_once(char::is_whitespace)
+                .map(|(path, props)| (path, props.trim()))
+                .map_or((arg, ""), |(path, props)| (path, props.trim()));
+            let (module, name) = path
+                .split_once('/')
+                .with_context(|| format!("ExpectTableImport requires module/name, got `{arg}`"))?;
+            ensure!(
+                config.assertions.expected_table_import.is_none(),
+                "Duplicate ExpectTableImport"
+            );
+            config.assertions.expected_table_import = Some(ExpectedTableImport {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                assertions: TableImportAssertions::parse(props)?,
+            });
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -6118,6 +6270,7 @@ impl Assertions {
             expected_func_import_count: self.expected_func_import_count,
             expect_shared_memory: self.expect_shared_memory,
             expected_memory_import: self.expected_memory_import.clone(),
+            expected_table_import: self.expected_table_import.clone(),
             expected_func_type_count: self.expected_func_type_count,
             expected_table_maximum: self.expected_table_maximum,
             ..Default::default()
@@ -6154,6 +6307,7 @@ impl Assertions {
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
         info.ensure_memory_import(self.expected_memory_import.as_ref(), linker_name)?;
+        info.ensure_table_import(self.expected_table_import.as_ref(), linker_name)?;
         info.ensure_table(self.expected_table_maximum, linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
