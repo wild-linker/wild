@@ -1,21 +1,27 @@
 ARG BASE_IMAGE=ghcr.io/wild-linker/wild/ci-ubuntu-amd64:latest
 FROM ${BASE_IMAGE}
 
+ENV WINESERVER=/usr/lib/x86_64-linux-gnu/wine/wineserver
+
 RUN eatmydata apt-get update \
     && eatmydata apt-get -y install \
         binutils-aarch64-linux-gnu \
         binutils-loongarch64-linux-gnu \
+        binutils-mingw-w64-x86-64 \
         binutils-powerpc64le-linux-gnu \
         binutils-riscv64-linux-gnu \
         g++-aarch64-linux-gnu \
         g++-loongarch64-linux-gnu \
+        g++-mingw-w64-x86-64 \
         g++-powerpc64le-linux-gnu \
         g++-riscv64-linux-gnu \
         gcc-aarch64-linux-gnu \
         gcc-loongarch64-linux-gnu \
+        gcc-mingw-w64-x86-64 \
         gcc-powerpc64le-linux-gnu \
         gcc-riscv64-linux-gnu \
         qemu-user \
+        wine64 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
