@@ -858,7 +858,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &layout::Layout<'data, Self>,
-    ) -> Result {
+    ) -> Result<F::Output> {
         if layout.has_textrel {
             let args = layout.args();
             match args.text_relocation_mode {

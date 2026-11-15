@@ -547,7 +547,7 @@ pub(crate) trait Platform:
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &Layout<'data, Self>,
-    ) -> Result;
+    ) -> Result<F::Output>;
 
     fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
         _layout: &mut Layout<'data, Self>,

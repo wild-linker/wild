@@ -46,11 +46,11 @@ impl OutputFileData for Output {
         &mut self.bytes
     }
 
-    fn finish(self) -> Result {
+    fn finish_writing(&mut self) -> Result {
         self.file_system.outputs.lock().unwrap().insert(
-            self.path,
+            self.path.clone(),
             BufferedFile {
-                bytes: self.bytes,
+                bytes: std::mem::take(&mut self.bytes),
                 executable: true,
             },
         );

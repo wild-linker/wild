@@ -21,4 +21,8 @@
 //#LinkArgs:-shared
 //#WildExtraLinkArgs:--threads=2
 
+//#Config:executable-replace:default
+//#LinkArgs:-static
+//#WildExtraLinkArgs:--no-update-in-place
+
 void _start(void) {}
