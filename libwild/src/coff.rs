@@ -1653,7 +1653,6 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
     SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
     // TODO: This sets `keep`; verify if that's correct
-    // TODO: This sets `keep`; verify if that's correct
     // Unlike BFD, LLD merges them into RDATA for tighter packing (by avoiding .CRT section), we
     // follow that.
     SectionRule::prefix_section_sort(".CRT$".as_bytes(), output_section_id::RDATA),
