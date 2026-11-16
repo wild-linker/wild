@@ -2,8 +2,6 @@
 // GNU ld's default script defines:
 //   __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800,
 //                           MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800))
-// Each config sizes .data/.bss so that a different term wins. _start exits with 42 if
-// __global_pointer$ is at the expected location.
 
 //#AbstractConfig:default
 //#ReferenceLinkers: bfd
