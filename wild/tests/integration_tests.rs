@@ -224,7 +224,9 @@
 //!
 //! ExpectError:{error regex} Verifies that the link fails and that the error message matches the
 //! specified regex. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
-//! times - all must match.
+//! times - all must match. Runs the linker on the real filesystem twice: with no output file, which
+//! must remain absent, and with a pre-existing output file, which must be removed or left
+//! unchanged.
 //!
 //! ExpectMessage:{message regex} Verifies that the linker prints the message matching the specified
 //! regex to stdout. May be specified multiple times - all must match.
@@ -2218,6 +2220,7 @@ impl Config {
     fn can_use_wild_in_process(&self) -> bool {
         self.linker_env.is_empty()
             && self.linker_working_directory.is_none()
+            && !self.should_error
             && !self.test_update_in_place
             && !self.test_hard_links
             && !self.test_output_to_dev_null
@@ -5236,10 +5239,14 @@ impl Linker {
             cross_arch,
             true,
         )?;
-        let messages = if command.can_skip() {
+        let messages = if !config.should_error && command.can_skip() {
             command.read_messages()?
         } else {
-            let messages = command.run_with_output_reuse(config)?;
+            let messages = if config.should_error {
+                command.run_expecting_error(config)?
+            } else {
+                command.run_with_output_reuse(config)?
+            };
             command.write_messages(&messages)?;
             command.write_input_hashes()?;
             messages
@@ -5625,7 +5632,13 @@ impl LinkCommand {
             output_path: output_path.to_owned(),
         };
 
-        if config.platform == PlatformKind::Elf {
+        if config.platform == PlatformKind::Elf
+            && !link_command.command.get_args().any(|arg| {
+                arg.to_string_lossy()
+                    .split(',')
+                    .any(|arg| arg == "--dependency-file" || arg.starts_with("--dependency-file="))
+            })
+        {
             link_command
                 .command
                 .arg(invocation_mode.format_arg(&format!(
@@ -5682,6 +5695,37 @@ impl LinkCommand {
             stdout: String::new(),
             stderr: warnings.clone(),
         })
+    }
+
+    fn run_expecting_error(&mut self, config: &Config) -> Result<LinkerMessages> {
+        match std::fs::remove_file(&self.output_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        self.run(config)?;
+        match std::fs::symlink_metadata(&self.output_path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => bail!("Failed link left a new output file behind. {self}"),
+        }
+
+        let previous_output = b"previous linker output\n";
+        std::fs::write(&self.output_path, previous_output)?;
+        let messages = self.run(config)?;
+        match std::fs::symlink_metadata(&self.output_path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(metadata) => {
+                ensure!(
+                    metadata.is_file() && std::fs::read(&self.output_path)? == previous_output,
+                    "Failed link modified the pre-existing output without removing it. {self}",
+                );
+                std::fs::remove_file(&self.output_path)?;
+            }
+        }
+        Ok(messages)
     }
 
     // Retaining identical files avoids repeated macOS virus scans for links using the OS

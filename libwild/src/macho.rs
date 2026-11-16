@@ -1362,7 +1362,7 @@ impl platform::Platform for MachO {
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &crate::layout::Layout<'data, Self>,
-    ) -> Result {
+    ) -> Result<F::Output> {
         output.write(layout, macho_writer::write::<A>)
     }
 

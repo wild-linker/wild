@@ -7465,7 +7465,7 @@ impl platform::Platform for Wasm {
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &crate::layout::Layout<'data, Self>,
-    ) -> crate::error::Result {
+    ) -> crate::error::Result<F::Output> {
         output.write(layout, crate::wasm_writer::write::<A>)
     }
 

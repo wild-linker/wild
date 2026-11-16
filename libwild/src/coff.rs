@@ -323,7 +323,7 @@ impl Platform for Coff {
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &layout::Layout<'data, Self>,
-    ) -> Result {
+    ) -> Result<F::Output> {
         output.write(layout, coff_writer::write::<A>)
     }
 

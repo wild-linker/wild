@@ -74,8 +74,17 @@ pub trait OutputFileData: Send {
     /// Returns the output buffer for random-access writing.
     fn bytes_mut(&mut self) -> &mut [u8];
 
-    /// Persist the bytes and apply final file attributes.
-    fn finish(self) -> Result;
+    /// Persist the bytes, release writable mappings and apply final file attributes. Keep failure
+    /// cleanup armed until `commit` is called. The byte buffer is no longer used after this call.
+    fn finish_writing(&mut self) -> Result;
+
+    /// Keep the finished output after the entire link has succeeded. Implementations that clean up
+    /// abandoned outputs on drop should disarm that cleanup here.
+    fn commit(self)
+    where
+        Self: Sized,
+    {
+    }
 
     /// Invalidate any OS caches that may have observed partially written output.
     fn invalidate(&mut self, _len: usize) {}
@@ -126,7 +135,7 @@ pub trait OutputFileData: Send {
 ///         &mut self.bytes
 ///     }
 ///
-///     fn finish(mut self) -> libwild::error::Result {
+///     fn finish_writing(&mut self) -> libwild::error::Result {
 ///         let data = mem::take(&mut self.bytes);
 ///         self.files
 ///             .lock()
@@ -335,6 +344,7 @@ pub struct OsOutputFile {
     file: File,
     buffer: OsOutputBuffer,
     path: Arc<Path>,
+    cleanup_on_drop: bool,
 }
 
 impl OutputFileData for OsOutputFile {
@@ -352,12 +362,15 @@ impl OutputFileData for OsOutputFile {
         }
     }
 
-    fn finish(mut self) -> Result {
-        if let OsOutputBuffer::InMemory(bytes) = &self.buffer {
+    fn finish_writing(&mut self) -> Result {
+        let buffer = std::mem::replace(&mut self.buffer, OsOutputBuffer::InMemory(Vec::new()));
+        if let OsOutputBuffer::InMemory(bytes) = &buffer {
             self.file
                 .write_all(bytes)
                 .with_context(|| format!("Failed to write to {}", self.path.display()))?;
         }
+
+        drop(buffer);
 
         // Making the file executable is best-effort only. For example if we're writing to a pipe or
         // something, it isn't going to work and that's OK.
@@ -366,9 +379,49 @@ impl OutputFileData for OsOutputFile {
         Ok(())
     }
 
+    fn commit(mut self) {
+        self.cleanup_on_drop = false;
+    }
+
     fn invalidate(&mut self, len: usize) {
         if let OsOutputBuffer::Mmap(output) = &mut self.buffer {
             crate::host::fs::invalidate_mapped_output(output, len);
+        }
+    }
+}
+
+impl OsOutputFile {
+    fn remove_failed_output(&self) -> Result {
+        let metadata = self.file.metadata()?;
+        if !metadata.is_file() {
+            return Ok(());
+        }
+
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(path_metadata) if path_metadata.is_file() => {
+                std::fs::remove_file(&self.path).context("Failed to remove output")?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Failed to stat output for cleanup"),
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OsOutputFile {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop {
+            // Ensure any mmap is dropped first.
+            self.buffer = OsOutputBuffer::InMemory(Vec::new());
+
+            if let Err(error) = self.remove_failed_output() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "wild: failed to clean up `{}`: {error:?}",
+                    self.path.display()
+                );
+            }
         }
     }
 }
@@ -428,55 +481,54 @@ impl FileSystem for OsFileSystem {
     }
 
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output> {
-        let mut open_options = std::fs::OpenOptions::new();
+        // Replacement options apply only to regular files. In particular, never replace a device
+        // node or a symlink to one, even when --no-update-in-place was explicitly requested.
+        let replacement_mode = if std::fs::metadata(&path).is_ok_and(|meta| !meta.is_file()) {
+            FileReplacementMode::UpdateInPlace
+        } else {
+            options.file_replacement_mode
+        };
 
-        match options.file_replacement_mode {
-            FileReplacementMode::UnlinkAndReplace => {
-                delete_old_output(&path);
-                open_options.truncate(true);
-            }
-            FileReplacementMode::UpdateInPlace | FileReplacementMode::UpdateInPlaceWithFallback => {
-                open_options.truncate(false);
-            }
-        }
-
-        let file = match open_options.read(true).write(true).create(true).open(&path) {
-            Ok(file) => file,
-            Err(error) => {
-                // Retry open operation with UnlinkAndReplace if it's an ETXTBSY error and
-                // falllback is permitted.
-                if error.kind() == ErrorKind::ExecutableFileBusy
-                    && matches!(
-                        options.file_replacement_mode,
-                        FileReplacementMode::UpdateInPlaceWithFallback
-                    )
+        let (file, created) = if replacement_mode == FileReplacementMode::UnlinkAndReplace {
+            delete_old_output(&path)?;
+            (create_new_output(&path)?, true)
+        } else {
+            match open_output(&path) {
+                Ok(opened) => opened,
+                Err(error)
+                    if error.kind() == ErrorKind::ExecutableFileBusy
+                        && replacement_mode == FileReplacementMode::UpdateInPlaceWithFallback =>
                 {
-                    // If the file is being executed, we can't modify it, but we can delete it.
-                    unlink_and_recreate(&path)?
-                } else {
+                    (unlink_and_recreate(&path)?, true)
+                }
+                Err(error) => {
                     return Err(error)
                         .with_context(|| format!("Failed to open `{}`", path.display()));
                 }
             }
         };
 
-        let file =
-            if options.file_replacement_mode == FileReplacementMode::UpdateInPlaceWithFallback {
-                let metadata = file
-                    .metadata()
-                    .with_context(|| format!("Failed to stat output `{}`", path.display()))?;
+        let mut output = OsOutputFile {
+            file,
+            buffer: OsOutputBuffer::InMemory(Vec::new()),
+            path,
+            cleanup_on_drop: created,
+        };
 
-                if metadata.is_file() && crate::host::fs::may_have_multiple_links(&metadata) {
-                    drop(file);
-                    unlink_and_recreate(&path)?
-                } else {
-                    file
-                }
-            } else {
-                file
-            };
+        if replacement_mode == FileReplacementMode::UpdateInPlaceWithFallback {
+            let metadata = output
+                .file
+                .metadata()
+                .with_context(|| format!("Failed to stat output `{}`", output.path.display()))?;
+            if metadata.is_file() && crate::host::fs::may_have_multiple_links(&metadata) {
+                output.file = unlink_and_recreate(&output.path)?;
+                output.cleanup_on_drop = true;
+            }
+        }
 
-        let defaults = OutputFileDefaults::for_file(&file);
+        let file = &output.file;
+        let path = &output.path;
+        let defaults = OutputFileDefaults::for_file(file);
 
         let fallocate = options.fallocate.unwrap_or(defaults.fallocate);
         let huge_pages_required = options.madvise_huge_pages == Some(true);
@@ -489,10 +541,11 @@ impl FileSystem for OsFileSystem {
             bail!("--madvise-huge-pages requires mmapped output file");
         }
 
+        output.cleanup_on_drop = true;
         let set_len_result = file.set_len(options.size);
 
         if fallocate
-            && let Err(error) = crate::host::fs::preallocate(&file, options.size)
+            && let Err(error) = crate::host::fs::preallocate(file, options.size)
             && options.fallocate.is_some()
         {
             return Err(error).with_context(|| format!("Failed to fallocate `{}`", path.display()));
@@ -503,7 +556,7 @@ impl FileSystem for OsFileSystem {
                 // For some types of output file (e.g. character devices) we can't mmap, so we try
                 // to mmap the file and if it fails, fall back to non-mmapped output.
                 match set_len_result {
-                    Ok(()) => match unsafe { MmapOptions::new().map_mut(&file) } {
+                    Ok(()) => match unsafe { MmapOptions::new().map_mut(file) } {
                         Ok(mmap) => {
                             if let Err(error) =
                                 advise_huge_pages_if_requested(&mmap, madvise_huge_pages)
@@ -543,7 +596,8 @@ impl FileSystem for OsFileSystem {
             }
         };
 
-        Ok(OsOutputFile { file, buffer, path })
+        output.buffer = buffer;
+        Ok(output)
     }
 
     fn write_auxiliary(&self, path: &Path, bytes: &[u8]) -> Result {
@@ -553,32 +607,62 @@ impl FileSystem for OsFileSystem {
     }
 }
 
-fn delete_old_output(path: &Path) {
-    if rayon::current_num_threads() > 1 {
+fn delete_old_output(path: &Path) -> Result {
+    let result = if rayon::current_num_threads() > 1 {
         let renamed_old_file = path.with_extension("delete");
-        if std::fs::rename(path, &renamed_old_file).is_ok() {
+        std::fs::rename(path, &renamed_old_file).map(|()| {
             // Unlinking large files can be slow, so continue linking while it's deleted.
             rayon::spawn(move || {
                 crate::verbose_timing_phase!("Delete old output");
                 let _ = std::fs::remove_file(renamed_old_file);
             });
-        }
+        })
     } else {
         crate::timing_phase!("Delete old output");
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to remove output `{}`", path.display()))
+        }
     }
 }
 
-fn unlink_and_recreate(path: &Path) -> Result<File> {
-    std::fs::remove_file(path)
-        .with_context(|| format!("Failed to unlink output `{}`", path.display()))?;
+fn open_output(path: &Path) -> std::io::Result<(File, bool)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    match options.create_new(true).open(path) {
+        Ok(file) => Ok((file, true)),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            options.create_new(false);
+            match options.open(path) {
+                Ok(file) => Ok((file, false)),
+                // Follow a dangling symlink.
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    options.create(true).open(path).map(|file| (file, true))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
 
+fn create_new_output(path: &Path) -> Result<File> {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .open(path)
-        .with_context(|| format!("Failed to recreate output `{}`", path.display()))
+        .with_context(|| format!("Failed to create output `{}`", path.display()))
+}
+
+fn unlink_and_recreate(path: &Path) -> Result<File> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("Failed to unlink output `{}`", path.display()))?;
+    create_new_output(path)
 }
 
 fn advise_huge_pages_if_requested(mmap: &memmap2::MmapMut, requested: bool) -> Result {
