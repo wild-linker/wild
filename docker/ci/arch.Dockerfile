@@ -10,6 +10,7 @@ RUN pacman --noconfirm -Syu \
         curl \
         git \
         lld \
+        llvm \
         qemu-user \
         aarch64-linux-gnu-gcc \
         riscv64-linux-gnu-gcc \
