@@ -299,31 +299,39 @@ impl<F: FileSystem> Linker<F> {
 
         file_loader.verify_inputs_unchanged()?;
 
-        // Write the dependency file and inputs trace after successful linking.
-        if result.is_ok() {
-            if let Some(dep_file_path) = &args.dependency_file() {
-                write_dependency_file(
-                    self.file_system.as_ref(),
-                    dep_file_path,
-                    args.output(),
-                    &file_loader.loaded_files,
+        let (result, output) = result?;
+
+        if let Some(dep_file_path) = &args.dependency_file() {
+            write_dependency_file(
+                self.file_system.as_ref(),
+                dep_file_path,
+                args.output(),
+                &file_loader.loaded_files,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to write dependency file `{}`",
+                    dep_file_path.display()
                 )
-                .with_context(|| {
-                    format!(
-                        "Failed to write dependency file `{}`",
-                        dep_file_path.display()
-                    )
-                })?;
-            }
-            if args.should_write_trace_file() {
-                let mut buf = BufWriter::new(std::io::stdout());
-                for input in &file_loader.loaded_files {
-                    writeln!(buf, "{}", input.filename.display())?;
-                }
+            })?;
+        }
+
+        if args.should_write_trace_file() {
+            let mut buf = BufWriter::new(std::io::stdout());
+            for input in &file_loader.loaded_files {
+                writeln!(buf, "{}", input.filename.display())?;
             }
         }
 
-        result
+        output.commit();
+
+        diff::maybe_diff()?;
+
+        // We've finished linking. We consider everything from this point onwards as shutdown.
+        let (g1, g2) = timing_guard!("Shutdown");
+        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
+
+        Ok(result)
     }
 
     pub fn file_system(&self) -> &F {
@@ -334,7 +342,7 @@ impl<F: FileSystem> Linker<F> {
         &'data self,
         file_loader: &mut FileLoader<'data, F>,
         args: &'data P::Args,
-    ) -> error::Result<LinkerOutput<'data>> {
+    ) -> error::Result<(LinkerOutput<'data>, F::Output)> {
         let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
 
         let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
@@ -428,23 +436,20 @@ impl<F: FileSystem> Linker<F> {
         let layout =
             layout::compute::<P, A>(symbol_db, per_symbol_flags, resolved, output_sections)?;
 
-        P::write_output_file::<A, F>(&output, &layout)?;
-        diff::maybe_diff()?;
-
-        // We've finished linking. We consider everything from this point onwards as shutdown.
-        let (g1, g2) = timing_guard!("Shutdown");
-        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
-
+        let output_file = P::write_output_file::<A, F>(&output, &layout)?;
         let input_file_data = file_loader
             .loaded_files
             .iter()
             .filter_map(|file| Some(file.storage()? as &dyn InputFileData))
             .collect();
 
-        Ok(LinkerOutput {
-            layout: Some(Box::new(layout)),
-            input_file_data,
-        })
+        Ok((
+            LinkerOutput {
+                layout: Some(Box::new(layout)),
+                input_file_data,
+            },
+            output_file,
+        ))
     }
 }
 

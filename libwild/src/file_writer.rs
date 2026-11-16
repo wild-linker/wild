@@ -55,8 +55,9 @@ impl<O: OutputFileData> OutputBuffer<O> {
         self.0.invalidate(len);
     }
 
-    fn finish(self) -> Result {
-        self.0.finish()
+    fn finish_writing(mut self) -> Result<O> {
+        self.0.finish_writing()?;
+        Ok(self.0)
     }
 }
 
@@ -108,7 +109,7 @@ impl<F: FileSystem> Output<F> {
         &self,
         layout: &'layout Layout<'data, P>,
         write_fn: impl FnOnce(&mut SizedOutput<F::Output>, &'layout Layout<'data, P>) -> Result,
-    ) -> Result {
+    ) -> Result<F::Output> {
         timing_phase!("Write output file");
         if layout.args().common().write_layout {
             write_layout(layout, self.file_system.as_ref())?;
@@ -121,10 +122,8 @@ impl<F: FileSystem> Output<F> {
         // unusable, so we can't really say that we've finished writing it until we've unmapped it.
         {
             timing_phase!("Flush and unmap output file");
-            sized_output.flush()?;
+            sized_output.flush()
         }
-
-        Ok(())
     }
 
     fn create_file(&self, file_size: u64) -> Result<SizedOutput<F::Output>> {
@@ -178,8 +177,8 @@ impl<O: OutputFileData> SizedOutput<O> {
         })
     }
 
-    fn flush(self) -> Result {
-        self.out.finish()
+    fn flush(self) -> Result<O> {
+        self.out.finish_writing()
     }
 }
 
