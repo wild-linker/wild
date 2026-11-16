@@ -29,11 +29,17 @@ impl Arch for LoongArch64 {
     const MAX_RELAX_MODIFY_AFTER: u64 = 4;
 
     fn possible_relaxations_do(
-        _r_type: Self::RType,
+        r_type: Self::RType,
         _section_kind: object::SectionKind,
-        _cb: impl FnMut(crate::arch::Relaxation<Self>),
+        mut cb: impl FnMut(crate::arch::Relaxation<Self>),
     ) {
-        // TODO: Implement relaxation for LoongArch64
+        if r_type.0 == object::elf::R_LARCH_CALL36 {
+            cb(Relaxation {
+                relaxation_kind: RelaxationKind::Call36ToBranch,
+                new_r_type: RType(object::elf::R_LARCH_B26),
+                alt_r_type: None,
+            });
+        }
     }
 
     fn relaxation_byte_range(_relaxation: Relaxation<Self>) -> RelaxationByteRange {
