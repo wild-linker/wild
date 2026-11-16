@@ -2828,7 +2828,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         let mut segments_map = HashMap::new();
         let mut ordered_sections = Vec::new();
-        let mut ordered_phdrs = Vec::new();
         let mut segment_entries = Vec::new();
 
         let mut num_phdrs = 0;
@@ -2883,16 +2882,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 segments_map.insert(phdr.name, id);
             }
 
-            let mut prev_phdrs = Vec::new();
+            let mut prev_phdrs: &[&[u8]] = &[];
             for id in &script.parsed.ordered_sections {
                 let info = output_sections.section_infos.get(*id);
                 if !info.phdrs.is_empty() {
-                    prev_phdrs = info.phdrs.clone();
+                    prev_phdrs = &info.phdrs;
                 }
                 let phdrs = if !info.phdrs.is_empty() {
                     info.phdrs.as_slice()
                 } else if info.section_attributes.is_alloc() {
-                    prev_phdrs.as_slice()
+                    prev_phdrs
                 } else {
                     &[]
                 };
@@ -2927,8 +2926,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                         Self::get_segment_flags_for_section(&info.section_attributes.flags);
                     builder.get_segment_mut(*segment).segment_flags |= SegmentFlags(entry.flags);
                 }
-                ordered_sections.push(*id);
-                ordered_phdrs.push(phdrs.to_vec());
+                ordered_sections.push((*id, phdrs));
             }
         }
 
@@ -2939,9 +2937,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let mut first_rw: Option<ProgramSegmentId> = None;
         let mut first_ro: Option<ProgramSegmentId> = None;
 
-        for (pos, id) in ordered_sections.iter().enumerate() {
-            let info = output_sections.section_infos.get(*id);
-            for &phdr_name in &ordered_phdrs[pos] {
+        for (pos, &(id, phdrs)) in ordered_sections.iter().enumerate() {
+            let info = output_sections.section_infos.get(id);
+            for &phdr_name in phdrs {
                 let Some(id) = segments_map.get(phdr_name) else {
                     continue;
                 };
@@ -2998,9 +2996,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         builder.set_custom_phdrs_include_headers(has_headers);
 
-        for (pos, section_id) in ordered_sections.iter().enumerate() {
-            let section_id = *section_id;
-
+        for (pos, &(section_id, _)) in ordered_sections.iter().enumerate() {
             if pos == 0 {
                 let mut header_events = Vec::new();
 
