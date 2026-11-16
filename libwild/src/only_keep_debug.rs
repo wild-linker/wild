@@ -5,7 +5,6 @@ use crate::elf;
 use crate::elf::ElfClass;
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::output_section_id::OrderEvent;
 use crate::platform::Platform;
 use crate::platform::SectionFlags as _;
 use crate::timing_phase;
@@ -71,10 +70,7 @@ fn zero_alloc_section_sizes<C: ElfClass>(layout: &mut Layout<elf::Elf<C>>) {
 fn compact_file_layout<P: Platform>(layout: &mut Layout<P>) -> Result {
     let mut file_offset = 0usize;
 
-    for event in &layout.output_order {
-        let OrderEvent::Section(section_id) = event else {
-            continue;
-        };
+    for &section_id in layout.output_order.file_order() {
         let has_file_data = section_id
             .parts::<P>()
             .any(|part_id| layout.section_part_layouts.get(part_id).file_size > 0);
