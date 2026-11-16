@@ -22,6 +22,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
             "powerpc:common64",
             ["powerpc64le-linux-gnu-objdump", "objdump"],
         ),
+        ArchKind::RiscV32 => ("riscv:rv32", ["riscv64-linux-gnu-objdump", "objdump"]),
     };
 
     let objdump = objdump_bin_candidates

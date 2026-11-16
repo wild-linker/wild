@@ -189,6 +189,9 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
         crate::arch::Architecture::Ppc64 => {
             linker.link_for_arch::<Elf64, crate::elf_ppc64::ElfPpc64>(args)
         }
+        crate::arch::Architecture::RiscV32 => {
+            linker.link_for_arch::<Elf32, crate::elf_riscv::ElfRiscV32>(args)
+        }
         crate::arch::Architecture::Unsupported => {
             bail!(
                 "No default target architecture known for host platform. \
@@ -326,11 +329,11 @@ type SymbolTable<'data, C> = object::read::elf::SymbolTable<'data, FileHeader<C>
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf<C: ElfClass>(PhantomData<C>);
 
+pub(crate) type Elf32 = Elf<Class32>;
 pub(crate) type File32<'data> = File<'data, Class32>;
 
 pub(crate) type Elf64 = Elf<Class64>;
 pub(crate) type File64<'data> = File<'data, Class64>;
-pub(crate) type RelocationList64<'data> = RelocationList<'data, Class64>;
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -1423,7 +1426,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 *keep = !args.nmagic;
             }
             if segment_def.segment_type == pt::RISCV_ATTRIBUTES
-                && args.architecture() != Architecture::RiscV64
+                && !matches!(
+                    args.architecture(),
+                    Architecture::RiscV64 | Architecture::RiscV32
+                )
             {
                 *keep = false;
             }
@@ -6002,8 +6008,8 @@ pub(crate) fn process_aarch64_build_attributes(
     Ok(attributes)
 }
 
-pub(crate) fn process_riscv_attributes(
-    object: &File64,
+pub(crate) fn process_riscv_attributes<C: ElfClass>(
+    object: &File<C>,
     riscv_attributes_section_index: object::SectionIndex,
 ) -> Result<Vec<RiscVAttribute>> {
     let section = object.section(riscv_attributes_section_index)?;

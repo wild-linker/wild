@@ -1,6 +1,7 @@
 use crate::ArchKind;
 use crate::Result;
 use crate::arch::Arch;
+use crate::arch::Class;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
@@ -15,15 +16,20 @@ use linker_utils::riscv::RelaxationKind;
 use linker_utils::utils::u32_from_slice;
 use std::fmt::Display;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct RiscV64;
+pub(crate) type RiscV64 = RiscV<crate::arch::Class64>;
+pub(crate) type RiscV32 = RiscV<crate::arch::Class32>;
 
-impl Arch for RiscV64 {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct RiscV<C: Class>(std::marker::PhantomData<C>);
+
+impl<C: Class> Arch for RiscV<C> {
     type RType = RType;
 
     type RelaxationKind = RelaxationKind;
 
     type RawInstruction = Option<String>;
+
+    type Class = C;
 
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
     const MAX_RELAX_MODIFY_AFTER: u64 = 4;

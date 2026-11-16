@@ -21,7 +21,19 @@ pub(crate) enum ArchKind {
     RiscV64,
     LoongArch64,
     Ppc64,
+    RiscV32,
 }
+
+pub(crate) trait Class: Copy + Eq + std::fmt::Debug + 'static {}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct Class64;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct Class32;
+
+impl Class for Class64 {}
+impl Class for Class32 {}
 
 /// Provides architecture-specific functionality needed by linker-diff.
 pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
@@ -33,6 +45,8 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
 
     /// A type representing a decoded instruction on this architecture.
     type RawInstruction: Clone;
+
+    type Class: Class;
 
     /// The maximum number of bytes prior to a relocation offset that a relaxation might modify.
     const MAX_RELAX_MODIFY_BEFORE: u64;
@@ -299,6 +313,13 @@ impl ArchKind {
                     object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
                     object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
                     object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
+                    other => bail!("Unsupported ELF architecture {other}"),
+                }
+            }
+            object::File::Elf32(file) => {
+                let e = file.endian();
+                match file.elf_header().e_machine(e) {
+                    object::elf::EM_RISCV => Ok(ArchKind::RiscV32),
                     other => bail!("Unsupported ELF architecture {other}"),
                 }
             }

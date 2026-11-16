@@ -15,6 +15,7 @@ pub(crate) enum Architecture {
     RiscV64,
     LoongArch64,
     Ppc64,
+    RiscV32,
     Unsupported,
 }
 
@@ -30,7 +31,10 @@ impl Architecture {
                 _ => bail!("Unsupported 64-bit architecture: 0x{:x}", machine),
             }
         } else {
-            bail!("Unsupported architecture: 0x{:x}", machine)
+            match machine {
+                EM_RISCV => Ok(Self::RiscV32),
+                _ => bail!("Unsupported 32-bit architecture: 0x{:x}", machine),
+            }
         }
     }
 }
@@ -43,6 +47,7 @@ impl Display for Architecture {
             Architecture::RiscV64 => "riscv64",
             Architecture::LoongArch64 => "loongarch64",
             Architecture::Ppc64 => "ppc64",
+            Architecture::RiscV32 => "riscv32",
             Architecture::Unsupported => "unsupported",
         };
         write!(f, "{arch}")
@@ -51,20 +56,24 @@ impl Display for Architecture {
 
 impl Architecture {
     pub(crate) fn parse_output_format(format: &[u8]) -> Self {
-        let Some(format) = format.strip_prefix(b"elf64-") else {
-            return Self::Unsupported;
-        };
-
-        match format {
-            b"x86-64" => Self::X86_64,
-            b"aarch64" | b"littleaarch64" => Self::AArch64,
-            b"littleriscv" => Self::RiscV64,
-            b"loongarch" => Self::LoongArch64,
-            b"powerpcle" => Self::Ppc64,
-            _ => Self::Unsupported,
+        if let Some(format) = format.strip_prefix(b"elf64-") {
+            match format {
+                b"x86-64" => Self::X86_64,
+                b"aarch64" | b"littleaarch64" => Self::AArch64,
+                b"littleriscv" => Self::RiscV64,
+                b"loongarch" => Self::LoongArch64,
+                b"powerpcle" => Self::Ppc64,
+                _ => Self::Unsupported,
+            }
+        } else if let Some(format) = format.strip_prefix(b"elf32-") {
+            match format {
+                b"littleriscv" => Self::RiscV32,
+                _ => Self::Unsupported,
+            }
+        } else {
+            Self::Unsupported
         }
     }
 }
 
-pub(crate) const SUPPORTED_TARGETS: &str =
-    "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle pe-x86-64";
+pub(crate) const SUPPORTED_TARGETS: &str = "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle pe-x86-64 elf32-littleriscv";

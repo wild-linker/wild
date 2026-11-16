@@ -318,7 +318,7 @@ impl Config {
                 .into_iter()
                 .map(ToOwned::to_owned),
             ),
-            ArchKind::RiscV64 => self.ignore.extend(
+            ArchKind::RiscV64 | ArchKind::RiscV32 => self.ignore.extend(
                 [
                     // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
@@ -701,6 +701,10 @@ impl Report {
             }
             ArchKind::Ppc64 => {
                 self.report_arch_specific_diffs::<crate::ppc64::Ppc64>(objects);
+            }
+            ArchKind::RiscV32 => {
+                self.report_arch_specific_diffs::<crate::riscv::RiscV32>(objects);
+                riscv_attributes::report_diffs(self, objects);
             }
         }
     }
