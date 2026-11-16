@@ -72,12 +72,13 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
           platforms: ${{ matrix.platform }}
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=inline' || '' }}
 
       - name: Export base image
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
@@ -173,11 +174,12 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
           platforms: ${{ matrix.platform }}
           build-args: |
             BASE_IMAGE=${{ matrix.base_image }}
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=inline' || '' }}
