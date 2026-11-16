@@ -639,6 +639,9 @@ pub(crate) fn build_import_section(imports: &[OutputImport<'_>]) -> Result<Impor
             OutputImportEntity::Memory(ty) => {
                 wasm_encoder::EntityType::Memory(convert_memory_type(ty))
             }
+            OutputImportEntity::Table(ty) => {
+                wasm_encoder::EntityType::Table(convert_table_type(ty)?)
+            }
         };
         section.import(import.module, import.name, entity);
     }
@@ -670,18 +673,7 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
 pub(crate) fn build_table_section(tables: &[wasmparser::TableType]) -> Result<TableSection> {
     let mut section = TableSection::new();
     for &table in tables {
-        ensure!(
-            table.element_type.is_func_ref(),
-            "only funcref tables are supported (got {:?})",
-            table.element_type
-        );
-        section.table(wasm_encoder::TableType {
-            element_type: wasm_encoder::RefType::FUNCREF,
-            minimum: table.initial,
-            maximum: table.maximum,
-            table64: table.table64,
-            shared: table.shared,
-        });
+        section.table(convert_table_type(table)?);
     }
     Ok(section)
 }
@@ -730,6 +722,7 @@ pub(crate) enum OutputImportEntity {
     Function { type_index: u32 },
     Global(wasmparser::GlobalType),
     Memory(wasmparser::MemoryType),
+    Table(wasmparser::TableType),
 }
 
 #[derive(Debug, Clone)]
@@ -772,6 +765,21 @@ fn convert_global_type(t: wasmparser::GlobalType) -> Result<wasm_encoder::Global
         val_type: convert_val_type(t.content_type)?,
         mutable: t.mutable,
         shared: t.shared,
+    })
+}
+
+fn convert_table_type(table: wasmparser::TableType) -> Result<wasm_encoder::TableType> {
+    ensure!(
+        table.element_type.is_func_ref(),
+        "only funcref tables are supported (got {:?})",
+        table.element_type
+    );
+    Ok(wasm_encoder::TableType {
+        element_type: wasm_encoder::RefType::FUNCREF,
+        minimum: table.initial,
+        maximum: table.maximum,
+        table64: table.table64,
+        shared: table.shared,
     })
 }
 
@@ -1062,7 +1070,7 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
                     set_name_first_wins(&mut global_names, next_global_import, import.name);
                     next_global_import += 1;
                 }
-                OutputImportEntity::Memory(_) => {}
+                OutputImportEntity::Memory(_) | OutputImportEntity::Table(_) => {}
             }
         }
 
@@ -1202,7 +1210,7 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
 
     let function_entries = collect_name_entries(&function_names, names.demangle);
     let global_entries = collect_name_entries(&global_names, names.demangle);
-    encode_name_custom_section(function_entries, global_entries)
+    encode_name_custom_section(&names.module_name, function_entries, global_entries)
 }
 
 fn set_name_first_wins<'a>(names: &mut Vec<Option<&'a str>>, index: u32, name: &'a str) {
@@ -1285,7 +1293,13 @@ fn name_subsection_len(count: u32, entries_len: usize) -> usize {
     1 + uleb128_size(payload as u64) + payload
 }
 
+fn module_name_subsection_len(name_len: usize) -> usize {
+    let payload = uleb128_size(name_len as u64) + name_len;
+    1 + uleb128_size(payload as u64) + payload
+}
+
 fn encode_name_custom_section(
+    module_name: &str,
     function_entries: Option<NameEntries<'_>>,
     global_entries: Option<NameEntries<'_>>,
 ) -> Option<Vec<u8>> {
@@ -1294,7 +1308,7 @@ fn encode_name_custom_section(
     }
     timing_phase!("Encode Wasm name custom section");
 
-    let mut content_len = uleb128_size(4) + 4;
+    let mut content_len = uleb128_size(4) + 4 + module_name_subsection_len(module_name.len());
     if let Some(entries) = &function_entries {
         content_len += name_subsection_len(entries.count, entries.entries_len);
     }
@@ -1310,6 +1324,7 @@ fn encode_name_custom_section(
     pos += write_uleb128(&mut out[pos..], 4);
     out[pos..pos + 4].copy_from_slice(b"name");
     pos += 4;
+    pos = write_module_name_subsection(&mut out, pos, module_name);
     if let Some(entries) = function_entries {
         pos = write_name_subsection(&mut out, pos, 1, entries);
     }
@@ -1318,6 +1333,17 @@ fn encode_name_custom_section(
     }
     debug_assert_eq!(pos, out.len());
     Some(out)
+}
+
+fn write_module_name_subsection(out: &mut [u8], mut pos: usize, name: &str) -> usize {
+    let payload = uleb128_size(name.len() as u64) + name.len();
+    out[pos] = 0;
+    pos += 1;
+    pos += write_uleb128(&mut out[pos..], payload as u64);
+    pos += write_uleb128(&mut out[pos..], name.len() as u64);
+    let name_len = name.len();
+    out[pos..pos + name_len].copy_from_slice(name.as_bytes());
+    pos + name_len
 }
 
 fn write_name_subsection(

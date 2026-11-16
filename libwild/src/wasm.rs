@@ -150,8 +150,11 @@ pub(crate) mod output_section_id {
 /// Size of a `[Option<u32>; _]` lookup indexed by a standard section id through `data_count`.
 pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = object::wasm::SEC_DATA_COUNT.0 as usize + 1;
 
-/// Export name of the indirect function table (`--export-table`).
+/// Name of the indirect function table (`--export-table` / `--import-table`).
 const INDIRECT_FUNCTION_TABLE_NAME: &str = "__indirect_function_table";
+
+/// Module the indirect function table is imported from (`--import-table`).
+const TABLE_IMPORT_MODULE: &str = "env";
 
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
@@ -1387,6 +1390,8 @@ pub(crate) enum WasmGotMemSource<'data> {
 
 #[derive(Debug, Default)]
 pub(crate) struct WasmNameInputs<'data> {
+    // `--soname` when set, otherwise the output filename.
+    pub(crate) module_name: String,
     pub(crate) demangle: bool,
     pub(crate) memory_base_global: Option<u32>,
     pub(crate) table_base_global: Option<u32>,
@@ -1434,7 +1439,7 @@ pub(crate) fn count_output_imports(layout: &WasmLayout<'_>) -> (usize, usize) {
         match import.entity {
             OutputImportEntity::Function { .. } => functions += 1,
             OutputImportEntity::Global(_) => globals += 1,
-            OutputImportEntity::Memory(_) => {}
+            OutputImportEntity::Memory(_) | OutputImportEntity::Table(_) => {}
         }
     }
     (functions, globals)
@@ -6002,6 +6007,7 @@ fn wasm_name_inputs<'data>(
     got_func: &GotFunc,
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     demangle: bool,
+    module_name: String,
 ) -> WasmNameInputs<'data> {
     let got_mem_sources = got_mem
         .entries
@@ -6035,6 +6041,7 @@ fn wasm_name_inputs<'data>(
         })
         .collect();
     WasmNameInputs {
+        module_name,
         demangle,
         memory_base_global: indices.memory_base_global,
         table_base_global: indices.table_base_global,
@@ -6267,6 +6274,10 @@ where
     'data: 'files,
 {
     timing_phase!("Build Wasm module layout");
+
+    if symbol_db.args.import_table && symbol_db.args.export_table {
+        bail!("--import-table and --export-table may not be used together");
+    }
 
     let mut layout_inputs = {
         timing_phase!("Collect Wasm object layout inputs");
@@ -6748,6 +6759,7 @@ where
             reloc_scan.needs_table || symbol_db.args.export_table,
             &weak_undef_funcs,
             symbol_db.args.growable_table,
+            symbol_db.args.import_table,
         )?;
         if symbol_db.args.export_table {
             ensure!(
@@ -6770,6 +6782,7 @@ where
             got_func,
             &layout_inputs,
             symbol_db.args.common().demangle,
+            symbol_db.args.module_name(),
         );
     }
     layout.target_feature_inputs = layout_inputs
@@ -6822,6 +6835,7 @@ fn finalize_indirect_function_table(
     needs_table: bool,
     weak_undef_funcs: &HashSet<u32>,
     growable_table: bool,
+    import_table: bool,
 ) -> Result {
     if !needs_table {
         return Ok(());
@@ -6901,17 +6915,42 @@ fn finalize_indirect_function_table(
         }
     }
 
-    layout.tables = vec![wasmparser::TableType {
+    let maximum = if import_table || growable_table {
+        None
+    } else {
+        Some(initial)
+    };
+    let table = wasmparser::TableType {
         element_type: wasmparser::RefType::FUNCREF,
         initial,
-        maximum: (!growable_table).then_some(initial),
+        maximum,
         shared: false,
         table64: false,
-    }];
+    };
     layout.element_functions = element_functions;
     layout.function_table_slots = slots_by_func;
+    if import_table {
+        import_indirect_function_table(layout, table);
+    } else {
+        layout.tables = vec![table];
+    }
 
     Ok(())
+}
+
+/// Imports the indirect function table as `env.__indirect_function_table`.
+fn import_indirect_function_table(layout: &mut WasmLayout<'_>, table: wasmparser::TableType) {
+    let import = OutputImport {
+        module: TABLE_IMPORT_MODULE,
+        name: INDIRECT_FUNCTION_TABLE_NAME,
+        entity: OutputImportEntity::Table(table),
+    };
+    let insert_at = layout
+        .imports
+        .iter()
+        .position(|existing| !matches!(existing.entity, OutputImportEntity::Memory(_)))
+        .unwrap_or(layout.imports.len());
+    layout.imports.insert(insert_at, import);
 }
 
 fn is_memory_addr_relocation(ty: object::wasm::RelocationType) -> bool {

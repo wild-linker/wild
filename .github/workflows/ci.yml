@@ -36,6 +36,8 @@ jobs:
           - runs-on: ubuntu-24.04
             container: ci-ubuntu-cross-amd64
             cross: all
+            features: coff
+            test-timeout: 60 # Wine can take a while to initialise
           - runs-on: ubuntu-24.04
             container: ci-arch-cross-amd64
             cross: aarch64,riscv64
@@ -55,7 +57,7 @@ jobs:
 
     container:
       # Note: when updating this image hash, update the other occurrences in this file too.
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-993be45b65504d8ffb8a972460f4d73f04447827
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-ff76baf211234df5954d0e0d536578202ad9acd8
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -76,15 +78,17 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
-      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace -- --skip wasm/
+      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace --features '${{ matrix.features }}' -- --skip wasm/
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
+        env:
+          WILD_TEST_TIMEOUT: ${{ matrix.test-timeout || 10 }}
 
   external-tests:
     name: Test Linux (external tests)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-993be45b65504d8ffb8a972460f4d73f04447827"
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -122,7 +126,7 @@ jobs:
             target: powerpc64le-unknown-linux-gnu
             config: .cargo/config.toml.cross-ppc64le
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-993be45b65504d8ffb8a972460f4d73f04447827
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
     steps:
       - uses: actions/checkout@v7
         with:
@@ -146,7 +150,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-993be45b65504d8ffb8a972460f4d73f04447827
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
     steps:
       - name: Setup Wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
@@ -177,7 +181,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-993be45b65504d8ffb8a972460f4d73f04447827
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
     steps:
       - uses: actions/checkout@v7
         with:
@@ -252,7 +256,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-993be45b65504d8ffb8a972460f4d73f04447827
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
     steps:
       - uses: actions/checkout@v7
         with:

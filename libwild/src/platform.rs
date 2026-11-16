@@ -444,7 +444,6 @@ pub(crate) trait Platform:
     const EH_FRAME_SECTION_ID: Option<OutputSectionId> = None;
     const NOTE_GNU_PROPERTY_SECTION_ID: Option<OutputSectionId> = None;
     const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> = None;
-    const GOT_RELR_SECTION_ID: Option<OutputSectionId> = None;
     const GNU_VERSION_SECTION_ID: Option<OutputSectionId> = None;
     const COMMENT_SECTION_ID: Option<OutputSectionId> = None;
     const INTERP_SECTION_ID: Option<OutputSectionId> = None;
@@ -980,7 +979,7 @@ pub(crate) trait Platform:
     ) -> bool;
 
     /// Given the name of an init/fini section, returns the sort priority, if any.
-    fn init_section_priority(_name: &[u8]) -> Option<u16> {
+    fn init_section_priority(_name: &[u8]) -> Option<u32> {
         None
     }
 

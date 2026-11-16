@@ -220,7 +220,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let AddressLayout {
         format_specific: address_layout_ext,
         symbol_resolutions,
-        got_relr_n,
         segment_layouts,
         section_part_layouts,
         section_layouts,
@@ -247,7 +246,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut layout = Layout {
         symbol_db,
         symbol_resolutions,
-        got_relr_n,
         segment_layouts,
         section_part_layouts,
         section_layouts,
@@ -289,7 +287,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 struct AddressLayout<'data, P: Platform> {
     format_specific: P::AddressLayoutExt,
     symbol_resolutions: SymbolResolutions<P>,
-    got_relr_n: u64,
     segment_layouts: SegmentLayouts,
     section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     section_layouts: OutputSectionMap<OutputRecordLayout>,
@@ -396,10 +393,6 @@ fn compute_address_layout<'data, P: Platform, A: Arch<Platform = P>>(
         &finalise_sizes_resources,
         partial_link_plan.as_ref(),
     )?;
-
-    let got_relr_n = A::Platform::GOT_RELR_SECTION_ID
-        .and_then(A::Platform::single_part_id)
-        .map_or(0, |part_id| section_part_sizes.get(part_id) / 8);
 
     let thunk_blocks = thunk_layout_builder.map_or_default(|builder| {
         builder.build(
@@ -606,7 +599,6 @@ fn compute_address_layout<'data, P: Platform, A: Arch<Platform = P>>(
     Ok(AddressLayout {
         format_specific,
         symbol_resolutions,
-        got_relr_n,
         segment_layouts,
         section_part_layouts,
         section_layouts,
@@ -969,7 +961,6 @@ pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
 pub struct Layout<'data, P: Platform> {
     pub(crate) symbol_db: SymbolDb<'data, P>,
     pub(crate) symbol_resolutions: SymbolResolutions<P>,
-    pub(crate) got_relr_n: u64,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
 
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,

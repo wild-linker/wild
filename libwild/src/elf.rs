@@ -294,6 +294,17 @@ impl ElfSymbol for object::elf::Sym64<LittleEndian> {
     type Class = Class64;
 }
 
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct Class32;
+
+impl ElfClass for Class32 {
+    type FileHeader = object::elf::FileHeader32<LittleEndian>;
+}
+
+impl ElfSymbol for object::elf::Sym32<LittleEndian> {
+    type Class = Class32;
+}
+
 pub(crate) type FileHeader<C> = <C as ElfClass>::FileHeader;
 pub(crate) type Word<C> = <FileHeader<C> as object::read::elf::FileHeader>::Word;
 pub(crate) type ProgramHeader<C> = <FileHeader<C> as object::read::elf::FileHeader>::ProgramHeader;
@@ -306,6 +317,7 @@ pub(crate) type Rela<C> = <FileHeader<C> as object::read::elf::FileHeader>::Rela
 pub(crate) type Relr<C> = <FileHeader<C> as object::read::elf::FileHeader>::Relr;
 pub(crate) type NoteHeader<C> = <FileHeader<C> as object::read::elf::FileHeader>::NoteHeader;
 pub(crate) type FileHeader64 = FileHeader<Class64>;
+pub(crate) type FileHeader32 = FileHeader<Class32>;
 pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 pub(crate) type Verdef = object::elf::Verdef<LittleEndian>;
 pub(crate) type Verdaux = object::elf::Verdaux<LittleEndian>;
@@ -319,6 +331,8 @@ type SymbolTable<'data, C> = object::read::elf::SymbolTable<'data, FileHeader<C>
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf<C: ElfClass>(PhantomData<C>);
+
+pub(crate) type File32<'data> = File<'data, Class32>;
 
 pub(crate) type Elf64 = Elf<Class64>;
 pub(crate) type File64<'data> = File<'data, Class64>;
@@ -677,6 +691,7 @@ impl<'data, C: ElfClass> RelocationSequence<'data> for Vec<ElfCrel<C>> {
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
 // its contents.
+const _: () = assert!(!core::mem::needs_drop::<File32>());
 const _: () = assert!(!core::mem::needs_drop::<File64>());
 
 /// Returns the name to use when writing a symbol into .symtab's string table.
@@ -749,7 +764,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         Some(output_section_id::NOTE_GNU_PROPERTY);
     const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::RISCV_ATTRIBUTES);
-    const GOT_RELR_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT_RELR);
     const GNU_VERSION_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GNU_VERSION);
     const COMMENT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::COMMENT);
     const INTERP_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::INTERP);
@@ -2576,8 +2590,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         rule_builder.prepend_section_rules(LINKER_REPLACED_SECTION_RULES);
     }
 
-    fn init_section_priority(name: &[u8]) -> Option<u16> {
-        init_fini_priority(name)
+    fn init_section_priority(name: &[u8]) -> Option<u32> {
+        init_fini_priority(name).map(|priority| priority.into())
     }
 
     fn validate_input_symbols(symbol_db: &SymbolDb<Self>) -> Result {
@@ -3645,7 +3659,8 @@ impl<'data, C: ElfClass> File<'data, C> {
     fn parse_elf_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
         let header = C::FileHeader::parse(data)?;
         let endian = header.endian()?;
-        let architecture = header.e_machine(endian).try_into()?;
+        let machine = header.e_machine(endian);
+        let architecture = crate::arch::Architecture::new::<C>(machine)?;
         let sections = header.sections(endian, data)?;
         let eflags = header.e_flags(endian);
 
@@ -3826,6 +3841,17 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
 
     fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
+
+        if let Some(&class) = input.data.get(4) {
+            let file_class = object::elf::FileClass(class);
+            if file_class != C::FileHeader::CLASS {
+                bail!(
+                    "`{}` has incompatible ELF class: {file_class:?}, expecting {:?}",
+                    input,
+                    C::FileHeader::CLASS,
+                );
+            }
+        }
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
 
@@ -4608,63 +4634,70 @@ fn compute_version_mapping(
     out
 }
 
-impl platform::SectionHeader for object::elf::SectionHeader64<LittleEndian> {
-    fn is_alloc(&self) -> bool {
-        self.sh_flags(LittleEndian).is_alloc()
-    }
+macro_rules! impl_section_header {
+    ($ty:ty) => {
+        impl platform::SectionHeader for $ty {
+            fn is_alloc(&self) -> bool {
+                self.sh_flags(LittleEndian).is_alloc()
+            }
 
-    fn is_writable(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::WRITE)
-    }
+            fn is_writable(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::WRITE)
+            }
 
-    fn is_executable(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::EXECINSTR)
-    }
+            fn is_executable(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::EXECINSTR)
+            }
 
-    fn is_tls(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::TLS)
-    }
+            fn is_tls(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::TLS)
+            }
 
-    fn is_merge_section(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::MERGE)
-    }
+            fn is_merge_section(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::MERGE)
+            }
 
-    fn is_strings(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::STRINGS)
-    }
+            fn is_strings(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::STRINGS)
+            }
 
-    fn should_retain(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::GNU_RETAIN)
-    }
+            fn should_retain(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::GNU_RETAIN)
+            }
 
-    fn should_exclude(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::EXCLUDE)
-    }
+            fn should_exclude(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::EXCLUDE)
+            }
 
-    fn is_group(&self) -> bool {
-        self.sh_flags(LittleEndian).contains(shf::GROUP)
-    }
+            fn is_group(&self) -> bool {
+                self.sh_flags(LittleEndian).contains(shf::GROUP)
+            }
 
-    fn is_group_header(&self) -> bool {
-        self.sh_type(LittleEndian) == sht::GROUP
-    }
+            fn is_group_header(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::GROUP
+            }
 
-    fn is_note(&self) -> bool {
-        self.sh_type(LittleEndian) == sht::NOTE
-    }
+            fn is_note(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::NOTE
+            }
 
-    fn is_prog_bits(&self) -> bool {
-        self.sh_type(LittleEndian) == sht::PROGBITS
-    }
+            fn is_prog_bits(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::PROGBITS
+            }
 
-    fn is_no_bits(&self) -> bool {
-        self.sh_type(LittleEndian) == sht::NOBITS
-    }
+            fn is_no_bits(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::NOBITS
+            }
 
-    fn is_null(&self) -> bool {
-        self.sh_type(LittleEndian) == sht::NULL
-    }
+            fn is_null(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::NULL
+            }
+        }
+    };
 }
+
+impl_section_header!(object::elf::SectionHeader32<LittleEndian>);
+impl_section_header!(object::elf::SectionHeader64<LittleEndian>);
 
 impl platform::SectionType for SectionType {
     fn is_rela(&self) -> bool {
