@@ -11,6 +11,7 @@ use crate::args::elf::RwxSegmentReport;
 use crate::args::elf::TextRelocationMode;
 use crate::bail;
 use crate::debug_assert_bail;
+use crate::elf::output_section_id::SDATA;
 use crate::elf_writer;
 use crate::ensure;
 use crate::erratum843419::ErratumSectionInfo;
@@ -163,12 +164,12 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
-
-/// Offset of `__global_pointer$` from the start of data. Currently the offset is 0x800 (2kb) from
-/// the start of DATA, this lets gp reach the first 4 kb of data. This is the same result as GNU ld
-/// for when there is no `.sdata` and the data section is small. GNU ld's default script uses:
-/// `MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));`
 pub(crate) const GLOBAL_POINTER_OFFSET: u64 = 0x800;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ElfLinkerSymbol {
+    RiscVGlobalPointer,
+}
 
 /// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
 pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
@@ -398,6 +399,8 @@ enum RegularSectionId {
     DataRelRo,
     Toc,
     PartialLinkingSingletons,
+    Sdata,
+    Sbss,
 
     // Must be last.
     Count,
@@ -510,6 +513,8 @@ pub(crate) mod output_section_id {
     pub(crate) const TDATA: OutputSectionId = RegularSectionId::Tdata.output_section_id();
     pub(crate) const TBSS: OutputSectionId = RegularSectionId::Tbss.output_section_id();
     pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
+    pub(crate) const SDATA: OutputSectionId = RegularSectionId::Sdata.output_section_id();
+    pub(crate) const SBSS: OutputSectionId = RegularSectionId::Sbss.output_section_id();
     pub(crate) const COMMENT: OutputSectionId = RegularSectionId::Comment.output_section_id();
     pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId =
         RegularSectionId::GccExceptTable.output_section_id();
@@ -813,7 +818,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type File<'data> = File<'data, C>;
     type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry<C>;
-    type PlatformSpecificSymbol = core::convert::Infallible;
+    type PlatformSpecificSymbol = ElfLinkerSymbol;
     type SectionHeader = SectionHeader<C>;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes<C>;
@@ -1519,10 +1524,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         if args.architecture() == Architecture::RiscV64 {
-            symbols.section_start_offset(
-                output_section_id::DATA,
-                crate::elf::GLOBAL_POINTER_OFFSET,
-                crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+            symbols.platform_specific(
+                GLOBAL_POINTER_SYMBOL_NAME.as_bytes(),
+                ElfLinkerSymbol::RiscVGlobalPointer,
             );
         }
 
@@ -1629,6 +1633,28 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         symbols
             .section_start(output_section_id::TDATA, "__tdata_start")
             .hide();
+    }
+
+    /// Calculating global pointer location similarly to how its handled in GNU ld
+    fn platform_specific_symbol_value(
+        symbol: ElfLinkerSymbol,
+        l: &OutputSectionMap<OutputRecordLayout>,
+    ) -> u64 {
+        match symbol {
+            ElfLinkerSymbol::RiscVGlobalPointer => {
+                let data_start = l.get(output_section_id::DATA).mem_offset;
+                let sdata_start = l.get(output_section_id::SDATA).mem_offset;
+                let bss = l.get(output_section_id::BSS);
+                let bss_end = bss.mem_offset + bss.mem_size;
+
+                let gp_location = (sdata_start + GLOBAL_POINTER_OFFSET).min(
+                    (data_start + GLOBAL_POINTER_OFFSET)
+                        .max(bss_end.saturating_sub(GLOBAL_POINTER_OFFSET)),
+                );
+
+                gp_location
+            }
+        }
     }
 
     fn built_in_section_infos<'data>()
@@ -2769,6 +2795,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::RELRO_PADDING);
         builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::SDATA);
+        builder.add_section(output_section_id::SBSS);
         builder.add_section(output_section_id::BSS);
         builder.add_sections(&custom.bss);
 
@@ -7213,6 +7241,18 @@ impl<C: ElfClass> Elf<C> {
             is_relro: true,
             ..Self::DEFAULT_DEFS
         };
+        defs[output_section_id::SDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SDATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SBSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SBSS_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
 
         defs
     };
@@ -8097,6 +8137,8 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
         secnames::DATA_REL_RO_SECTION_NAME,
         output_section_id::DATA_REL_RO,
     ),
+    SectionRule::prefix_section(secnames::SDATA_SECTION_NAME, output_section_id::SDATA),
+    SectionRule::prefix_section(secnames::SBSS_SECTION_NAME, output_section_id::SBSS),
     SectionRule::exact(
         secnames::TOC_SECTION_NAME,
         SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(
