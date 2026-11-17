@@ -10411,7 +10411,7 @@ impl PlatformKind {
             // TODO: disable running tests on riscv32 by default for now, until sufficient support
             // for it exists.
             return ALL_ARCHITECTURES
-                .into_iter()
+                .iter()
                 .copied()
                 .filter(|&arch| arch != Architecture::RiscV32)
                 .collect();
