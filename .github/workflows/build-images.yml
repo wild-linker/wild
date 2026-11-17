@@ -12,6 +12,10 @@ on:
       - 'docker/ci/**'
       - '.github/workflows/build-images.yml'
 
+concurrency:
+  group: build-images
+  cancel-in-progress: false
+
 permissions:
   packages: write
 
@@ -79,6 +83,14 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
           cache-to: ${{ github.event_name != 'pull_request' && 'type=inline' || '' }}
+
+      - name: Delete old package versions
+        if: github.event_name != 'pull_request'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ github.event.repository.name }}/${{ matrix.container }}
+          package-type: container
+          min-versions-to-keep: 5
 
       - name: Export base image
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
@@ -183,3 +195,11 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
           cache-to: ${{ github.event_name != 'pull_request' && 'type=inline' || '' }}
+
+      - name: Delete old package versions
+        if: github.event_name != 'pull_request'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ github.event.repository.name }}/${{ matrix.container }}
+          package-type: container
+          min-versions-to-keep: 5
