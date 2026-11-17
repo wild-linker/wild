@@ -37,6 +37,13 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load-with-flag.ld
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,.rodata,.dynamic,*]
 
+//#Config:non-alloc:default
+//#ReferenceLinkers:bfd
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-non-alloc.ld
+//#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*]
+//#ExpectProgramHeader:LOAD flags=RW,sections=[*]
+//#ExpectSection:.comment
+
 //#Config:no-load:default
 // This configuration checks GNU PHDRS validation that LLD does not implement.
 //#ReferenceLinkers:bfd
