@@ -27,8 +27,6 @@ impl Arch for X86_64 {
 
     type RawInstruction = iced_x86::Instruction;
 
-    type Class = crate::arch::Class64;
-
     const MAX_RELAX_MODIFY_BEFORE: u64 = 6;
     const MAX_RELAX_MODIFY_AFTER: u64 = 19;
 

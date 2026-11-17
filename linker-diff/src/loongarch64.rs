@@ -25,8 +25,6 @@ impl Arch for LoongArch64 {
 
     type RawInstruction = Option<String>;
 
-    type Class = crate::arch::Class64;
-
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
     const MAX_RELAX_MODIFY_AFTER: u64 = 4;
 

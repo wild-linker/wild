@@ -692,8 +692,8 @@ impl Report {
                 self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
             }
 
-            ArchKind::RiscV64 => {
-                self.report_arch_specific_diffs::<crate::riscv::RiscV64>(objects);
+            ArchKind::RiscV64 | ArchKind::RiscV32 => {
+                self.report_arch_specific_diffs::<crate::riscv::RiscV>(objects);
                 riscv_attributes::report_diffs(self, objects);
             }
             ArchKind::LoongArch64 => {
@@ -701,10 +701,6 @@ impl Report {
             }
             ArchKind::Ppc64 => {
                 self.report_arch_specific_diffs::<crate::ppc64::Ppc64>(objects);
-            }
-            ArchKind::RiscV32 => {
-                self.report_arch_specific_diffs::<crate::riscv::RiscV32>(objects);
-                riscv_attributes::report_diffs(self, objects);
             }
         }
     }

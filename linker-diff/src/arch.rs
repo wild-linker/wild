@@ -24,17 +24,6 @@ pub(crate) enum ArchKind {
     RiscV32,
 }
 
-pub(crate) trait Class: Copy + Eq + std::fmt::Debug + 'static {}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct Class64;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct Class32;
-
-impl Class for Class64 {}
-impl Class for Class32 {}
-
 /// Provides architecture-specific functionality needed by linker-diff.
 pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// The type of relocations on this architecture.
@@ -45,8 +34,6 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
 
     /// A type representing a decoded instruction on this architecture.
     type RawInstruction: Clone;
-
-    type Class: Class;
 
     /// The maximum number of bytes prior to a relocation offset that a relaxation might modify.
     const MAX_RELAX_MODIFY_BEFORE: u64;
