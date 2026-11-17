@@ -2784,7 +2784,7 @@ impl Config {
             expect_stdout: Default::default(),
             active_malfunction: None,
             cross_enabled: true,
-            support_architectures: platform.default_architectures().to_owned(),
+            support_architectures: platform.default_architectures(),
             requires_glibc: false,
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
@@ -10406,13 +10406,17 @@ impl PlatformKind {
         }
     }
 
-    fn default_architectures(self) -> &'static [Architecture] {
+    fn default_architectures(self) -> Vec<Architecture> {
         if self == PlatformKind::Elf {
             // TODO: disable running tests on riscv32 by default for now, until sufficient support
             // for it exists.
-            return &ALL_ARCHITECTURES[..ALL_ARCHITECTURES.len() - 1];
+            return ALL_ARCHITECTURES
+                .into_iter()
+                .copied()
+                .filter(|&arch| arch != Architecture::RiscV32)
+                .collect();
         }
-        self.supported_architectures()
+        self.supported_architectures().to_owned()
     }
 
     fn default_args_for_linking(self) -> ArgumentSet {
