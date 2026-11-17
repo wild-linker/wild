@@ -1735,6 +1735,17 @@ fn resolve_section<'data, P: Platform>(
                 output_info.section_id.base_part_id::<P>()
             };
 
+            if P::SORT_ALL_SECTIONS_BY_PRIORITY
+                && let Some(priority) = P::init_section_priority(section_name)
+            {
+                obj.init_fini_sections.push(InitFiniSectionDetail {
+                    index: input_section_index.into(),
+                    primary: output_info.section_id,
+                    priority,
+                    alignment,
+                });
+            }
+
             must_load |= output_info.must_keep;
 
             unloaded_section = UnloadedSection::new();
