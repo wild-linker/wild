@@ -1706,12 +1706,13 @@ fn init_priority(name: &[u8]) -> Option<u32> {
 }
 
 pub(crate) fn parse_priority_suffix(suffix: &[u8]) -> Option<u32> {
-    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_alphabetic()) {
+    if suffix.is_empty() {
         return None;
     }
 
     let mut priority_bytes = [0u8; 4];
-    let byte_count = suffix.len();
+    // TODO: 4 bytes is still too short for .refptr
+    let byte_count = suffix.len().min(4);
     priority_bytes[..byte_count].copy_from_slice(&suffix[..byte_count]);
     Some(u32::from_be_bytes(priority_bytes))
 }

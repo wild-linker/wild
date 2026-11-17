@@ -13,6 +13,7 @@ __attribute__((used, section(".CRT$XD"))) void (*const crt_xd)(void) = crt_ctor;
 __attribute__((used, section(".CRT$X"))) void (*const crt_x)(void) = crt_ctor;
 __attribute__((used, section(".CRT$XCA"))) void (*const crt_xca)(void) = crt_ctor;
 __attribute__((used, section(".CRT$xb"))) void (*const crt_xb)(void) = crt_ctor;
+__attribute__((used, section(".CRT$1"))) void (*const crt_one)(void) = crt_ctor;
 
 int main() {
   if (&crt_x > &crt_xc) return 100;
@@ -23,6 +24,7 @@ int main() {
   if (&crt_xca > &crt_xcb0) return 111;
   if (&crt_xcb1 > &crt_xd) return 112;
 
-  if (&crt_xc > &crt_xb) return 120;
+  if (&crt_x > &crt_xb) return 120;
+  if (&crt_one > &crt_x) return 121;
   return 42;
 }
