@@ -1428,13 +1428,8 @@ pub(crate) struct SectionAttributes {
     pub(crate) is_null: bool,
 }
 
-// TODO: share with ELF
-/// Section flags that should not be propagated from input sections to the output section in which
-/// they are placed. This is passed to `without`, so we keep all flags other than the one listed
-/// here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = SectionFlags(0x00FF_FF0F);
-
 impl platform::SectionAttributes for SectionAttributes {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = SectionFlags(0x00FF_FF0F);
     type Platform = Coff;
 
     fn merge(&mut self, rhs: Self) {
@@ -1448,7 +1443,9 @@ impl platform::SectionAttributes for SectionAttributes {
     ) {
         let info = output_sections.section_infos.get_mut(section_id);
         let mut attributes = *self;
-        attributes.flags = attributes.flags.without(SECTION_FLAGS_PROPAGATION_MASK);
+        attributes.flags = attributes
+            .flags
+            .without(Self::SECTION_FLAGS_PROPAGATION_MASK);
         info.section_attributes.merge(attributes);
     }
 

@@ -1004,8 +1004,6 @@ pub(crate) struct SectionAttributes {
     writable: bool,
 }
 
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = S_ATTR_EXT_RELOC.with(S_ATTR_LOC_RELOC);
-
 impl SectionAttributes {
     fn new(flags: SectionFlags, segment: Option<SegmentName>) -> Self {
         Self {
@@ -1017,6 +1015,7 @@ impl SectionAttributes {
 }
 
 impl platform::SectionAttributes for SectionAttributes {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = S_ATTR_EXT_RELOC.with(S_ATTR_LOC_RELOC);
     type Platform = MachO;
 
     fn merge(&mut self, rhs: Self) {
@@ -1034,7 +1033,7 @@ impl platform::SectionAttributes for SectionAttributes {
         // TODO: For now, we copy what ELF does to break ties in types. This acts as a workaround
         // since S_REGULAR = 0 and more specialized types should win this tiebreak.
         info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
-        info.section_attributes.attr |= self.attr.without(SECTION_FLAGS_PROPAGATION_MASK);
+        info.section_attributes.attr |= self.attr.without(Self::SECTION_FLAGS_PROPAGATION_MASK);
         info.section_attributes.writable |= self.writable;
     }
 

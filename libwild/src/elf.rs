@@ -6126,12 +6126,8 @@ pub(crate) struct LinkerScriptOverrides {
     pub(crate) has_fixed_type: bool,
 }
 
-/// Section flags that should not be propagated from input sections to the output section in which
-/// they are placed. This is passed to `without`, so we keep all flags other than the one listed
-/// here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
-
 impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
     type Platform = Elf<C>;
 
     fn merge(&mut self, rhs: Self) {
@@ -6171,7 +6167,8 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
         let mut attributes = *self;
 
         attributes.flags = attributes.flags.without(
-            SECTION_FLAGS_PROPAGATION_MASK | info.section_attributes.overrides.avoid_progpogation,
+            Self::SECTION_FLAGS_PROPAGATION_MASK
+                | info.section_attributes.overrides.avoid_progpogation,
         );
 
         if info.section_attributes.overrides.has_fixed_type {
