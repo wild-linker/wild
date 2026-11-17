@@ -3505,13 +3505,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 output_attributes.overrides.has_fixed_type = true;
             }
             linker_script::SectionAttributes::Readonly => {
-                output_attributes.overrides.avoid_progpogation = shf::WRITE;
+                output_attributes.overrides.avoid_propagation = shf::WRITE;
             }
             linker_script::SectionAttributes::Dsect
             | linker_script::SectionAttributes::Copy
             | linker_script::SectionAttributes::Info
             | linker_script::SectionAttributes::Overlay => {
-                output_attributes.overrides.avoid_progpogation = shf::ALLOC;
+                output_attributes.overrides.avoid_propagation = shf::ALLOC;
             }
         }
         output_attributes
@@ -3530,7 +3530,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 if !section_id.is_custom::<Self>() || info.section_attributes.has_input_sections {
                     current_flags = info.section_attributes.flags;
                 } else if *must_keep_sections.get(section_id) {
-                    let avoid_propagation = info.section_attributes.overrides.avoid_progpogation;
+                    let avoid_propagation = info.section_attributes.overrides.avoid_propagation;
                     let allowed_flags = (shf::ALLOC | shf::WRITE).without(avoid_propagation);
                     info.section_attributes.flags = current_flags & allowed_flags;
                     if info.section_attributes.ty == sht::NULL {
@@ -6122,7 +6122,7 @@ pub(crate) struct SectionAttributes<C: ElfClass> {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LinkerScriptOverrides {
-    pub(crate) avoid_progpogation: SectionFlags,
+    pub(crate) avoid_propagation: SectionFlags,
     pub(crate) has_fixed_type: bool,
 }
 
@@ -6168,7 +6168,7 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
 
         attributes.flags = attributes.flags.without(
             Self::SECTION_FLAGS_PROPAGATION_MASK
-                | info.section_attributes.overrides.avoid_progpogation,
+                | info.section_attributes.overrides.avoid_propagation,
         );
 
         if info.section_attributes.overrides.has_fixed_type {

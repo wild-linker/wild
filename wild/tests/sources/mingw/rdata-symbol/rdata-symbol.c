@@ -4,6 +4,6 @@
 //#ExpectSym: foo section=".rdata"
 //#ExpectSym: foo_ptr section=".data"
 
-extern int* foo_ptr;
+extern const int* foo_ptr;
 
 int main() { return *foo_ptr; }
