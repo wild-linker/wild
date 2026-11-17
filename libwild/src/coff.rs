@@ -256,6 +256,8 @@ impl<'data> platform::RelocationSequence<'data> for RelocationList<'data> {
 // const _: () = assert!(!core::mem::needs_drop::<File>());
 
 impl Platform for Coff {
+    const SORT_ALL_SECTIONS_BY_PRIORITY: bool = true;
+
     const NUM_SINGLE_PART_SECTIONS: u32 = COFF_NUM_SINGLE_PART_SECTIONS;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = COFF_NUM_BUILT_IN_REGULAR_SECTIONS;
 
@@ -1688,10 +1690,9 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section(".rdata".as_bytes(), output_section_id::RDATA),
     SectionRule::prefix_section(".data".as_bytes(), output_section_id::DATA),
     SectionRule::prefix_section(".bss".as_bytes(), output_section_id::BSS),
-    // TODO: This sets `keep`; verify if that's correct
     // Unlike BFD, LLD merges them into RDATA for tighter packing (by avoiding .CRT section), we
     // follow that.
-    SectionRule::prefix_section_sort(".CRT$".as_bytes(), output_section_id::RDATA),
+    SectionRule::prefix_section(".CRT$".as_bytes(), output_section_id::RDATA),
 ];
 
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] =

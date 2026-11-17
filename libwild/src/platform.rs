@@ -423,6 +423,8 @@ pub(crate) trait Platform:
     /// Whether an export list replaces the platform's default set of exported symbols.
     const EXPORT_LIST_RESTRICTS_DEFAULT_EXPORTS: bool = false;
 
+    /// Whether all sections should be considered for sorting by priority substring.
+    const SORT_ALL_SECTIONS_BY_PRIORITY: bool = false;
     // TODO: Some of these are very specific to a single platform. Investigate if the code that
     // references them could be moved, allowing the constant to be deleted.
 
