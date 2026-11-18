@@ -135,7 +135,7 @@ pub fn run(args: Args) -> error::Result {
 pub fn run_with_file_system<F: FileSystem>(mut args: Args, file_system: F) -> error::Result {
     let _thread_guard = timing::enter_linker_thread();
     let thread_pool = args.common_mut().build_thread_pool()?;
-    thread_pool.pool.install(move || -> error::Result {
+    thread_pool.install(move || -> error::Result {
         let linker = Linker::with_file_system(file_system);
         linker.run(&args)?;
         drop(linker);

@@ -30,6 +30,7 @@ use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::borrow::Cow;
+use std::error::Error as _;
 use std::fmt::Display;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -504,9 +505,24 @@ impl CommonArgs {
         // Always let Rayon spawn the pool's workers, even when only one thread is requested.
         // Reusing the current thread would fail if it already belonged to another pool; instead,
         // it blocks in `install` until linking finishes.
-        let pool = ThreadPoolBuilder::new()
+        let pool = match ThreadPoolBuilder::new()
             .num_threads(self.available_threads.get())
-            .build()?;
+            .build()
+        {
+            Ok(pool) => Some(pool),
+            Err(error)
+                if error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<std::io::Error>())
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::Unsupported) =>
+            {
+                // Rayon provides a single-threaded fallback for its implicit global pool.
+                self.available_threads = NonZeroUsize::MIN;
+                tokens.clear();
+                None
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         Ok(ThreadPool {
             pool,
@@ -617,8 +633,17 @@ pub(crate) enum Experiment {
 /// The thread pool used by the linker. If a jobserver is being used, dropping this instance will
 /// release jobserver tokens.
 pub struct ThreadPool {
-    pub(crate) pool: rayon::ThreadPool,
+    pool: Option<rayon::ThreadPool>,
     _jobserver_tokens: Vec<Acquired>,
+}
+
+impl ThreadPool {
+    pub(crate) fn install<T: Send>(&self, f: impl FnOnce() -> T + Send) -> T {
+        match &self.pool {
+            Some(pool) => pool.install(f),
+            None => f(),
+        }
+    }
 }
 
 // TODO: remove

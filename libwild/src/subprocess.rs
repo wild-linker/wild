@@ -43,7 +43,7 @@ fn subprocess_result(mut args: Args) -> Result<i32> {
 
             crate::setup_tracing(&args)?;
             let thread_pool = args.common_mut().build_thread_pool()?;
-            thread_pool.pool.install(|| -> Result {
+            thread_pool.install(|| -> Result {
                 let linker = crate::Linker::new();
                 let _outputs = linker.run(&args)?;
                 crate::timing::finalise_perfetto_trace()?;
