@@ -1,11 +1,18 @@
 /*
+//#AbstractConfig:default
 LLD does not perform the HI20 relaxation checked by the size assertions.
 //#ReferenceLinkers:bfd
-//#Arch: riscv64
-//#CompArgs: -march=rv64gc
 //#LinkArgs: -nostdlib -static --relax
 //#Object:riscv-hi20-relaxation-1.s
 //#ExpectSym:load_value size=8
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
 */
 
 .section .text, "ax", @progbits
