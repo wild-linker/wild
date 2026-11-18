@@ -90,10 +90,6 @@ pub(crate) enum SymbolPlacement<'data, P: Platform> {
     /// Defines a symbol that points to the start of a section.
     SectionStart(OutputSectionId),
 
-    /// Defines a symbol at a fixed offset from the start position. e.g RISC-V's __global_pointer$
-    /// at DATA + 0x800
-    SectionStartOffset(OutputSectionId, u64),
-
     /// Defines a symbol that points at the non-inclusive end of the section. i.e. 1 byte past the
     /// last byte of the section.
     SectionEnd(OutputSectionId),
@@ -324,18 +320,6 @@ impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
     ) -> &mut InternalSymDefInfo<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionStart(section_id),
-            name.as_bytes(),
-        ))
-    }
-
-    pub(crate) fn section_start_offset(
-        &mut self,
-        section_id: OutputSectionId,
-        offset: u64,
-        name: &'static str,
-    ) -> &mut InternalSymDefInfo<'data, P> {
-        self.add_symbol(InternalSymDefInfo::new(
-            SymbolPlacement::SectionStartOffset(section_id, offset),
             name.as_bytes(),
         ))
     }

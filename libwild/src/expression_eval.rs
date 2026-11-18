@@ -1004,12 +1004,6 @@ fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
             section_id: *section_id,
             address: 0,
         }),
-        SymbolPlacement::SectionStartOffset(section_id, offset) => {
-            Ok(SymbolValue::SectionRelative {
-                section_id: *section_id,
-                address: *offset,
-            })
-        }
         SymbolPlacement::SectionEnd(section_id) => Ok(SymbolValue::SectionRelative {
             section_id: *section_id,
             address: section_layouts.get(*section_id).mem_size,

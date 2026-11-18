@@ -11,7 +11,6 @@ use crate::args::elf::RwxSegmentReport;
 use crate::args::elf::TextRelocationMode;
 use crate::bail;
 use crate::debug_assert_bail;
-use crate::elf::output_section_id::SDATA;
 use crate::elf_writer;
 use crate::ensure;
 use crate::erratum843419::ErratumSectionInfo;
@@ -163,8 +162,8 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
-pub(crate) const GLOBAL_POINTER_OFFSET: u64 = 0x800;
+pub(crate) const RISCV_GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+pub(crate) const RISCV_GLOBAL_POINTER_OFFSET: u64 = 0x800;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ElfLinkerSymbol {
@@ -1524,7 +1523,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         if args.architecture() == Architecture::RiscV64 {
             symbols.platform_specific(
-                GLOBAL_POINTER_SYMBOL_NAME.as_bytes(),
+                RISCV_GLOBAL_POINTER_SYMBOL_NAME.as_bytes(),
                 ElfLinkerSymbol::RiscVGlobalPointer,
             );
         }
@@ -1634,7 +1633,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .hide();
     }
 
-    /// Calculating global pointer location similarly to how its handled in GNU ld
+    /// Matches GNU ld's default placement of `__global_pointer$`.
     fn platform_specific_symbol_value(
         symbol: ElfLinkerSymbol,
         l: &OutputSectionMap<OutputRecordLayout>,
@@ -1646,12 +1645,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 let bss = l.get(output_section_id::BSS);
                 let bss_end = bss.mem_offset + bss.mem_size;
 
-                let gp_location = (sdata_start + GLOBAL_POINTER_OFFSET).min(
-                    (data_start + GLOBAL_POINTER_OFFSET)
-                        .max(bss_end.saturating_sub(GLOBAL_POINTER_OFFSET)),
-                );
-
-                gp_location
+                (sdata_start + RISCV_GLOBAL_POINTER_OFFSET).min(
+                    (data_start + RISCV_GLOBAL_POINTER_OFFSET)
+                        .max(bss_end.saturating_sub(RISCV_GLOBAL_POINTER_OFFSET)),
+                )
             }
         }
     }
