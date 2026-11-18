@@ -162,7 +162,13 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+pub(crate) const RISCV_GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+pub(crate) const RISCV_GLOBAL_POINTER_OFFSET: u64 = 0x800;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ElfLinkerSymbol {
+    RiscVGlobalPointer,
+}
 
 /// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
 pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
@@ -395,6 +401,8 @@ enum RegularSectionId {
     DataRelRo,
     Toc,
     PartialLinkingSingletons,
+    Sdata,
+    Sbss,
 
     // Must be last.
     Count,
@@ -507,6 +515,8 @@ pub(crate) mod output_section_id {
     pub(crate) const TDATA: OutputSectionId = RegularSectionId::Tdata.output_section_id();
     pub(crate) const TBSS: OutputSectionId = RegularSectionId::Tbss.output_section_id();
     pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
+    pub(crate) const SDATA: OutputSectionId = RegularSectionId::Sdata.output_section_id();
+    pub(crate) const SBSS: OutputSectionId = RegularSectionId::Sbss.output_section_id();
     pub(crate) const COMMENT: OutputSectionId = RegularSectionId::Comment.output_section_id();
     pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId =
         RegularSectionId::GccExceptTable.output_section_id();
@@ -810,7 +820,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type File<'data> = File<'data, C>;
     type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry<C>;
-    type PlatformSpecificSymbol = core::convert::Infallible;
+    type PlatformSpecificSymbol = ElfLinkerSymbol;
     type SectionHeader = SectionHeader<C>;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes<C>;
@@ -1518,9 +1528,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         if args.architecture() == Architecture::RiscV64 {
-            symbols.section_start(
-                output_section_id::DATA,
-                crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+            symbols.platform_specific(
+                RISCV_GLOBAL_POINTER_SYMBOL_NAME.as_bytes(),
+                ElfLinkerSymbol::RiscVGlobalPointer,
             );
         }
 
@@ -1627,6 +1637,26 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         symbols
             .section_start(output_section_id::TDATA, "__tdata_start")
             .hide();
+    }
+
+    /// Matches GNU ld's default placement of `__global_pointer$`.
+    fn platform_specific_symbol_value(
+        symbol: ElfLinkerSymbol,
+        l: &OutputSectionMap<OutputRecordLayout>,
+    ) -> u64 {
+        match symbol {
+            ElfLinkerSymbol::RiscVGlobalPointer => {
+                let data_start = l.get(output_section_id::DATA).mem_offset;
+                let sdata_start = l.get(output_section_id::SDATA).mem_offset;
+                let bss = l.get(output_section_id::BSS);
+                let bss_end = bss.mem_offset + bss.mem_size;
+
+                (sdata_start + RISCV_GLOBAL_POINTER_OFFSET).min(
+                    (data_start + RISCV_GLOBAL_POINTER_OFFSET)
+                        .max(bss_end.saturating_sub(RISCV_GLOBAL_POINTER_OFFSET)),
+                )
+            }
+        }
     }
 
     fn built_in_section_infos<'data>()
@@ -2767,6 +2797,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::RELRO_PADDING);
         builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::SDATA);
+        builder.add_section(output_section_id::SBSS);
         builder.add_section(output_section_id::BSS);
         builder.add_sections(&custom.bss);
 
@@ -3371,13 +3403,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             | secnames::GROUP_SECTION_NAME => {
                 return SectionRuleOutcome::Discard;
             }
-            secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
+            secnames::RISCV_ATTRIBUTES_SECTION_NAME => {
+                return SectionRuleOutcome::RiscVAttribute;
+            }
             secnames::ARM_ATTRIBUTES_SECTION_NAME
                 if args.architecture() == Architecture::AArch64 =>
             {
                 return SectionRuleOutcome::AArch64Attribute;
             }
-            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
+            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => {
+                return SectionRuleOutcome::NoteGnuProperty;
+            }
             secnames::NOTE_ABI_TAG_SECTION_NAME => {
                 return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
                     output_section_id::NOTE_ABI_TAG,
@@ -7223,6 +7259,18 @@ impl<C: ElfClass> Elf<C> {
             is_relro: true,
             ..Self::DEFAULT_DEFS
         };
+        defs[output_section_id::SDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SDATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SBSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SBSS_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
 
         defs
     };
@@ -8118,6 +8166,8 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
         secnames::DATA_REL_RO_SECTION_NAME,
         output_section_id::DATA_REL_RO,
     ),
+    SectionRule::prefix_section(secnames::SDATA_SECTION_NAME, output_section_id::SDATA),
+    SectionRule::prefix_section(secnames::SBSS_SECTION_NAME, output_section_id::SBSS),
     SectionRule::exact(
         secnames::TOC_SECTION_NAME,
         SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(

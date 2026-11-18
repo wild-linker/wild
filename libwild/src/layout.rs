@@ -4364,9 +4364,7 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined
-        | SymbolPlacement::ForceUndefined
-        | SymbolPlacement::PlatformSpecific(_) => 0,
+        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
@@ -4399,6 +4397,9 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
             // been resolved. This is handled by update_redirect_resolutions() which is called after
             // layout is complete.
             0
+        }
+        SymbolPlacement::PlatformSpecific(symbol) => {
+            P::platform_specific_symbol_value(symbol, resources.section_layouts)
         }
         SymbolPlacement::LoadBaseAddress => resources
             .segment_layouts

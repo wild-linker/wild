@@ -1126,6 +1126,13 @@ pub(crate) trait Platform:
         bail!("Platform does not support copy relocations");
     }
 
+    fn platform_specific_symbol_value(
+        _symbol: Self::PlatformSpecificSymbol,
+        _section_layout: &OutputSectionMap<OutputRecordLayout>,
+    ) -> u64 {
+        0
+    }
+
     fn finalise_copy_relocations<'data>(
         _group_states: &mut [layout::GroupState<'data, Self>],
         _symbol_db: &SymbolDb<'data, Self>,
