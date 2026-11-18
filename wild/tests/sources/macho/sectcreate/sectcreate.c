@@ -1,5 +1,6 @@
 //#AbstractConfig:base
 //#LinkerDriver:clang
+//#DiffIgnore:section.__info.attributes
 
 //#Config:default:base
 //#Copy:info.txt:info.txt
@@ -12,6 +13,7 @@
 //#ExpectSectionBytes:__info=0x
 
 //#Config:zerofill:base
+//#DiffIgnore:section.__bss.attributes
 //#Object:zerofill.s
 // LLD create a completely invalid binary file
 //#ReferenceLinkers:ld
