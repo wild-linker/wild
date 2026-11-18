@@ -15,7 +15,7 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use object::SymbolKind;
-use object::elf::ProgramHeader64;
+use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader;
 use std::mem::offset_of;
 use zerocopy::FromBytes;
@@ -32,10 +32,9 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 }
 
 fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
-    let e = object.file.endianness();
     let mut values = FieldValues::default();
 
-    let Some(segment_hdr) = eh_frame_segment(object, e) else {
+    let Some(address1) = eh_frame_segment_address(object) else {
         values.insert_string_owned("GNU_EH_FRAME".to_owned(), "Missing".to_owned());
         return Ok(values);
     };
@@ -48,7 +47,6 @@ fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
         return Ok(values);
     };
 
-    let address1 = segment_hdr.p_vaddr(e);
     let address2 = section.address();
     if address1 != address2 {
         bail!(".eh_frame_hdr address doesn't match GNU_EN_FRAME segment");
@@ -188,13 +186,21 @@ fn verify_frames(
     Ok(())
 }
 
-fn eh_frame_segment(object: &crate::Binary, e: Endianness) -> Option<ProgramHeader64<Endianness>> {
-    let File::Elf64(elf_file) = object.file else {
-        return None;
-    };
+fn eh_frame_segment_address(object: &crate::Binary) -> Option<u64> {
+    match object.file {
+        File::Elf64(elf_file) => elf_eh_frame_segment_address(elf_file),
+        File::Elf32(elf_file) => elf_eh_frame_segment_address(elf_file),
+        _ => None,
+    }
+}
+
+fn elf_eh_frame_segment_address<'data, Elf: FileHeader<Endian = Endianness>>(
+    elf_file: &object::read::elf::ElfFile<'data, Elf>,
+) -> Option<u64> {
+    let e = elf_file.endian();
     for hdr in elf_file.elf_program_headers() {
-        if hdr.p_type.get(e) == object::elf::PT_GNU_EH_FRAME {
-            return Some(*hdr);
+        if hdr.p_type(e) == object::elf::PT_GNU_EH_FRAME {
+            return Some(hdr.p_vaddr(e).into());
         }
     }
     None

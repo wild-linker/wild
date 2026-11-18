@@ -25,7 +25,10 @@ use object::elf::*;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::SECTION_ATTRIBUTES;
-use object::read::elf::Dyn;
+use object::read::elf::Dyn as _;
+use object::read::elf::ElfFile;
+use object::read::elf::FileHeader;
+use object::read::elf::SectionHeader as _;
 use object::read::macho::LoadCommandVariant;
 use object::read::macho::MachHeader;
 use std::borrow::Cow;
@@ -178,7 +181,7 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
         if sym.address() == address
             && let Ok(name) = sym.name()
             && !name.is_empty()
-            && name != "$x"
+            && !name.starts_with("$x")
         {
             return Some(name.to_owned());
         }
@@ -249,34 +252,10 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
 
                 match object.file {
                     object::File::Elf64(elf_file) => {
-                        let section = elf_file.section_by_index(section.index())?;
-
-                        values.insert("alignment", section.align(), Converter::None, object);
-                        let section_header = section.elf_section_header();
-                        values.insert(
-                            "link",
-                            section_header.sh_link.get(e),
-                            Converter::SectionIndex,
-                            object,
-                        );
-                        values.insert(
-                            "flags",
-                            section_header.sh_flags.get(e).0,
-                            Converter::SectionFlags,
-                            object,
-                        );
-                        values.insert(
-                            "type",
-                            section_header.sh_type.get(e).0,
-                            Converter::None,
-                            object,
-                        );
-                        values.insert(
-                            "entsize",
-                            section_header.sh_entsize.get(e),
-                            Converter::None,
-                            object,
-                        );
+                        read_elf_section_fields(elf_file, section.index(), object, &mut values)?;
+                    }
+                    object::File::Elf32(elf_file) => {
+                        read_elf_section_fields(elf_file, section.index(), object, &mut values)?;
                     }
                     object::File::MachO64(macho_file) => {
                         let section = macho_file.section_by_index(section.index())?;
@@ -299,6 +278,39 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
             DiffMode::Normal,
         ));
     }
+}
+
+fn read_elf_section_fields<File: FileHeader<Endian = Endianness>>(
+    elf_file: &ElfFile<'_, File>,
+    section_index: object::SectionIndex,
+    object: &Binary,
+    values: &mut FieldValues,
+) -> Result<()> {
+    let section = elf_file.section_by_index(section_index)?;
+    let e = elf_file.endian();
+
+    values.insert("alignment", section.align(), Converter::None, object);
+    let section_header = section.elf_section_header();
+    values.insert(
+        "link",
+        section_header.sh_link(e),
+        Converter::SectionIndex,
+        object,
+    );
+    values.insert(
+        "flags",
+        section_header.sh_flags(e).0,
+        Converter::SectionFlags,
+        object,
+    );
+    values.insert("type", section_header.sh_type(e).0, Converter::None, object);
+    values.insert(
+        "entsize",
+        section_header.sh_entsize(e),
+        Converter::None,
+        object,
+    );
+    Ok(())
 }
 
 fn section_or_equiv<'data, 'file: 'data>(
@@ -514,27 +526,10 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
     match &obj.file {
         object::File::Elf64(elf_file) => {
-            let header = elf_file.elf_header();
-            let e = elf_file.endianness();
-            values.insert_string("ident", format!("{:?}", header.e_ident.magic));
-            values.insert("type", header.e_type.get(e).0, Converter::None, obj);
-            values.insert("machine", header.e_machine.get(e).0, Converter::None, obj);
-            values.insert("version", header.e_version.get(e), Converter::None, obj);
-            values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
-            values.insert("phoff", header.e_phoff.get(e), Converter::None, obj);
-            values.insert("flags", header.e_flags.get(e).0, Converter::None, obj);
-            values.insert("ehsize", header.e_ehsize.get(e), Converter::None, obj);
-            values.insert("phentsize", header.e_phentsize.get(e), Converter::None, obj);
-            values.insert("shentsize", header.e_shentsize.get(e), Converter::None, obj);
-            values.insert(
-                "shstrndx",
-                header.e_shstrndx.get(e).0,
-                Converter::SectionIndex,
-                obj,
-            );
-            // We currently ignore e_shoff, e_phnum and e_shnum, since we don't really expect them
-            // the same number of sections and program segments and the section header
-            // offset is also generally going to be different between different linkers.
+            read_elf_file_header_fields(elf_file, obj, &mut values);
+        }
+        object::File::Elf32(elf_file) => {
+            read_elf_file_header_fields(elf_file, obj, &mut values);
         }
         object::File::MachO64(file) => {
             let header = file.macho_header();
@@ -552,15 +547,51 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     Ok(values)
 }
 
+fn read_elf_file_header_fields<File: FileHeader<Endian = Endianness>>(
+    elf_file: &ElfFile<'_, File>,
+    obj: &Binary,
+    values: &mut FieldValues,
+) {
+    let header = elf_file.elf_header();
+    let e = elf_file.endian();
+    values.insert_string("ident", format!("{:?}", header.e_ident().magic));
+    values.insert("type", header.e_type(e).0, Converter::None, obj);
+    values.insert("machine", header.e_machine(e).0, Converter::None, obj);
+    values.insert("version", header.e_version(e), Converter::None, obj);
+    values.insert("entry", header.e_entry(e), Converter::SymAddress, obj);
+    values.insert("phoff", header.e_phoff(e), Converter::None, obj);
+    values.insert("flags", header.e_flags(e).0, Converter::None, obj);
+    values.insert("ehsize", header.e_ehsize(e), Converter::None, obj);
+    values.insert("phentsize", header.e_phentsize(e), Converter::None, obj);
+    values.insert("shentsize", header.e_shentsize(e), Converter::None, obj);
+    values.insert(
+        "shstrndx",
+        header.e_shstrndx(e).0,
+        Converter::SectionIndex,
+        obj,
+    );
+}
+
 fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
+    match &obj.file {
+        object::File::Elf64(elf_file) => read_elf_dynamic_fields(elf_file, obj),
+        object::File::Elf32(elf_file) => read_elf_dynamic_fields(elf_file, obj),
+        _ => bail!("Unsupported object file format for .dynamic"),
+    }
+}
+
+fn read_elf_dynamic_fields<File: FileHeader<Endian = Endianness>>(
+    elf_file: &ElfFile<'_, File>,
+    obj: &Binary,
+) -> Result<FieldValues> {
     let dynamic = obj
         .section_by_name(DYNAMIC_SECTION_NAME_STR)
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 
     let mut values = FieldValues::default();
-    let e = obj.file.endianness();
+    let e = elf_file.endian();
 
-    let entries: &[object::elf::Dyn64<Endianness>] = slice_from_all_bytes(dynamic.data()?);
+    let entries: &[File::Dyn] = slice_from_all_bytes(dynamic.data()?);
     let mut got_null = false;
 
     // The following relies on the BFD order of the tags, but seems the easiest way how to catch
@@ -568,7 +599,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
     let mut rela_is_null = false;
 
     for entry in entries {
-        let value = entry.d_val(e);
+        let value: u64 = entry.d_val(e).into();
         let (tag_name, converter) = match entry.d_tag(e) {
             // Ignore DT_NULL. All linkers should emit at least one, but many emit more than one.
             DT_NULL => {

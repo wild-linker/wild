@@ -4,11 +4,12 @@ use anyhow::bail;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_layout::ArchiveEntryInfo;
-use object::Endianness;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
-use object::read::elf::ElfSection64;
+use object::read::elf::ElfFile;
+use object::read::elf::FileHeader;
+use object::read::elf::Sym as _;
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
@@ -220,11 +221,11 @@ impl<'data> IndexedLayout<'data> {
     }
 
     fn is_section_tls(&self, section: &SectionInfo) -> Result<bool> {
-        if let object::File::Elf64(elf_file) = &self.files[section.section_id.file_index].file {
-            let elf_section = elf_file.section_by_index(section.section_id.section_index)?;
-            if let object::SectionFlags::Elf { sh_flags, .. } = elf_section.flags() {
-                return Ok(sh_flags.contains(linker_utils::elf::shf::TLS));
-            }
+        let elf_section = self.files[section.section_id.file_index]
+            .file
+            .section_by_index(section.section_id.section_index)?;
+        if let object::SectionFlags::Elf { sh_flags, .. } = elf_section.flags() {
+            return Ok(sh_flags.contains(linker_utils::elf::shf::TLS));
         }
         Ok(false)
     }
@@ -268,12 +269,14 @@ impl<'data> IndexedLayout<'data> {
     pub(crate) fn get_elf_section(
         &self,
         section_id: InputSectionId,
-    ) -> Result<ElfSection64<'data, '_, Endianness>> {
-        let object::File::Elf64(elf_file) = &self.files[section_id.file_index].file else {
-            bail!("get_elf_section called for non-ELF file");
-        };
-
-        Ok(elf_file.section_by_index(section_id.section_index)?)
+    ) -> Result<object::Section<'data, '_>> {
+        let file = &self.files[section_id.file_index].file;
+        match file {
+            object::File::Elf32(_) | object::File::Elf64(_) => {
+                Ok(file.section_by_index(section_id.section_index)?)
+            }
+            _ => bail!("get_elf_section called for non-ELF file"),
+        }
     }
 
     pub(crate) fn input_file_for_section(&self, section_id: InputSectionId) -> &InputFile<'data> {
@@ -308,14 +311,17 @@ impl<'data> IndexedLayout<'data> {
 
 fn is_ifunc(object: &object::File, symbol: &object::Symbol) -> bool {
     match object {
-        object::File::Elf64(elf_file) => {
-            let Ok(elf_symbol) = elf_file.symbol_by_index(symbol.index()) else {
-                return false;
-            };
-            elf_symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC
-        }
+        object::File::Elf64(elf_file) => elf_is_ifunc(elf_file, symbol.index()),
+        object::File::Elf32(elf_file) => elf_is_ifunc(elf_file, symbol.index()),
         _ => false,
     }
+}
+
+fn elf_is_ifunc<File: FileHeader>(elf_file: &ElfFile<File>, index: object::SymbolIndex) -> bool {
+    let Ok(elf_symbol) = elf_file.symbol_by_index(index) else {
+        return false;
+    };
+    elf_symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC
 }
 
 pub(crate) struct InputSectionDisplay<'layout, 'data> {

@@ -22,7 +22,6 @@ use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::utils::slice_from_all_bytes;
-use object::Endianness;
 use object::File;
 use object::Object as _;
 use object::ObjectSection;
@@ -58,7 +57,6 @@ mod version_diff;
 mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
-type ElfFile64<'data> = object::read::elf::ElfFile64<'data, Endianness>;
 type ValidationMap = (&'static str, fn(&Binary) -> Result);
 
 pub use crate::colour::ColourMode;

@@ -8,6 +8,8 @@ use object::Object;
 use object::ObjectSymbol;
 use object::elf;
 use object::elf::VER_FLG_BASE;
+use object::read::elf::ElfFile;
+use object::read::elf::FileHeader;
 use object::read::elf::Sym;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
@@ -28,12 +30,18 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 // Reads version names defined in the binary's version_d section and their parent name to find
 // whether all the versions are present.
 fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = bin.file.endianness();
-    let mut values = FieldValues::default();
+    match bin.file {
+        File::Elf64(elf_file) => read_elf_gnu_version_d(elf_file),
+        File::Elf32(elf_file) => read_elf_gnu_version_d(elf_file),
+        _ => Ok(FieldValues::default()),
+    }
+}
 
-    let File::Elf64(elf_file) = bin.file else {
-        return Ok(values);
-    };
+fn read_elf_gnu_version_d<'data, Elf: FileHeader<Endian = object::Endianness>>(
+    elf_file: &ElfFile<'data, Elf>,
+) -> Result<FieldValues> {
+    let e = elf_file.endian();
+    let mut values = FieldValues::default();
 
     let Some((mut verdef_iterator, strings_index)) = elf_file
         .elf_section_table()
@@ -86,12 +94,18 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
 // Reads dynamic symbol names and their corresponding version names to find whether all dynamic
 // symbols have the correct version.
 fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = bin.file.endianness();
-    let mut values = FieldValues::default();
+    match bin.file {
+        File::Elf64(elf_file) => read_elf_gnu_version(elf_file),
+        File::Elf32(elf_file) => read_elf_gnu_version(elf_file),
+        _ => Ok(FieldValues::default()),
+    }
+}
 
-    let File::Elf64(elf_file) = bin.file else {
-        return Ok(values);
-    };
+fn read_elf_gnu_version<'data, Elf: FileHeader<Endian = object::Endianness>>(
+    elf_file: &ElfFile<'data, Elf>,
+) -> Result<FieldValues> {
+    let e = elf_file.endian();
+    let mut values = FieldValues::default();
 
     let Some((versyms, _)) = elf_file
         .elf_section_table()
