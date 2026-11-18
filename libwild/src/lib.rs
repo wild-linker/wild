@@ -40,7 +40,6 @@ pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
-#[cfg_attr(not(feature = "plugins"), path = "lto_disabled.rs")]
 mod lto;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
@@ -343,7 +342,7 @@ impl<F: FileSystem> Linker<F> {
         file_loader: &mut FileLoader<'data, F>,
         args: &'data P::Args,
     ) -> error::Result<(LinkerOutput<'data>, F::Output)> {
-        let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
+        let mut plugin = P::maybe_init_lto(args, &self.linker_plugin_arena, &self.herd)?;
 
         let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
 
@@ -405,7 +404,7 @@ impl<F: FileSystem> Linker<F> {
         if let Some(plugin) = plugin.as_mut()
             && plugin.is_initialised()
         {
-            P::plugin_all_symbols_read(
+            P::lto_all_symbols_read(
                 plugin,
                 &mut symbol_db,
                 &mut resolver,

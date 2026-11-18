@@ -72,13 +72,17 @@ tempfile.workspace = true
 
 # When adding new features, please update version.rs.
 [features]
+
+# Shared LTO infrastructure; enabled by the backends.
+lto = []
+
 default = ["zstd"]
 
 # Support for running the linker as a subprocess.
 fork = []
 
 # Support for linker-plugins.
-plugins = ["libloading"]
+plugins = ["libloading", "lto"]
 
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]

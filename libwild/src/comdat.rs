@@ -171,7 +171,6 @@ pub(crate) struct Selection<'data> {
 }
 
 impl<'data> Selection<'data> {
-    #[cfg(feature = "plugins")]
     pub(crate) fn begin_lto_output(&mut self, first_group: usize) {
         self.first_lto_output_group = Some(first_group);
     }
@@ -207,7 +206,7 @@ impl<'data> Selection<'data> {
 
         let winners = self.select_native_groups(symbol_db, &selected);
 
-        #[cfg(feature = "plugins")]
+        #[cfg(feature = "lto")]
         self.select_ir_groups(resolved, symbol_db, &winners);
 
         Self::apply_selection(resolved, &selected)?;
@@ -386,7 +385,7 @@ impl<'data> Selection<'data> {
             .collect()
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(feature = "lto")]
     fn select_ir_groups<P: Platform>(
         &mut self,
         resolved: &mut [ResolvedGroup<'data, P>],

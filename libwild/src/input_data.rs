@@ -16,8 +16,8 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::file_kind::FileKind;
-use crate::linker_plugins::LinkerPlugin;
 use crate::linker_script::LinkerScript;
+use crate::lto::LtoBackend;
 use crate::lto::LtoInputInfo;
 use crate::macho_stub_library::DefinedStubLibrary;
 use crate::macho_stub_library::parse_defined_library;
@@ -347,7 +347,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         &mut self,
         inputs: &[Input],
         args: &'data P::Args,
-        plugin: &mut Option<LinkerPlugin<'data>>,
+        plugin: &mut Option<LtoBackend<'data>>,
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
@@ -423,7 +423,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             framework_search_path: &self.resolved_framework_search_path,
             logical_sysroot: self.logical_sysroot.as_deref(),
             physical_sysroot: self.physical_sysroot.as_deref(),
-            has_plugin: plugin.is_some(),
+            has_plugin: plugin.as_ref().is_some_and(LtoBackend::uses_embedded_ir),
             inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
@@ -498,7 +498,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
     fn extract_all<P: Platform>(
         &mut self,
         files: &mut [Option<LoadedFileState<'data, P, F::Input>>],
-        plugin: &mut Option<LinkerPlugin<'data>>,
+        plugin: &mut Option<LtoBackend<'data>>,
     ) -> Result<LoadedInputs<'data, P>> {
         let mut loaded = LoadedInputs {
             objects: Vec::with_capacity(files.len()),
@@ -519,7 +519,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         index: FileLoadIndex,
         files: &mut [Option<LoadedFileState<'data, P, F::Input>>],
         loaded: &mut LoadedInputs<'data, P>,
-        plugin: &mut Option<LinkerPlugin<'data>>,
+        plugin: &mut Option<LtoBackend<'data>>,
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
             None => {}
@@ -1265,7 +1265,7 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
     fn add_record(
         &mut self,
         record: InputRecord<'data, P>,
-        plugin: &mut Option<LinkerPlugin<'data>>,
+        plugin: &mut Option<LtoBackend<'data>>,
     ) {
         match record {
             InputRecord::Object(obj) => self.objects.push(obj),
@@ -1282,10 +1282,7 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
                         )
                     })
                     .and_then(|plugin| {
-                        let file = file
-                            .as_deref()
-                            .context("Linker plugins require a native filesystem input")?;
-                        plugin.process_input(input_ref, file, kind)
+                        plugin.process_input(input_ref, file.as_deref(), kind)
                     });
                 match plugin_result {
                     Ok(Some(info)) => self.lto_objects.push(Ok(info)),
@@ -1299,7 +1296,7 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
     fn add_records(
         &mut self,
         parsed_parts: Vec<InputRecord<'data, P>>,
-        plugin: &mut Option<LinkerPlugin<'data>>,
+        plugin: &mut Option<LtoBackend<'data>>,
     ) {
         for part in parsed_parts {
             self.add_record(part, plugin);

@@ -26,8 +26,8 @@ use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
-use crate::linker_plugins::LinkerPlugin;
 use crate::linker_script;
+use crate::lto::LtoBackend;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -561,19 +561,18 @@ pub(crate) trait Platform:
         Ok(())
     }
 
-    /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
-    /// that one should be used.
-    fn maybe_init_linker_plugin<'data>(
+    /// Select an LTO backend when supported by this platform and build configuration.
+    fn maybe_init_lto<'data>(
         _args: &'data Self::Args,
         _linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
         _herd: &'data bumpalo_herd::Herd,
-    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+    ) -> Result<Option<crate::lto::LtoBackend<'data>>> {
         Ok(None)
     }
 
-    /// Called once all symbols have been read, but only if a linker plugin is active.
-    fn plugin_all_symbols_read<'data, F: FileSystem>(
-        _plugin: &mut LinkerPlugin<'data>,
+    /// Called once all symbols have been read, if the LTO backend has processed inputs.
+    fn lto_all_symbols_read<'data, F: FileSystem>(
+        _plugin: &mut LtoBackend<'data>,
         _symbol_db: &mut SymbolDb<'data, Self>,
         _resolver: &mut Resolver<'data, Self>,
         _file_loader: &mut FileLoader<'data, F>,
@@ -581,7 +580,7 @@ pub(crate) trait Platform:
         _output_sections: &mut OutputSections<'data, Self>,
         _layout_rules_builder: &mut LayoutRulesBuilder<'data>,
     ) -> Result {
-        // Platforms that implement maybe_init_linker_plugin must implement this method too.
+        // Platforms that implement maybe_init_lto must implement this method too.
         unimplemented!();
     }
 

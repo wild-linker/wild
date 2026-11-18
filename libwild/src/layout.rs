@@ -5685,7 +5685,6 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
-            #[cfg(feature = "plugins")]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
                 section_id_range: s.section_id_range,

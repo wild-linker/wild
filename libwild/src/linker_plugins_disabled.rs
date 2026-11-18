@@ -10,12 +10,11 @@ use crate::error::Result;
 use crate::fs::FileSystem;
 use crate::input_data::FileLoader;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::lto::LtoInputInfo;
 use crate::output_section_id::OutputSections;
 use crate::resolution::Resolver;
 use crate::symbol_db::SymbolDb;
-use crate::symbol_db::SymbolId;
 use crate::value_flags::PerSymbolFlags;
-use rayon::Scope;
 use std::marker::PhantomData;
 
 /// Whether linker plugins can be used: the `plugins` feature is on and the host can load them.
@@ -24,10 +23,6 @@ pub(crate) const ENABLED: bool = false;
 pub(crate) struct LoadedPlugin {}
 
 pub(crate) struct LinkerPlugin<'data> {
-    _phantom: PhantomData<&'data u8>,
-}
-
-pub(crate) struct LtoInputInfo<'data> {
     _phantom: PhantomData<&'data u8>,
 }
 
@@ -66,17 +61,4 @@ impl<'data> LinkerPlugin<'data> {
     ) -> Result {
         Ok(())
     }
-}
-
-pub(crate) struct LtoInput<'data> {
-    _p: PhantomData<&'data ()>,
-}
-
-pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
-    _obj: &LtoInput<'data>,
-    _resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Elf<C>>,
-    _definitions_out: &mut [SymbolId],
-    _scope: &Scope<'scope>,
-) -> Result {
-    Ok(())
 }
