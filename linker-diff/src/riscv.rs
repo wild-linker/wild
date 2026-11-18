@@ -43,6 +43,7 @@ impl Arch for RiscV {
 
         match r_type.0 {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
+                relax(RelaxationKind::CallToCJal, object::elf::R_RISCV_RVC_JUMP);
                 relax(RelaxationKind::CallToJal, object::elf::R_RISCV_JAL);
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_RISCV_NONE);
             }
@@ -62,10 +63,14 @@ impl Arch for RiscV {
         relax(RelaxationKind::NoOp, r_type.0);
     }
 
-    fn relaxation_byte_range(_relaxation: Relaxation<Self>) -> RelaxationByteRange {
+    fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange {
+        let num_bytes = match relaxation.relaxation_kind {
+            RelaxationKind::CallToCJal => 2,
+            _ => 4,
+        };
         RelaxationByteRange {
             offset_shift: 0,
-            num_bytes: 4,
+            num_bytes,
         }
     }
 

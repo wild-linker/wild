@@ -26,6 +26,7 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::riscv::JAL_RANGE;
 use linker_utils::riscv::RelaxationKind;
+use linker_utils::riscv::distance_fits_cjal;
 use linker_utils::riscv::distance_fits_jal;
 use linker_utils::riscv::relocation_type_from_raw;
 use object::elf::EF_RISCV_RV64ILP32;
@@ -231,13 +232,13 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
     where
         Self: std::marker::Sized,
     {
-        // TODO: Support relaxations for riscv32.
-        if C::ADDRESS_SIZE != 8 {
-            return None;
-        }
-
         let mut relocation = Self::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
+
+        // IFuncs cannot be referenced directly, they always need to go via the PLT.
+        if flags.is_ifunc() {
+            return None;
+        }
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
         // relocation is in a non-executable section.
@@ -245,26 +246,33 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
             return None;
         }
 
-        let offset = offset_in_section as usize;
-
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
                 return if sym_addr != 0 {
-                    if is_jalr_deleted(section_bytes, offset) {
-                        // Rewrite auipc into jal.
-                        Some(Relaxation {
-                            kind: RelaxationKind::CallToJal,
-                            rel_info: rel_info_from_type!(object::elf::R_RISCV_JAL),
-                            mandatory: output_kind.is_static_executable(),
-                        })
-                    } else {
-                        relocation.kind = RelocationKind::Relative;
-                        Some(Relaxation {
-                            kind: RelaxationKind::NoOp,
-                            rel_info: relocation,
-                            mandatory: output_kind.is_static_executable(),
-                        })
+                    if let Some(deltas) = relax_deltas {
+                        let input_offset = deltas.output_to_input_offset(offset_in_section);
+                        if C::ADDRESS_SIZE == 4 && deltas.delta_bytes_at(input_offset + 2) == 6 {
+                            // Rewrite auipc into c.jal.
+                            return Some(Relaxation {
+                                kind: RelaxationKind::CallToCJal,
+                                rel_info: rel_info_from_type!(object::elf::R_RISCV_RVC_JUMP),
+                                mandatory: output_kind.is_static_executable(),
+                            });
+                        } else if deltas.delta_bytes_at(input_offset + 4) == 4 {
+                            // Rewrite auipc into jal.
+                            return Some(Relaxation {
+                                kind: RelaxationKind::CallToJal,
+                                rel_info: rel_info_from_type!(object::elf::R_RISCV_JAL),
+                                mandatory: output_kind.is_static_executable(),
+                            });
+                        }
                     }
+                    relocation.kind = RelocationKind::Relative;
+                    Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                        mandatory: output_kind.is_static_executable(),
+                    })
                 } else {
                     // Target resolved to zero (e.g. weak undef) — replace with nop.
                     Some(Relaxation {
@@ -324,7 +332,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
     }
 
     fn supports_size_reduction_relaxations() -> bool {
-        C::ADDRESS_SIZE == 8
+        true
     }
 
     fn collect_relaxation_deltas(
@@ -399,23 +407,6 @@ pub(crate) struct Relaxation {
     kind: RelaxationKind,
     rel_info: RelocationKindInfo,
     mandatory: bool,
-}
-
-/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
-/// by a size-changing relaxation.
-fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
-    if offset + 8 > section_bytes.len() {
-        return true;
-    }
-
-    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
-    let auipc_rd = (auipc_word >> 7) & 0x1f;
-    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
-    // jalr opcode = 0x67; rs1 in bits [19:15]
-    let is_jalr_with_matching_rs1 =
-        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
-
-    !is_jalr_with_matching_rs1
 }
 
 impl crate::platform::Relaxation for Relaxation {
@@ -510,17 +501,32 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
                     && rel.offset() == call_offset
-                    && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
+                    && !existing_deltas.is_some_and(|d| {
+                        d.has_delta_at(call_offset + 2) || d.has_delta_at(call_offset + 4)
+                    })
                 {
                     if let Some(info) = resolve_symbol(sym_idx)
                         && !info.is_interposable
+                        && !info.is_ifunc
                     {
                         let call_output_offset = existing_deltas.map_or(call_offset, |deltas| {
                             deltas.input_to_output_offset(call_offset)
                         });
                         let distance = info.output_address as i64
                             - (section_output_address + call_output_offset) as i64;
-                        if distance_fits_jal(distance) {
+                        let off = call_offset as usize;
+                        let jalr_word =
+                            u32::from_le_bytes(section_bytes[off + 4..off + 8].try_into().unwrap());
+                        let rd = (jalr_word >> 7) & 0x1f;
+                        if C::ADDRESS_SIZE == 4
+                            && off + 8 <= section_bytes.len()
+                            && rd == 1
+                            && distance_fits_cjal(distance)
+                        {
+                            // Delete 6 bytes starting at call_offset + 2 (keeps 2 bytes for c.jal).
+                            raw_deltas.push((call_offset + 2, 6));
+                            new_cumulative_delta += 6;
+                        } else if distance_fits_jal(distance) {
                             // Delete the jalr instruction (4 bytes at call_offset + 4).
                             raw_deltas.push((call_offset + 4, 4));
                             new_cumulative_delta += 4;
@@ -541,6 +547,7 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
                     })
                     && let Some(info) = resolve_symbol(sym_idx)
                     && !info.is_interposable
+                    && !info.is_ifunc
                 {
                     let output_address = info.output_address;
                     let off = hi20_offset as usize;
@@ -614,7 +621,9 @@ fn collect_relaxation_referenced_symbols<C: ElfClass, R: Relocation<Platform = E
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
                     && rel.offset() == call_offset
-                    && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
+                    && !existing_deltas.is_some_and(|d| {
+                        d.has_delta_at(call_offset + 2) || d.has_delta_at(call_offset + 4)
+                    })
                 {
                     symbols.push(sym_idx);
                 } else if let Some((hi20_offset, sym_idx)) = prev_hi20

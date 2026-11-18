@@ -12,10 +12,19 @@ use crate::utils::u32_from_slice;
 /// JAL instruction range: signed 21-bit immediate, 2-byte aligned.
 pub const JAL_RANGE: std::ops::RangeInclusive<i64> = -(1i64 << 20)..=((1i64 << 20) - 1);
 
+/// C.JAL instruction range: signed 12-bit immediate, 2-byte aligned.
+pub const CJAL_RANGE: std::ops::RangeInclusive<i64> = -(1i64 << 11)..=((1i64 << 11) - 1);
+
 #[inline]
 #[must_use]
 pub fn distance_fits_jal(distance: i64) -> bool {
     JAL_RANGE.contains(&distance)
+}
+
+#[inline]
+#[must_use]
+pub fn distance_fits_cjal(distance: i64) -> bool {
+    (distance % 2 == 0) && CJAL_RANGE.contains(&distance)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +37,9 @@ pub enum RelaxationKind {
 
     /// Rewrite auipc+jalr to jal.
     CallToJal,
+
+    /// Rewrite auipc+jalr to c.jal (RiscV32 only).
+    CallToCJal,
 
     /// Rewrite 4-byte `lui rd, imm` to 2-byte `c.lui rd, nzimm`.
     Hi20ToCLui,
@@ -57,6 +69,10 @@ impl RelaxationKind {
                 let jal_base = 0x6fu32 | (rd << 7);
                 section_bytes[offset..offset + 4].copy_from_slice(&jal_base.to_le_bytes());
             }
+            RelaxationKind::CallToCJal => {
+                let cjal_base = 0x2001u16;
+                section_bytes[offset..offset + 2].copy_from_slice(&cjal_base.to_le_bytes());
+            }
             RelaxationKind::Hi20ToCLui => {
                 let lui_lo = u16::from_le_bytes([section_bytes[offset], section_bytes[offset + 1]]);
                 let rd = (lui_lo >> 7) & 0x1f;
@@ -75,7 +91,7 @@ impl RelaxationKind {
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
         match self {
-            RelaxationKind::CallToJal | RelaxationKind::Hi20Delete => {
+            RelaxationKind::CallToJal | RelaxationKind::CallToCJal | RelaxationKind::Hi20Delete => {
                 RelocationModifier::SkipNextRelocation
             }
             _ => RelocationModifier::Normal,
