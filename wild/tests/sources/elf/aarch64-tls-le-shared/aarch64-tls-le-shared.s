@@ -1,11 +1,11 @@
 // Checks that a local-exec TLS access (R_AARCH64_TLSLE_ADD_TPREL_HI12/LO12_NC) is an error when
 // linking a shared object. Local-exec is a fixed offset from the thread pointer into the
 // executable's TLS block, and a shared object's TLS variables aren't in that block.
-// GNU ld accepts this and produces a broken library, so there's no reference linker.
+// GNU ld accepts this on AArch64, so only lld is used as a reference.
 //#Arch:aarch64
 //#LinkArgs:-shared
-//#ReferenceLinkers:
-//#ExpectErrorWild:R_AARCH64_TLSLE_ADD_TPREL_HI12 against symbol `tls_var` cannot be used when making a shared object
+//#ReferenceLinkers:lld
+//#ExpectError:R_AARCH64_TLSLE_ADD_TPREL_HI12.*tls_var.*shared
 
 .section .tdata,"awT",%progbits
 .globl tls_var
