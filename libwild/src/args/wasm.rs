@@ -77,9 +77,8 @@ pub struct WasmArgs {
     // Export all defined, non-hidden symbols (`--export-dynamic`).
     pub(crate) export_dynamic: bool,
     pub(crate) gc_sections: bool,
-    pub(crate) allow_undefined: bool,
     pub(crate) import_undefined: bool,
-    pub(crate) error_unresolved_symbols: bool,
+    pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) allow_multiple_definition: bool,
     pub(crate) strip_debug: bool,
     pub(crate) strip_all: bool,
@@ -124,10 +123,13 @@ impl WasmArgs {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+}
 
-    pub(crate) fn report_unresolved_symbols(&self) -> bool {
-        self.error_unresolved_symbols && !self.allow_undefined
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnresolvedSymbols {
+    Error,
+    Warn,
+    Ignore,
 }
 
 impl Default for WasmArgs {
@@ -158,9 +160,8 @@ impl Default for WasmArgs {
             import_table: false,
             export_dynamic: false,
             gc_sections: true,
-            allow_undefined: false,
             import_undefined: false,
-            error_unresolved_symbols: true,
+            unresolved_symbols: UnresolvedSymbols::Error,
             allow_multiple_definition: false,
             strip_debug: false,
             strip_all: false,
@@ -610,8 +611,8 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .long("allow-undefined")
         .help("Allow undefined symbols in the output")
         .execute(|args, _modifier_stack| {
-            args.allow_undefined = true;
             args.import_undefined = true;
+            args.unresolved_symbols = UnresolvedSymbols::Ignore;
             Ok(())
         });
 
@@ -629,7 +630,20 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .long("error-unresolved-symbols")
         .help("Report unresolved symbols as errors")
         .execute(|args, _modifier_stack| {
-            args.error_unresolved_symbols = true;
+            if args.unresolved_symbols != UnresolvedSymbols::Ignore {
+                args.unresolved_symbols = UnresolvedSymbols::Error;
+            }
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("warn-unresolved-symbols")
+        .help("Report unresolved symbols as warnings")
+        .execute(|args, _modifier_stack| {
+            if args.unresolved_symbols != UnresolvedSymbols::Ignore {
+                args.unresolved_symbols = UnresolvedSymbols::Warn;
+            }
             Ok(())
         });
 
