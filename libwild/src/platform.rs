@@ -1784,6 +1784,11 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
+    /// Objects generated from command-line options, as (name, bytes) pairs.
+    fn synthetic_objects(&self) -> impl Iterator<Item = (&Path, &[u8])> {
+        std::iter::empty()
+    }
+
     fn lib_search_path(&self) -> &[Box<Path>];
 
     /// Expand explicitly sysroot-relative input and library search paths using the resolved root.
