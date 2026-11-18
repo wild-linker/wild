@@ -466,7 +466,8 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             let input_file = &*self.inputs_arena.alloc(InputFile {
                 filename: path.to_owned(),
                 original_filename: path.to_owned(),
-                // Mark it as temporary so linker-diff doesn't try to parse the payload as an object file.
+                // Mark it as temporary so linker-diff doesn't try to parse the payload
+                // as an object file.
                 modifiers: Modifiers {
                     temporary: true,
                     ..Default::default()
