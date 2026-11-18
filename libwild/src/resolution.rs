@@ -112,6 +112,8 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
 
+        P::add_command_line_sections(symbol_db.args, output_sections);
+
         assign_section_ids(
             &mut self.resolved_groups,
             &mut symbol_db.section_part_ids,

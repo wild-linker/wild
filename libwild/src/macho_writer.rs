@@ -373,6 +373,21 @@ fn write_epilogue(
     layout: &MachOLayout<'_>,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
+    for sc in &layout.args().sectcreate {
+        let sec_id = layout
+            .output_sections
+            .custom_identity_to_id(crate::macho::sectcreate_identity(sc))
+            .context("Missing output section for -sectcreate")?;
+        if crate::macho::is_zerofill_section(layout.output_sections.section_flags(sec_id)) {
+            continue;
+        }
+        let part = sec_id.part_id_with_alignment::<MachO>(crate::alignment::MIN);
+        let out = buffers
+            .get_mut(part)
+            .split_off_mut(..sc.contents.len())
+            .context("-sectcreate section buffer is too small")?;
+        out.copy_from_slice(&sc.contents);
+    }
     write_chained_fixup_table(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
     write_init_offsets(layout, buffers.get_mut(part_id::INIT_OFFSETS))?;
 

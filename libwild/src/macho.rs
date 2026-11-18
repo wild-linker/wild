@@ -1414,9 +1414,15 @@ impl platform::Platform for MachO {
     }
 
     fn apply_force_keep_sections(
-        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        _args: &Self::Args,
+        keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
+        args: &Self::Args,
+        output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
+        for sc in &args.sectcreate {
+            if let Some(sec_id) = output_sections.custom_identity_to_id(sectcreate_identity(sc)) {
+                *keep_sections.get_mut(sec_id) = true;
+            }
+        }
     }
 
     fn is_zero_sized_section_content(
@@ -1996,6 +2002,24 @@ impl platform::Platform for MachO {
         Ok(())
     }
 
+    fn add_command_line_sections<'data>(
+        args: &'data Self::Args,
+        output_sections: &mut crate::output_section_id::OutputSections<'data, Self>,
+    ) {
+        for sc in &args.sectcreate {
+            output_sections.get_or_create_named_section(
+                sectcreate_identity(sc),
+                alignment::MIN,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+            );
+        }
+    }
+
     fn new_epilogue_layout<'data>(
         _args: &Self::Args,
         _output_kind: crate::output_kind::OutputKind,
@@ -2084,14 +2108,32 @@ impl platform::Platform for MachO {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        _state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         output_sections: &crate::output_section_id::OutputSections<Self>,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
         format_specific: &Self::FinaliseSizesExt<'_>,
-        _args: &Self::Args,
+        args: &Self::Args,
     ) -> Result {
+        for sc in &args.sectcreate {
+            let sec_id = output_sections
+                .custom_identity_to_id(sectcreate_identity(sc))
+                .context("Missing output section for -sectcreate")?;
+            ensure!(
+                sec_id.is_regular::<MachO>(),
+                "-sectcreate into the built-in section `{}` is not supported",
+                sc.sectname
+            );
+            if is_zerofill_section(output_sections.section_flags(sec_id)) {
+                continue;
+            }
+            let part = sec_id.part_id_with_alignment::<MachO>(alignment::MIN);
+            let size = sc.contents.len() as u64;
+            extra_sizes.increment(part, size);
+            state.sectcreate_parts.push((part, size));
+        }
+
         // Addresses aren't available yet, so estimate the number of pages that can contain fixups
         // from all sections in the __DATA and __DATA_CONST segments.
         let data_like_sections = output_sections
@@ -2142,7 +2184,7 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_layout_epilogue<'data>(
-        _epilogue_state: &mut Self::EpilogueLayoutExt,
+        epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         format_specific: &Self::FinaliseSizesExt<'data>,
@@ -2153,6 +2195,9 @@ impl platform::Platform for MachO {
             part_id::INIT_OFFSETS,
             format_specific.init_functions.len() as u64 * INIT_OFFSET_ENTRY_SIZE,
         );
+        for &(part, size) in &epilogue_state.sectcreate_parts {
+            memory_offsets.increment(part, size);
+        }
         Ok(())
     }
 
@@ -2762,6 +2807,7 @@ pub(crate) struct CommonGroupStateExt {
 #[derive(Debug, Default)]
 pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
+    sectcreate_parts: Vec<(crate::part_id::PartId, u64)>,
 }
 
 #[derive(Debug)]
@@ -2891,6 +2937,24 @@ fn add_sections_in_segment<'data>(
             builder.add_section(section_id);
         }
     }
+}
+
+pub(crate) fn is_zerofill_section(flags: SectionFlags) -> bool {
+    matches!(
+        flags.typ(),
+        object::macho::S_ZEROFILL
+            | object::macho::S_GB_ZEROFILL
+            | object::macho::S_THREAD_LOCAL_ZEROFILL
+    )
+}
+
+pub(crate) fn sectcreate_identity(
+    sc: &crate::args::macho::SectCreate,
+) -> SectionIdentity<'_, MachO> {
+    SectionIdentity::new(
+        SectionName(sc.sectname.as_bytes()),
+        Some(SegmentName::from_bytes(sc.segname.as_bytes())),
+    )
 }
 
 #[derive(Debug)]

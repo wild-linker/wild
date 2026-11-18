@@ -40,6 +40,15 @@ pub struct MachOArgs {
     pub(crate) rpaths: Vec<String>,
     pub(crate) export_list_paths: Vec<PathBuf>,
     pub(crate) merge_cstring_literals: bool,
+    pub(crate) sectcreate: Vec<SectCreate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectCreate {
+    pub(crate) segname: String,
+    pub(crate) sectname: String,
+    pub(crate) path: PathBuf,
+    pub(crate) contents: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,10 +130,26 @@ impl Default for MachOArgs {
             install_name: None,
             current_version: SemanticVersion(Version(0)),
             compatibility_version: SemanticVersion(Version(0)),
+            sectcreate: Vec::new(),
             rpaths: Vec::new(),
             export_list_paths: Vec::new(),
             merge_cstring_literals: true,
         }
+    }
+}
+
+impl MachOArgs {
+    fn load_sectcreate_files(&mut self, file_system: &impl FileSystem) -> Result {
+        use crate::fs::InputFileData;
+
+        for sc in &mut self.sectcreate {
+            let path = self.common.resolve_input_path(&sc.path);
+            let (input, _) = file_system.open_input(&path, false).with_context(|| {
+                format!("Failed to read -sectcreate file `{}`", sc.path.display())
+            })?;
+            sc.contents = input.bytes().to_vec();
+        }
+        Ok(())
     }
 }
 
@@ -134,7 +159,8 @@ impl platform::Args for MachOArgs {
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input, file_system)
+        parse(self, input, file_system)?;
+        self.load_sectcreate_files(file_system)
     }
 
     fn should_strip_debug(&self) -> bool {
@@ -358,9 +384,20 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     parser
         .declare_with_three_params()
         .short("sectcreate")
-        .help("Create a section from a file (not yet supported)")
-        .execute(|args, _modifier_stack, _segment, _section, _file| {
-            args.warn_unsupported("-sectcreate")
+        .help("Create a section from the contents of a file")
+        .execute(|args, _modifier_stack, segname, sectname, file| {
+            ensure!(
+                segname.len() <= 16 && sectname.len() <= 16,
+                "-sectcreate names must be at most 16 bytes"
+            );
+            args.common_mut().save_dir.handle_file(file);
+            args.sectcreate.push(SectCreate {
+                segname: segname.to_owned(),
+                sectname: sectname.to_owned(),
+                path: PathBuf::from(file),
+                contents: Vec::new(),
+            });
+            Ok(())
         });
     parser
         .declare_with_param()

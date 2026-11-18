@@ -337,6 +337,7 @@ impl Platform for Coff {
     fn apply_force_keep_sections(
         _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
         _args: &Self::Args,
+        _output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
     }
 

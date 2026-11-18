@@ -925,7 +925,11 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         crate::lto::resolve_lto_symbols(obj, resources, definitions_out, scope)
     }
 
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
+    fn apply_force_keep_sections(
+        keep_sections: &mut OutputSectionMap<bool>,
+        args: &ElfArgs,
+        _output_sections: &OutputSections<Self>,
+    ) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
         // keeping, which by inherently needs to be after this method is called.

@@ -3964,7 +3964,11 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         });
 
         // Keep any sections that we've said we want to keep regardless.
-        P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
+        P::apply_force_keep_sections(
+            &mut keep_sections,
+            resources.symbol_db.args,
+            output_sections,
+        );
 
         if output_order.has_custom_layout()
             && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID

@@ -610,7 +610,11 @@ pub(crate) trait Platform:
 
     /// Implementations can force certain sections to be kept. Only needs to be done for sections
     /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Self::Args);
+    fn apply_force_keep_sections(
+        keep_sections: &mut OutputSectionMap<bool>,
+        args: &Self::Args,
+        output_sections: &OutputSections<Self>,
+    );
 
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
@@ -892,6 +896,12 @@ pub(crate) trait Platform:
         resources: &'scope layout::GraphResources<'data, 'scope, Self>,
         scope: &Scope<'scope>,
     ) -> Result;
+
+    fn add_command_line_sections<'data>(
+        _args: &'data Self::Args,
+        _output_sections: &mut crate::output_section_id::OutputSections<'data, Self>,
+    ) {
+    }
 
     fn new_epilogue_layout<'data>(
         args: &Self::Args,

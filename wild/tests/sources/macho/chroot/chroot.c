@@ -17,4 +17,10 @@
 //#Archive:as(root/sdk/usr/lib/libmain.a),noadd:chroot.c
 //#LinkArgs:--chroot root -syslibroot root/sdk -lmain
 
+//#Config:sectcreate:base
+//#Object:as(root/input.o),noadd:chroot.c
+//#Copy:../sectcreate/info.txt:root/info.txt
+//#LinkArgs:-sectcreate __TEXT __info /info.txt --chroot $OUT_DIR/root /input.o
+//#ExpectSectionBytes:__info=0x68656c6c6f20736563746372656174650a
+
 int main(void) { return 42; }
