@@ -1,10 +1,17 @@
 /*
  * checking that __global_pointer$ is set the same in symtab and relocations: .data + 0x800
-//#Arch: riscv64
+//#AbstractConfig:default
 //#ReferenceLinkers: bfd
-//#CompArgs: -march=rv64gc
 //#LinkArgs: -nostdlib -static --no-relax
 //#RunEnabled: true
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
 */
 
 .section .text, "ax", @progbits

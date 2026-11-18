@@ -36,6 +36,12 @@
 //#ExpectSection:.relr.dyn max_entries=7
 //#CompArgs:-fPIE
 
+//#Config:riscv32:default
+//#Arch:riscv32
+//#ExpectSection:.relr.dyn max_entries=8
+//#CompArgs:-fPIE
+//#RunEnabled:false
+
 //#Config:ppc64le:default
 //#Arch:ppc64le
 //#ExpectSection:.relr.dyn max_entries=4

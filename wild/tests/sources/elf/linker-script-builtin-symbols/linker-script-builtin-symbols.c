@@ -27,8 +27,8 @@
 //#ExpectError:(?i-u)symbol( not found:)? '?__tdata_start'?
 //#ExpectErrorWild:Symbol '__tdata_start' referenced by --defsym does not exist
 
-//#Config:no_sections_riscv64:no_sections
-//#Arch:riscv64
+//#Config:no_sections_riscv:no_sections
+//#Arch:riscv64,riscv32
 //#ExpectSym:__global_pointer$
 
 #include "../common/runtime.h"

@@ -1,4 +1,4 @@
-//#Arch:riscv64
+//#Arch:riscv64,riscv32
 //#LinkerScript:linker-script-relaxed-symbol.ld
 //#ReferenceLinkers:bfd,lld
 //#Object:linker-script-relaxed-symbol.s

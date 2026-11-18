@@ -1,7 +1,7 @@
 /*
  * Tests that we can handle a relative relocation to address 0 from a
  * non-relocatable RISC-V executable.
-//#Arch: riscv64
+//#Arch: riscv64,riscv32
 //#LinkArgs: -nostdlib -static
 //#Mode: static
 //#RunEnabled: false

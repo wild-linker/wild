@@ -54,7 +54,7 @@
 //#ExpectSym:_start
 
 //#Config:only-keep-debug-copy-relocations:only-keep-debug-dynamic
-//#Arch:x86_64,aarch64,riscv64
+//#Arch:x86_64,aarch64,riscv64,riscv32
 //#CompArgs:-g -fno-pic -fno-pie -DCOPY_RELOCATION
 //#CompSoArgs:-fPIC
 //#LinkArgs:-z now

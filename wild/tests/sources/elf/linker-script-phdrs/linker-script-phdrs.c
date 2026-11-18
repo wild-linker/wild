@@ -20,13 +20,21 @@
 //#SkipArch:riscv64
 
 //#Config:nophdrs:nophdrs-base
-//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0 --defsym=is_64_bit=1
 
-//#Config:riscv:nophdrs-base
-//#Arch:riscv64
+//#AbstractConfig:riscv:nophdrs-base
 //#ReferenceLinkers:bfd,lld
 //#ExpectProgramHeader:RISCV_ATTRIBUTES flags=R,sections=[.riscv.attributes]
-//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=1
+//#LinkerScript:linker-script-phdrs.ld
+
+//#Config:riscv64:riscv
+//#Arch:riscv64
+//#LinkArgs:-shared -z now --defsym=is_riscv=1 --defsym=is_64_bit=1
+
+//#Config:riscv32:riscv
+//#Arch:riscv32
+//#DiffMatchAny:true
+//#LinkArgs:-shared -z now --defsym=is_riscv=1 --defsym=is_64_bit=0
 
 //#Config:single-load:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load.ld
