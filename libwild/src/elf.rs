@@ -209,8 +209,12 @@ pub(crate) trait ElfWord: Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync
 
 impl ElfWord for u32 {
     fn from_u64(value: u64) -> Result<Self> {
-        u32::try_from(value)
-            .with_context(|| format!("ELF word value 0x{value:x} does not fit in ELF32"))
+        let hi = (value >> 32) as u32;
+        if hi == 0 || hi == u32::MAX {
+            Ok(value as u32)
+        } else {
+            bail!("ELF word value 0x{value:x} does not fit in ELF32")
+        }
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -1518,7 +1522,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 .hide();
         }
 
-        if args.architecture() == Architecture::RiscV64 {
+        if matches!(
+            args.architecture(),
+            Architecture::RiscV64 | Architecture::RiscV32
+        ) {
             symbols.section_start_offset(
                 output_section_id::DATA,
                 crate::elf::RISCV_GLOBAL_POINTER_OFFSET,

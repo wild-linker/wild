@@ -97,6 +97,14 @@ fn narrow_u32(value: u64, field: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{field} value 0x{value:x} does not fit in ELF32"))
 }
 
+fn narrow_address_u32(value: u64, field: &str) -> Result<u32> {
+    if value >> 32 == 0 || value >> 32 == 0xffff_ffff {
+        Ok(value as u32)
+    } else {
+        bail!("{field} value 0x{value:x} does not fit in ELF32")
+    }
+}
+
 fn narrow_i32(value: i64, field: &str) -> Result<i32> {
     i32::try_from(value).with_context(|| format!("{field} value {value} does not fit in ELF32"))
 }
@@ -307,7 +315,7 @@ impl_section_header!(
 );
 
 macro_rules! impl_symbol {
-    ($ty:ty, $narrow:expr) => {
+    ($ty:ty, $narrow:expr, $narrow_addr:expr) => {
         impl WritableSymbol for $ty {
             fn set_name(&mut self, value: u32) {
                 self.st_name.set(LittleEndian, value);
@@ -332,7 +340,8 @@ macro_rules! impl_symbol {
                 self.st_shndx.set(LittleEndian, value);
             }
             fn set_value(&mut self, value: u64) -> Result {
-                self.st_value.set(LittleEndian, $narrow(value, "st_value")?);
+                self.st_value
+                    .set(LittleEndian, $narrow_addr(value, "st_value")?);
                 Ok(())
             }
             fn set_size(&mut self, value: u64) -> Result {
@@ -343,8 +352,12 @@ macro_rules! impl_symbol {
     };
 }
 
-impl_symbol!(object::elf::Sym32<LittleEndian>, narrow_u32);
-impl_symbol!(object::elf::Sym64<LittleEndian>, identity_u64);
+impl_symbol!(
+    object::elf::Sym32<LittleEndian>,
+    narrow_u32,
+    narrow_address_u32
+);
+impl_symbol!(object::elf::Sym64<LittleEndian>, identity_u64, identity_u64);
 
 fn set_dynamic_tag32(
     out: &mut object::I32<LittleEndian, object::elf::DynamicTag>,

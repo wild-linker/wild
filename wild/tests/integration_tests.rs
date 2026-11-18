@@ -6875,17 +6875,32 @@ impl Assertions {
         };
         let data = section.data()?;
         let mut count: u64 = 0;
-        let mut i = 0;
-        while i + 8 <= data.len() {
-            let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-            if val & 1 == 0 {
-                // Address entry — encodes 1 relocation.
-                count += 1;
-            } else {
-                // Bitmap entry — count set bits excluding LSB marker.
-                count += u64::from((val >> 1).count_ones());
+        if obj.is_64() {
+            let mut i = 0;
+            while i + 8 <= data.len() {
+                let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                if val & 1 == 0 {
+                    // Address entry — encodes 1 relocation.
+                    count += 1;
+                } else {
+                    // Bitmap entry — count set bits excluding LSB marker.
+                    count += u64::from((val >> 1).count_ones());
+                }
+                i += 8;
             }
-            i += 8;
+        } else {
+            let mut i = 0;
+            while i + 4 <= data.len() {
+                let val = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+                if val & 1 == 0 {
+                    // Address entry — encodes 1 relocation.
+                    count += 1;
+                } else {
+                    // Bitmap entry — count set bits excluding LSB marker.
+                    count += u64::from((val >> 1).count_ones());
+                }
+                i += 4;
+            }
         }
         ensure!(
             count >= expected_count,

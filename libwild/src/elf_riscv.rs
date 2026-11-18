@@ -76,10 +76,6 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
 
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
-        ensure!(
-            C::ADDRESS_SIZE == 8,
-            "relocations are not supported for riscv32 yet"
-        );
         linker_utils::riscv::relocation_type_from_raw(r_type).with_context(|| {
             format!(
                 "Unsupported relocation type {}",
@@ -89,13 +85,21 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
     }
 
     fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
-        matches!(r_type, object::elf::R_RISCV_32)
+        if C::ADDRESS_SIZE == 8 {
+            matches!(r_type, object::elf::R_RISCV_32)
+        } else {
+            false
+        }
     }
 
     fn get_dynamic_relocation_type(
         relocation: DynamicRelocationKind,
     ) -> object::elf::RelocationType {
-        relocation.riscv64_r_type()
+        if C::ADDRESS_SIZE == 8 {
+            relocation.riscv64_r_type()
+        } else {
+            relocation.riscv32_r_type()
+        }
     }
 
     fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
