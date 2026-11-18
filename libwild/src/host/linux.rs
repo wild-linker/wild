@@ -68,6 +68,8 @@ pub(crate) mod os {
 
     pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &[];
 
+    pub(crate) const RAYON_SUPPORTS_MULTI_THREADING: bool = true;
+
     pub(crate) fn kernel_version() -> Option<(u64, u64)> {
         let uname = nix::sys::utsname::uname().ok()?;
         let release = uname.release().to_string_lossy();

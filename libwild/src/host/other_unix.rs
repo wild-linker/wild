@@ -22,6 +22,8 @@ pub(crate) mod os {
     pub(crate) const IS_MACOS: bool = false;
 
     pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &[];
+
+    pub(crate) const RAYON_SUPPORTS_MULTI_THREADING: bool = true;
 }
 
 #[cfg(feature = "plugins")]

@@ -21,6 +21,7 @@ use crate::error::Result;
 use crate::fs::FileReplacementMode;
 use crate::fs::FileSystem;
 use crate::fs::FileWriteMode;
+use crate::host;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use hashbrown::HashMap;
@@ -500,24 +501,21 @@ impl CommonArgs {
             }
         });
 
-        cfg_select! {
-            target_os = "wasi" => {
-                // Rayon provides a single-threaded fallback for its implicit global pool.
-                self.available_threads = NonZeroUsize::MIN;
-                tokens.clear();
-                let pool = None;
-            }
-            _ => {
-                // Always let Rayon spawn the pool's workers, even when only one thread is
-                // requested. Reusing the current thread would fail if it already belonged to
-                // another pool; instead, it blocks in `install` until linking finishes.
-                let pool = Some(
-                    rayon::ThreadPoolBuilder::new()
-                        .num_threads(self.available_threads.get())
-                        .build()?,
-                );
-            }
-        }
+        let pool = if host::os::RAYON_SUPPORTS_MULTI_THREADING {
+            // Always let Rayon spawn the pool's workers, even when only one thread is
+            // requested. Reusing the current thread would fail if it already belonged to
+            // another pool; instead, it blocks in `install` until linking finishes.
+            Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(self.available_threads.get())
+                    .build()?,
+            )
+        } else {
+            // Rayon provides a single-threaded fallback for its implicit global pool.
+            self.available_threads = NonZeroUsize::MIN;
+            tokens.clear();
+            None
+        };
 
         Ok(ThreadPool {
             pool,

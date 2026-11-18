@@ -24,6 +24,8 @@ pub(crate) mod os {
     /// On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld
     /// linker.
     pub(crate) const CLANG_DRIVER_NOOP_SHORT_FLAGS: &[&str] = &["C"];
+
+    pub(crate) const RAYON_SUPPORTS_MULTI_THREADING: bool = true;
 }
 
 #[cfg(feature = "plugins")]
