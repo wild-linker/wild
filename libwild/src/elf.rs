@@ -7635,6 +7635,17 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     if !section_flags.is_alloc() {
         // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
     } else if rel_kind.is_tls() {
+        // A local-exec access is an offset from the thread pointer into the executable's TLS
+        // block. A shared object's TLS block is placed at runtime, so that offset can't be known.
+        if rel_kind == RelocationKind::TpOff && symbol_db.output_kind.is_shared_object() {
+            bail!(
+                "relocation {} against symbol `{}` cannot be used when making a shared object; \
+                recompile with -fPIC",
+                A::rel_type_to_string(r_type),
+                symbol_db.symbol_name_for_display(symbol_id),
+            );
+        }
+
         if does_relocation_require_static_tls(rel_kind) {
             resources
                 .has_static_tls
