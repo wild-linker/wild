@@ -1429,6 +1429,7 @@ pub(crate) struct SectionAttributes {
 }
 
 impl platform::SectionAttributes for SectionAttributes {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = SectionFlags(0x00FF_FF0F);
     type Platform = Coff;
 
     fn merge(&mut self, rhs: Self) {
@@ -1441,8 +1442,11 @@ impl platform::SectionAttributes for SectionAttributes {
         section_id: OutputSectionId,
     ) {
         let info = output_sections.section_infos.get_mut(section_id);
-
-        info.section_attributes.flags |= self.flags;
+        let mut attributes = *self;
+        attributes.flags = attributes
+            .flags
+            .without(Self::SECTION_FLAGS_PROPAGATION_MASK);
+        info.section_attributes.merge(attributes);
     }
 
     fn is_null(&self) -> bool {

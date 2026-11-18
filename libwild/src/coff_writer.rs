@@ -1374,10 +1374,7 @@ fn write_section_headers(table_writer: &mut TableWriter<'_, '_>, layout: &CoffLa
             .set(LittleEndian, Default::default());
         entry.characteristics.set(
             LittleEndian,
-            layout
-                .output_sections
-                .section_flags(section_id)
-                .without(object::pe::SectionFlags(object::pe::IMAGE_SCN_ALIGN_MASK)),
+            layout.output_sections.section_flags(section_id),
         );
     }
     Ok(())

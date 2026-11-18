@@ -3505,13 +3505,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 output_attributes.overrides.has_fixed_type = true;
             }
             linker_script::SectionAttributes::Readonly => {
-                output_attributes.overrides.avoid_progpogation = shf::WRITE;
+                output_attributes.overrides.avoid_propagation = shf::WRITE;
             }
             linker_script::SectionAttributes::Dsect
             | linker_script::SectionAttributes::Copy
             | linker_script::SectionAttributes::Info
             | linker_script::SectionAttributes::Overlay => {
-                output_attributes.overrides.avoid_progpogation = shf::ALLOC;
+                output_attributes.overrides.avoid_propagation = shf::ALLOC;
             }
         }
         output_attributes
@@ -3530,7 +3530,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 if !section_id.is_custom::<Self>() || info.section_attributes.has_input_sections {
                     current_flags = info.section_attributes.flags;
                 } else if *must_keep_sections.get(section_id) {
-                    let avoid_propagation = info.section_attributes.overrides.avoid_progpogation;
+                    let avoid_propagation = info.section_attributes.overrides.avoid_propagation;
                     let allowed_flags = (shf::ALLOC | shf::WRITE).without(avoid_propagation);
                     info.section_attributes.flags = current_flags & allowed_flags;
                     if info.section_attributes.ty == sht::NULL {
@@ -6122,16 +6122,12 @@ pub(crate) struct SectionAttributes<C: ElfClass> {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LinkerScriptOverrides {
-    pub(crate) avoid_progpogation: SectionFlags,
+    pub(crate) avoid_propagation: SectionFlags,
     pub(crate) has_fixed_type: bool,
 }
 
-/// Section flags that should not be propagated from input sections to the output section in which
-/// they are placed. This is passed to `without`, so we keep all flags other than the one listed
-/// here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
-
 impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
     type Platform = Elf<C>;
 
     fn merge(&mut self, rhs: Self) {
@@ -6171,7 +6167,8 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
         let mut attributes = *self;
 
         attributes.flags = attributes.flags.without(
-            SECTION_FLAGS_PROPAGATION_MASK | info.section_attributes.overrides.avoid_progpogation,
+            Self::SECTION_FLAGS_PROPAGATION_MASK
+                | info.section_attributes.overrides.avoid_propagation,
         );
 
         if info.section_attributes.overrides.has_fixed_type {
