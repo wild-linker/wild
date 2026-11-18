@@ -172,16 +172,16 @@ jobs:
       - name: Build and run the WASI linker
         run: |
           cargo build --target wasm32-wasip1
-          wild=$(realpath target/wasm32-wasip1/debug/wild.wasm)
-          wasmtime run "$wild" --version
-          smoke=$(mktemp -d)
-          clang -c wild/tests/sources/elf/chroot/entry.s -o "$smoke/entry.o"
-          cd "$smoke"
-          wasmtime run --dir=. "$wild" -m elf_x86_64 --no-threads -static -o smoke entry.o
-          chmod +x smoke
-          status=0
-          ./smoke || status=$?
-          test "$status" -eq 42
+          clang -x assembler - -c -o main.o <<'EOF'
+          .globl _start
+          _start:
+              mov $60, %eax
+              mov $0, %edi
+              syscall
+          EOF
+          wasmtime run --dir=. target/wasm32-wasip1/debug/wild.wasm -m elf_x86_64 -static main.o
+          chmod +x a.out
+          ./a.out
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
       # -p libwild prevents integration tests from running. they depend on
       # spawning processes, which isn't supported on wasi.

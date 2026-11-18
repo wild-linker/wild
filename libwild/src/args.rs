@@ -28,9 +28,7 @@ use hashbrown::HashSet;
 use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
-use rayon::ThreadPoolBuilder;
 use std::borrow::Cow;
-use std::error::Error as _;
 use std::fmt::Display;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -502,27 +500,24 @@ impl CommonArgs {
             }
         });
 
-        // Always let Rayon spawn the pool's workers, even when only one thread is requested.
-        // Reusing the current thread would fail if it already belonged to another pool; instead,
-        // it blocks in `install` until linking finishes.
-        let pool = match ThreadPoolBuilder::new()
-            .num_threads(self.available_threads.get())
-            .build()
-        {
-            Ok(pool) => Some(pool),
-            Err(error)
-                if error
-                    .source()
-                    .and_then(|source| source.downcast_ref::<std::io::Error>())
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::Unsupported) =>
-            {
+        cfg_select! {
+            target_os = "wasi" => {
                 // Rayon provides a single-threaded fallback for its implicit global pool.
                 self.available_threads = NonZeroUsize::MIN;
                 tokens.clear();
-                None
+                let pool = None;
             }
-            Err(error) => return Err(error.into()),
-        };
+            _ => {
+                // Always let Rayon spawn the pool's workers, even when only one thread is
+                // requested. Reusing the current thread would fail if it already belonged to
+                // another pool; instead, it blocks in `install` until linking finishes.
+                let pool = Some(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(self.available_threads.get())
+                        .build()?,
+                );
+            }
+        }
 
         Ok(ThreadPool {
             pool,
