@@ -11,14 +11,14 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
-use linker_utils::riscv64::RelaxationKind;
+use linker_utils::riscv::RelaxationKind;
 use linker_utils::utils::u32_from_slice;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct RiscV64;
+pub(crate) struct RiscV;
 
-impl Arch for RiscV64 {
+impl Arch for RiscV {
     type RType = RType;
 
     type RelaxationKind = RelaxationKind;
@@ -278,7 +278,7 @@ impl crate::arch::RType for RType {
     }
 
     fn opt_relocation_info(self) -> Option<RelocationKindInfo> {
-        linker_utils::riscv64::relocation_type_from_raw(self.0)
+        linker_utils::riscv::relocation_type_from_raw(self.0)
     }
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {

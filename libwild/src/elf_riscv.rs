@@ -1,8 +1,11 @@
-use crate::elf::Elf64;
+use crate::elf::Class32;
+use crate::elf::Class64;
+use crate::elf::Elf;
+use crate::elf::ElfClass;
 use crate::elf::ElfCrel;
 use crate::elf::ElfRela;
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::elf::RelocationList64;
+use crate::elf::RelocationList;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -21,24 +24,37 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
-use linker_utils::riscv64::JAL_RANGE;
-use linker_utils::riscv64::RelaxationKind;
-use linker_utils::riscv64::distance_fits_jal;
-use linker_utils::riscv64::relocation_type_from_raw;
+use linker_utils::riscv::JAL_RANGE;
+use linker_utils::riscv::RelaxationKind;
+use linker_utils::riscv::distance_fits_jal;
+use linker_utils::riscv::relocation_type_from_raw;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
+use object::read::elf::Sym as _;
+use std::marker::PhantomData;
 
-pub(crate) struct ElfRiscV64;
+pub(crate) struct ElfRiscV<C: ElfClass>(PhantomData<C>);
 
-const PLT_ENTRY_TEMPLATE: &[u8] = &[
+pub(crate) type ElfRiscV64 = ElfRiscV<Class64>;
+pub(crate) type ElfRiscV32 = ElfRiscV<Class32>;
+
+const PLT_ENTRY_TEMPLATE_64: &[u8] = &[
     0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
     0x03, 0x3e, 0x0e, 0x0, // ld t3,offset_low(&(.got.plt[n])(t3)
     0x67, 0x03, 0x0e, 0x0, // jalr t1,t3
     0x73, 0x0, 0x10, 0x0, // ebreak
 ];
 
+const PLT_ENTRY_TEMPLATE_32: &[u8] = &[
+    0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
+    0x03, 0x2e, 0x0e, 0x0, // lw t3,offset_low(&(.got.plt[n])(t3)
+    0x67, 0x03, 0x0e, 0x0, // jalr t1,t3
+    0x73, 0x0, 0x10, 0x0, // ebreak
+];
+
 const _ASSERTS: () = {
-    assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
+    assert!(PLT_ENTRY_TEMPLATE_64.len() as u64 == PLT_ENTRY_SIZE);
+    assert!(PLT_ENTRY_TEMPLATE_32.len() as u64 == PLT_ENTRY_SIZE);
 };
 
 macro_rules! rel_info_from_type {
@@ -47,9 +63,9 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::platform::Arch for ElfRiscV64 {
+impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
     type Relaxation = Relaxation;
-    type Platform = Elf64;
+    type Platform = Elf<C>;
     const DEFAULT_LOAD_ADDRESS: u64 = 0x10000;
 
     const NUM_GOT_PLT_HEADER_ENTRIES: u64 = 2;
@@ -60,7 +76,11 @@ impl crate::platform::Arch for ElfRiscV64 {
 
     #[inline(always)]
     fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
-        linker_utils::riscv64::relocation_type_from_raw(r_type).with_context(|| {
+        ensure!(
+            C::ADDRESS_SIZE == 8,
+            "relocations are not supported for riscv32 yet"
+        );
+        linker_utils::riscv::relocation_type_from_raw(r_type).with_context(|| {
             format!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
@@ -91,7 +111,11 @@ impl crate::platform::Arch for ElfRiscV64 {
         // make the offset calculation in the unsigned type.
         debug_assert!(plt_address < got_address);
 
-        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        if C::ADDRESS_SIZE == 8 {
+            plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE_64);
+        } else {
+            plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE_32);
+        }
         RiscVInstruction::UiType.write_to_value(
             got_address.wrapping_sub(plt_address),
             false,
@@ -104,7 +128,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         RISCV_TLS_DTV_OFFSET
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf<C>>) -> u64 {
         layout.tls_start_address_aligned()
     }
 
@@ -183,7 +207,7 @@ impl crate::platform::Arch for ElfRiscV64 {
     ) -> bool {
         object
             .symbol(symbol_index)
-            .is_ok_and(|sym| sym.st_other.contains(object::elf::STO_RISCV_VARIANT_CC))
+            .is_ok_and(|sym| sym.st_other().contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
     #[inline(always)]
@@ -203,7 +227,12 @@ impl crate::platform::Arch for ElfRiscV64 {
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = ElfRiscV64::relocation_from_raw(relocation_kind).unwrap();
+        // TODO: Support relaxations for riscv32.
+        if C::ADDRESS_SIZE != 8 {
+            return None;
+        }
+
+        let mut relocation = Self::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
@@ -275,8 +304,7 @@ impl crate::platform::Arch for ElfRiscV64 {
                             if rd == rs1 {
                                 return Some(Relaxation {
                                     kind: RelaxationKind::Lo12Rs1ToZero,
-                                    rel_info: ElfRiscV64::relocation_from_raw(relocation_kind)
-                                        .unwrap(),
+                                    rel_info: Self::relocation_from_raw(relocation_kind).unwrap(),
                                     mandatory: false,
                                 });
                             }
@@ -292,25 +320,25 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     fn supports_size_reduction_relaxations() -> bool {
-        true
+        C::ADDRESS_SIZE == 8
     }
 
     fn collect_relaxation_deltas(
         section_output_address: u64,
         section_bytes: &[u8],
-        relocations: RelocationList64,
+        relocations: RelocationList<C>,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
-            RelocationList64::Rela(rela_list) => collect_relaxation_deltas(
+            RelocationList::Rela(rela_list) => collect_relaxation_deltas::<C, _>(
                 section_output_address,
                 section_bytes,
                 rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
                 &mut resolve_symbol,
             ),
-            RelocationList64::Crel(crel_iter) => collect_relaxation_deltas(
+            RelocationList::Crel(crel_iter) => collect_relaxation_deltas::<C, _>(
                 section_output_address,
                 section_bytes,
                 crel_iter.flatten().map(ElfCrel::new),
@@ -321,15 +349,15 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     fn collect_relaxation_referenced_symbols(
-        relocations: RelocationList64,
+        relocations: RelocationList<C>,
         existing_deltas: Option<&SectionRelaxDeltas>,
     ) -> Vec<object::SymbolIndex> {
         match relocations {
-            RelocationList64::Rela(rela_list) => collect_relaxation_referenced_symbols(
+            RelocationList::Rela(rela_list) => collect_relaxation_referenced_symbols::<C, _>(
                 rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
             ),
-            RelocationList64::Crel(crel_iter) => collect_relaxation_referenced_symbols(
+            RelocationList::Crel(crel_iter) => collect_relaxation_referenced_symbols::<C, _>(
                 crel_iter.flatten().map(ElfCrel::new),
                 existing_deltas,
             ),
@@ -342,7 +370,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
-        crate::dwarf_address_info::get_source_info::<crate::elf::Class64, Self>(
+        crate::dwarf_address_info::get_source_info::<C, Self>(
             object,
             relocations,
             section,
@@ -413,7 +441,7 @@ impl crate::platform::Relaxation for Relaxation {
 /// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
 /// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
 /// returns the output address and interposability of a symbol.
-fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
+fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
     section_output_address: u64,
     section_bytes: &[u8],
     relocations: impl Iterator<Item = R>,
@@ -557,7 +585,7 @@ fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
 }
 
 /// Symbols that `collect_relaxation_deltas` may resolve.
-fn collect_relaxation_referenced_symbols<R: Relocation<Platform = Elf64>>(
+fn collect_relaxation_referenced_symbols<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
 ) -> Vec<object::SymbolIndex> {

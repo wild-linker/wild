@@ -474,7 +474,9 @@ use object::macho::S_THREAD_LOCAL_VARIABLES;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
+use object::read::elf::Dyn as _;
 use object::read::elf::ProgramHeader;
+use object::read::elf::SectionHeader as _;
 use object::read::macho::ExportData;
 use object::read::macho::Fixup;
 use object::read::macho::LoadCommandVariant;
@@ -1535,6 +1537,8 @@ enum Architecture {
     LoongArch64,
     #[strum(serialize = "ppc64le")]
     Ppc64,
+    #[strum(serialize = "riscv32")]
+    RiscV32,
     #[strum(serialize = "wasm32")]
     Wasm32,
 }
@@ -1545,6 +1549,7 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::RiscV64,
     Architecture::LoongArch64,
     Architecture::Ppc64,
+    Architecture::RiscV32,
 ];
 
 impl Architecture {
@@ -1555,6 +1560,7 @@ impl Architecture {
             Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
             Architecture::Ppc64 => "elf64lppc",
+            Architecture::RiscV32 => "elf32lriscv",
             Architecture::Wasm32 => panic!("Wasm has no ELF emulation name"),
         }
     }
@@ -1571,6 +1577,7 @@ impl Architecture {
     fn triple_arch(self) -> String {
         match self {
             Architecture::Ppc64 => "powerpc64le".to_owned(),
+            Architecture::RiscV32 => "riscv64".to_owned(),
             _ => self.to_string(),
         }
     }
@@ -1658,6 +1665,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         Some(Architecture::RiscV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
         Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
         Some(Architecture::Ppc64) => "/lib64/ld64.so.2",
+        Some(Architecture::RiscV32) => "/lib/ld-linux-riscv32-ilp32d.so.1",
         Some(Architecture::Wasm32) => panic!("Wasm has no dynamic linker"),
     }
 }
@@ -1724,6 +1732,10 @@ fn get_host_architecture() -> Architecture {
     #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
     {
         Architecture::Ppc64
+    }
+    #[cfg(target_arch = "riscv32")]
+    {
+        Architecture::RiscV32
     }
 }
 
@@ -2713,8 +2725,15 @@ impl ArgumentSet {
         }
     }
 
-    fn default_for_compiling() -> Self {
-        Self { args: Vec::new() }
+    fn default_for_compiling(platform: PlatformKind, arch: Architecture) -> Self {
+        match (platform, arch) {
+            // We use the riscv64 compiler to compile for riscv32 as well, so explicitly set the
+            // architecture/abi.
+            (PlatformKind::Elf, Architecture::RiscV32) => Self {
+                args: vec!["-march=rv32gc".to_owned(), "-mabi=ilp32d".to_owned()],
+            },
+            _ => Self { args: Vec::new() },
+        }
     }
 
     fn empty() -> Self {
@@ -2744,8 +2763,8 @@ impl Config {
             linker_args: platform.default_args_for_linking(),
             post_linker_args: ArgumentSet::empty(),
             linker_so_args: ArgumentSet::empty(),
-            compiler_args: ArgumentSet::default_for_compiling(),
-            compiler_so_args: ArgumentSet::default_for_compiling(),
+            compiler_args: ArgumentSet::default_for_compiling(platform, arch),
+            compiler_so_args: ArgumentSet::default_for_compiling(platform, arch),
             wild_extra_linker_args: ArgumentSet::empty(),
             linker_env: Default::default(),
             linker_working_directory: None,
@@ -2768,7 +2787,7 @@ impl Config {
             expect_stdout: Default::default(),
             active_malfunction: None,
             cross_enabled: true,
-            support_architectures: platform.supported_architectures().to_owned(),
+            support_architectures: platform.default_architectures(),
             requires_glibc: false,
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
@@ -3573,9 +3592,11 @@ fn process_directive(
                 .split(',')
                 .map(|arch| Architecture::parse(arch.trim()))
                 .collect::<Result<Vec<_>, _>>()?;
-            config.support_architectures = ALL_ARCHITECTURES
-                .to_owned()
-                .into_iter()
+            config.support_architectures = config
+                .platform
+                .default_architectures()
+                .iter()
+                .copied()
                 .filter(|arch| !skipped.contains(arch))
                 .collect();
         }
@@ -4559,7 +4580,8 @@ fn get_c_compiler(
                 arch @ (Architecture::AArch64
                 | Architecture::RiscV64
                 | Architecture::LoongArch64
-                | Architecture::Ppc64),
+                | Architecture::Ppc64
+                | Architecture::RiscV32),
             ),
             "gcc" | "g++",
             CLanguage::C,
@@ -4569,7 +4591,8 @@ fn get_c_compiler(
                 arch @ (Architecture::AArch64
                 | Architecture::RiscV64
                 | Architecture::LoongArch64
-                | Architecture::Ppc64),
+                | Architecture::Ppc64
+                | Architecture::RiscV32),
             ),
             "gcc" | "g++",
             CLanguage::Cpp,
@@ -6291,15 +6314,8 @@ impl Assertions {
         }
 
         match obj {
-            object::File::Elf64(elf_obj) => {
-                self.verify_comment_section(&elf_obj, linker_used)?;
-                self.verify_load_alignment(&elf_obj)?;
-                self.verify_dynamic_entries(&elf_obj)?;
-                Self::verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
-                Self::verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
-                self.verify_program_headers(&elf_obj)?;
-                self.verify_section_entry_sizes(&elf_obj)?;
-            }
+            object::File::Elf64(elf_obj) => self.verify_elf(&elf_obj, linker_used)?,
+            object::File::Elf32(elf_obj) => self.verify_elf(&elf_obj, linker_used)?,
             object::File::Pe64(_pe_obj) => {}
             _ => bail!("Unsupported object file format"),
         }
@@ -6465,11 +6481,11 @@ impl Assertions {
             return Ok(());
         };
 
-        let object::File::Elf64(file) = obj else {
-            bail!("ExpectEntry is only supported for 64-bit ELF and Mach-O");
+        let actual_address = match obj {
+            object::File::Elf64(file) => file.elf_header().e_entry.get(file.endianness()),
+            object::File::Elf32(file) => file.elf_header().e_entry.get(file.endianness()).into(),
+            _ => bail!("ExpectEntry is only supported for ELF and Mach-O"),
         };
-
-        let actual_address = file.elf_header().e_entry.get(file.endianness());
         ensure!(
             actual_address == expected_address,
             "Expected entry point `{}` at {expected_address:#x}, but ELF e_entry was {actual_address:#x}",
@@ -6880,9 +6896,26 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_section_entry_sizes(
+    fn verify_elf<'data, File: object::read::elf::FileHeader<Endian = object::Endianness>>(
         &self,
-        obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
+        elf_obj: &object::read::elf::ElfFile<'data, File>,
+        linker_used: &Linker,
+    ) -> Result {
+        self.verify_comment_section(elf_obj, linker_used)?;
+        self.verify_load_alignment(elf_obj)?;
+        self.verify_dynamic_entries(elf_obj)?;
+        Self::verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
+        Self::verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
+        self.verify_program_headers(elf_obj)?;
+        self.verify_section_entry_sizes(elf_obj)?;
+        Ok(())
+    }
+
+    fn verify_section_entry_sizes<
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
+        &self,
+        obj: &object::read::elf::ElfFile<'_, File>,
     ) -> Result {
         for expected in &self.expected_sections {
             if expected.assertions.max_entries.is_none() && expected.assertions.entsize.is_none() {
@@ -6892,7 +6925,7 @@ impl Assertions {
             let section = obj
                 .section_by_name(&expected.section_name)
                 .with_context(|| format!("Section `{}` not found", expected.section_name))?;
-            let entry_size = section.elf_section_header().sh_entsize.get(obj.endian());
+            let entry_size: u64 = section.elf_section_header().sh_entsize(obj.endian()).into();
 
             if let Some(expected_entsize) = expected.assertions.entsize {
                 ensure!(
@@ -6944,7 +6977,7 @@ impl Assertions {
 
     fn verify_comment_section<'data>(
         &self,
-        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        obj: &impl object::Object<'data>,
         linker_used: &Linker,
     ) -> Result {
         if obj.kind() == ObjectKind::Relocatable {
@@ -7009,16 +7042,19 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_load_alignment<'data>(
+    fn verify_load_alignment<
+        'data,
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
         &self,
-        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        obj: &object::read::elf::ElfFile<'data, File>,
     ) -> Result {
         let mut expected_load_alignments = self.expected_load_alignments.iter();
         let endian = obj.endian();
         let segments = obj.elf_program_headers();
         for segment in segments {
             if segment.p_type(endian) == object::elf::PT_LOAD {
-                let alignment = segment.p_align(endian);
+                let alignment = segment.p_align(endian).into();
                 let Some(expected) = expected_load_alignments.next() else {
                     return Ok(());
                 };
@@ -7073,9 +7109,12 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_dynamic_entries<'data>(
+    fn verify_dynamic_entries<
+        'data,
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
         &self,
-        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        obj: &object::read::elf::ElfFile<'data, File>,
     ) -> Result {
         if self.expected_dynamic_entries.is_empty()
             && self.absent_dynamic_entries.is_empty()
@@ -7097,13 +7136,13 @@ impl Assertions {
 
         let data = dynamic_section.data()?;
         let endian = obj.endian();
-        let Ok(entries) = object::pod::slice_from_all_bytes::<object::elf::Dyn64<_>>(data) else {
+        let Ok(entries) = object::pod::slice_from_all_bytes::<File::Dyn>(data) else {
             bail!("Unexpected .dynamic section length {:#x}", data.len());
         };
         let mut found_tags: HashMap<&str, usize> = HashMap::new();
 
         for entry in entries {
-            let tag = entry.d_tag.get(endian);
+            let tag = entry.d_tag(endian);
             if let Some(name) = dynamic_tag_name(tag, obj.architecture()) {
                 *found_tags.entry(name).or_default() += 1;
             }
@@ -7143,9 +7182,12 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_plt_marking(
-        obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
-        entries: &[object::elf::Dyn64<object::Endianness>],
+    fn verify_plt_marking<
+        'data,
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
+        obj: &object::read::elf::ElfFile<'data, File>,
+        entries: &[File::Dyn],
         marked: bool,
     ) -> Result {
         ensure!(
@@ -7156,11 +7198,11 @@ impl Assertions {
         let tag_value = |name| {
             entries
                 .iter()
-                .take_while(|entry| entry.d_tag.get(endian) != object::elf::DT_NULL)
+                .take_while(|entry| entry.d_tag(endian) != object::elf::DT_NULL)
                 .find(|entry| {
-                    dynamic_tag_name(entry.d_tag.get(endian), obj.architecture()) == Some(name)
+                    dynamic_tag_name(entry.d_tag(endian), obj.architecture()) == Some(name)
                 })
-                .map(|entry| entry.d_val.get(endian))
+                .map(|entry| entry.d_val(endian).into())
         };
 
         let (plt, plt_data) = if marked {
@@ -7233,9 +7275,12 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_program_headers<'data>(
+    fn verify_program_headers<
+        'data,
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
         &self,
-        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        obj: &object::read::elf::ElfFile<'data, File>,
     ) -> Result {
         if self.expected_program_headers.is_empty() && self.absent_program_headers.is_empty() {
             return Ok(());
@@ -7265,31 +7310,31 @@ impl Assertions {
                     }
 
                     if let Some(expected_paddr) = assertions.paddr
-                        && header.p_paddr(endian) != expected_paddr
+                        && header.p_paddr(endian).into() != expected_paddr
                     {
                         continue;
                     }
 
                     if let Some(expected_vaddr) = assertions.vaddr
-                        && header.p_vaddr(endian) != expected_vaddr
+                        && header.p_vaddr(endian).into() != expected_vaddr
                     {
                         continue;
                     }
 
                     if let Some(expected_file_size) = assertions.file_size
-                        && header.p_filesz(endian) != expected_file_size
+                        && header.p_filesz(endian).into() != expected_file_size
                     {
                         continue;
                     }
 
                     if let Some(expected_mem_size) = assertions.mem_size
-                        && header.p_memsz(endian) != expected_mem_size
+                        && header.p_memsz(endian).into() != expected_mem_size
                     {
                         continue;
                     }
 
                     if let Some(expected_offset) = assertions.offset
-                        && header.p_offset(endian) != expected_offset
+                        && header.p_offset(endian).into() != expected_offset
                     {
                         continue;
                     }
@@ -7344,15 +7389,18 @@ impl Assertions {
         Ok(())
     }
 
-    fn get_sections_in_segment<'data>(
-        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
-        header: &object::elf::ProgramHeader64<object::Endianness>,
+    fn get_sections_in_segment<
+        'data,
+        File: object::read::elf::FileHeader<Endian = object::Endianness>,
+    >(
+        obj: &object::read::elf::ElfFile<'data, File>,
+        header: &File::ProgramHeader,
     ) -> HashSet<&'data str> {
         let endian = obj.endian();
-        let p_vaddr = header.p_vaddr(endian);
-        let p_memsz = header.p_memsz(endian);
-        let p_offset = header.p_offset(endian);
-        let p_filesz = header.p_filesz(endian);
+        let p_vaddr = header.p_vaddr(endian).into();
+        let p_memsz = header.p_memsz(endian).into();
+        let p_offset = header.p_offset(endian).into();
+        let p_filesz = header.p_filesz(endian).into();
 
         let mut sections = HashSet::new();
         for section in obj.sections() {
@@ -7520,26 +7568,40 @@ fn verify_no_overlapping_sections(obj: &object::File) -> Result {
 }
 
 fn verify_no_overlapping_segments(obj: &object::File) -> Result {
-    let object::File::Elf64(elf_obj) = obj else {
-        return Ok(());
+    let mut segments = Vec::new();
+    let mut extract_segments = |i, start: u64, size: u64, p_type| {
+        if p_type == object::elf::PT_LOAD && size > 0 {
+            segments.push((i, start, start + size));
+        }
     };
 
-    let segments = elf_obj
-        .elf_program_headers()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, seg)| {
-            let start = seg.p_vaddr(elf_obj.endian());
-            let size = seg.p_memsz(elf_obj.endian());
-            let p_type = seg.p_type(elf_obj.endian());
-            if p_type != object::elf::PT_LOAD || size == 0 {
-                return None;
+    match obj {
+        object::File::Elf64(elf_obj) => {
+            for (i, seg) in elf_obj.elf_program_headers().iter().enumerate() {
+                extract_segments(
+                    i,
+                    seg.p_vaddr(elf_obj.endian()),
+                    seg.p_memsz(elf_obj.endian()),
+                    seg.p_type(elf_obj.endian()),
+                );
             }
-            Some((i, start, start + size))
-        })
-        .sorted_by_key(|seg| seg.1);
+        }
+        object::File::Elf32(elf_obj) => {
+            for (i, seg) in elf_obj.elf_program_headers().iter().enumerate() {
+                extract_segments(
+                    i,
+                    seg.p_vaddr(elf_obj.endian()).into(),
+                    seg.p_memsz(elf_obj.endian()).into(),
+                    seg.p_type(elf_obj.endian()),
+                );
+            }
+        }
+        _ => return Ok(()),
+    }
 
-    for ((idx1, start1, end1), (idx2, start2, end2)) in segments.tuple_windows() {
+    let sorted_segments = segments.into_iter().sorted_by_key(|seg| seg.1);
+
+    for ((idx1, start1, end1), (idx2, start2, end2)) in sorted_segments.tuple_windows() {
         if start2 < end1 {
             bail!(
                 "Program segment {} (vaddr={:#x}..{:#x}) overlaps with \
@@ -8966,9 +9028,7 @@ where
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
-fn was_linked_with_wild<'data>(
-    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
-) -> bool {
+fn was_linked_with_wild<'data>(obj: &impl object::Object<'data>) -> bool {
     let Ok(actual_comments) = read_comments(obj) else {
         return false;
     };
@@ -8978,7 +9038,7 @@ fn was_linked_with_wild<'data>(
 }
 
 fn read_comments<'data>(
-    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    obj: &impl object::Object<'data>,
 ) -> Result<Vec<std::borrow::Cow<'data, str>>> {
     let comment_section = obj
         .section_by_name(".comment")
@@ -9472,6 +9532,7 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
         Architecture::RiscV64,
         Architecture::LoongArch64,
         Architecture::Ppc64,
+        Architecture::RiscV32,
     ]
     .into_iter()
     .map(|arch| {
@@ -10387,6 +10448,19 @@ impl PlatformKind {
             PlatformKind::MinGW => &[Architecture::X86_64],
             PlatformKind::Wasm => &[Architecture::Wasm32],
         }
+    }
+
+    fn default_architectures(self) -> Vec<Architecture> {
+        if self == PlatformKind::Elf {
+            // TODO: disable running tests on riscv32 by default for now, until sufficient support
+            // for it exists.
+            return ALL_ARCHITECTURES
+                .iter()
+                .copied()
+                .filter(|&arch| arch != Architecture::RiscV32)
+                .collect();
+        }
+        self.supported_architectures().to_owned()
     }
 
     fn default_args_for_linking(self) -> ArgumentSet {

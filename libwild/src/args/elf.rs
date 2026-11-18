@@ -348,6 +348,8 @@ pub(crate) enum Emulation {
     Ppc64,
     #[strum(serialize = "i386pep", message = "x86-64 PE target")]
     I386Pep,
+    #[strum(serialize = "elf32lriscv", message = "RISC-V 32-bit ELF target")]
+    RiscV32,
     #[strum(disabled)]
     Unsupported,
 }
@@ -362,6 +364,7 @@ impl Emulation {
             Emulation::RiscV64 => Architecture::RiscV64,
             Emulation::LoongArch64 => Architecture::LoongArch64,
             Emulation::Ppc64 => Architecture::Ppc64,
+            Emulation::RiscV32 => Architecture::RiscV32,
             Emulation::Unsupported => Architecture::Unsupported,
         }
     }
@@ -512,6 +515,10 @@ const fn default_emulation() -> Emulation {
     {
         return Emulation::Ppc64;
     }
+    #[cfg(target_arch = "riscv32")]
+    {
+        return Emulation::RiscV32;
+    }
 
     #[allow(unreachable_code)]
     Emulation::Unsupported
@@ -590,6 +597,7 @@ impl ElfArgs {
             Architecture::RiscV64 => Emulation::RiscV64,
             Architecture::LoongArch64 => Emulation::LoongArch64,
             Architecture::Ppc64 => Emulation::Ppc64,
+            Architecture::RiscV32 => Emulation::RiscV32,
             Architecture::Unsupported => Emulation::Unsupported,
         });
     }
@@ -2591,6 +2599,7 @@ impl platform::Args for ElfArgs {
             Architecture::RiscV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
             Architecture::Ppc64 => Alignment { exponent: 16 },
+            Architecture::RiscV32 => Alignment { exponent: 12 },
             Architecture::Unsupported => unreachable!(),
         }
     }

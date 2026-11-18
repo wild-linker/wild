@@ -45,7 +45,7 @@ mod header_diff;
 mod init_order;
 mod loongarch64;
 mod ppc64;
-mod riscv64;
+mod riscv;
 mod riscv_attributes;
 pub(crate) mod section_map;
 mod segment;
@@ -318,7 +318,7 @@ impl Config {
                 .into_iter()
                 .map(ToOwned::to_owned),
             ),
-            ArchKind::RiscV64 => self.ignore.extend(
+            ArchKind::RiscV64 | ArchKind::RiscV32 => self.ignore.extend(
                 [
                     // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
@@ -692,8 +692,8 @@ impl Report {
                 self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
             }
 
-            ArchKind::RiscV64 => {
-                self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
+            ArchKind::RiscV64 | ArchKind::RiscV32 => {
+                self.report_arch_specific_diffs::<crate::riscv::RiscV>(objects);
                 riscv_attributes::report_diffs(self, objects);
             }
             ArchKind::LoongArch64 => {

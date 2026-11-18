@@ -21,6 +21,7 @@ pub(crate) enum ArchKind {
     RiscV64,
     LoongArch64,
     Ppc64,
+    RiscV32,
 }
 
 /// Provides architecture-specific functionality needed by linker-diff.
@@ -299,6 +300,13 @@ impl ArchKind {
                     object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
                     object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
                     object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
+                    other => bail!("Unsupported ELF architecture {other}"),
+                }
+            }
+            object::File::Elf32(file) => {
+                let e = file.endian();
+                match file.elf_header().e_machine(e) {
+                    object::elf::EM_RISCV => Ok(ArchKind::RiscV32),
                     other => bail!("Unsupported ELF architecture {other}"),
                 }
             }
