@@ -1048,6 +1048,7 @@ impl platform::Symbol for WasmSymbol {
 pub(crate) struct SectionAttributes {}
 
 impl platform::SectionAttributes for SectionAttributes {
+    const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = SectionFlags {};
     type Platform = Wasm;
 
     fn merge(&mut self, _rhs: Self) {

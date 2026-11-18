@@ -265,7 +265,6 @@ impl<'data> LayoutRulesBuilder<'data> {
             } else if let linker_script::Command::Sections(sections) = cmd {
                 *has_section_table = true;
                 let mut section_start_lc_idx = last_lc_idx;
-                let mut prev_phdrs = Vec::new();
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
@@ -317,9 +316,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 })
                                 .transpose()?;
 
-                            if !sec.phdrs.is_empty() {
-                                prev_phdrs = sec.phdrs.clone();
-                            }
                             let identity = P::section_identity_from_name(SectionName(
                                 sec.output_section_name,
                             ))
@@ -335,7 +331,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 sec.region,
                                 Some(&location_info),
                                 fill_value,
-                                prev_phdrs.clone(),
+                                sec.phdrs.clone(),
                                 sec.attributes.as_ref(),
                                 true,
                             );

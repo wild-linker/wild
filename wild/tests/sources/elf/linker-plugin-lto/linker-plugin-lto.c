@@ -45,6 +45,22 @@
 //#CompArgs:-fPIE
 //#LinkArgs:-pie
 
+//#Config:clang-thin-options:clang-thin
+// BFD does not support the LLD-style LTO options.
+//#ReferenceLinkers:lld
+//#LinkArgs:-Wl,--lto-O2,--thinlto-jobs=1
+//#LinkArgs:-Wl,--thinlto-cache-dir=$OUT_DIR/cache,--thinlto-cache-policy=cache_size_files=100
+
+//#Config:clang-thin-options-invalid-jobs:clang-thin-options
+//#LinkArgs:-Wl,--thinlto-jobs=invalid
+//#ExpectError:(Invalid parallelism level|invalid job count).*invalid
+
+// Single dash -l... should load a library
+//#Config:clang-thin-lto-option-library:clang-thin
+//#ReferenceLinkers:lld
+//#LinkArgs:-Wl,-lto-O2
+//#ExpectError:(Couldn't find library `to-O2`|unable to find library -lto-O2)
+
 //#Config:clang-link-gcc:error
 //#Compiler:clang
 //#CompArgs:-flto

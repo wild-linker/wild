@@ -57,7 +57,7 @@ jobs:
 
     container:
       # Note: when updating this image hash, update the other occurrences in this file too.
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-ff76baf211234df5954d0e0d536578202ad9acd8
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8"
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -126,7 +126,7 @@ jobs:
             target: powerpc64le-unknown-linux-gnu
             config: .cargo/config.toml.cross-ppc64le
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258
     steps:
       - uses: actions/checkout@v7
         with:
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258
     steps:
       - name: Setup Wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
@@ -181,7 +181,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258
     steps:
       - uses: actions/checkout@v7
         with:
@@ -256,7 +256,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-ff76baf211234df5954d0e0d536578202ad9acd8
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-73d1e446536b3ab6dbdff2d21887f2bd3f977258
     steps:
       - uses: actions/checkout@v7
         with:

@@ -1645,6 +1645,11 @@ pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
 pub(crate) trait SectionAttributes:
     std::fmt::Debug + Default + Send + Sync + Copy + 'static
 {
+    /// Section flags that should not be propagated from input sections to the output section in
+    /// which they are placed. This is passed to `without`, so we keep all flags not matching this
+    /// mask.
+    const SECTION_FLAGS_PROPAGATION_MASK: <Self::Platform as Platform>::SectionFlags;
+
     type Platform: Platform;
 
     fn merge(&mut self, rhs: Self);
