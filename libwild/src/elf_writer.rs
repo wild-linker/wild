@@ -66,7 +66,10 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
+use crate::parsing::InternalSymDefInfo;
+use crate::parsing::Redirect;
 use crate::parsing::SymbolLoc;
+use crate::parsing::SymbolPlacement;
 use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
@@ -5797,8 +5800,7 @@ fn get_symbol_attributes<C: ElfClass>(
         FileLayout::LinkerScript(script) => {
             let local_index = symbol_id.to_input(script.symbol_id_range);
             let def_info = &script.internal_symbols.symbol_definitions[local_index.0];
-            let shndx = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
-                &def_info.placement
+            let shndx = if let SymbolPlacement::Redirect(redirect) = &def_info.placement
                 && let SymbolLoc::SectionEnd(section_id) = redirect.loc
             {
                 let section_id = layout.output_sections.primary_output_section(section_id);
@@ -5806,10 +5808,9 @@ fn get_symbol_attributes<C: ElfClass>(
                     .output_sections
                     .output_index_of_nearest_section(section_id)
             } else {
-                def_info.section_id().and_then(|section_id| {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout.output_sections.output_index_of_section(section_id)
-                })
+                def_info
+                    .section_id()
+                    .and_then(|section_id| internal_symbol_section_index(layout, section_id))
             }
             .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
@@ -5820,10 +5821,7 @@ fn get_symbol_attributes<C: ElfClass>(
             let def_info = &prelude.internal_symbols.symbol_definitions[offset];
             let shndx = def_info
                 .section_id()
-                .and_then(|section_id| {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout.output_sections.output_index_of_section(section_id)
-                })
+                .and_then(|section_id| internal_symbol_section_index(layout, section_id))
                 .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
             Ok((shndx, def_info.symbol.st_type()))
         }
@@ -5838,13 +5836,43 @@ fn get_symbol_attributes<C: ElfClass>(
     }
 }
 
+fn internal_symbol_section_index<C: ElfClass>(
+    layout: &ElfLayout<C>,
+    section_id: OutputSectionId,
+) -> Option<u32> {
+    let section_id = layout.output_sections.primary_output_section(section_id);
+    layout.output_sections.output_index_of_section(section_id)
+}
+
+fn get_internal_symbol_attributes<C: ElfClass>(
+    layout: &ElfLayout<C>,
+    def_info: &InternalSymDefInfo<elf::Elf<C>>,
+) -> Result<(SymbolSection, object::elf::SymbolType)> {
+    if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+        return get_defsym_attributes(layout, redirect);
+    }
+
+    let shndx = def_info
+        .section_id()
+        .map(|section_id| {
+            internal_symbol_section_index(layout, section_id).with_context(|| {
+                format!(
+                    "symbol '{}' in section '{}' that we're not going to output",
+                    String::from_utf8_lossy(def_info.name),
+                    layout.output_sections.display_name(section_id)
+                )
+            })
+        })
+        .transpose()?
+        .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
+
+    Ok((shndx, def_info.symbol.st_type()))
+}
+
 fn get_defsym_attributes<C: ElfClass>(
     layout: &ElfLayout<C>,
-    def_info: &crate::parsing::InternalSymDefInfo<elf::Elf<C>>,
-) -> Result<(SymbolSection, object::elf::SymbolType), error::Error> {
-    let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement else {
-        unreachable!()
-    };
+    redirect: &Redirect,
+) -> Result<(SymbolSection, object::elf::SymbolType)> {
     if let Expression::Symbol(target_name) = redirect.expression {
         let target_symbol_id =
             layout
@@ -5859,8 +5887,7 @@ fn get_defsym_attributes<C: ElfClass>(
             if let Some(rel_sec) = redirect.loc.relative_section_id()
                 && matches!(target_shndx, SymbolSection::Raw(object::elf::SHN_ABS))
             {
-                let os = layout.output_sections.primary_output_section(rel_sec);
-                let shndx = layout.output_sections.output_index_of_section(os);
+                let shndx = internal_symbol_section_index(layout, rel_sec);
                 Ok((
                     shndx.map_or(
                         SymbolSection::Raw(object::elf::SHN_ABS),
@@ -5880,17 +5907,11 @@ fn get_defsym_attributes<C: ElfClass>(
                 let os = layout.output_sections.primary_output_section(os);
                 layout.output_sections.output_index_of_nearest_section(os)
             }
-            SymbolLoc::SectionStartRelative(os) | SymbolLoc::SectionEndRelative(os) => {
-                let os = layout.output_sections.primary_output_section(os);
-                layout.output_sections.output_index_of_section(os)
-            }
-            SymbolLoc::FirstSection => Some(1),
-            SymbolLoc::LocationCounter(_, Some(os)) => {
-                let os = layout.output_sections.primary_output_section(os);
-                layout.output_sections.output_index_of_section(os)
-            }
-            SymbolLoc::LocationCounter(_, None) => Some(1),
-            SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
+            SymbolLoc::SectionStartRelative(os)
+            | SymbolLoc::SectionEndRelative(os)
+            | SymbolLoc::LocationCounter(_, Some(os)) => internal_symbol_section_index(layout, os),
+            SymbolLoc::FirstSection | SymbolLoc::LocationCounter(_, None) => Some(1),
+            SymbolLoc::None => None,
         };
         Ok((
             shndx.map_or(
@@ -5921,58 +5942,23 @@ fn write_internal_dynsym<C: ElfClass>(
     dynsym_writer: &mut SymbolTableWriter<'_, '_, C>,
     layout: &ElfLayout<C>,
     symbol_id: SymbolId,
-    def_info: &crate::parsing::InternalSymDefInfo<elf::Elf<C>>,
+    def_info: &InternalSymDefInfo<elf::Elf<C>>,
 ) -> Result {
-    if matches!(
-        def_info.placement,
-        crate::parsing::SymbolPlacement::Redirect(_)
-    ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
-    }
-
-    let section_id = def_info
-        .section_id()
-        .context("Tried to export dynamic symbol not associated with a section")?;
-
-    let section_id = layout.output_sections.primary_output_section(section_id);
-
-    let shndx = layout
-        .output_sections
-        .output_index_of_section(section_id)
-        .context("Tried to write dynamic symbol in section that's not being output")?;
+    let (shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
 
     let resolution = layout
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
 
-    let address = resolution.address()?;
-    let name = layout.symbol_db.symbol_name(symbol_id)?;
+    let (address, st_type) = if matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
+        (resolution.raw_value, st_type)
+    } else {
+        def_info
+            .section_id()
+            .context("Tried to export dynamic symbol not associated with a section")?;
 
-    let entry = dynsym_writer.define_symbol(
-        false,
-        SymbolSection::Index(shndx),
-        address,
-        0,
-        Some(name.bytes()),
-    )?;
-    entry.set_binding_and_type(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
-
-    Ok(())
-}
-
-/// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
-fn write_defsym_dynsym<C: ElfClass>(
-    dynsym_writer: &mut SymbolTableWriter<'_, '_, C>,
-    layout: &ElfLayout<C>,
-    symbol_id: SymbolId,
-    def_info: &crate::parsing::InternalSymDefInfo<elf::Elf<C>>,
-) -> Result {
-    let (shndx, st_type) = get_defsym_attributes(layout, def_info)?;
-
-    let resolution = layout
-        .local_symbol_resolution(symbol_id)
-        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
-    let address = resolution.raw_value;
+        (resolution.address()?, object::elf::STT_NOTYPE)
+    };
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
     let entry = dynsym_writer
@@ -6152,34 +6138,7 @@ fn write_internal_symbols<C: ElfClass>(
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
-        // For Redirect, get attributes from the target symbol
-        let (mut shndx, st_type) = if matches!(
-            def_info.placement,
-            crate::parsing::SymbolPlacement::Redirect(_)
-        ) {
-            get_defsym_attributes(layout, def_info)?
-        } else {
-            let shndx = def_info
-                .section_id()
-                .map(|section_id| {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-
-                    layout
-                        .output_sections
-                        .output_index_of_section(section_id)
-                        .with_context(|| {
-                            format!(
-                                "symbol '{}' in section '{}' that we're not going to output {resolution:?}",
-                                layout.symbol_db.symbol_name_for_display(symbol_id),
-                                layout.output_sections.display_name(section_id)
-                            )
-                        })
-                })
-                .transpose()?
-                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
-
-            (shndx, def_info.symbol.st_type())
-        };
+        let (mut shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
 
         // Move symbols that are in our header (section 0) into the first section, otherwise they'll
         // show up as undefined.
