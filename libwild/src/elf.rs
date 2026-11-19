@@ -162,7 +162,8 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+pub(crate) const RISCV_GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+pub(crate) const RISCV_GLOBAL_POINTER_OFFSET: u64 = 0x800;
 
 /// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
 pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
@@ -1518,9 +1519,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
 
         if args.architecture() == Architecture::RiscV64 {
-            symbols.section_start(
+            symbols.section_start_offset(
                 output_section_id::DATA,
-                crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+                crate::elf::RISCV_GLOBAL_POINTER_OFFSET,
+                crate::elf::RISCV_GLOBAL_POINTER_SYMBOL_NAME,
             );
         }
 
