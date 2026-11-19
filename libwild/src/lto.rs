@@ -291,6 +291,8 @@ pub(crate) fn prepare_symbols_for_lto<C: ElfClass>(
     // refer to.
     mark_init_fini_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
 
+    mark_forced_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
+
     mark_lto_symbols_for_dynamic_export(symbol_db, per_symbol_flags, resolved_groups);
 }
 
@@ -363,6 +365,23 @@ fn mark_init_fini_symbols_as_non_ir_ref<'data, C: ElfClass>(
             // Mark the selected definition, which isn't necessarily the first symbol with this
             // name, e.g. a weak definition may precede the strong one.
             per_symbol_flags.set_flag(symbol_db.definition(symbol_id), ValueFlags::HAS_NON_IR_REF);
+        }
+    }
+}
+
+fn mark_forced_symbols_as_non_ir_ref<C: ElfClass>(
+    symbol_db: &SymbolDb<Elf<C>>,
+    per_symbol_flags: &mut PerSymbolFlags,
+) {
+    for name in symbol_db.args.force_undefined_symbol_names() {
+        if let Some(symbol_id) =
+            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        {
+            let definition = symbol_db.definition(symbol_id);
+
+            if !definition.is_undefined() {
+                per_symbol_flags.set_flag(definition, ValueFlags::HAS_NON_IR_REF);
+            }
         }
     }
 }
