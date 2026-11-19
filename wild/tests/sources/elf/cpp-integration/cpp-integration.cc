@@ -28,6 +28,8 @@
 //#CompArgs:-fmerge-constants
 //#LinkerDriver:g++
 //#LinkArgs:-no-pie -static -Wl,-z,now,--no-relax
+// BFD discards debug info for fully garbage-collected musl archive members, unlike Wild and LLD.
+//#DiffIgnore:debug_info.missing_unit
 //#DiffIgnore:rel.extra-got-plt-got
 // Wild uses similar order as LLD, which is different from GNU ld.
 //#DiffIgnore:init_array

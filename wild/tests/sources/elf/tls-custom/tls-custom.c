@@ -5,7 +5,6 @@
 // GNU ld seems to have a bug as it overlaps the .tcustom and .tcustomdata sections,
 // leading to non null-initialized data.
 //#ReferenceLinkers:lld
-//#LinkArgs:-Wl,--gc-sections
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 // At least some versions of GNU ld for risc-v export these symbols for some reason.
 //#DiffIgnore:dynsym.tbss_a.section

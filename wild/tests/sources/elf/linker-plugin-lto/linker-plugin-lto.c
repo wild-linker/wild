@@ -27,8 +27,6 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section.eh_frame.type
-// RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
-//#DiffIgnore:section.text.alignment
 //#CompArgs:-fPIE
 //#LinkArgs:-pie
 
@@ -41,7 +39,6 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section.eh_frame.type
-//#DiffIgnore:section.text.alignment
 //#CompArgs:-fPIE
 //#LinkArgs:-pie
 
@@ -180,7 +177,6 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section-diff-failed..text
-//#DiffIgnore:section.text.alignment
 //#DoesNotContain: foo
 //#CompArgs:-fPIE
 //#LinkArgs:-pie

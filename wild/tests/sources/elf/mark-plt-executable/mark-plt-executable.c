@@ -5,7 +5,7 @@
 //#RequiresLinkerFlags:-z mark-plt
 //#LinkerDriver:gcc
 //#CompArgs:-fPIC -DUSE_LIBC
-//#LinkArgs:-Wl,-z,mark-plt,-z,now,--gc-sections
+//#LinkArgs:-Wl,-z,mark-plt,-z,now
 //#ReferenceLinkers:bfd
 //#DiffIgnore:.dynamic.DT_X86_64_PLT
 //#DiffIgnore:.dynamic.DT_X86_64_PLTSZ

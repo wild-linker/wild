@@ -19,7 +19,7 @@
 // Alpine's compiler driver produces PIE even with -static. TODO: pass -no-pie automatically
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute(3).static-pie
 //#SkipArch:loongarch64
-//#LinkArgs:-static -Wl,--gc-sections
+//#LinkArgs:-static
 //#DiffIgnore:section.sdata
 // TODO: RISC-V BFD linker keeps the symbol in .dynsym section
 //#DiffIgnore:section.rela.dyn
@@ -28,7 +28,7 @@
 
 //#Config:gcc-static-pie-no-relax:default
 //#CompArgs:-fPIE
-//#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
+//#LinkArgs:-static-pie -Wl,--no-relax
 //#DiffEnabled:false
 //#ReferenceLinkers:
 // TODO: #874
@@ -52,7 +52,7 @@
 //#Config:clang-static-pie-no-relax:default
 //#Compiler:clang
 //#CompArgs:-fPIE
-//#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
+//#LinkArgs:-static-pie -Wl,--no-relax
 //#DiffEnabled:false
 //#ReferenceLinkers:
 // For some reason, both linkers cannot find: `rcrt1.o`

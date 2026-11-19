@@ -47,7 +47,7 @@
 //#AbstractConfig:lto:default
 //#RequiresLinkerPlugin:true
 //#CompArgs:-flto
-//#LinkArgs:-nostdlib -flto -Wl,--gc-sections,-znow -O0
+//#LinkArgs:-nostdlib -flto -Wl,-znow -O0
 
 //#Config:lto-gcc:lto
 //#Compiler:gcc

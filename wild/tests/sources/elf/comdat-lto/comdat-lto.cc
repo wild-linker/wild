@@ -4,7 +4,7 @@
 //#Object:runtime.c
 //#Object:other.cc
 //#CompArgs:-flto -O1
-//#LinkArgs:-flto -nostdlib -Wl,-z,now,--gc-sections
+//#LinkArgs:-flto -nostdlib -Wl,-z,now
 //#DiffIgnore:section.got
 
 //#Config:gcc:base

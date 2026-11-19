@@ -16,7 +16,7 @@
 
 //#Config:sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
-//#LinkArgs:-Wl,-z,now,--gc-sections
+//#LinkArgs:-Wl,-z,now
 //#WildExtraLinkArgs:-Wl,--wild-experimental-sframe
 //#RemoveSection:.eh_frame
 //#RemoveSection:.eh_frame_hdr
@@ -30,7 +30,7 @@
 
 //#Config:discard-sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
-//#LinkArgs:-Wl,-z,now,--gc-sections,--discard-sframe
+//#LinkArgs:-Wl,-z,now,--discard-sframe
 //#WildExtraLinkArgs:-Wl,--wild-experimental-sframe
 //#RequiresGlibcVersion:2.42
 //#RequiresSFrameBacktrace:true

@@ -446,6 +446,12 @@
 //! file-size=N: Type: Integer. Asserts the file size of the segment.
 //!
 //! mem-size=N: Type: Integer. Asserts the mem size of the segment.
+//!
+//! ## Default args (ELF)
+//!
+//! * --gc-sections (except for relocatable links)
+//! * -znow
+//! * -static unless Mode selects otherwise or a CompilerDriver is used
 
 mod external_tests;
 mod test_file_system;
@@ -2718,6 +2724,15 @@ struct ArgumentSet {
 }
 
 impl ArgumentSet {
+    fn is_relocatable(&self) -> bool {
+        let is_relocatable = |arg: &str| matches!(arg, "-r" | "--relocatable");
+
+        self.args.iter().any(|arg| match arg.strip_prefix("-Wl,") {
+            Some(args) => args.split(',').any(is_relocatable),
+            None => is_relocatable(arg),
+        })
+    }
+
     fn parse(s: &str) -> ArgumentSet {
         ArgumentSet {
             args: s
@@ -5501,8 +5516,6 @@ impl LinkCommand {
                         // that explicitly request it pass --fix-cortex-a53-843419.
                         command.arg("-mno-fix-cortex-a53-843419");
                     }
-
-                    command.args(&linker_args.args);
                 }
                 LinkerDriver::Direct(direct_config) => {
                     command = Command::new(linker_path);
@@ -5532,10 +5545,6 @@ impl LinkCommand {
                                     command.arg("-static");
                                 }
                                 Mode::Unspecified => {}
-                            }
-
-                            if !linker_args.args.iter().any(|a| a == "-r") {
-                                command.arg("--gc-sections");
                             }
                         }
                         PlatformKind::MachO => {
@@ -5571,10 +5580,14 @@ impl LinkCommand {
                             }
                         }
                     }
-
-                    command.args(&linker_args.args);
                 }
             }
+
+            if config.platform == PlatformKind::Elf && !linker_args.is_relocatable() {
+                command.arg(invocation_mode.format_arg("--gc-sections"));
+            }
+
+            command.args(&linker_args.args);
 
             if let Some(malfunction) = config.active_malfunction.as_ref() {
                 command.env(libwild::malfunction::ENV_NAME, malfunction);
