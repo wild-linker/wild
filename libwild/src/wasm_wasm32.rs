@@ -8,6 +8,8 @@ pub(crate) struct WasmWasm32;
 pub(crate) struct Relaxation {}
 
 impl crate::platform::Relaxation for Relaxation {
+    type RelocationKindInfo = linker_utils::elf::RelocationKindInfo;
+
     fn apply(&self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
         unreachable!()
     }

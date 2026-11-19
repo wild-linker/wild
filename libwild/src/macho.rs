@@ -63,6 +63,7 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::relaxation::opt_input_to_output;
 use object::Endianness;
@@ -1292,6 +1293,7 @@ impl platform::Platform for MachO {
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
     type RelocationInfo = object::macho::RelocationInfo;
+    type RelocationKindInfo = RelocationKindInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = EpilogueLayoutExt;

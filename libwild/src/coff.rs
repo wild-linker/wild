@@ -48,6 +48,7 @@ use linker_utils::coff::secnames::BSS_SECTION_NAME;
 use linker_utils::coff::secnames::DATA_SECTION_NAME;
 use linker_utils::coff::secnames::RDATA_SECTION_NAME;
 use linker_utils::coff::secnames::TEXT_SECTION_NAME;
+use linker_utils::elf::RelocationKindInfo;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
@@ -290,6 +291,7 @@ impl Platform for Coff {
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
     type RelocationInfo = RelocationType;
+    type RelocationKindInfo = RelocationKindInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();

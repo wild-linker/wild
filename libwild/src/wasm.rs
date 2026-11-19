@@ -31,6 +31,7 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::utils::u32_from_slice;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -7429,6 +7430,7 @@ impl platform::Platform for Wasm {
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
     type RelocationInfo = object::wasm::RelocationType;
+    type RelocationKindInfo = RelocationKindInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
