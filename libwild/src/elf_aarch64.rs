@@ -328,6 +328,18 @@ impl crate::platform::Arch for ElfAArch64 {
         layout.tls_start_address_aarch64()
     }
 
+    /// DTPREL is relative to the start of the module's TLS block, for both executables and shared
+    /// objects.
+    fn dtp_offset_base(layout: &Layout<Elf64>, _for_shared_object: bool) -> u64 {
+        layout.tls_start_address()
+    }
+
+    fn executable_tlsld_offset(_layout: &Layout<Elf64>) -> u64 {
+        // `__tls_get_addr` returns the start of the module's TLS block, and the code then adds the
+        // symbol's DTPREL.
+        0
+    }
+
     fn process_aarch64_build_attributes<'data>(
         object: &<Self::Platform as Platform>::File<'data>,
         format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
