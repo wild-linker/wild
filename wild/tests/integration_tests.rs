@@ -401,7 +401,7 @@
 //! section="section-name": Type: string. Asserts the name of the section in which the symbol is
 //! located.
 //!
-//! is_abs: Type: bool. Asserts that the symbol is an absolute symbol. Mutually exclusive with
+//! is_abs: Type: bool. Asserts whether the symbol is absolute. `is_abs=true` cannot be used with
 //! `section`.
 //!
 //! segment="segment-name": Type: string. Asserts the name of the segment containing the symbol's
@@ -2598,8 +2598,7 @@ struct SymtabAssertions {
     #[serde(rename = "section")]
     section_name: Option<String>,
 
-    #[serde(default)]
-    is_abs: bool,
+    is_abs: Option<bool>,
 
     #[serde(rename = "segment")]
     segment_name: Option<String>,
@@ -2639,8 +2638,8 @@ impl ExpectedSymtabEntry {
             "`segment` requires `section` for symbol `{name}`"
         );
         ensure!(
-            !assertions.is_abs || assertions.section_name.is_none(),
-            "`is_abs` and `section` are mutually exclusive for symbol `{name}`"
+            assertions.is_abs != Some(true) || assertions.section_name.is_none(),
+            "`is_abs=true` and `section` are mutually exclusive for symbol `{name}`"
         );
         Ok(Self {
             name: name.to_owned(),
@@ -8913,14 +8912,15 @@ where
             }
         }
 
-        if exp.assertions.is_abs {
-            match sym.section() {
-                object::SymbolSection::Absolute => {}
-                other => bail!(
-                    "Expected symbol `{}` to be an absolute symbol, but it was {other:?}",
-                    exp.name
-                ),
-            }
+        if let Some(expected_is_abs) = exp.assertions.is_abs {
+            let section = sym.section();
+            let is_abs = section == object::SymbolSection::Absolute;
+
+            ensure!(
+                is_abs == expected_is_abs,
+                "Expected symbol `{}` to have is_abs={expected_is_abs}, but it was {section:?}",
+                exp.name
+            );
         }
 
         if let Some(expected_alignment) = exp.assertions.alignment {

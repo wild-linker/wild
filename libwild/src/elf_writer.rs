@@ -5846,25 +5846,33 @@ fn get_internal_symbol_attributes<C: ElfClass>(
     layout: &ElfLayout<C>,
     def_info: &InternalSymDefInfo<elf::Elf<C>>,
 ) -> Result<(SymbolSection, object::elf::SymbolType)> {
-    if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
-        return get_defsym_attributes(layout, redirect);
+    let (mut shndx, st_type) = if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+        get_defsym_attributes(layout, redirect)?
+    } else {
+        let shndx = def_info
+            .section_id()
+            .map(|section_id| {
+                internal_symbol_section_index(layout, section_id).with_context(|| {
+                    format!(
+                        "symbol '{}' in section '{}' that we're not going to output",
+                        String::from_utf8_lossy(def_info.name),
+                        layout.output_sections.display_name(section_id)
+                    )
+                })
+            })
+            .transpose()?
+            .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
+
+        (shndx, def_info.symbol.st_type())
+    };
+
+    // Move symbols that are in our header (section 0) into the first section, otherwise they'll
+    // show up as undefined.
+    if matches!(shndx, SymbolSection::Index(0)) {
+        shndx = SymbolSection::Index(1);
     }
 
-    let shndx = def_info
-        .section_id()
-        .map(|section_id| {
-            internal_symbol_section_index(layout, section_id).with_context(|| {
-                format!(
-                    "symbol '{}' in section '{}' that we're not going to output",
-                    String::from_utf8_lossy(def_info.name),
-                    layout.output_sections.display_name(section_id)
-                )
-            })
-        })
-        .transpose()?
-        .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
-
-    Ok((shndx, def_info.symbol.st_type()))
+    Ok((shndx, st_type))
 }
 
 fn get_defsym_attributes<C: ElfClass>(
@@ -6136,13 +6144,7 @@ fn write_internal_symbols<C: ElfClass>(
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
-        let (mut shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
-
-        // Move symbols that are in our header (section 0) into the first section, otherwise they'll
-        // show up as undefined.
-        if matches!(shndx, SymbolSection::Index(0)) {
-            shndx = SymbolSection::Index(1);
-        }
+        let (shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
 
         let mut address = resolution.value();
 
