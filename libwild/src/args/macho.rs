@@ -40,6 +40,15 @@ pub struct MachOArgs {
     pub(crate) rpaths: Vec<String>,
     pub(crate) export_list_paths: Vec<PathBuf>,
     pub(crate) merge_cstring_literals: bool,
+    pub(crate) sectcreate: Vec<SectCreate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectCreate {
+    segname: String,
+    sectname: String,
+    path: PathBuf,
+    object: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +130,7 @@ impl Default for MachOArgs {
             install_name: None,
             current_version: SemanticVersion(Version(0)),
             compatibility_version: SemanticVersion(Version(0)),
+            sectcreate: Vec::new(),
             rpaths: Vec::new(),
             export_list_paths: Vec::new(),
             merge_cstring_literals: true,
@@ -128,13 +138,39 @@ impl Default for MachOArgs {
     }
 }
 
+impl MachOArgs {
+    fn load_sectcreate_files(&mut self, file_system: &impl FileSystem) -> Result {
+        use crate::fs::InputFileData;
+
+        for sc in &mut self.sectcreate {
+            let path = self.common.resolve_input_path(&sc.path);
+            let (input, _) = file_system.open_input(&path, false).with_context(|| {
+                format!("Failed to read -sectcreate file `{}`", sc.path.display())
+            })?;
+            sc.object =
+                crate::macho::build_sectcreate_object(&sc.segname, &sc.sectname, input.bytes())
+                    .with_context(|| {
+                        format!("Failed to create section from `{}`", sc.path.display())
+                    })?;
+        }
+        Ok(())
+    }
+}
+
 impl platform::Args for MachOArgs {
+    fn synthetic_objects(&self) -> impl Iterator<Item = (&Path, &[u8])> {
+        self.sectcreate
+            .iter()
+            .map(|sc| (sc.path.as_path(), sc.object.as_slice()))
+    }
+
     fn parse<S, I>(&mut self, input: I, file_system: &impl FileSystem) -> Result
     where
         S: AsRef<str>,
         I: Iterator<Item = S>,
     {
-        parse(self, input, file_system)
+        parse(self, input, file_system)?;
+        self.load_sectcreate_files(file_system)
     }
 
     fn should_strip_debug(&self) -> bool {
@@ -358,9 +394,16 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     parser
         .declare_with_three_params()
         .short("sectcreate")
-        .help("Create a section from a file (not yet supported)")
-        .execute(|args, _modifier_stack, _segment, _section, _file| {
-            args.warn_unsupported("-sectcreate")
+        .help("Create a section from the contents of a file")
+        .execute(|args, _modifier_stack, segname, sectname, file| {
+            args.common_mut().save_dir.handle_file(file);
+            args.sectcreate.push(SectCreate {
+                segname: segname.to_owned(),
+                sectname: sectname.to_owned(),
+                path: PathBuf::from(file),
+                object: Vec::new(),
+            });
+            Ok(())
         });
     parser
         .declare_with_param()

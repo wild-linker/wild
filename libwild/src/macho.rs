@@ -3619,6 +3619,29 @@ fn exported_symbol_is_weak(layout: &Layout<'_, MachO>, symbol_id: SymbolId) -> R
     Ok(object.object.symbol(symbol_index)?.is_weak())
 }
 
+pub(crate) fn build_sectcreate_object(
+    segname: &str,
+    sectname: &str,
+    contents: &[u8],
+) -> Result<Vec<u8>> {
+    let mut object = object::write::Object::new(
+        object::BinaryFormat::MachO,
+        object::Architecture::Aarch64,
+        Endianness::Little,
+    );
+    let section = object.add_section(
+        segname.as_bytes().to_vec(),
+        sectname.as_bytes().to_vec(),
+        object::SectionKind::Data,
+    );
+    object.section_mut(section).flags = object::SectionFlags::MachO {
+        flags: macho::S_ATTR_NO_DEAD_STRIP,
+        reserved2: 0,
+    };
+    object.set_section_data(section, contents, 1);
+    Ok(object.write()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3712,5 +3735,24 @@ mod tests {
                 assert_eq!(record.lma_offset, record.mem_offset);
             }
         }
+    }
+
+    #[test]
+    fn sectcreate_object_parses() {
+        use object::Object as _;
+        use object::ObjectSection as _;
+
+        let bytes = build_sectcreate_object("__TEXT", "__info", b"hello").unwrap();
+        assert!(File::parse_bytes(&bytes, false).is_ok());
+        let object = object::File::parse(bytes.as_slice()).unwrap();
+        let section = object.section_by_name("__info").unwrap();
+        assert_eq!(section.segment_name().unwrap(), Some("__TEXT"));
+        assert_eq!(section.data().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn sectcreate_rejects_long_names() {
+        assert!(build_sectcreate_object("__SEGMENT_TOO_LONG", "__info", b"x").is_err());
+        assert!(build_sectcreate_object("__TEXT", "__SECTION_TOO_LONG", b"x").is_err());
     }
 }
