@@ -163,6 +163,7 @@
 //!   type=int: Asserts the section has the specified section type.
 //!   address=int: Asserts the section has the specified address.
 //!   index=int: Asserts the section has the specified section header index.
+//!   size=N: Asserts the section has the specified size in bytes.
 //!
 //! RelrCount:N Checks that .relr.dyn encodes at least N total relocations (counting both address
 //! entries and bitmap-encoded relocations).
@@ -2522,6 +2523,8 @@ struct SectionAssertions {
     address: Option<u64>,
 
     index: Option<usize>,
+
+    size: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -6671,6 +6674,17 @@ impl Assertions {
                     expected.section_name,
                     expected_index,
                     index
+                );
+            }
+
+            if let Some(expected_size) = expected.assertions.size {
+                let actual_size = section.size();
+                ensure!(
+                    actual_size == expected_size,
+                    "Section `{}` size mismatch: expected {}, got {}",
+                    expected.section_name,
+                    expected_size,
+                    actual_size
                 );
             }
         }
