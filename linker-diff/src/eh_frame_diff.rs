@@ -78,10 +78,18 @@ fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
         Converter::None,
         object,
     );
+    let addr_mask = if object.file.is_64() {
+        u64::MAX
+    } else {
+        u64::from(u32::MAX)
+    };
+
     values.insert(
         "frame_pointer",
-        (address1 as i64 + i64::from(header.frame_pointer)) as u64
-            + offset_of!(EhFrameHdr, frame_pointer) as u64,
+        ((address1 as i64
+            + offset_of!(EhFrameHdr, frame_pointer) as i64
+            + i64::from(header.frame_pointer)) as u64)
+            & addr_mask,
         Converter::SectionAddress,
         object,
     );
@@ -123,8 +131,9 @@ fn verify_frames(
     let eh_frame_base = eh_frame_section.address();
     let eh_frame_data = eh_frame_section.data()?;
 
-    let eh_frame: gimli::EhFrame<EndianSlice<'_, gimli::LittleEndian>> =
+    let mut eh_frame: gimli::EhFrame<EndianSlice<'_, gimli::LittleEndian>> =
         gimli::EhFrame::new(eh_frame_data, gimli::LittleEndian);
+    eh_frame.set_address_size(if object.file.is_64() { 8 } else { 4 });
     let bases = gimli::BaseAddresses::default().set_eh_frame(eh_frame_base);
 
     // Multiple FDEs can legitimately share a pc_begin, so track all of them.
@@ -160,9 +169,16 @@ fn verify_frames(
         }
     }
 
+    let addr_mask = if object.file.is_64() {
+        u64::MAX
+    } else {
+        u64::from(u32::MAX)
+    };
+
     for hdr in header_entries {
-        let frame_address = (header_base as i64 + i64::from(hdr.frame_ptr)) as u64;
-        let hdr_info_address = (header_base as i64 + i64::from(hdr.frame_info_ptr)) as u64;
+        let frame_address = ((header_base as i64 + i64::from(hdr.frame_ptr)) as u64) & addr_mask;
+        let hdr_info_address =
+            ((header_base as i64 + i64::from(hdr.frame_info_ptr)) as u64) & addr_mask;
         if let Some(infos) = frame_to_infos.get(&frame_address) {
             if !infos.contains(&hdr_info_address) {
                 bail!(
