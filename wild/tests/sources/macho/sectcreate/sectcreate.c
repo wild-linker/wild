@@ -19,7 +19,7 @@
 //#ReferenceLinkers:ld
 //#Copy:info.txt:info.txt
 //#LinkArgs:-Wl,-sectcreate,__DATA,__bss,$OUT_DIR/info.txt
-//#ExpectSection:__bss
+//#ExpectSection:__bss size=21
 //#ExpectSym:_sectcreate_bss section="__bss",segment="__DATA"
 
 #include <stdlib.h>
