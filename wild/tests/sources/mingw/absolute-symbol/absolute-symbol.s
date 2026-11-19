@@ -1,7 +1,7 @@
 //#LinkArgs:--entry _start
 //#RunEnabled:false
 //#DiffIgnore:section.got
-//#ExpectSym:abs_sym is_abs
+//#ExpectSym:abs_sym is_abs,address=0xCAFECAFE
 
 .text
 .globl _start

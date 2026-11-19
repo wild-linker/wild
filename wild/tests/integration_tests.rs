@@ -8853,6 +8853,8 @@ where
             continue;
         };
 
+        let address = symbol_address(obj, &sym)?;
+
         if let Some(exp_name) = exp.assertions.section_name.as_ref() {
             match sym.section() {
                 object::SymbolSection::Section(index) => {
@@ -8880,7 +8882,7 @@ where
                     }
 
                     if let Some(expected_offset) = exp.assertions.section_offset {
-                        let actual_offset = sym.address().wrapping_sub(section.address());
+                        let actual_offset = address.wrapping_sub(section.address());
                         if expected_offset != actual_offset {
                             bail!(
                                 "Expected symbol `{}` to be at offset {expected_offset} \
@@ -8910,7 +8912,7 @@ where
         }
 
         if let Some(expected_alignment) = exp.assertions.alignment {
-            let addr = sym.address();
+            let addr = address;
             if !addr.is_multiple_of(expected_alignment) {
                 bail!(
                     "Expected symbol `{}` to have address aligned to {expected_alignment:#x}, \
@@ -8922,7 +8924,7 @@ where
 
         // Check assertions not related to sections.
         if let Some(expected_address) = exp.assertions.absolute_address {
-            let actual_address = sym.address();
+            let actual_address = address;
             if expected_address != actual_address {
                 bail!(
                     "Expected symbol `{}` to have address {expected_address:#x}, \
@@ -9002,8 +9004,6 @@ where
         }
 
         if let Some(expected_line) = exp.assertions.line {
-            let address = sym.address();
-
             let actual_line = lookup_line_for_symbol(obj, address)
                 .with_context(|| format!("Error reading line info for `{name}` (0x{address:x})"))?
                 .with_context(|| format!("Missing line info for `{name}` (0x{address:x})"))?;
@@ -9026,6 +9026,22 @@ where
     }
 
     Ok(())
+}
+
+fn symbol_address<'data>(
+    obj: &object::File,
+    sym: &impl object::ObjectSymbol<'data>,
+) -> Result<u64> {
+    Ok(match (obj, sym.section()) {
+        // `object`'s COFF address accessor returns zero for symbols without a section.
+        (object::File::Pe64(pe), object::SymbolSection::Absolute) => u64::from(
+            pe.symbol_by_index(sym.index())?
+                .coff_symbol()
+                .value
+                .get(LittleEndian),
+        ),
+        _ => sym.address(),
+    })
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
