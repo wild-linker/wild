@@ -394,7 +394,6 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         Ok(entry)
     }
 
-    #[allow(clippy::unused_self)]
     fn copy_absolute_symbol(
         &mut self,
         sym: &coff::SymtabEntry,
