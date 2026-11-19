@@ -1,10 +1,9 @@
 use crate::bail;
 use crate::coff::Coff;
 use crate::platform::PreviousRelocationInfo;
+use linker_utils::coff::RelocationKind;
+use linker_utils::coff::RelocationKindInfo;
 use linker_utils::elf::AllowedRange;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RelocationSize;
 use linker_utils::elf::Sign;
 use linker_utils::relaxation::RelocationModifier;
 use object::pe::RelocationType;
@@ -35,21 +34,24 @@ impl crate::platform::Arch for CoffX86_64 {
     fn relocation_from_raw(
         r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
     ) -> crate::error::Result<RelocationKindInfo> {
-        let (kind, size, range) = match r_type {
+        let (kind, byte_size, range, place_offset) = match r_type {
             object::pe::IMAGE_REL_AMD64_ADDR32NB => (
-                RelocationKind::Absolute,
-                RelocationSize::ByteSize(4),
+                RelocationKind::ImageBaseRelative,
+                4,
                 AllowedRange::from_byte_size(4, Sign::Unsigned),
+                0,
             ),
             object::pe::IMAGE_REL_AMD64_ADDR32 => (
                 RelocationKind::Absolute,
-                RelocationSize::ByteSize(4),
+                4,
                 AllowedRange::from_byte_size(4, Sign::Unsigned),
+                0,
             ),
             object::pe::IMAGE_REL_AMD64_ADDR64 => (
                 RelocationKind::Absolute,
-                RelocationSize::ByteSize(8),
+                8,
                 AllowedRange::from_byte_size(8, Sign::Unsigned),
+                0,
             ),
             object::pe::IMAGE_REL_AMD64_REL32
             | object::pe::IMAGE_REL_AMD64_REL32_1
@@ -58,21 +60,18 @@ impl crate::platform::Arch for CoffX86_64 {
             | object::pe::IMAGE_REL_AMD64_REL32_4
             | object::pe::IMAGE_REL_AMD64_REL32_5 => (
                 RelocationKind::Relative,
-                RelocationSize::ByteSize(4),
+                4,
                 AllowedRange::from_byte_size(4, Sign::Signed),
+                u64::from(r_type.0),
             ),
             _ => bail!("Unsupported relocation: {r_type}"),
         };
 
         Ok(RelocationKindInfo {
             kind,
-            size,
-            mask: None,
+            byte_size,
             range,
-            alignment: 1,
-            bias: None,
-            thunkable: false,
-            implicit_addend: true,
+            place_offset,
         })
     }
 

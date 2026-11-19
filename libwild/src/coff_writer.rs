@@ -9,7 +9,6 @@ use crate::coff::DosHeader;
 use crate::coff::output_section_id;
 use crate::coff::part_id;
 use crate::debug_assert_bail;
-use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
@@ -55,8 +54,7 @@ use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::RelocationSize;
+use linker_utils::coff::RelocationKind;
 use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
 use object::SymbolIndex;
@@ -764,37 +762,19 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
 
     let r_type = rel.raw_type();
     let rel_info = A::relocation_from_raw(rel.raw_type())?;
-    ensure!(
-        rel_info.implicit_addend,
-        "PE/COFF relocations always have implicit addend"
-    );
-    let mut addend = rel.addend() as u64;
-    // TODO: Copied from macho and is also similar to `adjust_value_based_on_content`. Perhaps
-    // candidate for a deduplication?
-    {
-        let RelocationSize::ByteSize(byte_size @ (4 | 8)) = rel_info.size else {
-            bail!(
-                "Unexpected relocation size for implicit addend read: {}",
-                rel_info.size
-            );
-        };
-        let byte_size = usize::from(byte_size);
-        let bytes = out
-            .get(offset_in_section as usize..)
-            .and_then(|bytes| bytes.get(..byte_size))
-            .context("implicit addend read extends beyond section data")?;
-        let mut buffer = [0u8; 8];
-        buffer[..byte_size].copy_from_slice(bytes);
-        let field = match byte_size {
-            4 => i64::from(i32::from_le_bytes(bytes.try_into()?)) as u64,
-            8 => u64::from_le_bytes(bytes.try_into()?),
-            _ => todo!(),
-        };
-        addend = addend.wrapping_add(field);
-    }
+
+    let byte_size = usize::from(rel_info.byte_size);
+    let bytes = out
+        .get(offset_in_section as usize..)
+        .and_then(|bytes| bytes.get(..byte_size))
+        .context("implicit addend read extends beyond section data")?;
+    let addend = match byte_size {
+        4 => i64::from(i32::from_le_bytes(bytes.try_into()?)) as u64,
+        8 => u64::from_le_bytes(bytes.try_into()?),
+        _ => unreachable!(),
+    };
 
     match rel_info.kind {
-        RelocationKind::None => return Ok(()),
         RelocationKind::Relative if rel.symbol().is_none() => {
             if layout.symbol_db.output_kind.is_position_independent() {
                 bail!(
@@ -803,8 +783,8 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
                     rel.raw_type()
                 );
             }
-            let place = section_address + offset_in_section;
-            let value = (rel.addend() as u64).wrapping_sub(place);
+            let place = section_address + offset_in_section + rel_info.place_offset;
+            let value = addend.wrapping_sub(place);
             rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
             return Ok(());
         }
@@ -825,8 +805,7 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
         local_symbol_id,
         flags,
     } = get_resolution(rel, object_layout, layout)?;
-    let reject_dynamic_direct = layout.symbol_db.output_kind.is_position_independent()
-        || A::relocation_from_raw(r_type)?.kind == RelocationKind::TpOff;
+    let reject_dynamic_direct = layout.symbol_db.output_kind.is_position_independent();
     if reject_dynamic_direct
         && (flags.is_interposable() || flags.is_dynamic())
         && !flags.needs_copy_relocation()
@@ -841,21 +820,17 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
     let rel_info = A::relocation_from_raw(r_type)?;
 
     let value = match rel_info.kind {
-        // TODO: This reuses ELF code which doesn't fit well here. Create COFF's own code in linker
-        // utils.
-        RelocationKind::Absolute if r_type == object::pe::IMAGE_REL_AMD64_ADDR32NB => {
+        RelocationKind::Absolute => resolution.value_with_addend(addend as i64),
+        RelocationKind::ImageBaseRelative => {
             let without_base = addend.wrapping_sub(layout.args().image_base().unwrap());
             resolution.value_with_addend(without_base as i64)
         }
-        RelocationKind::Absolute => resolution.value_with_addend(addend as i64),
         RelocationKind::Relative => {
             // TODO: Handle undefined weak
             let symbol_plus_addend = resolution.value_with_addend(addend as i64);
-            symbol_plus_addend.wrapping_sub(place)
-        }
-        RelocationKind::None => 0,
-        _ => {
-            unreachable!()
+            symbol_plus_addend
+                .wrapping_sub(place)
+                .wrapping_sub(rel_info.place_offset)
         }
     };
 
@@ -873,7 +848,7 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
     tracing::trace!(
             %flags,
             ?rel_info.kind,
-            %rel_info.size,
+            %rel_info.byte_size,
             value,
             value_hex = %HexU64::new(value),
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
