@@ -956,11 +956,15 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         &Self::SECTION_DEFINITIONS
     }
 
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(
+        header: &Self::SectionHeader,
+        alignment: Alignment,
+    ) -> Self::SectionAttributes {
         SectionAttributes {
             flags: header.sh_flags(LittleEndian),
             ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize(LittleEndian).into(),
+            alignment,
             has_input_sections: true,
             overrides: Default::default(),
             class: PhantomData,
@@ -1640,6 +1644,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     flags: d.section_flags,
                     ty: d.ty,
                     entsize: d.element_size,
+                    alignment: d.min_alignment,
                     has_input_sections: false,
                     overrides: Default::default(),
                     class: PhantomData,
@@ -6123,6 +6128,7 @@ pub(crate) struct SectionAttributes<C: ElfClass> {
     pub(crate) flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) entsize: u64,
+    alignment: Alignment,
     has_input_sections: bool,
     pub(crate) overrides: LinkerScriptOverrides,
     class: PhantomData<C>,
@@ -6153,6 +6159,7 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
         // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
         // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
         self.ty = self.ty.max(rhs.ty);
+        self.alignment = self.alignment.max(rhs.alignment);
 
         // If all input sections specify the same entsize, then we use that. If there's any
         // inconsistency, then we set entsize to 0.
@@ -6184,6 +6191,7 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
         }
 
         info.section_attributes.merge(attributes);
+        info.min_alignment = info.min_alignment.max(self.alignment);
 
         if let SectionKind::Secondary(primary_id) = info.kind
             && info.location_info.is_some()

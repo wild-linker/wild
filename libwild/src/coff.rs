@@ -329,7 +329,10 @@ impl Platform for Coff {
         output.write(layout, coff_writer::write::<A>)
     }
 
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(
+        header: &Self::SectionHeader,
+        _alignment: Alignment,
+    ) -> Self::SectionAttributes {
         Self::SectionAttributes {
             flags: header.characteristics.get(LittleEndian),
             is_null: header.is_null(),

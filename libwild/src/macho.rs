@@ -1406,7 +1406,10 @@ impl platform::Platform for MachO {
         layout.refresh_file_layouts(layout::SegmentFileLayout::FromSections)
     }
 
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(
+        header: &Self::SectionHeader,
+        _alignment: Alignment,
+    ) -> Self::SectionAttributes {
         SectionAttributes::new(
             header.flags.get(LE),
             Some(SegmentName::from_bytes(header.segment_name())),

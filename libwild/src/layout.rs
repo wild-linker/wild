@@ -1757,8 +1757,13 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         self.mem_sizes.increment(part_id, size);
     }
 
-    fn store_section_attributes(&mut self, part_id: PartId, header: &P::SectionHeader) {
-        let new_attributes = P::section_attributes(header);
+    fn store_section_attributes(
+        &mut self,
+        part_id: PartId,
+        header: &P::SectionHeader,
+        output_sections: &OutputSections<P>,
+    ) {
+        let new_attributes = P::section_attributes(header, part_id.alignment(output_sections));
 
         match self
             .section_attributes
@@ -4797,7 +4802,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                     let part_id =
                         self.section_part_id(index, &resources.symbol_db.section_part_ids);
 
-                    common.store_section_attributes(part_id, header);
+                    common.store_section_attributes(part_id, header, resources.output_sections);
                 }
                 SectionSlot::FrameData(index) => {
                     frame_section_indices.push(*index);
@@ -5007,7 +5012,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             SectionSlot::Loaded(section)
         };
 
-        common.store_section_attributes(part_id, header);
+        common.store_section_attributes(part_id, header, resources.output_sections);
 
         if let Some(config) = A::thunk_config()
             && resources.thunk_layout_builder.is_some()
@@ -5050,7 +5055,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             part_id,
             section.capacity(part_id, resources.output_sections),
         );
-        common.store_section_attributes(part_id, header);
+        common.store_section_attributes(part_id, header, resources.output_sections);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
