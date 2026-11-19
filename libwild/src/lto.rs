@@ -8,6 +8,8 @@ use crate::elf::ElfClass;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::grouping::Group;
+use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
@@ -276,10 +278,12 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
 }
 
 pub(crate) fn prepare_symbols_for_lto<C: ElfClass>(
-    symbol_db: &SymbolDb<Elf<C>>,
+    symbol_db: &mut SymbolDb<Elf<C>>,
     per_symbol_flags: &mut PerSymbolFlags,
     resolved_groups: &[ResolvedGroup<Elf<C>>],
 ) {
+    hide_excluded_symbols(symbol_db, resolved_groups);
+
     mark_native_symbols_as_non_ir_ref(symbol_db, per_symbol_flags, resolved_groups);
 
     // Mark wrapped symbol names and their __wrap_/__real_ variants as referenced by non-IR
@@ -294,6 +298,48 @@ pub(crate) fn prepare_symbols_for_lto<C: ElfClass>(
     mark_forced_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
 
     mark_lto_symbols_for_dynamic_export(symbol_db, per_symbol_flags, resolved_groups);
+}
+
+fn hide_excluded_symbols<C: ElfClass>(
+    symbol_db: &mut SymbolDb<Elf<C>>,
+    resolved_groups: &[ResolvedGroup<Elf<C>>],
+) {
+    let mut excluded = Vec::new();
+
+    for group in resolved_groups {
+        for file in &group.files {
+            let ResolvedFile::LtoInput(file) = file else {
+                continue;
+            };
+
+            let SequencedInput::LtoInput(object) = symbol_db.file(file.file_id) else {
+                unreachable!();
+            };
+
+            if object.input_ref.has_archive_semantics()
+                && !symbol_db
+                    .args
+                    .should_export_dynamic(object.input_ref.lib_name())
+            {
+                excluded.extend(object.symbols_iter().filter_map(|(id, symbol)| {
+                    (symbol.is_definition() && symbol_db.is_canonical(id)).then_some(id)
+                }));
+            }
+        }
+    }
+
+    // Generated objects have no archive identity. Merge hidden visibility from the
+    // selected LTO definitions into their generated replacements instead.
+    for id in excluded {
+        let file_id = symbol_db.file_id_for_symbol(id);
+        let Group::LtoInputs(objects) = &mut symbol_db.groups[file_id.group()] else {
+            unreachable!();
+        };
+
+        let object = &mut objects[file_id.file()];
+        let index = object.symbol_id_range.id_to_offset(id);
+        object.symbols[index].visibility = object::elf::STV_HIDDEN.0;
+    }
 }
 
 fn mark_native_symbols_as_non_ir_ref<C: ElfClass>(
