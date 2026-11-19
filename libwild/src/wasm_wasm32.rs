@@ -8,13 +8,13 @@ pub(crate) struct WasmWasm32;
 pub(crate) struct Relaxation {}
 
 impl crate::platform::Relaxation for Relaxation {
-    type RelocationKindInfo = linker_utils::elf::RelocationKindInfo;
+    type RelocationKindInfo = linker_utils::wasm::RelocationKindInfo;
 
     fn apply(&self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
         unreachable!()
     }
 
-    fn rel_info(&self) -> linker_utils::elf::RelocationKindInfo {
+    fn rel_info(&self) -> linker_utils::wasm::RelocationKindInfo {
         unreachable!()
     }
 
@@ -55,7 +55,7 @@ impl crate::platform::Arch for WasmWasm32 {
 
     fn relocation_from_raw(
         _r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
-    ) -> crate::error::Result<linker_utils::elf::RelocationKindInfo> {
+    ) -> crate::error::Result<linker_utils::wasm::RelocationKindInfo> {
         // TODO: map Wasm reloc type codes (R_WASM_*) to RelocationKindInfo.
         todo!()
     }

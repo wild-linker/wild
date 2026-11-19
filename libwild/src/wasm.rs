@@ -31,8 +31,8 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
-use linker_utils::elf::RelocationKindInfo;
 use linker_utils::utils::u32_from_slice;
+use linker_utils::wasm::RelocationKindInfo;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
@@ -1325,6 +1325,8 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
         None
     }
 }
+
+impl platform::RelocationKindInfo for RelocationKindInfo {}
 
 #[derive(Debug, Default)]
 pub(crate) struct RelocationList<'data> {
