@@ -19,6 +19,7 @@ use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
@@ -346,6 +347,23 @@ impl Platform for Coff {
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
         &Self::SECTION_DEFINITIONS
+    }
+
+    fn finalise_output_section_alignments(
+        _sizes: &OutputSectionPartMap<u64>,
+        output_sections: &mut OutputSections<'_, Self>,
+    ) {
+        let section_ids = output_sections
+            .ids_with_info()
+            .filter(|(section_id, info)| {
+                section_id.is_custom::<Coff>() && matches!(info.kind, SectionKind::Primary(_))
+            })
+            .map(|(section_id, _)| section_id)
+            .collect::<Vec<_>>();
+
+        for section_id in section_ids {
+            output_sections.bump_min_alignment(section_id, alignment::PE_SECTION_ALIGNMENT);
+        }
     }
 
     fn finalise_group_layout(_memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt {}
@@ -897,7 +915,12 @@ impl Platform for Coff {
     }
 
     fn section_identity_from_name(name: SectionName) -> Option<SectionIdentity<Self>> {
-        Some(SectionIdentity::new(name, ()))
+        // Dollar character means COFF's "grouped section".
+        let base = match name.bytes().iter().position(|&b| b == b'$') {
+            Some(i) => SectionName(&name.0[..i]),
+            None => name,
+        };
+        Some(SectionIdentity::new(base, ()))
     }
 }
 
