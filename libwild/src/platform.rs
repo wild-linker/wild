@@ -1483,6 +1483,10 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
     fn is_alloc(&self) -> bool;
 
+    fn is_discardable(&self) -> bool {
+        !self.is_alloc()
+    }
+
     fn is_writable(&self) -> bool;
 
     fn is_executable(&self) -> bool;

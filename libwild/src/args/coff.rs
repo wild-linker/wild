@@ -103,7 +103,8 @@ impl platform::Args for CoffArgs {
     }
 
     fn should_strip_debug(&self) -> bool {
-        todo!()
+        // TODO
+        true
     }
 
     fn should_strip_all(&self) -> bool {
@@ -169,6 +170,11 @@ impl platform::Args for CoffArgs {
         } else {
             msvc::is_ignored_flag(flag)
         }
+    }
+
+    fn should_gc_sections(&self) -> bool {
+        // TODO: needs COMDAT support to be implemented first
+        false
     }
 
     fn architecture(&self) -> Architecture {

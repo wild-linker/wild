@@ -1779,11 +1779,11 @@ fn resolve_section<'data, P: Platform>(
             ));
         }
         SectionRuleOutcome::Debug => {
-            if args.should_strip_debug() && !input_section.is_alloc() {
+            if args.should_strip_debug() && input_section.is_discardable() {
                 return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
             }
 
-            is_debug_info = !input_section.is_alloc();
+            is_debug_info = input_section.is_discardable();
 
             part_id = PartId::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();

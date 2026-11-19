@@ -5550,7 +5550,8 @@ impl LinkCommand {
                         }
                         PlatformKind::MinGW => {
                             command.arg("-m").arg(arch.mingw_emulation_name());
-                            command.arg("--gc-sections");
+                            // TODO: Requires COMDAT support
+                            // command.arg("--gc-sections");
                         }
                         PlatformKind::Wasm => {
                             let primary_wat = config

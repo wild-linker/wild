@@ -17,6 +17,7 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout_rules;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -342,7 +343,7 @@ impl Platform for Coff {
     }
 
     fn is_zero_sized_section_content(_section_id: OutputSectionId) -> bool {
-        todo!()
+        false
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
@@ -1216,6 +1217,14 @@ impl platform::SectionHeader for SectionHeader {
         self.characteristics.get(LittleEndian).is_alloc()
     }
 
+    fn is_discardable(&self) -> bool {
+        !self.is_alloc()
+            || self
+                .characteristics
+                .get(LittleEndian)
+                .contains(object::pe::IMAGE_SCN_MEM_DISCARDABLE)
+    }
+
     fn is_writable(&self) -> bool {
         self.characteristics
             .get(LittleEndian)
@@ -1685,7 +1694,8 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix_section_sort(".CRT$".as_bytes(), output_section_id::RDATA),
 ];
 
-const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[];
+const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] =
+    &[SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug)];
 
 fn init_priority(name: &[u8]) -> Option<u32> {
     if let Some(pos) = name.iter().position(|&byte| byte == b'$') {

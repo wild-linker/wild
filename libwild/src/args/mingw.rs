@@ -14,7 +14,7 @@ pub const SILENTLY_IGNORED_FLAGS: &[&str] = &[];
 
 pub const IGNORED_FLAGS: &[&str] = &[];
 
-pub const IGNORED_NO_VALUE_FLAGS: &[&str] = &["gc-sections"];
+pub const IGNORED_NO_VALUE_FLAGS: &[&str] = &["no-gc-sections", "gc-sections"];
 
 pub(super) fn is_ignored_flag(flag: &str) -> bool {
     IGNORED_FLAGS.contains(&flag)
