@@ -462,7 +462,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             *entry = Some(file.state);
         }
         let mut loaded = self.extract_all(&mut files_by_index, plugin)?;
-        self.include_syntetic_objects(args, &mut loaded, plugin)?;
+        self.include_synthetic_objects(args, &mut loaded, plugin)?;
         Ok(loaded)
     }
 
@@ -516,7 +516,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         Ok(loaded)
     }
 
-    fn include_syntetic_objects<P: Platform>(
+    fn include_synthetic_objects<P: Platform>(
         &mut self,
         args: &'data P::Args,
         loaded: &mut LoadedInputs<'data, P>,
