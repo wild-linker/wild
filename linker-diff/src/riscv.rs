@@ -9,7 +9,7 @@ use crate::utils::decode_insn_with_objdump;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::riscv64_rel_type_to_string;
+use linker_utils::elf::riscv_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv::RelaxationKind;
 use linker_utils::utils::u32_from_slice;
@@ -282,7 +282,7 @@ impl crate::arch::RType for RType {
     }
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {
-        DynamicRelocationKind::from_riscv64_r_type(self.0)
+        DynamicRelocationKind::from_riscv_r_type(self.0)
     }
 
     fn should_ignore_when_computing_referent(self) -> bool {
@@ -292,7 +292,7 @@ impl crate::arch::RType for RType {
 
 impl Display for RType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&riscv64_rel_type_to_string(self.0), f)
+        Display::fmt(&riscv_rel_type_to_string(self.0), f)
     }
 }
 

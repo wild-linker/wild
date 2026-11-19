@@ -20,7 +20,7 @@ use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RiscVInstruction;
-use linker_utils::elf::riscv64_rel_type_to_string;
+use linker_utils::elf::riscv_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -99,7 +99,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
     }
 
     fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
-        riscv64_rel_type_to_string(r_type)
+        riscv_rel_type_to_string(r_type)
     }
 
     fn write_plt_entry(

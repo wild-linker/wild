@@ -45,7 +45,6 @@ use crate::Binary;
 use crate::ColourMode;
 use crate::Diff;
 use crate::DiffValues;
-use crate::ElfFile64;
 use crate::File;
 use crate::Report;
 use crate::Result;
@@ -87,11 +86,12 @@ use object::ObjectSymbolTable as _;
 use object::RelocationTarget;
 use object::SectionKind;
 use object::read::elf::Dyn as _;
-use object::read::elf::ElfSection64;
-use object::read::elf::FileHeader as _;
+use object::read::elf::ElfFile;
+use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelrIterator;
 use object::read::elf::SectionHeader as _;
+use object::read::elf::Sym as _;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::iter::Peekable;
@@ -839,34 +839,27 @@ fn get_original_referent<'data, R: RType>(
     rel: &object::Relocation,
     input_file: &crate::section_map::InputFile<'data>,
 ) -> Result<Referent<'data, R>> {
-    let e = input_file.file.endianness();
     if let RelocationTarget::Symbol(symbol_index) = rel.target() {
         let symbol = input_file.file.symbol_by_index(symbol_index)?;
 
-        if let Some(section_index) = symbol.section_index() {
-            match &input_file.file {
-                File::Elf64(elf_file) => {
-                    let section = elf_file.section_by_index(section_index)?;
+        if let Some(section_index) = symbol.section_index()
+            && let Ok(section) = input_file.file.section_by_index(section_index)
+            && let object::SectionFlags::Elf { sh_flags, .. } = section.flags()
+            && sh_flags.contains(linker_utils::elf::shf::MERGE | linker_utils::elf::shf::STRINGS)
+            && let Ok(section_data) = section.data()
+            && (symbol.address() as usize) < section_data.len()
+        {
+            let string_plus_rest = &section_data[symbol.address() as usize..];
+            if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
+                let addend = symbol
+                    .name_bytes()
+                    .is_ok_and(|name| !name.is_empty())
+                    .then(|| rel.addend());
 
-                    let flags = section.elf_section_header().sh_flags(e);
-
-                    if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
-                        let section_data = section.data()?;
-                        let string_plus_rest = &section_data[symbol.address() as usize..];
-                        if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
-                            let addend = symbol
-                                .name_bytes()
-                                .is_ok_and(|name| !name.is_empty())
-                                .then(|| rel.addend());
-
-                            return Ok(Referent::MergedString(MergedStringRef {
-                                data: &string_plus_rest[..end_offset],
-                                named_symbol_addend: addend,
-                            }));
-                        }
-                    }
-                }
-                _ => {}
+                return Ok(Referent::MergedString(MergedStringRef {
+                    data: &string_plus_rest[..end_offset],
+                    named_symbol_addend: addend,
+                }));
             }
         }
 
@@ -2090,7 +2083,7 @@ struct RelaxationTester<'data> {
 
 impl<'data> RelaxationTester<'data> {
     fn new(
-        original_section: &ElfSection64<'data, '_, Endianness>,
+        original_section: &object::Section<'data, '_>,
         bin: &'data Binary<'data>,
         section_address: u64,
         input_file: &section_map::InputFile,
@@ -3087,8 +3080,6 @@ fn symbol_versions_by_name<'data>(
     binaries: &'data [Binary<'data>],
     layout: &IndexedLayout<'data>,
 ) -> HashMap<&'data [u8], SymbolVersions> {
-    let e = binaries[0].file.endianness();
-
     // Populate our map with eligible unique symbols from the input files.
     let mut by_name: HashMap<&[u8], SymbolVersions> = layout
         .symbol_name_to_section_id
@@ -3098,7 +3089,7 @@ fn symbol_versions_by_name<'data>(
 
             // Merge sections are ignored, since they're split before copying, so can't be compared
             // 1:1 between output files.
-            if is_merge_section(&section, e)
+            if is_merge_section(&section)
                 || section.size() == 0
                 || !SUPPORTED_SECTION_KINDS.contains(&section.kind())
             {
@@ -3144,11 +3135,12 @@ fn symbol_versions_by_name<'data>(
 
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
-fn is_merge_section(section: &ElfSection64<Endianness>, e: Endianness) -> bool {
-    section
-        .elf_section_header()
-        .sh_flags(e)
-        .contains(object::elf::SHF_MERGE)
+fn is_merge_section(section: &object::Section) -> bool {
+    if let object::SectionFlags::Elf { sh_flags, .. } = section.flags() {
+        sh_flags.contains(linker_utils::elf::shf::MERGE)
+    } else {
+        false
+    }
 }
 
 /// Returns information about sections where we can uniquely locate that section in each input file
@@ -3256,7 +3248,7 @@ impl<'data> SectionVersions<'data> {
     fn original_section<'layout>(
         &self,
         layout: &'layout IndexedLayout<'data>,
-    ) -> Result<ElfSection64<'data, 'layout, Endianness>> {
+    ) -> Result<object::Section<'data, 'layout>> {
         layout.get_elf_section(self.input_section_id)
     }
 
@@ -3323,10 +3315,16 @@ pub(crate) fn validate_got_plt(bin: &Binary) -> Result {
 }
 
 pub(crate) fn validate_null_section(bin: &Binary) -> Result {
-    let File::Elf64(elf_file) = bin.file else {
-        return Ok(());
-    };
+    match bin.file {
+        File::Elf64(elf_file) => elf_validate_null_section(elf_file),
+        File::Elf32(elf_file) => elf_validate_null_section(elf_file),
+        _ => Ok(()),
+    }
+}
 
+fn elf_validate_null_section<File: FileHeader<Endian = Endianness>>(
+    elf_file: &ElfFile<File>,
+) -> Result {
     let Some(header) = elf_file.elf_section_table().iter().next() else {
         return Ok(());
     };
@@ -3334,13 +3332,13 @@ pub(crate) fn validate_null_section(bin: &Binary) -> Result {
     let e = elf_file.endian();
 
     let fields = [
-        ("sh_name", u64::from(header.sh_name.get(e))),
-        ("sh_type", u64::from(header.sh_type.get(e).0)),
-        ("sh_flags", header.sh_flags.get(e).0),
-        ("sh_addr", header.sh_addr.get(e)),
-        ("sh_offset", header.sh_offset.get(e)),
-        ("sh_addralign", header.sh_addralign.get(e)),
-        ("sh_entsize", header.sh_entsize.get(e)),
+        ("sh_name", u64::from(header.sh_name(e))),
+        ("sh_type", u64::from(header.sh_type(e).0)),
+        ("sh_flags", header.sh_flags(e).0),
+        ("sh_addr", header.sh_addr(e).into()),
+        ("sh_offset", header.sh_offset(e).into()),
+        ("sh_addralign", header.sh_addralign(e).into()),
+        ("sh_entsize", header.sh_entsize(e).into()),
     ];
 
     for (name, value) in fields {
@@ -3529,19 +3527,30 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn build_indexes(&mut self, file: &File<'data>) -> Result {
-        if let object::File::Elf64(elf_file) = file {
-            self.index_dynamic(elf_file);
-            self.verdef = Self::index_verdef(elf_file)?;
-            self.verneed = Self::index_verneed(elf_file)?;
-            self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
-            self.index_got_tables(elf_file).unwrap();
-            self.index_relocations(elf_file)?;
-            self.index_plt_sections(elf_file)?;
+        match file {
+            object::File::Elf64(elf_file) => self.build_indexes_elf(elf_file),
+            object::File::Elf32(elf_file) => self.build_indexes_elf(elf_file),
+            _ => Ok(()),
         }
+    }
+
+    fn build_indexes_elf<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result {
+        self.index_dynamic(elf_file);
+        self.verdef = Self::index_verdef(elf_file)?;
+        self.verneed = Self::index_verneed(elf_file)?;
+        self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
+        self.index_got_tables(elf_file).unwrap();
+        self.index_relocations(elf_file)?;
+        self.index_plt_sections(elf_file)?;
         Ok(())
     }
 
-    fn index_verdef(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+    fn index_verdef<Elf: FileHeader<Endian = Endianness>>(
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result<Vec<Option<&'data [u8]>>> {
         let e = elf_file.endian();
         let mut versions = Vec::new();
 
@@ -3574,7 +3583,9 @@ impl<'data> AddressIndex<'data> {
         Ok(versions)
     }
 
-    fn index_verneed(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+    fn index_verneed<Elf: FileHeader<Endian = Endianness>>(
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result<Vec<Option<&'data [u8]>>> {
         let e = elf_file.endian();
         let mut versions = Vec::new();
 
@@ -3610,9 +3621,9 @@ impl<'data> AddressIndex<'data> {
         Ok(versions)
     }
 
-    fn index_dynamic_symbols(
+    fn index_dynamic_symbols<Elf: FileHeader<Endian = Endianness>>(
         &self,
-        elf_file: &ElfFile64<'data>,
+        elf_file: &ElfFile<'data, Elf>,
     ) -> Result<Vec<SymtabEntryInfo<'data>>> {
         let e = elf_file.endian();
         let symbol_version_indexes: Option<&[object::elf::Versym<Endianness>]> = self
@@ -3700,7 +3711,10 @@ impl<'data> AddressIndex<'data> {
         Ok(dynamic_symbol_names)
     }
 
-    fn index_relocations(&mut self, elf_file: &ElfFile64<'data>) -> Result {
+    fn index_relocations<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result {
         if let Some(dynamic_relocations) = elf_file.dynamic_relocations() {
             for (_, rel) in dynamic_relocations {
                 if let RelocationTarget::Symbol(symbol_index) = rel.target() {
@@ -3727,17 +3741,18 @@ impl<'data> AddressIndex<'data> {
                 object::elf::SHT_RELR | object::elf::SHT_ANDROID_RELR
             ) {
                 self.relr_addresses.extend(
-                    RelrIterator::<object::elf::FileHeader64<Endianness>>::new(
-                        e,
-                        header.data_as_array(e, elf_file.data())?,
-                    ),
+                    RelrIterator::<Elf>::new(e, header.data_as_array(e, elf_file.data())?)
+                        .map(Into::into),
                 );
             }
         }
         Ok(())
     }
 
-    fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
+    fn index_plt_sections<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result {
         self.index_plt_named(elf_file, PLT_SECTION_NAME_STR)?;
         self.index_plt_named(elf_file, PLT_SEC_SECTION_NAME_STR)?;
         self.index_plt_named(elf_file, PLT_GOT_SECTION_NAME_STR)?;
@@ -3745,7 +3760,11 @@ impl<'data> AddressIndex<'data> {
         Ok(())
     }
 
-    fn index_plt_named(&mut self, elf_file: &ElfFile64<'data>, section_name: &str) -> Result {
+    fn index_plt_named<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+        section_name: &str,
+    ) -> Result {
         let Some(section) = elf_file.section_by_name(section_name) else {
             return Ok(());
         };
@@ -3756,7 +3775,7 @@ impl<'data> AddressIndex<'data> {
 
         let e = elf_file.endian();
 
-        let entry_length = section.elf_section_header().sh_entsize(e) as usize;
+        let entry_length = section.elf_section_header().sh_entsize(e).into() as usize;
 
         if ![0, 8, 0x10].contains(&entry_length) {
             bail!("{section_name} has unrecognised entry length {entry_length}");
@@ -3773,7 +3792,10 @@ impl<'data> AddressIndex<'data> {
         Ok(())
     }
 
-    fn index_got_tables(&mut self, elf_file: &ElfFile64<'data>) -> Result {
+    fn index_got_tables<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+    ) -> Result {
         self.got_tables = [GOT_PLT_SECTION_NAME_STR, GOT_SECTION_NAME_STR]
             .iter()
             .filter_map(|table_name| Self::index_got_table(elf_file, table_name).transpose())
@@ -3784,8 +3806,8 @@ impl<'data> AddressIndex<'data> {
         Ok(())
     }
 
-    fn index_got_table(
-        elf_file: &ElfFile64<'data>,
+    fn index_got_table<Elf: FileHeader<Endian = Endianness>>(
+        elf_file: &ElfFile<'data, Elf>,
         table_name: &str,
     ) -> Result<Option<GotIndex<'data>>> {
         let Some(got_section) = elf_file.section_by_name(table_name) else {
@@ -3793,14 +3815,21 @@ impl<'data> AddressIndex<'data> {
         };
 
         let data = got_section.data()?;
-        let raw_entries: &[u64] = if data.is_empty() {
+        let raw_entries = if data.is_empty() {
             // An empty .got may not be aligned, so we avoid calling object::slice_from_bytes.
-            &[]
-        } else {
+            GotEntries::Bits64(&[])
+        } else if elf_file.is_64() {
             let entry_size = size_of::<u64>();
-            object::slice_from_bytes(data, data.len() / entry_size)
+            let slice = object::slice_from_bytes(data, data.len() / entry_size)
                 .unwrap()
-                .0
+                .0;
+            GotEntries::Bits64(slice)
+        } else {
+            let entry_size = size_of::<u32>();
+            let slice = object::slice_from_bytes(data, data.len() / entry_size)
+                .unwrap()
+                .0;
+            GotEntries::Bits32(slice)
         };
 
         let base = got_section.address();
@@ -3810,7 +3839,10 @@ impl<'data> AddressIndex<'data> {
         }))
     }
 
-    fn index_dynamic(&mut self, elf_file: &ElfFile64) {
+    fn index_dynamic<Elf: FileHeader<Endian = Endianness>>(
+        &mut self,
+        elf_file: &ElfFile<'data, Elf>,
+    ) {
         let e = elf_file.endian();
 
         let dynamic_segment = elf_file
@@ -3818,7 +3850,7 @@ impl<'data> AddressIndex<'data> {
             .iter()
             .find(|seg| seg.p_type(e) == object::elf::PT_DYNAMIC);
 
-        self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
+        self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e).into());
 
         if elf_file.elf_header().e_type(e) == object::elf::ET_DYN {
             self.bin_attributes.relocatability = Relocatability::Relocatable;
@@ -3828,23 +3860,22 @@ impl<'data> AddressIndex<'data> {
             self.bin_attributes.output_kind = OutputKind::Executable;
         }
 
-        dynamic_segment
+        let entries: &[Elf::Dyn] = dynamic_segment
             .and_then(|seg| seg.data(e, elf_file.data()).ok())
-            .and_then(|dynamic_table_data| {
-                object::slice_from_all_bytes::<object::elf::Dyn64<Endianness>>(dynamic_table_data)
-                    .ok()
-            })
-            .unwrap_or_default()
-            .iter()
-            .for_each(|entry| match entry.d_tag.get(e) {
+            .and_then(|dynamic_table_data| object::slice_from_all_bytes(dynamic_table_data).ok())
+            .unwrap_or_default();
+
+        for entry in entries {
+            let val = entry.val(e);
+            match entry.d_tag(e) {
                 object::elf::DT_JMPREL => {
-                    self.jmprel_address = Some(entry.d_val.get(e));
+                    self.jmprel_address = Some(val);
                 }
                 object::elf::DT_VERSYM => {
-                    self.versym_address = Some(entry.d_val.get(e));
+                    self.versym_address = Some(val);
                 }
                 object::elf::DT_FLAGS_1
-                    if object::elf::DynamicFlags1(entry.val(e)).contains(object::elf::DF_1_PIE) =>
+                    if object::elf::DynamicFlags1(val).contains(object::elf::DF_1_PIE) =>
                 {
                     self.bin_attributes.output_kind = OutputKind::Executable;
                 }
@@ -3854,10 +3885,11 @@ impl<'data> AddressIndex<'data> {
                 object::elf::DT_SYMBOLIC => self.symbolic = true,
                 object::elf::DT_FLAGS => {
                     self.symbolic |=
-                        object::elf::DynamicFlags(entry.val(e)).contains(object::elf::DF_SYMBOLIC);
+                        object::elf::DynamicFlags(val).contains(object::elf::DF_SYMBOLIC);
                 }
                 _ => {}
-            });
+            }
+        }
     }
 
     fn plt_to_got_address<A: Arch>(&self, plt_address: u64) -> Result<Option<u64>> {
@@ -3923,30 +3955,33 @@ impl<'data> AddressIndex<'data> {
 
 fn get_tls_tp_offset(file: &object::File) -> u64 {
     match file {
-        object::File::Elf64(elf_file) => {
-            let e = elf_file.endian();
-
-            elf_file
-                .elf_program_headers()
-                .iter()
-                .find_map(|header| {
-                    (header.p_type(e) == object::elf::PT_TLS).then(|| {
-                        let address = header.p_vaddr(e);
-                        let memory_size = header.p_memsz(e);
-                        let pointer_alignment = size_of::<u64>() as u64;
-                        let segment_alignment = header.p_align(e);
-                        if segment_alignment > pointer_alignment {
-                            let segment_end = address + memory_size;
-                            segment_end.next_multiple_of(segment_alignment) - address
-                        } else {
-                            memory_size.next_multiple_of(pointer_alignment)
-                        }
-                    })
-                })
-                .unwrap_or(0)
-        }
+        object::File::Elf64(elf_file) => elf_get_tls_tp_offset(elf_file),
+        object::File::Elf32(elf_file) => elf_get_tls_tp_offset(elf_file),
         _ => 0,
     }
+}
+
+fn elf_get_tls_tp_offset<File: FileHeader<Endian = Endianness>>(elf_file: &ElfFile<File>) -> u64 {
+    let e = elf_file.endian();
+
+    elf_file
+        .elf_program_headers()
+        .iter()
+        .find_map(|header| {
+            (header.p_type(e) == object::elf::PT_TLS).then(|| {
+                let address: u64 = header.p_vaddr(e).into();
+                let memory_size: u64 = header.p_memsz(e).into();
+                let pointer_alignment = size_of::<File::Word>() as u64;
+                let segment_alignment: u64 = header.p_align(e).into();
+                if segment_alignment > pointer_alignment {
+                    let segment_end = address + memory_size;
+                    segment_end.next_multiple_of(segment_alignment) - address
+                } else {
+                    memory_size.next_multiple_of(pointer_alignment)
+                }
+            })
+        })
+        .unwrap_or(0)
 }
 
 fn get_aarch64_tls_offset_bias(file: &object::File) -> u64 {
@@ -3983,11 +4018,26 @@ fn index_symbols_by_address(file: &object::File) -> HashMap<u64, Vec<object::Sym
     out
 }
 
+#[derive(Clone, Copy)]
+enum GotEntries<'data> {
+    Bits64(&'data [u64]),
+    Bits32(&'data [u32]),
+}
+
+impl GotEntries<'_> {
+    fn get(&self, index: usize) -> Option<u64> {
+        match self {
+            GotEntries::Bits64(slice) => slice.get(index).copied(),
+            GotEntries::Bits32(slice) => slice.get(index).map(|&v| u64::from(v)),
+        }
+    }
+}
+
 struct GotIndex<'data> {
     /// The addresses covered by this table.
     address_range: Range<u64>,
 
-    entries: &'data [u64],
+    entries: GotEntries<'data>,
 }
 
 impl<'data> GotIndex<'data> {
@@ -4004,7 +4054,11 @@ impl<'data> GotIndex<'data> {
             .checked_sub(self.address_range.start)
             .context("got_address outside index range")?;
 
-        let entry_size = size_of::<u64>() as u64;
+        let entry_size = if bin.file.is_64() {
+            size_of::<u64>() as u64
+        } else {
+            size_of::<u32>() as u64
+        };
         if !offset.is_multiple_of(entry_size) {
             bail!("Unaligned reference to GOT 0x{got_address:x}");
         }
@@ -4051,7 +4105,7 @@ impl<'data> GotIndex<'data> {
                         }
                         (BasicValueKind::TlsGd, _) => {
                             // The module is local, but the offset may be fixed or relocated.
-                            let offset_address = got_address + size_of::<u64>() as u64;
+                            let offset_address = got_address + entry_size;
                             let tls_offset = if let Some(offset_rel) =
                                 index.relocation_at_address(offset_address)
                             {
@@ -4070,7 +4124,8 @@ impl<'data> GotIndex<'data> {
                                     as i64
                             } else {
                                 let dtv_offset = match bin.file.architecture() {
-                                    object::Architecture::Riscv64 => RISCV_TLS_DTV_OFFSET,
+                                    object::Architecture::Riscv64
+                                    | object::Architecture::Riscv32 => RISCV_TLS_DTV_OFFSET,
                                     object::Architecture::PowerPc64 => 0x8000,
                                     _ => 0,
                                 };
@@ -4113,7 +4168,7 @@ impl<'data> GotIndex<'data> {
             }
         } else {
             // Entries without an explicit addend use the original file data.
-            let raw_value = *self
+            let raw_value = self
                 .entries
                 .get((offset / entry_size) as usize)
                 .context("got_address past end of index range")?;
@@ -4185,24 +4240,30 @@ fn determine_ifunc_name<'data>(address: u64, bin: &Binary<'data>) -> Option<Symb
     bin.address_index
         .symbols_at_address(address)
         .iter()
-        .filter_map(|symbol_index| {
-            let File::Elf64(elf_file) = &bin.file else {
-                return None;
-            };
-            let symbol = elf_file.symbol_by_index(*symbol_index).ok()?;
-
-            // We're likely to get symbols of type STT_GNU_IFUNC. The resolver should be just a
-            // regular function and that's what we want.
-            if symbol.elf_symbol().st_type() != object::elf::STT_FUNC {
-                return None;
-            }
-
-            Some(SymbolName {
-                bytes: symbol.name_bytes().ok()?,
-                version: None,
-            })
+        .filter_map(|symbol_index| match &bin.file {
+            File::Elf64(elf_file) => elf_determine_ifunc_name(elf_file, *symbol_index),
+            File::Elf32(elf_file) => elf_determine_ifunc_name(elf_file, *symbol_index),
+            _ => None,
         })
         .max()
+}
+
+fn elf_determine_ifunc_name<'data, File: FileHeader>(
+    elf_file: &ElfFile<'data, File>,
+    symbol_index: object::SymbolIndex,
+) -> Option<SymbolName<'data>> {
+    let symbol = elf_file.symbol_by_index(symbol_index).ok()?;
+
+    // We're likely to get symbols of type STT_GNU_IFUNC. The resolver should be just a
+    // regular function and that's what we want.
+    if symbol.elf_symbol().st_type() != object::elf::STT_FUNC {
+        return None;
+    }
+
+    Some(SymbolName {
+        bytes: symbol.name_bytes().ok()?,
+        version: None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4216,25 +4277,29 @@ struct DynamicRelocation<'data, R: RType> {
 fn read_segment<'data>(file: &File<'data>, address: u64) -> Option<Data<'data>> {
     match file {
         File::Elf64(elf_file) => read_segment_elf(elf_file, address),
+        File::Elf32(elf_file) => read_segment_elf(elf_file, address),
         _ => unimplemented!(),
     }
 }
 
-fn read_segment_elf<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
+fn read_segment_elf<'data, Elf: FileHeader<Endian = Endianness>>(
+    elf_file: &ElfFile<'data, Elf>,
+    address: u64,
+) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
     let e = elf_file.endian();
     for raw_seg in elf_file.elf_program_headers() {
         if raw_seg.p_type(e) != object::elf::PT_LOAD {
             continue;
         }
-        let seg_address = raw_seg.p_vaddr(e);
-        let seg_len = raw_seg.p_memsz(e);
+        let seg_address: u64 = raw_seg.p_vaddr(e).into();
+        let seg_len: u64 = raw_seg.p_memsz(e).into();
         let seg_end = seg_address + seg_len;
 
         if seg_address <= address && address < seg_end {
             let start = (address - seg_address) as usize;
-            let file_start = raw_seg.p_offset(e) as usize;
-            let file_size = raw_seg.p_filesz(e) as usize;
+            let file_start = raw_seg.p_offset(e).into() as usize;
+            let file_size = raw_seg.p_filesz(e).into() as usize;
             let file_end = file_start + file_size;
             let file_bytes = elf_file.data();
             if file_bytes.is_empty() {
@@ -4253,9 +4318,15 @@ fn read_segment_elf<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<
 }
 
 fn read_word_at(file: &File, address: u64) -> Option<u64> {
-    let bytes = read_bytes(file, address, size_of::<u64>() as u64)?;
-    let chunk = bytes.first_chunk()?;
-    Some(u64::from_le_bytes(*chunk))
+    if file.is_64() {
+        let bytes = read_bytes(file, address, size_of::<u64>() as u64)?;
+        let chunk = bytes.first_chunk()?;
+        Some(u64::from_le_bytes(*chunk))
+    } else {
+        let bytes = read_bytes(file, address, size_of::<u32>() as u64)?;
+        let chunk = bytes.first_chunk()?;
+        Some(u64::from(u32::from_le_bytes(*chunk)))
+    }
 }
 
 fn read_bytes<'data>(file: &File<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
@@ -4481,7 +4552,7 @@ impl Display for OutputKind {
 }
 
 impl Visibility {
-    fn from_sym(elf_symbol: &object::elf::Sym64<Endianness>) -> Visibility {
+    fn from_sym<S: object::read::elf::Sym>(elf_symbol: &S) -> Visibility {
         match elf_symbol.st_visibility() {
             object::elf::STV_DEFAULT => Visibility::Default,
             object::elf::STV_PROTECTED => Visibility::Protected,

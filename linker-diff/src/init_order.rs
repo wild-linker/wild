@@ -41,18 +41,23 @@ fn get_pointer_list<A: Arch>(bin: &Binary, section_name: &str) -> Result<Vec<Res
 
     let data = sec.data()?;
 
-    const ADDRESS_SIZE: usize = size_of::<u64>();
+    let address_size = if bin.file.is_64() { 8 } else { 4 };
 
-    let mut names = Vec::with_capacity(data.len() / ADDRESS_SIZE);
+    let mut names = Vec::with_capacity(data.len() / address_size);
 
-    let chunks = data.as_chunks::<ADDRESS_SIZE>();
     ensure!(
-        chunks.1.is_empty(),
+        data.len() % address_size == 0,
         "data must be a multiple of ADDRESS_SIZE"
     );
-    for (entry_num, address_bytes) in chunks.0.iter().enumerate() {
-        let mut address = u64::from_le_bytes(*address_bytes.first_chunk::<ADDRESS_SIZE>().unwrap());
-        let entry_address = section_address + (entry_num * ADDRESS_SIZE) as u64;
+    let num_entries = data.len() / address_size;
+    for entry_num in 0..num_entries {
+        let chunk = &data[entry_num * address_size..(entry_num + 1) * address_size];
+        let mut address = if bin.file.is_64() {
+            u64::from_le_bytes(chunk.try_into().unwrap())
+        } else {
+            u64::from(u32::from_le_bytes(chunk.try_into().unwrap()))
+        };
+        let entry_address = section_address + (entry_num * address_size) as u64;
         let mut symbol_names = Vec::new();
 
         let relocation = bin.address_index.relocation_at_address(entry_address);

@@ -140,11 +140,11 @@ pub fn aarch64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'s
 }
 
 #[must_use]
-pub fn riscv64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
+pub fn riscv_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_RISCV.name(r_type) {
         Cow::Borrowed(name)
     } else {
-        Cow::Owned(format!("Unknown riscv64 relocation type 0x{r_type:x}"))
+        Cow::Owned(format!("Unknown riscv relocation type 0x{r_type:x}"))
     }
 }
 
@@ -675,7 +675,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn from_riscv64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
+    pub fn from_riscv_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_RISCV_COPY => DynamicRelocationKind::Copy,
             object::elf::R_RISCV_IRELATIVE => DynamicRelocationKind::Irelative,
