@@ -2220,6 +2220,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
                     ValueFlags::ABSOLUTE
                 }
                 SymbolPlacement::SectionStart(_)
+                | SymbolPlacement::SectionStartOffset(_, _)
                 | SymbolPlacement::SectionEnd(_)
                 | SymbolPlacement::TlsEnd(_)
                 | SymbolPlacement::SectionGroupEnd(_)
@@ -2262,6 +2263,7 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
+            SymbolPlacement::SectionStartOffset(i, _) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::TlsEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),

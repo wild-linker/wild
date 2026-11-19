@@ -13,7 +13,6 @@ use crate::elf::EhFrameHdrEntry;
 use crate::elf::Elf;
 use crate::elf::ElfClass;
 use crate::elf::ElfWord as _;
-use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::NonAddressableCounts;
@@ -104,7 +103,6 @@ use hashbrown::HashMap;
 use linker_utils::elf::Bias;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
-use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -6191,13 +6189,6 @@ fn write_internal_symbols<C: ElfClass>(
 
         if platform::Symbol::is_tls(&def_info.symbol) {
             address -= layout.tls_start_address();
-        }
-
-        // Mandatory RISC-V symbol defined by the default linker script as:
-        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__
-        // - 0x800));
-        if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
-            address += RISCV_TLS_DTV_OFFSET;
         }
 
         // PROVIDE_HIDDEN symbols should be local, not global
