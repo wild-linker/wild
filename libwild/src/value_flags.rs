@@ -122,6 +122,9 @@ bitflags! {
 
         /// A surviving partial-link group uses this symbol's raw name as its signature.
         const GROUP_SIGNATURE = 1 << 21;
+
+        /// The symbol is defined by a linker script.
+        const LINKER_SCRIPT = 1 << 22;
     }
 }
 
@@ -171,6 +174,11 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn is_ifunc(self) -> bool {
         self.contains(ValueFlags::IFUNC)
+    }
+
+    #[must_use]
+    pub(crate) fn is_linker_script_symbol(self) -> bool {
+        self.contains(ValueFlags::LINKER_SCRIPT)
     }
 
     /// Returns whether the value will have an address that is known at link time. This is as
