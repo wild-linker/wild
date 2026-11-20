@@ -3866,6 +3866,13 @@ fn apply_relocation<
         offset_in_section = new_place - section_address;
     }
     let original_place = section_address + offset_in_section;
+    // The offset comes from the input file, so a malformed object could point outside the section.
+    ensure!(
+        offset_in_section <= out.len() as u64,
+        "relocation offset {:#x} is outside its section, which is {:#x} bytes",
+        offset_in_section,
+        out.len(),
+    );
     let _span = tracing::trace_span!(
         "relocation",
         address = original_place,
