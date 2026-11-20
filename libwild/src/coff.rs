@@ -44,11 +44,11 @@ use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
+use linker_utils::coff::RelocationKindInfo;
 use linker_utils::coff::secnames::BSS_SECTION_NAME;
 use linker_utils::coff::secnames::DATA_SECTION_NAME;
 use linker_utils::coff::secnames::RDATA_SECTION_NAME;
 use linker_utils::coff::secnames::TEXT_SECTION_NAME;
-use linker_utils::elf::RelocationKindInfo;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::SymbolIndex;
@@ -212,19 +212,12 @@ impl Relocation for CoffRelocation {
         self.raw.virtual_address.get(LittleEndian).into()
     }
 
-    // TODO: this is a bit abused to handle bias for some of AMD64 relocations
     fn addend(&self) -> i64 {
-        match self.raw_type() {
-            object::pe::IMAGE_REL_AMD64_REL32 => -4,
-            object::pe::IMAGE_REL_AMD64_REL32_1 => -5,
-            object::pe::IMAGE_REL_AMD64_REL32_2 => -6,
-            object::pe::IMAGE_REL_AMD64_REL32_3 => -7,
-            object::pe::IMAGE_REL_AMD64_REL32_4 => -8,
-            object::pe::IMAGE_REL_AMD64_REL32_5 => -9,
-            _ => 0,
-        }
+        unreachable!("COFF only uses implicit addends")
     }
 }
+
+impl platform::RelocationKindInfo for RelocationKindInfo {}
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct RelocationList<'data>(&'data [ImageRelocation]);
