@@ -1,10 +1,17 @@
 /*
-//#Arch: riscv64
-//#CompArgs: -march=rv64gc
+//#AbstractConfig:default
 //#LinkArgs: -nostdlib -static --gc-sections
 //#NoSym:unused_func
 //#ExpectSym:_start
 //#ExpectSectionBytes:.debug_test=0x0804
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
 */
 
 .section .text._start,"ax",@progbits

@@ -679,11 +679,17 @@ impl DynamicRelocationKind {
         let kind = match r_type {
             object::elf::R_RISCV_COPY => DynamicRelocationKind::Copy,
             object::elf::R_RISCV_IRELATIVE => DynamicRelocationKind::Irelative,
-            object::elf::R_RISCV_TLS_DTPMOD64 => DynamicRelocationKind::DtpMod,
-            object::elf::R_RISCV_TLS_DTPREL64 => DynamicRelocationKind::DtpOff,
-            object::elf::R_RISCV_TLS_TPREL64 => DynamicRelocationKind::TpOff,
+            object::elf::R_RISCV_TLS_DTPMOD64 | object::elf::R_RISCV_TLS_DTPMOD32 => {
+                DynamicRelocationKind::DtpMod
+            }
+            object::elf::R_RISCV_TLS_DTPREL64 | object::elf::R_RISCV_TLS_DTPREL32 => {
+                DynamicRelocationKind::DtpOff
+            }
+            object::elf::R_RISCV_TLS_TPREL64 | object::elf::R_RISCV_TLS_TPREL32 => {
+                DynamicRelocationKind::TpOff
+            }
             object::elf::R_RISCV_RELATIVE => DynamicRelocationKind::Relative,
-            object::elf::R_RISCV_64 => DynamicRelocationKind::Absolute,
+            object::elf::R_RISCV_64 | object::elf::R_RISCV_32 => DynamicRelocationKind::Absolute,
             object::elf::R_RISCV_TLSDESC => DynamicRelocationKind::TlsDesc,
             object::elf::R_RISCV_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
             _ => return None,
@@ -702,6 +708,22 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::Relative => object::elf::R_RISCV_RELATIVE,
             DynamicRelocationKind::Absolute => object::elf::R_RISCV_64,
             DynamicRelocationKind::GotEntry => object::elf::R_RISCV_64,
+            DynamicRelocationKind::TlsDesc => object::elf::R_RISCV_TLSDESC,
+            DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
+        }
+    }
+
+    #[must_use]
+    pub fn riscv32_r_type(&self) -> object::elf::RelocationType {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_RISCV_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_RISCV_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_RISCV_TLS_DTPMOD32,
+            DynamicRelocationKind::DtpOff => object::elf::R_RISCV_TLS_DTPREL32,
+            DynamicRelocationKind::TpOff => object::elf::R_RISCV_TLS_TPREL32,
+            DynamicRelocationKind::Relative => object::elf::R_RISCV_RELATIVE,
+            DynamicRelocationKind::Absolute => object::elf::R_RISCV_32,
+            DynamicRelocationKind::GotEntry => object::elf::R_RISCV_32,
             DynamicRelocationKind::TlsDesc => object::elf::R_RISCV_TLSDESC,
             DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
         }

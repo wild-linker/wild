@@ -209,8 +209,12 @@ pub(crate) trait ElfWord: Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync
 
 impl ElfWord for u32 {
     fn from_u64(value: u64) -> Result<Self> {
-        u32::try_from(value)
-            .with_context(|| format!("ELF word value 0x{value:x} does not fit in ELF32"))
+        let hi = (value >> 32) as u32;
+        if hi == 0 || hi == u32::MAX {
+            Ok(value as u32)
+        } else {
+            bail!("ELF word value 0x{value:x} does not fit in ELF32")
+        }
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -255,6 +259,7 @@ pub(crate) trait ElfClass: Copy + Default + Send + Sync + std::fmt::Debug + 'sta
     const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry<Self>>() as u64;
     const DYNAMIC_ENTRY_SIZE: u64 = size_of::<DynamicEntry<Self>>() as u64;
     const NOTE_HEADER_SIZE: u64 = size_of::<NoteHeader<Self>>() as u64;
+    const GNU_HASH_ENTRY_SIZE: u64 = if Self::ADDRESS_SIZE == 4 { 4 } else { 0 };
     const GNU_HASH_BLOOM_SIZE: u64 = Self::ADDRESS_SIZE;
     const PROGRAM_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const SECTION_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
@@ -1522,7 +1527,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 .hide();
         }
 
-        if args.architecture() == Architecture::RiscV64 {
+        if matches!(
+            args.architecture(),
+            Architecture::RiscV64 | Architecture::RiscV32
+        ) {
             symbols.section_start_offset(
                 output_section_id::DATA,
                 crate::elf::RISCV_GLOBAL_POINTER_OFFSET,
@@ -6994,6 +7002,7 @@ impl<C: ElfClass> Elf<C> {
             kind: Self::primary_section(GNU_HASH_SECTION_NAME),
             ty: sht::GNU_HASH,
             section_flags: shf::ALLOC,
+            element_size: C::GNU_HASH_ENTRY_SIZE,
             link: &[output_section_id::DYNSYM],
             min_alignment: C::GNU_HASH_ALIGNMENT,
             ..Self::DEFAULT_DEFS

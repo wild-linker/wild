@@ -1,4 +1,4 @@
-//#Arch:riscv64
+//#Arch:riscv64,riscv32
 //#Compiler:clang
 //#LinkArgs:-r
 //#RunEnabled:false
