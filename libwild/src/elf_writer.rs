@@ -3951,8 +3951,7 @@ fn apply_relocation<
     let rel_info;
     let output_kind = layout.symbol_db.output_kind;
 
-    let symbol_id = layout.symbol_db.definition(local_symbol_id);
-    let is_linker_script_symbol = layout.symbol_db.is_linker_script_symbol(symbol_id);
+    let is_linker_script_symbol = flags.is_linker_script_symbol();
     let can_relax = elf::can_relax_symbol(flags, output_kind, is_linker_script_symbol);
 
     let relaxation = if can_relax {
@@ -4784,9 +4783,7 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-        let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
-        let symbol_id = layout.symbol_db.definition(local_symbol_id);
-        if layout.symbol_db.is_linker_script_symbol(symbol_id) && section_info.is_writable {
+        if resolution.flags.is_linker_script_symbol() && section_info.is_writable {
             if resolution.is_absolute() {
                 table_writer.write_rela_dyn_general(0, 0, object::elf::RelocationType(0), 0)?;
                 Ok(address)
@@ -7150,7 +7147,7 @@ fn write_internal_symbols_plt_got_entries<'data, C: ElfClass, A: Arch<Platform =
                     layout,
                     layout.args(),
                     res,
-                    layout.symbol_db.is_linker_script_symbol(symbol_id),
+                    res.flags.is_linker_script_symbol(),
                 )
                 .with_context(|| {
                     format!("Failed to process `{}`", layout.symbol_debug(symbol_id))

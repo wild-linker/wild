@@ -1402,7 +1402,7 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
                 &mut common.mem_sizes,
                 symbol_db.output_kind,
                 symbol_db.args,
-                symbol_db.is_linker_script_symbol(symbol_id),
+                flags.is_linker_script_symbol(),
             );
         }
 
@@ -4417,16 +4417,18 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
             .map(|seg| seg.sizes.mem_offset)?,
     };
 
+    let flags = resources
+        .symbol_db
+        .flags_for_symbol(resources.per_symbol_flags, symbol_id);
+
     Some(P::create_resolution(
-        resources
-            .symbol_db
-            .flags_for_symbol(resources.per_symbol_flags, symbol_id),
+        flags,
         raw_value,
         None,
         memory_offsets,
         resources.symbol_db.args,
         resources.symbol_db.output_kind,
-        resources.symbol_db.is_linker_script_symbol(symbol_id),
+        flags.is_linker_script_symbol(),
     ))
 }
 

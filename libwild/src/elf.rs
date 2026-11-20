@@ -7550,7 +7550,7 @@ fn classify_symbol_relocation<
 
     let mut next_modifier = RelocationModifier::Normal;
     let mut flags_to_add = ValueFlags::empty();
-    let is_linker_script_symbol = resources.symbol_db.is_linker_script_symbol(symbol_id);
+    let is_linker_script_symbol = flags.is_linker_script_symbol();
     let can_relax = can_relax_symbol(flags, symbol_db.output_kind, is_linker_script_symbol);
 
     let relaxation = if can_relax {
@@ -7770,7 +7770,7 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         if section_is_writable {
             require_address_sized_relocation()?;
 
-            if resources.symbol_db.is_linker_script_symbol(symbol_id) {
+            if flags.is_linker_script_symbol() {
                 common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             } else {
                 allocate_relative(common, relr_writer)?;
