@@ -825,11 +825,14 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
             .value_with_addend(addend as i64)
             .wrapping_sub(layout.args().image_base().unwrap()),
         RelocationKind::Relative => {
-            // TODO: Handle undefined weak
-            let symbol_plus_addend = resolution.value_with_addend(addend as i64);
-            symbol_plus_addend
-                .wrapping_sub(place)
-                .wrapping_sub(rel_info.place_offset)
+            if flags.is_undefined_weak() {
+                0
+            } else {
+                resolution
+                    .value_with_addend(addend as i64)
+                    .wrapping_sub(place)
+                    .wrapping_sub(rel_info.place_offset)
+            }
         }
     };
 
