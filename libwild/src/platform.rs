@@ -50,7 +50,6 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use object::Endianness;
@@ -82,7 +81,9 @@ pub(crate) struct ThunkConfig {
 
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
-    type Relaxation: Relaxation;
+    type Relaxation: Relaxation<
+        RelocationKindInfo = <Self::Platform as Platform>::RelocationKindInfo,
+    >;
     type Platform: Platform;
 
     /// Default load address for non-PIE output.
@@ -151,7 +152,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(
         r_type: <Self::Platform as Platform>::RelocationInfo,
-    ) -> Result<RelocationKindInfo>;
+    ) -> Result<<Self::Platform as Platform>::RelocationKindInfo>;
 
     /// Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(
@@ -369,10 +370,19 @@ pub(crate) trait Arch: Send + Sync + 'static {
     }
 }
 
+pub(crate) trait RelocationKindInfo {
+    /// Whether relocations of this kind can be resolved by a range-extension thunk.
+    fn thunkable(&self) -> bool {
+        false
+    }
+}
+
 pub(crate) trait Relaxation: Send + Sync + 'static {
+    type RelocationKindInfo: RelocationKindInfo;
+
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64);
 
-    fn rel_info(&self) -> RelocationKindInfo;
+    fn rel_info(&self) -> Self::RelocationKindInfo;
 
     fn debug_kind(&self) -> impl std::fmt::Debug;
 
@@ -481,6 +491,7 @@ pub(crate) trait Platform:
     type DynamicEntry: Send + Sync + 'static;
     type DynamicSymbolDefinitionExt: Copy + Send + Sync + std::fmt::Debug + 'static;
     type RelocationInfo: Copy + Send + Sync + 'static;
+    type RelocationKindInfo: RelocationKindInfo;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
     type EpilogueLayoutExt: Send + Sync + 'static;

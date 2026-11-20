@@ -30,6 +30,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::platform::Arch;
 use crate::platform::Platform;
+use crate::platform::RelocationKindInfo as _;
 use crate::platform::SectionAttributes as _;
 use crate::resolution;
 use crate::symbol_db::SymbolId;
@@ -325,7 +326,7 @@ pub(crate) fn handle_thunk_extensions_for_relocation<A: Arch>(
     if resources.thunk_layout_builder.is_some()
         && let Some(config) = A::thunk_config()
         && let Some(rel_info) = A::relocation_from_raw(rel).ok()
-        && rel_info.thunkable
+        && rel_info.thunkable()
     {
         if section_part_id == config.primary_function_part_id {
             resources

@@ -110,6 +110,7 @@ use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
@@ -627,6 +628,12 @@ impl<C: ElfClass> Relocation for ElfCrel<C> {
     }
 }
 
+impl platform::RelocationKindInfo for RelocationKindInfo {
+    fn thunkable(&self) -> bool {
+        self.thunkable
+    }
+}
+
 /// A list of relocations that supports iteration.
 #[derive(Clone)]
 pub(crate) enum RelocationList<'data, C: ElfClass> {
@@ -828,6 +835,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type DynamicEntry = DynamicEntry<C>;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = object::elf::RelocationType;
+    type RelocationKindInfo = RelocationKindInfo;
     type FinaliseSizesExt<'data> = LayoutExt;
     type LayoutMetadata = ();
     type AddressLayoutExt = ();

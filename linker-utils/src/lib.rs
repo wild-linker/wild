@@ -7,4 +7,5 @@ pub mod ppc64;
 pub mod relaxation;
 pub mod riscv;
 pub mod utils;
+pub mod wasm;
 pub mod x86_64;

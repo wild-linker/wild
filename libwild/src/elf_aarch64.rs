@@ -743,6 +743,8 @@ const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
 ];
 
 impl crate::platform::Relaxation for Relaxation {
+    type RelocationKindInfo = RelocationKindInfo;
+
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
