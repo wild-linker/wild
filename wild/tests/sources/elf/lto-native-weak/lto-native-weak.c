@@ -10,8 +10,6 @@
 //#AbstractConfig:clang:base
 //#Compiler:clang
 //#LinkerDriver:clang
-// RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
-//#DiffIgnore:section.text.alignment
 
 //#AbstractConfig:gcc:base
 //#Compiler:gcc
@@ -37,6 +35,11 @@
 //#CompArgs:-DDIRECT_REF
 //#Object:weak.c:-flto
 //#Object:strong.c:-flto
+
+//#Config:clang-no-gc:clang-ir-weak-first-ref
+//#LinkArgs:-Wl,--no-gc-sections
+// RISC-V LTO objects have an empty .text aligned to 4, but live code aligned to 2.
+//#DiffIgnore:section.text.alignment
 
 //#Config:clang-native-archive:clang
 //#Archive:weak.c
@@ -71,6 +74,9 @@
 //#CompArgs:-DDIRECT_REF
 //#Object:weak.c:-flto
 //#Object:strong.c:-flto
+
+//#Config:gcc-no-gc:gcc-ir-weak-first-ref
+//#LinkArgs:-Wl,--no-gc-sections
 
 //#Config:gcc-native-archive:gcc
 //#Archive:weak.c

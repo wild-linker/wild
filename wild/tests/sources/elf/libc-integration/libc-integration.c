@@ -22,7 +22,7 @@
 //#CompArgs:-g -ftls-model=global-dynamic
 //#SkipArch: ppc64le
 //#LinkerDriver:clang
-//#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-static -Wl,--strip-debug -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#ReferenceLinkers:bfd,lld
@@ -34,7 +34,7 @@
 //#SkipArch: ppc64le
 //#CompArgs:-fPIE -fPIC
 //#LinkerDriver:clang
-//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,-z,now
 //#TestUpdateInPlace:true
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
@@ -45,7 +45,7 @@
 //#Config:gcc-static:default
 //#CompArgs:-g -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-//#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-static -Wl,--strip-debug -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#ReferenceLinkers:bfd,lld
@@ -57,7 +57,7 @@
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
 //#LinkerDriver:gcc
-//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#ReferenceLinkers:bfd,lld
@@ -71,7 +71,7 @@
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkerDriver:clang
-//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
+//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
 //#DiffIgnore:section.relro_padding
@@ -83,7 +83,7 @@
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkerDriver:clang
-//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
+//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#ReferenceLinkers:bfd,lld
 //#Cross: false
 //#DiffIgnore:section.relro_padding
@@ -97,7 +97,7 @@
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,-z,now -L./does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
 //#SkipArch: loongarch64, riscv64,ppc64le
 //#LinkArgs:-pie
@@ -111,7 +111,7 @@
 // than local exec. lld does however still optimise to local exec, so we enable it as an additional
 // reference point.
 //#ReferenceLinkers:bfd,lld
-//#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
+//#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,-z,now -L/does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
 //#SkipArch: loongarch64, riscv64,ppc64le
 //#CompArgs:-fPIE
@@ -120,7 +120,7 @@
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,-z,now
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
 //#LinkArgs:-pie
@@ -130,7 +130,7 @@
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
-//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,-z,now,-z,pack-relative-relocs
 // Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol
 // dependency.
 //#ReferenceLinkers:
@@ -143,7 +143,7 @@
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
-//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,--pack-dyn-relocs=relr
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,-z,now,--pack-dyn-relocs=relr
 //#ReferenceLinkers:lld
 //#NoSym:GLIBC_ABI_DT_RELR
 //#Contains:.relr.dyn
