@@ -381,7 +381,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.52.1
+        uses: crate-ci/typos@v1.52.2
 
   nix-checks:
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
