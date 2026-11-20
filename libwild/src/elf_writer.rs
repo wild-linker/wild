@@ -103,6 +103,7 @@ use crate::writable_elf::WritableRelr as _;
 use crate::writable_elf::WritableSectionHeader as _;
 use crate::writable_elf::WritableSymbol as _;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use linker_utils::elf::Bias;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -5762,80 +5763,102 @@ fn write_linker_script_dynsym<C: ElfClass>(
 /// This is used to copy attributes from a target symbol to a defsym alias.
 fn get_symbol_attributes<C: ElfClass>(
     layout: &ElfLayout<C>,
-    symbol_id: SymbolId,
+    mut symbol_id: SymbolId,
 ) -> Result<(SymbolSection, object::elf::SymbolType)> {
-    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+    let mut visited = HashSet::new();
+    let mut section_if_absolute = None;
 
-    match layout.file_layout(file_id) {
-        FileLayout::Object(obj) => {
-            let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let sym = obj.object.symbol(local_index)?;
+    let (shndx, st_type) = loop {
+        let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
 
-            let shndx = obj
-                .object
-                .symbol_section(sym, local_index)?
-                .and_then(|section_index| {
-                    let slot = &obj.sections[section_index.0];
-                    match slot {
-                        SectionSlot::PartialLinkSingleton(singleton) => {
-                            Some(layout.partial_link.output_index(singleton))
+        let def_info = match layout.file_layout(file_id) {
+            FileLayout::Object(obj) => {
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+                let sym = obj.object.symbol(local_index)?;
+
+                let shndx = obj
+                    .object
+                    .symbol_section(sym, local_index)?
+                    .and_then(|section_index| {
+                        let slot = &obj.sections[section_index.0];
+                        match slot {
+                            SectionSlot::PartialLinkSingleton(singleton) => {
+                                Some(layout.partial_link.output_index(singleton))
+                            }
+                            SectionSlot::Loaded(_)
+                            | SectionSlot::MergeStrings(_)
+                            | SectionSlot::Sorted(_) => {
+                                let output_section_id = obj
+                                    .section_part_id(
+                                        section_index,
+                                        &layout.symbol_db.section_part_ids,
+                                    )
+                                    .output_section_id::<elf::Elf<C>>();
+                                layout
+                                    .output_sections
+                                    .output_index_of_section(output_section_id)
+                            }
+                            _ => None,
                         }
-                        SectionSlot::Loaded(_)
-                        | SectionSlot::MergeStrings(_)
-                        | SectionSlot::Sorted(_) => {
-                            let output_section_id = obj
-                                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                                .output_section_id::<elf::Elf<C>>();
-                            layout
-                                .output_sections
-                                .output_index_of_section(output_section_id)
-                        }
-                        _ => None,
-                    }
-                })
-                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
+                    })
+                    .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
-            let st_type = sym.st_type();
+                let st_type = sym.st_type();
 
-            Ok((shndx, st_type))
-        }
-        FileLayout::LinkerScript(script) => {
-            let local_index = symbol_id.to_input(script.symbol_id_range);
-            let def_info = &script.internal_symbols.symbol_definitions[local_index.0];
-            let shndx = if let SymbolPlacement::Redirect(redirect) = &def_info.placement
-                && let SymbolLoc::SectionEnd(section_id) = redirect.loc
-            {
-                let section_id = layout.output_sections.primary_output_section(section_id);
-                layout
-                    .output_sections
-                    .output_index_of_nearest_section(section_id)
-            } else {
-                def_info
-                    .section_id()
-                    .and_then(|section_id| internal_symbol_section_index(layout, section_id))
+                break (shndx, st_type);
             }
-            .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
+            FileLayout::LinkerScript(script) => {
+                let local_index = symbol_id.to_input(script.symbol_id_range);
+                &script.internal_symbols.symbol_definitions[local_index.0]
+            }
+            FileLayout::Prelude(prelude) => {
+                let offset = symbol_id.offset_from(prelude.internal_symbols.start_symbol_id);
+                &prelude.internal_symbols.symbol_definitions[offset]
+            }
+            FileLayout::SyntheticSymbols(_)
+            | FileLayout::Dynamic(_)
+            | FileLayout::Epilogue(_)
+            | FileLayout::NotLoaded => {
+                break (object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE);
+            }
+            FileLayout::StubLibrary(_) => unreachable!(),
+        };
 
-            Ok((shndx, object::elf::STT_NOTYPE))
+        let SymbolPlacement::Redirect(redirect) = &def_info.placement else {
+            break get_internal_symbol_attributes(layout, def_info)?;
+        };
+        let Expression::Symbol(target_name) = redirect.expression else {
+            break get_internal_symbol_attributes(layout, def_info)?;
+        };
+
+        // Cyclic assignments have no terminal symbol from which to inherit a type.
+        if !visited.insert(symbol_id) {
+            break (
+                redirect_symbol_section(layout, &redirect.loc),
+                object::elf::STT_NOTYPE,
+            );
         }
-        FileLayout::Prelude(prelude) => {
-            let offset = symbol_id.offset_from(SymbolId::undefined());
-            let def_info = &prelude.internal_symbols.symbol_definitions[offset];
-            let shndx = def_info
-                .section_id()
-                .and_then(|section_id| internal_symbol_section_index(layout, section_id))
-                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
-            Ok((shndx, def_info.symbol.st_type()))
+
+        if let Some(section_id) = redirect.loc.relative_section_id()
+            && let Some(index) = internal_symbol_section_index(layout, section_id)
+        {
+            section_if_absolute = Some(index);
         }
-        FileLayout::SyntheticSymbols(_) => {
-            // For other non-object files (e.g. epilogue), default to ABS
-            Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
-        }
-        FileLayout::Dynamic(_) | FileLayout::Epilogue(_) | FileLayout::NotLoaded => {
-            Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
-        }
-        FileLayout::StubLibrary(_) => unreachable!(),
+
+        let target_id = layout
+            .symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+            .ok_or_else(|| redirect.missing_target(target_name))?;
+        symbol_id = layout.symbol_db.definition(target_id);
+    };
+
+    if matches!(shndx, SymbolSection::Raw(object::elf::SHN_ABS))
+        && let Some(index) = section_if_absolute
+    {
+        return Ok((SymbolSection::Index(index), st_type));
     }
+
+    Ok((shndx, st_type))
 }
 
 fn internal_symbol_section_index<C: ElfClass>(
@@ -5912,25 +5935,27 @@ fn get_defsym_attributes<C: ElfClass>(
             Err(redirect.missing_target(target_name))
         }
     } else {
-        let shndx = match redirect.loc {
-            SymbolLoc::SectionEnd(os) => {
-                let os = layout.output_sections.primary_output_section(os);
-                layout.output_sections.output_index_of_nearest_section(os)
-            }
-            SymbolLoc::SectionStartRelative(os)
-            | SymbolLoc::SectionEndRelative(os)
-            | SymbolLoc::LocationCounter(_, Some(os)) => internal_symbol_section_index(layout, os),
-            SymbolLoc::FirstSection | SymbolLoc::LocationCounter(_, None) => Some(1),
-            SymbolLoc::None => None,
-        };
         Ok((
-            shndx.map_or(
-                SymbolSection::Raw(object::elf::SHN_ABS),
-                SymbolSection::Index,
-            ),
+            redirect_symbol_section(layout, &redirect.loc),
             object::elf::STT_NOTYPE,
         ))
     }
+}
+
+fn redirect_symbol_section<C: ElfClass>(layout: &ElfLayout<C>, loc: &SymbolLoc) -> SymbolSection {
+    let shndx = match *loc {
+        SymbolLoc::SectionEnd(os) => {
+            let os = layout.output_sections.primary_output_section(os);
+            layout.output_sections.output_index_of_nearest_section(os)
+        }
+        SymbolLoc::SectionStartRelative(os)
+        | SymbolLoc::SectionEndRelative(os)
+        | SymbolLoc::LocationCounter(_, Some(os)) => internal_symbol_section_index(layout, os),
+        SymbolLoc::FirstSection | SymbolLoc::LocationCounter(_, None) => Some(1),
+        SymbolLoc::None => None,
+    };
+
+    shndx.map_or(object::elf::SHN_ABS.into(), SymbolSection::Index)
 }
 
 fn write_prelude_dynsym<C: ElfClass>(
