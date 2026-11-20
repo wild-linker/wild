@@ -821,10 +821,9 @@ fn apply_relocation<'data, A: Arch<Platform = Coff>, R: Relocation<Platform = Co
 
     let value = match rel_info.kind {
         RelocationKind::Absolute => resolution.value_with_addend(addend as i64),
-        RelocationKind::ImageBaseRelative => {
-            let without_base = addend.wrapping_sub(layout.args().image_base().unwrap());
-            resolution.value_with_addend(without_base as i64)
-        }
+        RelocationKind::ImageBaseRelative => resolution
+            .value_with_addend(addend as i64)
+            .wrapping_sub(layout.args().image_base().unwrap()),
         RelocationKind::Relative => {
             // TODO: Handle undefined weak
             let symbol_plus_addend = resolution.value_with_addend(addend as i64);
