@@ -5956,7 +5956,7 @@ fn write_internal_dynsym<C: ElfClass>(
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
 
-    let (address, st_type) = if matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
+    let (mut address, st_type) = if matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
         (resolution.raw_value, st_type)
     } else {
         def_info
@@ -5965,6 +5965,11 @@ fn write_internal_dynsym<C: ElfClass>(
 
         (resolution.address()?, object::elf::STT_NOTYPE)
     };
+
+    if st_type == object::elf::STT_TLS {
+        address -= layout.tls_start_address();
+    }
+
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
     let entry = dynsym_writer
@@ -6148,7 +6153,7 @@ fn write_internal_symbols<C: ElfClass>(
 
         let mut address = resolution.value();
 
-        if platform::Symbol::is_tls(&def_info.symbol) {
+        if st_type == object::elf::STT_TLS {
             address -= layout.tls_start_address();
         }
 
