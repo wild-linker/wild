@@ -301,10 +301,9 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             let section_id = output_section_id::BSS;
             Some(self.copy_symbol(sym, name, section_id, value, flags)?)
         } else if sym.is_absolute() {
-            self.copy_absolute_symbol(sym, name, flags)
-                .with_context(|| {
-                    format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
-                })?;
+            self.copy_absolute_symbol(sym, name).with_context(|| {
+                format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
+            })?;
             return Ok(());
         } else {
             bail!("Attempted to output a symtab entry with an unexpected section type")
@@ -395,14 +394,16 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         Ok(entry)
     }
 
-    #[allow(clippy::unused_self)]
     fn copy_absolute_symbol(
-        &self,
-        _sym: &coff::SymtabEntry,
-        _name: &[u8],
-        _flags: ValueFlags,
+        &mut self,
+        sym: &coff::SymtabEntry,
+        name: &[u8],
     ) -> Result<&mut object::pe::ImageSymbol> {
-        bail!("Absolute symbols are not supported currently")
+        let entry = self.define_symbol(object::pe::IMAGE_SYM_ABSOLUTE, sym.value() as u32, name)?;
+        entry.storage_class = sym.raw.storage_class;
+        entry.typ = sym.raw.typ;
+        entry.number_of_aux_symbols = 0;
+        Ok(entry)
     }
 
     #[inline(always)]
