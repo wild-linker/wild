@@ -1,7 +1,12 @@
 /*
+//#Config:default
 //#Arch: riscv32
 //#LinkArgs: -shared
 //#RunEnabled: false
+
+//#Config:gnu-hash-entsize:default
+//#ExpectSection: .gnu.hash entsize=4
+//#ReferenceLinkers:bfd
 */
 
 .text

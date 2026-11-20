@@ -189,6 +189,9 @@ impl Config {
                 ".hash",
                 "section.hash.alignment",
                 "section.hash.entsize",
+                // bfd sets this to 4 and 0 on 32-bit and 64-bit architectures respectively. lld
+                // emits 0 on both.
+                "section.gnu.hash.entsize",
                 // Some other linkers seem to generate a `.hash` section even when there are no
                 // dynamic symbols.
                 "section.hash",

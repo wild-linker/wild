@@ -259,6 +259,7 @@ pub(crate) trait ElfClass: Copy + Default + Send + Sync + std::fmt::Debug + 'sta
     const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry<Self>>() as u64;
     const DYNAMIC_ENTRY_SIZE: u64 = size_of::<DynamicEntry<Self>>() as u64;
     const NOTE_HEADER_SIZE: u64 = size_of::<NoteHeader<Self>>() as u64;
+    const GNU_HASH_ENTRY_SIZE: u64 = if Self::ADDRESS_SIZE == 4 { 4 } else { 0 };
     const GNU_HASH_BLOOM_SIZE: u64 = Self::ADDRESS_SIZE;
     const PROGRAM_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
     const SECTION_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
@@ -6993,6 +6994,7 @@ impl<C: ElfClass> Elf<C> {
             kind: Self::primary_section(GNU_HASH_SECTION_NAME),
             ty: sht::GNU_HASH,
             section_flags: shf::ALLOC,
+            element_size: C::GNU_HASH_ENTRY_SIZE,
             link: &[output_section_id::DYNSYM],
             min_alignment: C::GNU_HASH_ALIGNMENT,
             ..Self::DEFAULT_DEFS
