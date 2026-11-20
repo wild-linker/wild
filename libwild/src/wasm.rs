@@ -7469,7 +7469,10 @@ impl platform::Platform for Wasm {
         output.write(layout, crate::wasm_writer::write::<A>)
     }
 
-    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(
+        _header: &Self::SectionHeader,
+        _alignment: Alignment,
+    ) -> Self::SectionAttributes {
         SectionAttributes::default()
     }
 

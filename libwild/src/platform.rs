@@ -599,9 +599,11 @@ pub(crate) trait Platform:
         false
     }
 
-    /// Returns attributes of the supplied section. This is type+flags and doesn't include other
-    /// information like name, size etc.
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
+    /// Returns attributes of the supplied section, including its type, flags and alignment.
+    fn section_attributes(
+        header: &Self::SectionHeader,
+        alignment: Alignment,
+    ) -> Self::SectionAttributes;
 
     /// Validate that the supplied sizes are internally consistent.
     fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
