@@ -1,5 +1,6 @@
 use crate::FileSystem;
 use crate::alignment::Alignment;
+use crate::args::wasm::UnresolvedSymbols;
 use crate::args::wasm::WasmArgs;
 use crate::bail;
 use crate::ensure;
@@ -1411,6 +1412,8 @@ pub(crate) struct WasmNameInputs<'data> {
     pub(crate) got_func_global_base: Option<u32>,
     pub(crate) got_mem: Vec<WasmGotMemSource<'data>>,
     pub(crate) got_func_names: Vec<Option<&'data str>>,
+    /// Output function indices of `undefined_stub` bodies.
+    pub(crate) undefined_stub_funcs: Vec<u32>,
 }
 
 /// One `target_features` entry together with the input file that declared it.
@@ -2176,6 +2179,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) got_mem_globals: Vec<Option<u32>>,
     pub(crate) got_func_globals: Vec<Option<u32>>,
     pub(crate) function_symbol_redirects: Vec<Option<u32>>,
+    pub(crate) undefined_globals: Vec<bool>,
 }
 
 impl WasmObjectIndexMap {
@@ -2209,6 +2213,14 @@ impl WasmObjectIndexMap {
             object::wasm::R_WASM_GLOBAL_INDEX_LEB | object::wasm::R_WASM_GLOBAL_INDEX_I32 => {
                 match sym.kind {
                     object::wasm::SYM_TYPE_GLOBAL => {
+                        if self
+                            .undefined_globals
+                            .get(sym.index as usize)
+                            .copied()
+                            .unwrap_or(false)
+                        {
+                            return Ok(u32::MAX);
+                        }
                         remap_wasm_index(&self.global_indices, sym.index, "global")
                     }
                     object::wasm::SYM_TYPE_DATA => self
@@ -3038,6 +3050,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             got_mem_globals: Vec::new(),
             got_func_globals: Vec::new(),
             function_symbol_redirects: Vec::new(),
+            undefined_globals: Vec::new(),
         };
 
         for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
@@ -3096,7 +3109,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 ImportResolution::ResolvedGlobal { .. }
                 | ImportResolution::DirectGlobal { .. }
                 | ImportResolution::GotMemSlot(_)
-                | ImportResolution::GotFuncSlot(_) => {
+                | ImportResolution::GotFuncSlot(_)
+                | ImportResolution::UndefinedGlobal => {
                     bail!("function import resolved as global");
                 }
             }
@@ -3154,6 +3168,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         .context("Wasm global index overflow")?;
                     index_map.global_indices.push(output_global_index);
                 }
+                ImportResolution::UndefinedGlobal => {
+                    index_map.global_indices.push(0);
+                }
                 ImportResolution::ResolvedFunction { .. }
                 | ImportResolution::WeakUndefStub { .. } => {
                     bail!("global import resolved as function");
@@ -3186,6 +3203,13 @@ impl<'data> WasmObjectLayoutInput<'data> {
             "Wasm global index overflow",
             &mut index_map.global_indices,
         )?;
+        let mut undefined_globals = vec![false; index_map.global_indices.len()];
+        for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            if matches!(resolution, ImportResolution::UndefinedGlobal) {
+                undefined_globals[i] = true;
+            }
+        }
+        index_map.undefined_globals = undefined_globals;
 
         // Imported and defined memories are merged into a single output memory.
         let memory_slot_count = self.memory_imports.len() + self.memories.len();
@@ -3238,6 +3262,8 @@ enum ImportResolution {
     LinkerDefined(WasmLinkerSymbol),
     /// Undefined weak function absorbed into a shared `unreachable` stub.
     WeakUndefStub { stub_index: u32 },
+    /// Unresolved global that is not imported. Its index relocates as `u32::MAX`.
+    UndefinedGlobal,
     /// Fixed module global index (GOT.mem / GOT.func entry).
     DirectGlobal { output_index: u32 },
     /// GOT.mem slot pending final module global index.
@@ -3333,7 +3359,7 @@ fn report_disallowed_unresolved_imports<'data>(
     resolutions: &[ObjectImportResolutions],
     symbol_db: &SymbolDb<'data, Wasm>,
 ) -> Result {
-    if symbol_db.args.allow_undefined {
+    if symbol_db.args.unresolved_symbols == UnresolvedSymbols::Ignore {
         return Ok(());
     }
 
@@ -3387,10 +3413,17 @@ fn report_disallowed_unresolved_imports<'data>(
         }
     }
 
-    if errors.is_empty() {
-        return Ok(());
+    match symbol_db.args.unresolved_symbols {
+        UnresolvedSymbols::Ignore => Ok(()),
+        UnresolvedSymbols::Error if errors.is_empty() => Ok(()),
+        UnresolvedSymbols::Error => bail!("{}", errors.join("\n")),
+        UnresolvedSymbols::Warn => {
+            for message in errors {
+                symbol_db.warning(message);
+            }
+            Ok(())
+        }
     }
-    bail!("{}", errors.join("\n"));
 }
 
 fn collect_shared_unresolved_imports<'data>(
@@ -3768,11 +3801,12 @@ impl LinkerImportAbsorption {
     }
 }
 
-/// Synthetic function produced for an unresolved weak function import.
+/// Synthetic `unreachable` function for an unresolved function import.
 #[derive(Debug, Clone)]
 struct WeakUndefFunctionStub {
     ty: wasmparser::FuncType,
     function_index: u32,
+    name: Option<&'static str>,
 }
 
 /// Reserved Wasm index-space slots for linker-defined globals/functions.
@@ -3900,7 +3934,7 @@ fn setup_got_mem_and_indices<'data>(
 
     let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
-    let weak_undef_stubs = {
+    let mut weak_undef_stubs = {
         timing_phase!("Absorb Wasm GOT and weak-undef imports");
         absorb_got_imports(
             &scan.got_mem,
@@ -3924,6 +3958,12 @@ fn setup_got_mem_and_indices<'data>(
         weak_undef_stubs
     };
     report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
+    if symbol_db.args.unresolved_symbols == UnresolvedSymbols::Warn
+        && !symbol_db.args.import_undefined
+    {
+        absorb_signature_undef_stubs(layout_inputs, resolutions, &mut weak_undef_stubs)?;
+        mark_unresolved_globals_undefined(layout_inputs, resolutions);
+    }
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices =
@@ -4089,6 +4129,7 @@ fn absorb_weak_undef_function_imports<'data>(
                 stubs.push(WeakUndefFunctionStub {
                     ty,
                     function_index: 0,
+                    name: None,
                 });
                 idx
             };
@@ -4097,6 +4138,98 @@ fn absorb_weak_undef_function_imports<'data>(
     }
 
     Ok(stubs)
+}
+
+fn absorb_signature_undef_stubs<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &mut [ObjectImportResolutions],
+    stubs: &mut Vec<WeakUndefFunctionStub>,
+) -> Result<()> {
+    let mut type_to_stub: HashMap<wasmparser::FuncType, u32> = HashMap::new();
+    for (input, res) in inputs.iter().zip(resolutions.iter_mut()) {
+        let explicit = explicit_import_flags(
+            input,
+            object::wasm::SYM_TYPE_FUNCTION,
+            input.function_imports.len(),
+        );
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            if explicit[i] {
+                continue;
+            }
+            let ty = input
+                .types
+                .get(import.type_index as usize)
+                .with_context(|| {
+                    format!(
+                        "Wasm type index {} out of range for unresolved function `{}`",
+                        import.type_index, import.name
+                    )
+                })?
+                .clone();
+            let stub_index = if let Some(&idx) = type_to_stub.get(&ty) {
+                idx
+            } else {
+                let idx = u32::try_from(stubs.len()).context("too many Wasm undefined stubs")?;
+                type_to_stub.insert(ty.clone(), idx);
+                stubs.push(WeakUndefFunctionStub {
+                    ty,
+                    function_index: 0,
+                    name: Some("undefined_stub"),
+                });
+                idx
+            };
+            res.function_resolutions[i] = ImportResolution::WeakUndefStub { stub_index };
+        }
+    }
+    Ok(())
+}
+
+fn mark_unresolved_globals_undefined(
+    inputs: &[WasmObjectLayoutInput<'_>],
+    resolutions: &mut [ObjectImportResolutions],
+) {
+    for (input, res) in inputs.iter().zip(resolutions.iter_mut()) {
+        let explicit = explicit_import_flags(
+            input,
+            object::wasm::SYM_TYPE_GLOBAL,
+            input.global_imports.len(),
+        );
+        for (i, slot) in res.global_resolutions.iter_mut().enumerate() {
+            if !matches!(slot, ImportResolution::Unresolved) {
+                continue;
+            }
+            if explicit[i] {
+                continue;
+            }
+            *slot = ImportResolution::UndefinedGlobal;
+        }
+    }
+}
+
+fn explicit_import_flags(
+    input: &WasmObjectLayoutInput<'_>,
+    kind: object::wasm::SymbolKind,
+    import_count: usize,
+) -> Vec<bool> {
+    let mut explicit = vec![false; import_count];
+    for sym in input.symbols {
+        if sym.kind != kind || !sym.is_undefined() || !sym.is_explicit_name() {
+            continue;
+        }
+        if let Some(slot) = explicit.get_mut(sym.index as usize) {
+            *slot = true;
+        }
+    }
+    explicit
 }
 
 fn resolve_got_mem_def(
@@ -4319,7 +4452,7 @@ fn scan_layout_relocations(
 ) -> Result<LayoutRelocScan> {
     timing_phase!("Scan Wasm layout relocations");
 
-    let check_undefined_data = !symbol_db.args.allow_undefined;
+    let check_undefined_data = symbol_db.args.unresolved_symbols != UnresolvedSymbols::Ignore;
     let object_scans: Vec<Result<ObjectRelocScan>> = layout_inputs
         .par_iter()
         .map(|input| scan_object_layout_relocations(input, symbol_db, check_undefined_data))
@@ -4399,7 +4532,17 @@ fn scan_layout_relocations(
     }
 
     if !undefined_data_errors.is_empty() {
-        bail!("{}", undefined_data_errors.join("\n"));
+        match symbol_db.args.unresolved_symbols {
+            UnresolvedSymbols::Ignore => {}
+            UnresolvedSymbols::Error => {
+                bail!("{}", undefined_data_errors.join("\n"));
+            }
+            UnresolvedSymbols::Warn => {
+                for message in undefined_data_errors {
+                    symbol_db.warning(message);
+                }
+            }
+        }
     }
 
     Ok(LayoutRelocScan {
@@ -6060,6 +6203,12 @@ fn wasm_name_inputs<'data>(
         got_func_global_base: indices.got_func_global_base,
         got_mem: got_mem_sources,
         got_func_names,
+        undefined_stub_funcs: indices
+            .weak_undef_stubs
+            .iter()
+            .filter(|stub| stub.name.is_some())
+            .map(|stub| stub.function_index)
+            .collect(),
     }
 }
 

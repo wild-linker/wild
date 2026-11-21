@@ -1140,6 +1140,9 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
         if let Some(idx) = names.init_memory_func {
             set_name_first_wins(&mut function_names, idx, "__wasm_init_memory");
         }
+        for &idx in &names.undefined_stub_funcs {
+            set_name_first_wins(&mut function_names, idx, "undefined_stub");
+        }
     }
 
     let per_object_names: Vec<ObjectNameEntries<'_>> = {
