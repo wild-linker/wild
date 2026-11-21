@@ -1367,7 +1367,8 @@ fn process_alternatives<'data, P: Platform>(
 
                 // A partial link's output is an input to a later link, so its hidden symbols must
                 // stay global for that link to resolve references to them.
-                if visibility != Visibility::Default && !symbol_db.db.output_kind.is_partial_link() {
+                if visibility != Visibility::Default && !symbol_db.db.output_kind.is_partial_link()
+                {
                     handle_non_default_visibility(per_symbol_flags, first, visibility);
 
                     for &alt in alternatives {
