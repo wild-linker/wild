@@ -4144,6 +4144,11 @@ fn absorb_signature_undef_stubs<'data>(
 ) -> Result<()> {
     let mut type_to_stub: HashMap<wasmparser::FuncType, u32> = HashMap::new();
     for (input, res) in inputs.iter().zip(resolutions.iter_mut()) {
+        let explicit = explicit_import_flags(
+            input,
+            object::wasm::SYM_TYPE_FUNCTION,
+            input.function_imports.len(),
+        );
         for (i, import) in input.function_imports.iter().enumerate() {
             if !input.live_function_imports.get(i).copied().unwrap_or(false) {
                 continue;
@@ -4154,7 +4159,7 @@ fn absorb_signature_undef_stubs<'data>(
             ) {
                 continue;
             }
-            if import_has_explicit_name(input, object::wasm::SYM_TYPE_FUNCTION, i as u32) {
+            if explicit[i] {
                 continue;
             }
             let ty = input
@@ -4190,11 +4195,16 @@ fn mark_unresolved_globals_undefined(
     resolutions: &mut [ObjectImportResolutions],
 ) {
     for (input, res) in inputs.iter().zip(resolutions.iter_mut()) {
+        let explicit = explicit_import_flags(
+            input,
+            object::wasm::SYM_TYPE_GLOBAL,
+            input.global_imports.len(),
+        );
         for (i, slot) in res.global_resolutions.iter_mut().enumerate() {
             if !matches!(slot, ImportResolution::Unresolved) {
                 continue;
             }
-            if import_has_explicit_name(input, object::wasm::SYM_TYPE_GLOBAL, i as u32) {
+            if explicit[i] {
                 continue;
             }
             *slot = ImportResolution::UndefinedGlobal;
@@ -4202,17 +4212,21 @@ fn mark_unresolved_globals_undefined(
     }
 }
 
-fn import_has_explicit_name(
+fn explicit_import_flags(
     input: &WasmObjectLayoutInput<'_>,
     kind: object::wasm::SymbolKind,
-    import_index: u32,
-) -> bool {
-    input.symbols.iter().any(|sym| {
-        sym.kind == kind
-            && sym.is_undefined()
-            && sym.is_explicit_name()
-            && sym.index == import_index
-    })
+    import_count: usize,
+) -> Vec<bool> {
+    let mut explicit = vec![false; import_count];
+    for sym in input.symbols {
+        if sym.kind != kind || !sym.is_undefined() || !sym.is_explicit_name() {
+            continue;
+        }
+        if let Some(slot) = explicit.get_mut(sym.index as usize) {
+            *slot = true;
+        }
+    }
+    explicit
 }
 
 fn resolve_got_mem_def(
