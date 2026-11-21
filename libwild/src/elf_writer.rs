@@ -5985,14 +5985,14 @@ fn write_internal_dynsym<C: ElfClass>(
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
 
-    let (mut address, st_type) = if matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
-        (resolution.raw_value, st_type)
+    let mut address = if matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
+        resolution.raw_value
     } else {
         def_info
             .section_id()
             .context("Tried to export dynamic symbol not associated with a section")?;
 
-        (resolution.address()?, object::elf::STT_NOTYPE)
+        resolution.address()?
     };
 
     if st_type == object::elf::STT_TLS {
