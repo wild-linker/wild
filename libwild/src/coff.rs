@@ -5,6 +5,7 @@ use crate::arch::Architecture;
 use crate::args::coff::CoffArgs;
 use crate::bail;
 use crate::coff_writer;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
@@ -1121,7 +1122,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         if size == 0 {
             size = section.virtual_size.get(e) as usize;
         }
-        Ok(&self.data[ptr..ptr + size])
+        let end = ptr
+            .checked_add(size)
+            .context("COFF section raw data extent overflows address space")?;
+        self.data
+            .get(ptr..end)
+            .context("COFF section raw data extends past end of file")
     }
 
     fn section_data(
@@ -1743,3 +1749,70 @@ pub(crate) const DOS_STUB: &[u8] = &[
     0x74, 0x20, 0x62, 0x65, 0x20, 0x72, 0x75, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x44, 0x4f, 0x53, 0x20,
     0x6d, 0x6f, 0x64, 0x65, 0x2e, 0x24, 0x00, 0x00,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::ObjectFile;
+    use object::SectionIndex;
+
+    fn create_test_coff(ptr: u32, size: u32, total_len: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        // ImageFileHeader (20 bytes)
+        bytes.extend_from_slice(&0x8664u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+
+        // ImageSectionHeader (40 bytes)
+        bytes.extend_from_slice(b".text\0\0\0");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&size.to_le_bytes());
+        bytes.extend_from_slice(&ptr.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0x60500020u32.to_le_bytes());
+
+        if bytes.len() < total_len {
+            bytes.resize(total_len, 0x90);
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_raw_section_data_valid() {
+        let mut bytes = create_test_coff(60, 4, 64);
+        bytes[60..64].copy_from_slice(b"WILD");
+        let file = File::parse_coff_bytes(&bytes, false).unwrap();
+        let section = file.section(SectionIndex(0)).unwrap();
+        let data = file.raw_section_data(section).unwrap();
+        assert_eq!(data, b"WILD");
+    }
+
+    #[test]
+    fn test_raw_section_data_past_eof() {
+        let bytes = create_test_coff(60, 100, 70);
+        let file = File::parse_coff_bytes(&bytes, false).unwrap();
+        let section = file.section(SectionIndex(0)).unwrap();
+        let err = file.raw_section_data(section).unwrap_err();
+        assert!(err.to_string().contains("extends past end of file"));
+    }
+
+    #[test]
+    fn test_raw_section_data_overflow() {
+        let bytes = create_test_coff(u32::MAX, 10, 60);
+        let file = File::parse_coff_bytes(&bytes, false).unwrap();
+        let section = file.section(SectionIndex(0)).unwrap();
+        let err = file.raw_section_data(section).unwrap_err();
+        assert!(
+            err.to_string().contains("extends past end of file")
+                || err.to_string().contains("overflows address space")
+        );
+    }
+}
