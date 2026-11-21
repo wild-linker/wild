@@ -106,7 +106,7 @@ impl<'data> ExportList<'data> {
     /// Adds a matcher using GNU version-script syntax. This does not add a required Mach-O export
     /// root, even when the matcher is an exact name.
     pub(crate) fn add_symbol(&mut self, symbol: &'data str, without_semicolon: bool) -> Result<()> {
-        let matcher = parse_matcher(&mut BStr::new(symbol), without_semicolon)?;
+        let matcher = parse_matcher(&mut BStr::new(symbol), without_semicolon, false)?;
         self.rules.push(matcher);
         Ok(())
     }
@@ -134,7 +134,7 @@ fn parse_gnu_export_list<'input>(input: &mut &'input BStr) -> winnow::Result<Exp
             break;
         }
 
-        let matcher = parse_matcher(input, false)?;
+        let matcher = parse_matcher(input, false, false)?;
         out.rules.push(matcher);
     }
 

@@ -607,7 +607,7 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVe
         } else if try_take(input, b"local:") {
             section = Some(VersionRuleSection::Local);
         } else {
-            let matcher = parse_matcher(input, false)?;
+            let matcher = parse_matcher(input, false, true)?;
 
             match section {
                 Some(VersionRuleSection::Global) | None => {
@@ -623,9 +623,55 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVe
     Ok(out)
 }
 
+/// Whether `name` can be written without quotes in a version script. As in GNU ld and LLD, a `:` is
+/// only valid as part of `::`.
+fn is_valid_unquoted_symbol_name(name: &[u8]) -> bool {
+    let mut after_colon = false;
+
+    for &byte in name {
+        if after_colon {
+            if byte != b':' {
+                return false;
+            }
+            after_colon = false;
+            continue;
+        }
+
+        if byte == b':' {
+            after_colon = true;
+            continue;
+        }
+
+        if !byte.is_ascii_alphanumeric()
+            && !matches!(
+                byte,
+                b'_' | b'.'
+                    | b'$'
+                    | b'/'
+                    | b'\\'
+                    | b'~'
+                    | b'='
+                    | b'+'
+                    | b'['
+                    | b']'
+                    | b'*'
+                    | b'?'
+                    | b'-'
+                    | b'!'
+                    | b'^'
+            )
+        {
+            return false;
+        }
+    }
+
+    !after_colon
+}
+
 pub(crate) fn parse_matcher<'data>(
     input: &mut &'data BStr,
     without_semicolon: bool, // e.g. symbol to export passed via CLI arg
+    validate_symbol_names: bool,
 ) -> winnow::Result<ParsedSymbolMatcher<'data>> {
     if try_take(input, b"extern ") {
         let mut matchers = Vec::new();
@@ -661,7 +707,7 @@ pub(crate) fn parse_matcher<'data>(
                 }
             };
 
-            let matcher = parse_matcher(input, !expect_semicolon)?;
+            let matcher = parse_matcher(input, !expect_semicolon, validate_symbol_names)?;
             let ParsedSymbolMatcher::Single(matcher) = matcher else {
                 let unexpected_extern = if matches!(matcher, ParsedSymbolMatcher::CxxMatchers(_)) {
                     "C++"
@@ -683,6 +729,8 @@ pub(crate) fn parse_matcher<'data>(
         return Ok(ParsedSymbolMatcher::Multiple(matchers));
     }
 
+    let token_start = *input;
+
     let token = if without_semicolon {
         if input.contains(&b'}') {
             take_until(1.., b'}').parse_next(input)?
@@ -700,6 +748,18 @@ pub(crate) fn parse_matcher<'data>(
     try_take(input, b";");
 
     let token = token.trim_ascii_end();
+
+    if validate_symbol_names
+        && token.strip_circumfix(b"\"", b"\"").is_none()
+        && !is_valid_unquoted_symbol_name(token)
+    {
+        // Report the error at the start of the name rather than after the `;`.
+        *input = token_start;
+        return Err(ContextError::from_external_error(
+            input,
+            VersionScriptError::InvalidSymbolName(String::from_utf8_lossy(token).into_owned()),
+        ));
+    }
 
     Ok(ParsedSymbolMatcher::Single(
         if let Some(unquoted) = token.strip_circumfix(b"\"", b"\"") {
@@ -748,6 +808,7 @@ enum VersionScriptError {
     InvalidGlobPattern,
     UnexpectedExtern(String),
     UnsupportedExtern(String),
+    InvalidSymbolName(String),
 }
 
 impl std::error::Error for VersionScriptError {}
@@ -762,6 +823,12 @@ impl std::fmt::Display for VersionScriptError {
                 write!(f, "Unexpected extern \"{s}\" in parsing")
             }
             VersionScriptError::UnsupportedExtern(s) => write!(f, "Unsupported extern \"{s}\""),
+            VersionScriptError::InvalidSymbolName(s) => {
+                write!(
+                    f,
+                    "Symbol name \"{s}\" contains characters that require quoting"
+                )
+            }
         }
     }
 }
@@ -1177,5 +1244,43 @@ mod tests {
 
         assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);
         assert_eq!(script.find_match(&sym(b"fxxx")).unwrap().0, 2);
+    }
+
+    #[test]
+    fn test_parse_unquoted_invalid_symbol_name() {
+        for name in [
+            "wasi:cli/run@0.2.4#run",
+            "foo@VER",
+            "foo bar",
+            "foo(int)",
+            "a:b",
+            ":ab",
+            "ab:",
+            "a:::b",
+        ] {
+            let script = format!("{{ global: {name}; local: *; }};");
+            let error = VersionScript::parse(ScriptData {
+                raw: script.as_bytes(),
+            })
+            .unwrap_err();
+            assert!(
+                format!("{error:?}").contains("contains characters that require quoting"),
+                "{name}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_quoted_and_valid_symbol_names() {
+        let script = br#"{ global: "wasi:cli/run@0.2.4#run"; "foo(int)"; ns::foo*; a::::b; _ZN3foo3barEv; local: *; };"#;
+        let script = RegularVersionScript::parse(ScriptData { raw: script }).unwrap();
+        assert!(is_matching_global(&script, "wasi:cli/run@0.2.4#run"));
+        assert!(is_matching_global(&script, "_ZN3foo3barEv"));
+    }
+
+    #[test]
+    fn test_parse_matcher_does_not_validate_symbol_names() {
+        let mut input = BStr::new("wasi:cli/run@0.2.4#run");
+        assert!(parse_matcher(&mut input, true, false).is_ok());
     }
 }
