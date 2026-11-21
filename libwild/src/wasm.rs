@@ -5873,7 +5873,7 @@ fn encode_init_memory_body(
 }
 
 fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>], shared: bool) -> MemoryType {
-    let mut initial = 2u64;
+    let mut initial = 0u64;
     for input in inputs {
         for import in &input.memory_imports {
             initial = initial.max(import.initial);
