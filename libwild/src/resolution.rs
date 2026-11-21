@@ -1429,6 +1429,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
                             }
 
                             if visibility != Visibility::Default
+                                && !symbol_db.output_kind.is_partial_link()
                                 && let Some(def_id) = symbol_db.get_unversioned(&pre_hashed)
                             {
                                 symbol_db::apply_visibility_to_definition(
@@ -1452,6 +1453,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
                         symbol_db.replace_definition(undefined.symbol_id, definition_id);
                         let visibility = symbol_db.input_symbol_visibility(undefined.symbol_id);
                         if visibility != Visibility::Default
+                            && !symbol_db.output_kind.is_partial_link()
                             && let Some(def_id) = symbol_db.get_unversioned(entry.key())
                         {
                             symbol_db::apply_visibility_to_definition(
@@ -1963,8 +1965,11 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
         Some(symbol_id) => {
             *definition_out = symbol_id;
             // If the undefined reference has non-default visibility, the definition must be
-            // downgraded so it cannot leak into dynsym
-            if !local_symbol_attributes.default_visibility {
+            // downgraded so it cannot leak into dynsym. Not for partial links, whose hidden
+            // symbols must stay global for a later link.
+            if !local_symbol_attributes.default_visibility
+                && !resources.symbol_db.output_kind.is_partial_link()
+            {
                 let visibility = resources.symbol_db.input_symbol_visibility(local_symbol_id);
                 match visibility {
                     Visibility::Hidden => {
