@@ -515,11 +515,16 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
                         let distance = info.output_address as i64
                             - (section_output_address + call_output_offset) as i64;
                         let off = call_offset as usize;
-                        let jalr_word =
-                            u32::from_le_bytes(section_bytes[off + 4..off + 8].try_into().unwrap());
-                        let rd = (jalr_word >> 7) & 0x1f;
+                        let rd = if off + 8 <= section_bytes.len() {
+                            let jalr_word = u32::from_le_bytes(
+                                section_bytes[off + 4..off + 8].try_into().unwrap(),
+                            );
+                            Some((jalr_word >> 7) & 0x1f)
+                        } else {
+                            None
+                        };
                         if C::ADDRESS_SIZE == 4
-                            && off + 8 <= section_bytes.len()
+                            && let Some(rd) = rd
                             && rd == 1
                             && distance_fits_cjal(distance)
                         {
