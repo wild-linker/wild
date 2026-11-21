@@ -1,9 +1,17 @@
 /*
-//#Arch: riscv64
-//#CompArgs: -march=rv64gc
+//#AbstractConfig:default
 //#LinkArgs: -nostdlib -static --relax
 //#ExpectSym:nearby_func
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
 //#ExpectSym:_start size=12
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
+//#ExpectSym:_start size=10
 */
 
 .section .text, "ax", @progbits

@@ -1,10 +1,17 @@
 /*
-//#Arch: riscv64
-//#CompArgs: -march=rv64gc
+//#AbstractConfig:default
 //#LinkArgs: -nostdlib -static --relax
 //#Object:riscv-hi20-lui-deletion-1.s
 //#ExpectSym:load_zero size=6
 //#ExpectSym:load_small size=6
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
 */
 
 .section .text, "ax", @progbits

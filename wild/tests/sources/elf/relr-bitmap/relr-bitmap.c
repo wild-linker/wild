@@ -38,7 +38,7 @@
 
 //#Config:riscv32:default
 //#Arch:riscv32
-//#ExpectSection:.relr.dyn max_entries=8
+//#ExpectSection:.relr.dyn max_entries=7
 //#CompArgs:-fPIE
 //#RunEnabled:false
 
