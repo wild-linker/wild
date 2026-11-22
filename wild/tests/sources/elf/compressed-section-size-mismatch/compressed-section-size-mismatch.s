@@ -17,13 +17,14 @@
 
 //#Config:zstd-bigger:default
 //#Object:zstd-bigger.s
-// GNU ld also accepts a zstd stream that's shorter than the header says, so there's no reference
-// linker for this config.
+// GNU ld isn't always built with zstd support, and when it is, it accepts a zstd stream that's
+// shorter than its header says, so the zstd configs have no reference linker.
 //#ReferenceLinkers:
 //#ExpectError:header's size of 4096 bytes
 
 //#Config:zstd-smaller:default
 //#Object:zstd-smaller.s
-//#ExpectError:header's size of 8 bytes|bad value
+//#ReferenceLinkers:
+//#ExpectError:header's size of 8 bytes
 
 .section .note.GNU-stack,"",%progbits
