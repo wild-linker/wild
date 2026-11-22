@@ -4887,11 +4887,14 @@ fn decompress_into<C: CompressionHeader<Endian = LittleEndian>>(
 ) -> Result {
     match compression.ch_type(LittleEndian) {
         object::elf::ELFCOMPRESS_ZLIB => {
-            flate2::Decompress::new(true).decompress(
-                input,
-                out,
-                flate2::FlushDecompress::Finish,
-            )?;
+            let mut decompress = flate2::Decompress::new(true);
+            let status = decompress.decompress(input, out, flate2::FlushDecompress::Finish)?;
+            // The stream must end exactly when the buffer, sized from the header, is full.
+            ensure!(
+                status == flate2::Status::StreamEnd && decompress.total_out() == out.len() as u64,
+                "compressed section data doesn't match its header's size of {} bytes",
+                out.len(),
+            );
         }
         // We might use pure Rust implementation for the decompression (ruzstd), however the
         // decompression speed is not on par with the official C library.
@@ -4901,7 +4904,14 @@ fn decompress_into<C: CompressionHeader<Endian = LittleEndian>>(
             #[cfg(feature = "zstd")]
             {
                 use std::io::Read as _;
-                zstd::stream::Decoder::new(input)?.read_exact(out)?;
+                let mut decoder = zstd::stream::Decoder::new(input)?;
+                // Both must hold: the data fills the buffer, and nothing is left over.
+                let fills_buffer = decoder.read_exact(out).is_ok();
+                ensure!(
+                    fills_buffer && decoder.read(&mut [0u8])? == 0,
+                    "compressed section data doesn't match its header's size of {} bytes",
+                    out.len(),
+                );
             }
             #[cfg(not(feature = "zstd"))]
             {
