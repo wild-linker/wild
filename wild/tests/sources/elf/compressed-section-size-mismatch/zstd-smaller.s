@@ -1,0 +1,10 @@
+// The compression header says 8 bytes, but the stream decompresses to 16. The section isn't
+// named .debug_info because assemblers won't set SHF_COMPRESSED (0x800) on known section names.
+.section .debug_test,"0x800",%progbits
+// ch_type, ch_reserved, ch_size, ch_addralign
+  .long 2
+  .long 0
+  .quad 8
+  .quad 1
+  .byte 0x28,0xb5,0x2f,0xfd,0x4,0x58,0x45,0x0,0x0,0x10,0x0,0x0,0x1,0x0,0x32,0xc0,0x2,0x32,0x7c,0x24,0x16
+.section .note.GNU-stack,"",%progbits
