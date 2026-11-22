@@ -1350,6 +1350,13 @@ pub(crate) trait Platform:
         _output_sections: &mut OutputSections<'_, Self>,
     ) {
     }
+
+    fn relocation_section(
+        _relocations: &Self::RelocationSections,
+        _target_section: object::SectionIndex,
+    ) -> Option<object::SectionIndex> {
+        None
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -1629,6 +1636,14 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
 
     fn is_null(&self) -> bool {
         false
+    }
+
+    fn is_rela(&self) -> bool {
+        false
+    }
+
+    fn relocation_target(&self) -> Option<object::SectionIndex> {
+        None
     }
 }
 
@@ -2127,6 +2142,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
             other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
         }
         Ok(())
+    }
+
+    fn emit_relocs(&self) -> bool {
+        false
     }
 
     fn should_output_partial_object(&self) -> bool {

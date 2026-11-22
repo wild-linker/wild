@@ -3869,7 +3869,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         let entry_size = size_of::<P::SymtabEntry>() as u64;
 
-        if resources.symbol_db.args.should_output_partial_object() {
+        if resources.symbol_db.args.should_output_partial_object()
+            || resources.symbol_db.args.emit_relocs()
+        {
             let mut num_section_syms =
                 partial_link_plan.map_or(0, |plan| u64::from(plan.singleton_count));
 
@@ -4843,12 +4845,20 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 }
                 SectionSlot::Unloaded(_) | SectionSlot::UnloadedDebugInfo { must_load: false } => {
                     if no_gc {
-                        queue.send_gc_unit_request::<A>(
-                            self.file_id,
-                            SectionGcUnit::new(object::SectionIndex(i)),
-                            resources,
-                            scope,
-                        );
+                        if resources.symbol_db.args.emit_relocs()
+                            && self
+                                .object
+                                .section(object::SectionIndex(i))
+                                .is_ok_and(|s| s.is_rela())
+                        {
+                        } else {
+                            queue.send_gc_unit_request::<A>(
+                                self.file_id,
+                                SectionGcUnit::new(object::SectionIndex(i)),
+                                resources,
+                                scope,
+                            );
+                        }
                     }
                 }
                 SectionSlot::MergeStrings(_) => {
@@ -4893,6 +4903,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 queue,
                 scope,
             )?;
+            self.load_relocation_section(common, frame_data_section_index, resources)?;
         }
 
         if let Some(section_index) = note_gnu_property_section {
@@ -5072,6 +5083,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         common.store_section_attributes(part_id, header, resources.output_sections);
 
+        self.load_relocation_section(common, section_index, resources)?;
+
         if let Some(config) = A::thunk_config()
             && resources.thunk_layout_builder.is_some()
             && part_id == config.primary_function_part_id
@@ -5087,6 +5100,36 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             resources.keep_section(section_id);
         }
 
+        Ok(())
+    }
+
+    fn load_relocation_section<'scope>(
+        &mut self,
+        common: &mut CommonGroupState<'data, P>,
+        target_section_index: SectionIndex,
+        resources: &'scope GraphResources<'data, 'scope, P>,
+    ) -> Result {
+        if resources.symbol_db.args.emit_relocs()
+            && let Some(rela_sec_idx) =
+                P::relocation_section(&self.relocations, target_section_index)
+        {
+            let rela_part_id =
+                self.section_part_id(rela_sec_idx, &resources.symbol_db.section_part_ids);
+            if rela_part_id != crate::part_id::UNMAPPED {
+                let rela_header = self.object.section(rela_sec_idx)?;
+                let rela_section = Section::create(rela_header, self, rela_part_id)?;
+                common.allocate(
+                    rela_part_id,
+                    rela_section.capacity(rela_part_id, resources.output_sections),
+                );
+                common.store_section_attributes(
+                    rela_part_id,
+                    rela_header,
+                    resources.output_sections,
+                );
+                self.sections[rela_sec_idx.0] = SectionSlot::Loaded(rela_section);
+            }
+        }
         Ok(())
     }
 
@@ -5529,7 +5572,8 @@ impl<'data> SymbolCopyInfo<'data> {
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
         let must_keep = symbol_state.contains(ValueFlags::GROUP_SIGNATURE)
-            || (symbol_db.args.should_output_partial_object() && symbol_state.has_resolution());
+            || ((symbol_db.args.should_output_partial_object() || symbol_db.args.emit_relocs())
+                && symbol_state.has_resolution());
 
         if !must_keep && symbol_db.args.discard_all() && sym.is_local() {
             return None;

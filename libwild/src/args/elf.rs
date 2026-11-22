@@ -161,6 +161,7 @@ pub struct ElfArgs {
 
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
+    pub(crate) emit_relocs: bool,
 
     pub(crate) nmagic: bool,
     pub(crate) rosegment: bool,
@@ -392,6 +393,7 @@ impl Default for ElfArgs {
             lib_search_path: Vec::new(),
             should_output_executable: true,
             should_output_partial_object: false,
+            emit_relocs: false,
             dynamic_linker: DynamicLinker::default(),
             strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other
@@ -1196,6 +1198,16 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.relro = false;
             args.should_write_linker_identity = false;
             args.merge_sections = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("q")
+        .long("emit-relocs")
+        .help("Generate relocations in final output")
+        .execute(|args, _modifier_stack| {
+            args.emit_relocs = true;
             Ok(())
         });
 
@@ -2429,7 +2441,9 @@ impl platform::Args for ElfArgs {
     }
 
     fn should_strip_all(&self) -> bool {
-        !self.should_output_partial_object() && matches!(self.strip, Strip::All)
+        !self.should_output_partial_object()
+            && !self.emit_relocs
+            && matches!(self.strip, Strip::All)
     }
 
     fn retain_symbols_path(&self) -> Option<&Path> {
@@ -2614,6 +2628,10 @@ impl platform::Args for ElfArgs {
 
     fn should_output_executable(&self) -> bool {
         self.should_output_executable
+    }
+
+    fn emit_relocs(&self) -> bool {
+        self.emit_relocs
     }
 
     fn should_output_partial_object(&self) -> bool {
