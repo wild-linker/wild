@@ -162,7 +162,11 @@ pub fn ppc64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'sta
     if let Some(name) = object::elf::NAMES_R_PPC64.name(r_type) {
         Cow::Borrowed(name)
     } else {
-        Cow::Owned(format!("Unknown ppc64 relocation type 0x{r_type:x}"))
+        match r_type {
+            crate::ppc64::R_PPC64_PLTSEQ => Cow::Borrowed("R_PPC64_PLTSEQ"),
+            crate::ppc64::R_PPC64_PLTCALL => Cow::Borrowed("R_PPC64_PLTCALL"),
+            _ => Cow::Owned(format!("Unknown ppc64 relocation type 0x{r_type:x}")),
+        }
     }
 }
 
