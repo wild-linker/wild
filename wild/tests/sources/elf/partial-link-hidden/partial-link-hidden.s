@@ -6,6 +6,12 @@
 //#Relocatable:dup-one.s,dup-two.s,hidden-ref.s,default-def.s
 //#LinkArgs:-no-pie
 
+//#Config:shared:default
+//#Mode:dynamic
+//#PostLinkArgs:-shared
+//#RunEnabled:false
+//#NoDynSym:referenced_hidden
+
 .text
 .globl _start
 _start:

@@ -125,6 +125,11 @@ bitflags! {
 
         /// The symbol is defined by a linker script.
         const LINKER_SCRIPT = 1 << 22;
+
+        /// In a partial link, the symbol must be written with hidden visibility, because a hidden
+        /// definition or reference was merged into it. It stays global, so that a later link can
+        /// still resolve references to it.
+        const HIDDEN = 1 << 23;
     }
 }
 
