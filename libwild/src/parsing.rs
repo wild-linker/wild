@@ -417,12 +417,14 @@ impl Redirect<'_> {
         &mut self,
         evaluated: &crate::expression_eval::EvaluatedValue,
     ) {
-        if evaluated.is_absolute() && self.loc.relative_section_id().is_some() {
+        if evaluated.is_absolute() && self.loc.section_id().is_some() {
             self.loc = SymbolLoc::None;
         } else if let Some(sec_id) = evaluated.section_id()
-            && self.loc.relative_section_id() != Some(sec_id)
+            && self.loc.section_id() != Some(sec_id)
         {
             self.loc = SymbolLoc::SectionEnd(sec_id);
+        } else if evaluated.is_first_section() {
+            self.loc = SymbolLoc::FirstSection;
         }
     }
 }

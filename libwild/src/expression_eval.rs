@@ -56,6 +56,7 @@ pub(crate) enum SymbolValue {
         section_id: OutputSectionId,
         address: u64,
     },
+    FirstSection(u64),
 }
 
 impl SymbolValue {
@@ -76,6 +77,7 @@ pub(crate) enum ExpressionValueKind {
     Address,
     Absolute,
     Relative(OutputSectionId),
+    FirstSection,
 }
 
 impl ExpressionValueKind {
@@ -85,6 +87,10 @@ impl ExpressionValueKind {
 
     pub(crate) fn is_number(self) -> bool {
         matches!(self, ExpressionValueKind::Number)
+    }
+
+    pub(crate) fn is_first_section(self) -> bool {
+        matches!(self, ExpressionValueKind::FirstSection)
     }
 
     pub(crate) fn section_id(self) -> Option<OutputSectionId> {
@@ -104,6 +110,10 @@ pub(crate) struct EvaluatedValue {
 impl EvaluatedValue {
     pub(crate) fn is_absolute(&self) -> bool {
         self.value_kind.is_absolute()
+    }
+
+    pub(crate) fn is_first_section(&self) -> bool {
+        self.value_kind.is_first_section()
     }
 
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
@@ -147,6 +157,14 @@ fn evaluate_symbol_value<P: Platform>(
                 *value_kind = ExpressionValueKind::Number;
             } else {
                 *value_kind = ExpressionValueKind::Absolute;
+            }
+            Ok(*value)
+        }
+        SymbolValue::FirstSection(value) => {
+            if current_section.is_some() {
+                *value_kind = ExpressionValueKind::Number;
+            } else {
+                *value_kind = ExpressionValueKind::FirstSection;
             }
             Ok(*value)
         }
@@ -199,12 +217,16 @@ fn arithmetic_binary_op(
         }
         (
             ExpressionValueKind::Relative(sec_l),
-            ExpressionValueKind::Absolute | ExpressionValueKind::Address,
+            ExpressionValueKind::Absolute
+            | ExpressionValueKind::Address
+            | ExpressionValueKind::FirstSection,
         ) => {
             normalize_rel(&mut val_l, &mut kind_l, sec_l);
         }
         (
-            ExpressionValueKind::Absolute | ExpressionValueKind::Address,
+            ExpressionValueKind::Absolute
+            | ExpressionValueKind::Address
+            | ExpressionValueKind::FirstSection,
             ExpressionValueKind::Relative(sec_r),
         ) => {
             normalize_rel(&mut val_r, &mut kind_r, sec_r);
@@ -246,6 +268,22 @@ fn arithmetic_binary_op(
             && matches!(kind_r, ExpressionValueKind::Address)
     {
         ExpressionValueKind::Address
+    } else if matches!(kind_l, ExpressionValueKind::FirstSection)
+        && matches!(
+            kind_r,
+            ExpressionValueKind::Number
+                | ExpressionValueKind::Absolute
+                | ExpressionValueKind::FirstSection
+        )
+        || matches!(kind_r, ExpressionValueKind::FirstSection)
+            && matches!(
+                kind_l,
+                ExpressionValueKind::Number
+                    | ExpressionValueKind::Absolute
+                    | ExpressionValueKind::FirstSection
+            )
+    {
+        ExpressionValueKind::FirstSection
     } else {
         ExpressionValueKind::Absolute
     };
@@ -634,11 +672,11 @@ fn evaluate_expression_value<'data, P: Platform>(
             let val = match expr.as_ref() {
                 Some(e) => {
                     let mut val = eval!(e, value_kind)?;
-                    if current_section.is_none() {
-                        if let ExpressionValueKind::Relative(sec) = *value_kind {
-                            val = val.wrapping_add(section_layouts.get(sec).mem_offset);
-                        }
-                        *value_kind = ExpressionValueKind::Absolute;
+                    if current_section.is_none()
+                        && let ExpressionValueKind::Relative(sec) = *value_kind
+                    {
+                        val = val.wrapping_add(section_layouts.get(sec).mem_offset);
+                        *value_kind = ExpressionValueKind::Address;
                     }
                     val
                 }
@@ -753,7 +791,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 *value_kind = ExpressionValueKind::Relative(curr_sec);
                 Ok(res.wrapping_sub(section_base))
             } else {
-                *value_kind = ExpressionValueKind::Address;
+                *value_kind = ExpressionValueKind::FirstSection;
                 Ok(res)
             }
         }
@@ -995,6 +1033,8 @@ fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
             visited_nodes.remove(&canonical_id);
             let symbol_value = if evaluated.is_absolute() {
                 SymbolValue::Absolute(evaluated.value)
+            } else if evaluated.is_first_section() {
+                SymbolValue::FirstSection(evaluated.value)
             } else {
                 SymbolValue::new(evaluated.value, evaluated.section_id())
             };
