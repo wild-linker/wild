@@ -19,6 +19,10 @@ use crate::elf::RelocationSize;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
 
+// TODO: Upstream to `object` and use constants here once available.
+pub const R_PPC64_PLTSEQ: object::elf::RelocationType = object::elf::RelocationType(119);
+pub const R_PPC64_PLTCALL: object::elf::RelocationType = object::elf::RelocationType(120);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -149,6 +153,34 @@ pub const fn relocation_type_from_raw(
         ),
         object::elf::R_PPC64_TOC16_LO_DS => (
             RelocationKind::SymRelGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
+            AllowedRange::no_check(),
+            4,
+            0,
+        ),
+        object::elf::R_PPC64_PLT16_LO => (
+            RelocationKind::GotRelGotBase,
+            RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_PLT16_HI => (
+            RelocationKind::GotRelGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_PLT16_HA => (
+            RelocationKind::GotRelGotBase,
+            RelocationSize::bit_mask_ppc64(16, 32, Ppc64Instruction::D),
+            AllowedRange::no_check(),
+            1,
+            0x8000,
+        ),
+        object::elf::R_PPC64_PLT16_LO_DS => (
+            RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask_ppc64(0, 16, Ppc64Instruction::Ds),
             AllowedRange::no_check(),
             4,
@@ -343,8 +375,12 @@ pub const fn relocation_type_from_raw(
             1,
             0x8000,
         ),
-        // Markers on a TLS sequence. The address calculation is a separate relocation.
-        object::elf::R_PPC64_TLS | object::elf::R_PPC64_TLSGD | object::elf::R_PPC64_TLSLD => (
+        // Markers. The address calculation is a separate relocation.
+        object::elf::R_PPC64_TLS
+        | object::elf::R_PPC64_TLSGD
+        | object::elf::R_PPC64_TLSLD
+        | R_PPC64_PLTSEQ
+        | R_PPC64_PLTCALL => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             AllowedRange::no_check(),

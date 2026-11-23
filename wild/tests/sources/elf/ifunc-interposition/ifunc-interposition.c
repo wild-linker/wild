@@ -16,8 +16,8 @@
 //#LinkArgs:-no-pie
 
 //#Config:got:default
-// ppc64le GCC -fno-plt emits PLT16_HA / PLT16_LO_DS, which are not decoded yet.
-//#SkipArch:ppc64le
+// lld does not decode R_PPC64_PLT16_* / PLTSEQ / PLTCALL.
+//#ReferenceLinkers:bfd
 //#CompSoArgs:-fPIC -fno-plt
 //#CompArgs:-fPIE
 //#LinkArgs:-no-pie
