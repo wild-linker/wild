@@ -301,6 +301,10 @@ impl crate::platform::Arch for ElfX86_64 {
                         }
                         // jmp *x(%rip)
                         [0xff, 0x25] => {
+                            // The relaxation rewrites up to offset + 4: a relative jmp and a nop.
+                            if section_bytes.len() < offset + 4 {
+                                return None;
+                            }
                             malfunction_point_ret!("no-jmp-indirect-to-relative", None);
                             return Some(Relaxation {
                                 kind: RelaxationKind::JmpIndirectToRelative,
@@ -431,6 +435,10 @@ impl crate::platform::Arch for ElfX86_64 {
                     match section_bytes.get(offset + 4..offset + 6) {
                         // PC-relative direct call
                         Some(&[0xe8, _]) => {
+                            // The relaxation rewrites the lea and the call: up to offset + 9.
+                            if section_bytes.len() < offset + 9 {
+                                return None;
+                            }
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
@@ -438,6 +446,10 @@ impl crate::platform::Arch for ElfX86_64 {
                             });
                         }
                         Some(&[REX_W, 0xb8]) => {
+                            // The relaxation rewrites up to offset + 19.
+                            if section_bytes.len() < offset + 19 {
+                                return None;
+                            }
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec64,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
@@ -446,6 +458,10 @@ impl crate::platform::Arch for ElfX86_64 {
                         }
                         // PC-relative indirect call
                         Some(&[0xff, 0x15]) => {
+                            // The relaxation rewrites up to offset + 10.
+                            if section_bytes.len() < offset + 10 {
+                                return None;
+                            }
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExecNoPlt,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
@@ -495,6 +511,10 @@ impl crate::platform::Arch for ElfX86_64 {
             // Note, the conditions on this relaxation (is_executable) must match those on
             // GOTPC32_TLSDESC above.
             object::elf::R_X86_64_TLSDESC_CALL if output_kind.is_executable() => {
+                // The relaxation replaces the two-byte call with a nop.
+                if section_bytes.len() < offset + 2 {
+                    return None;
+                }
                 return Some(Relaxation {
                     kind: RelaxationKind::SkipTlsDescCall,
                     rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
