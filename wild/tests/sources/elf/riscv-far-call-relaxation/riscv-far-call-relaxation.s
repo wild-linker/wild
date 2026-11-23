@@ -1,9 +1,17 @@
 /*
+//#AbstractConfig:default
+//#LinkArgs: -nostdlib -static --relax
+//#ExpectSym:far size=4
+
+//#Config:riscv64:default
 //#Arch: riscv64
 //#CompArgs: -march=rv64gc
-//#LinkArgs: -nostdlib -static --relax
 //#ExpectSym:_start size=100
-//#ExpectSym:far size=4
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
+//#ExpectSym:_start size=60
 */
 
 .option norvc

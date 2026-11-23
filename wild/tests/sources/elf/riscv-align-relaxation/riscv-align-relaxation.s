@@ -1,8 +1,15 @@
 /*
-//#Arch: riscv64
-//#CompArgs: -march=rv64gc
+//#AbstractConfig:default
 //#LinkArgs: -nostdlib -static
 //#DiffIgnore:file-header.entry
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs: -march=rv64gc
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs: -march=rv32gc
 */
 
 .globl _start

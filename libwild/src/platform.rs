@@ -402,6 +402,8 @@ pub(crate) struct RelaxSymbolInfo {
     pub output_address: u64,
     /// Whether the symbol may be interposed at runtime.
     pub is_interposable: bool,
+    /// Whether the symbol is an ifunc.
+    pub is_ifunc: bool,
 }
 
 /// Information about the previous relocation, used for pair-based relaxations.

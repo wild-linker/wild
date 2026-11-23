@@ -1,11 +1,19 @@
 /*
-//#Arch: riscv64
-//#CompArgs:-march=rv64gc
+//#AbstractConfig:default
 //#LinkArgs:-nostdlib -pie --export-dynamic --relax -z now
 //#RunEnabled:false
 //#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
+
+//#Config:riscv64:default
+//#Arch: riscv64
+//#CompArgs:-march=rv64gc
 //#ExpectDynSym:_start size=12
+
+//#Config:riscv32:default
+//#Arch: riscv32
+//#CompArgs:-march=rv32gc
+//#ExpectDynSym:_start size=10
 */
 
 .section .text, "ax", @progbits
