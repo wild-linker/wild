@@ -336,6 +336,7 @@ fn test_merge_parts() {
             crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
+            &output_sections.new_section_map_with(|| true),
         )
         .unwrap();
 
@@ -451,6 +452,7 @@ fn test_output_order_map_consistent() {
             crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
+            &output_sections.new_section_map_with(|| true),
         )
         .unwrap();
     let mut part_map = output_sections.new_part_map::<u32>();
@@ -518,6 +520,7 @@ fn test_output_order_map() {
             crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
+            &output_sections.new_section_map_with(|| true),
         )
         .unwrap();
     let mut part_map = output_sections.new_part_map::<u32>();

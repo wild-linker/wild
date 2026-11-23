@@ -773,11 +773,10 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             buffers.take(part_id::GNU_VERSION_R),
             versym.is_empty().not().then_some(versym),
         );
-
         TableWriter {
             output_kind,
-            got: <[elf::Word<C>]>::mut_from_bytes(buffers.take(part_id::GOT)).unwrap(),
-            got_relr: <[elf::Word<C>]>::mut_from_bytes(buffers.take(part_id::GOT_RELR)).unwrap(),
+            got: slice_from_all_bytes_mut(buffers.take(part_id::GOT)),
+            got_relr: slice_from_all_bytes_mut(buffers.take(part_id::GOT_RELR)),
             plt_got: buffers.take(part_id::PLT_GOT),
             rela_plt: slice_from_all_bytes_mut(buffers.take(part_id::RELA_PLT)),
             tls,

@@ -371,28 +371,27 @@ fn compute_address_layout<'data, P: Platform, A: Arch<Platform = P>>(
         location_counters.extend(script.parsed.location_counters.iter().cloned());
     }
 
-    let (output_order, program_segments) =
-        output_sections.output_order(symbol_db.output_kind, &linker_scripts, &location_counters)?;
-
-    tracing::trace!(
-        "Output order:\n{}",
-        output_order.display::<A::Platform>(&output_sections, &program_segments)
-    );
-
     let TotalSectionSizes {
         mut section_part_sizes,
         gdb_index_data,
         partial_link,
+        output_order,
+        program_segments,
     } = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
-        &output_order,
-        &program_segments,
+        &linker_scripts,
+        &location_counters,
         per_symbol_flags,
         must_keep_sections,
         &finalise_sizes_resources,
         partial_link_plan.as_ref(),
     )?;
+
+    tracing::trace!(
+        "Output order:\n{}",
+        output_order.display::<A::Platform>(&output_sections, &program_segments)
+    );
 
     let thunk_blocks = thunk_layout_builder.map_or_default(|builder| {
         builder.build(
@@ -2622,13 +2621,15 @@ struct TotalSectionSizes<'data, P: Platform> {
     section_part_sizes: OutputSectionPartMap<u64>,
     gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
     partial_link: PartialLinkSingletons,
+    output_order: OutputOrder<'data>,
+    program_segments: ProgramSegments<P::ProgramSegmentDef>,
 }
 
 fn compute_total_section_part_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &mut OutputSections<P>,
-    output_order: &OutputOrder<'data>,
-    program_segments: &ProgramSegments<P::ProgramSegmentDef>,
+    output_sections: &mut OutputSections<'data, P>,
+    linker_scripts: &[&SequencedLinkerScript<'data, P>],
+    location_counters: &[crate::layout_rules::LocationCounter<'data>],
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources<'data, '_, P>,
@@ -2678,13 +2679,27 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         unreachable!();
     };
 
+    let keep_sections = prelude.determine_kept_sections(
+        &total_sizes,
+        must_keep_sections,
+        output_sections,
+        resources,
+        per_symbol_flags,
+    );
+    let (output_order, program_segments) = output_sections.output_order(
+        resources.symbol_db.output_kind,
+        linker_scripts,
+        location_counters,
+        &keep_sections,
+    )?;
+
     let partial_link = prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
-        must_keep_sections,
+        keep_sections,
         output_sections,
-        output_order,
-        program_segments,
+        &output_order,
+        &program_segments,
         per_symbol_flags,
         resources,
         partial_link_plan,
@@ -2706,6 +2721,8 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         section_part_sizes: total_sizes,
         gdb_index_data,
         partial_link,
+        output_order,
+        program_segments,
     })
 }
 
@@ -3810,7 +3827,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         total_sizes: &mut OutputSectionPartMap<u64>,
-        must_keep_sections: OutputSectionMap<bool>,
+        keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections<P>,
         output_order: &OutputOrder<'data>,
         program_segments: &ProgramSegments<P::ProgramSegmentDef>,
@@ -3824,14 +3841,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         let mut extra_sizes = common.mem_sizes.new_empty_like();
 
         let partial_link = self.determine_header_sizes(
-            total_sizes,
             &mut extra_sizes,
-            must_keep_sections,
+            keep_sections,
             output_sections,
             program_segments,
             output_order,
             resources,
-            per_symbol_flags,
             partial_link_plan,
         );
 
@@ -3942,20 +3957,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         )
     }
 
-    fn determine_header_sizes(
-        &mut self,
+    fn determine_kept_sections(
+        &self,
         total_sizes: &OutputSectionPartMap<u64>,
-        extra_sizes: &mut OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
-        output_sections: &mut OutputSections<P>,
-        program_segments: &ProgramSegments<P::ProgramSegmentDef>,
-        output_order: &OutputOrder<'data>,
+        output_sections: &OutputSections<P>,
         resources: &FinaliseSizesResources<'data, '_, P>,
         symbol_flags: &PerSymbolFlags,
-        partial_link_plan: Option<&PartialLinkPlan>,
-    ) -> PartialLinkSingletons {
-        use output_section_id::OrderEvent;
-
+    ) -> OutputSectionMap<bool> {
         // Determine which sections to keep. To start with, we keep all sections that we've
         // previously marked as needing to be kept. These may include sections that are empty, but
         // into which we've loaded an empty input section.
@@ -3970,12 +3979,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
-
-        if output_order.has_custom_layout()
-            && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID
-        {
-            *keep_sections.get_mut(relro_padding_id) = false;
-        }
 
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
@@ -3999,6 +4002,31 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 let keep_secondary = replace(keep_sections.get_mut(section_id), false);
                 *keep_sections.get_mut(primary_id) |= keep_secondary;
             }
+        }
+
+        keep_sections
+    }
+
+    fn determine_header_sizes(
+        &mut self,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        mut keep_sections: OutputSectionMap<bool>,
+        output_sections: &mut OutputSections<P>,
+        program_segments: &ProgramSegments<P::ProgramSegmentDef>,
+        output_order: &OutputOrder<'data>,
+        resources: &FinaliseSizesResources<'data, '_, P>,
+        partial_link_plan: Option<&PartialLinkPlan>,
+    ) -> PartialLinkSingletons {
+        use output_section_id::OrderEvent;
+
+        if output_order.has_custom_layout()
+            && let Some(relro_padding_id) = P::RELRO_PADDING_SECTION_ID
+        {
+            *keep_sections.get_mut(relro_padding_id) = false;
+        }
+
+        for i in 0..output_sections.num_sections() {
+            let section_id = OutputSectionId::from_usize(i);
 
             // Remove any built-in sections without a type except for section 0 (the file header).
             // This should just be the .phdr and .shdr sections which contain the program headers
@@ -7263,8 +7291,14 @@ fn test_no_disallowed_overlaps() {
     let output_kind =
         crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
-    let (output_order, program_segments) =
-        output_sections.output_order(output_kind, &[], &[]).unwrap();
+    let (output_order, program_segments) = output_sections
+        .output_order(
+            output_kind,
+            &[],
+            &[],
+            &output_sections.new_section_map_with(|| true),
+        )
+        .unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
     if args.architecture() == crate::arch::Architecture::Unsupported {
         args.set_architecture(crate::arch::Architecture::X86_64);

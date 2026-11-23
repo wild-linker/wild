@@ -203,7 +203,9 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
     }
 }
 
-pub(crate) trait ElfWord: Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync {
+pub(crate) trait ElfWord:
+    Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync + object::Pod
+{
     fn from_u64(value: u64) -> Result<Self>;
     fn from_le_bytes(bytes: &[u8]) -> Self;
 }

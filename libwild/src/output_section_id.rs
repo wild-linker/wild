@@ -1030,6 +1030,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         output_kind: OutputKind,
         linker_scripts: &[&SequencedLinkerScript<'data, P>],
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
+        keep_sections: &OutputSectionMap<bool>,
     ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
         verbose_timing_phase!("Compute output order");
 
@@ -1061,6 +1062,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             if has_custom_layout {
                 if (has_custom_phdrs && !info.phdrs.is_empty())
                     || info.location_info.as_ref().is_some_and(|l| l.from_script)
+                {
+                    return;
+                }
+
+                // Absent orphans must not split segments or switch memory regions. Explicit section
+                // addresses still need to take effect even when the section is empty.
+                if info.section_attributes.is_alloc()
+                    && !*keep_sections.get(id)
+                    && info.location_info.is_none()
                 {
                     return;
                 }

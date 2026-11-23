@@ -38,6 +38,10 @@ pub fn slice_from_all_bytes<T: object::Pod>(data: &[u8]) -> &[T] {
 
 #[must_use]
 pub fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
+    // Skip alignment check if the slice is empty.
+    if data.is_empty() {
+        return &mut [];
+    }
     object::slice_from_bytes_mut(data, data.len() / size_of::<T>())
         .unwrap()
         .0
