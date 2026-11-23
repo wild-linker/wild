@@ -1366,10 +1366,21 @@ fn process_alternatives<'data, P: Platform>(
                 }
 
                 if visibility != Visibility::Default {
-                    handle_non_default_visibility(per_symbol_flags, first, visibility);
+                    let is_partial_link = symbol_db.db.output_kind.is_partial_link();
+                    handle_non_default_visibility(
+                        per_symbol_flags,
+                        first,
+                        visibility,
+                        is_partial_link,
+                    );
 
                     for &alt in alternatives {
-                        handle_non_default_visibility(per_symbol_flags, alt, visibility);
+                        handle_non_default_visibility(
+                            per_symbol_flags,
+                            alt,
+                            visibility,
+                            is_partial_link,
+                        );
                     }
                 }
             }
@@ -1386,9 +1397,15 @@ fn handle_non_default_visibility(
     per_symbol_flags: &AtomicPerSymbolFlags,
     symbol_id: SymbolId,
     visibility: Visibility,
+    is_partial_link: bool,
 ) {
     let flags = per_symbol_flags.get_atomic(symbol_id);
     match visibility {
+        Visibility::Hidden if is_partial_link => {
+            // A partial link's output is an input to a later link, so the symbol must stay global
+            // for that link to resolve references to it. Record that it's hidden instead.
+            flags.or_assign(ValueFlags::HIDDEN);
+        }
         Visibility::Hidden => {
             // Hidden merged visibility must localize the symbol so it cannot leak into dynsym.
             // However, symbols from shared libraries must not be downgraded since that would remove
@@ -1412,8 +1429,14 @@ pub(crate) fn apply_visibility_to_definition(
     per_symbol_flags: &mut PerSymbolFlags,
     definition_id: SymbolId,
     visibility: Visibility,
+    is_partial_link: bool,
 ) {
     match visibility {
+        Visibility::Hidden if is_partial_link => {
+            // As in handle_non_default_visibility: keep the symbol global, but record that it's
+            // hidden.
+            per_symbol_flags.set_flag(definition_id, ValueFlags::HIDDEN);
+        }
         Visibility::Hidden => {
             per_symbol_flags.set_flag(
                 definition_id,

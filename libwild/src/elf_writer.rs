@@ -1785,6 +1785,13 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         if flags.is_downgraded_to_local() {
             entry.set_binding_and_type(object::elf::STB_LOCAL, sym.st_type());
         }
+        if flags.contains(ValueFlags::HIDDEN) {
+            // Replace only the visibility, the low two bits. Some architectures use the others.
+            let hidden: object::elf::SymbolOther = object::elf::STV_HIDDEN.into();
+            entry.set_other(object::elf::SymbolOther(
+                (sym.st_other().0 & !0x3) | hidden.0,
+            ));
+        }
         Ok(entry)
     }
 
@@ -1810,6 +1817,13 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
         // Fix binding if symbol was downgraded to local by version script
         if flags.is_downgraded_to_local() {
             entry.set_binding_and_type(object::elf::STB_LOCAL, sym.st_type());
+        }
+        if flags.contains(ValueFlags::HIDDEN) {
+            // Replace only the visibility, the low two bits. Some architectures use the others.
+            let hidden: object::elf::SymbolOther = object::elf::STV_HIDDEN.into();
+            entry.set_other(object::elf::SymbolOther(
+                (sym.st_other().0 & !0x3) | hidden.0,
+            ));
         }
         Ok(entry)
     }
