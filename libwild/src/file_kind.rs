@@ -148,16 +148,17 @@ fn is_gcc_bitcode(
     Some(memchr::memmem::find(strings, b"\0.gnu.lto_.").is_some())
 }
 
-// TODO: Use object crate once a new version is up.
-const SHT_LLVM_LTO: object::elf::SectionType = object::elf::SectionType(0x6fff4c0c);
-
 fn is_llvm_bitcode(
     data: &[u8],
     header: &impl FileHeader<Endian = object::LittleEndian>,
 ) -> Option<bool> {
     let e = LittleEndian;
     let section_headers = header.section_headers(e, data).ok()?;
-    Some(section_headers.iter().any(|s| s.sh_type(e) == SHT_LLVM_LTO))
+    Some(
+        section_headers
+            .iter()
+            .any(|s| s.sh_type(e) == object::elf::SHT_LLVM_LTO),
+    )
 }
 
 impl std::fmt::Display for FileKind {
