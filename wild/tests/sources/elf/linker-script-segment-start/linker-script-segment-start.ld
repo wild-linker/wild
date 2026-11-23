@@ -1,6 +1,7 @@
 ENTRY(_start)
 
 text_start = SEGMENT_START("text", 0x10);
+abs_text_start = ABSOLUTE(SEGMENT_START("text", 0x10));
 rodata_start = SEGMENT_START("rodata", 0x11);
 data_start = SEGMENT_START("data", 0x12);
 bss_start = SEGMENT_START("bss", 0x13);
@@ -11,6 +12,7 @@ SECTIONS {
     local_text_start = SEGMENT_START("text", 0x10);
     *(.text .text.*)
   }
+  mid_abs_text_start = ABSOLUTE(SEGMENT_START("text", 0x10));
   .rodata : { *(.rodata .rodata.*) }
   .data : { *(.data .data.*) }
   .bss : { *(.bss .bss.*) }
