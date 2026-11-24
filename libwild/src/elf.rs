@@ -3192,42 +3192,24 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         }
 
-        let first_rw_pos = first_rw_after_exec.or(first_rw);
-        let has_tls_in_script = last_tdata.is_some() || first_tbss.is_some();
-        let has_data_in_script = last_data.is_some() || first_bss.is_some();
-
         #[derive(Copy, Clone, PartialEq, Eq)]
-        enum Anchor {
+        enum Placement {
             BeforeStart,
+            Before(usize),
             After(usize),
             AfterEnd,
         }
 
-        let ro_anchor = last_ro
+        let first_rw_pos = first_rw_after_exec.or(first_rw);
+        let has_tls_in_script = last_tdata.is_some() || first_tbss.is_some();
+        let has_data_in_script = last_data.is_some() || first_bss.is_some();
+        let rw_fallback = last_rw.map_or(Placement::AfterEnd, Placement::After);
+        let ro_placement = last_ro
             .or(last_exec)
-            .map_or(Anchor::BeforeStart, Anchor::After);
-        let exec_anchor = last_exec
+            .map_or(Placement::BeforeStart, Placement::After);
+        let exec_placement = last_exec
             .or(last_ro)
-            .map_or(Anchor::BeforeStart, Anchor::After);
-        let rw_anchor = last_rw.map_or(Anchor::AfterEnd, Anchor::After);
-
-        builder.add_section(crate::output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::PROGRAM_HEADERS);
-
-        if let Some(first_alloc_id) = first_alloc {
-            let sec_info = output_sections.output_info(first_alloc_id);
-            if let Some(ref loc_info) = sec_info.location_info {
-                let (_, lc_stop) = loc_info.location_counters;
-                builder.emit_location_counters_up_to(lc_stop);
-            }
-        }
-
-        if ro_anchor == Anchor::BeforeStart {
-            builder.add_sections(&custom.ro);
-        }
-        if exec_anchor == Anchor::BeforeStart {
-            builder.add_sections(&custom.exec);
-        }
+            .map_or(Placement::BeforeStart, Placement::After);
 
         let (relro_data, non_relro_data): (Vec<_>, Vec<_>) =
             custom.data.iter().copied().partition(|&id| {
@@ -3240,82 +3222,90 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     .is_some_and(|details| details.is_relro)
             });
 
-        let emit_unplaced_rw = |builder: &mut OutputOrderBuilder<Self>| {
+        // Each orphan group has one placement. Groups sharing a placement are emitted in the order
+        // recorded here: TLS before RELRO, then ordinary data and BSS.
+        let mut orphan_groups: Vec<(Placement, &[OutputSectionId])> = Vec::with_capacity(8);
+        if let Some(pos) = last_tbss.or(last_tdata) {
+            let tdata_placement = first_tbss.map_or(Placement::After(pos), Placement::Before);
+            orphan_groups.push((tdata_placement, &custom.tdata));
+            orphan_groups.push((Placement::After(pos), &custom.tbss));
+        }
+
+        if let Some(pos) = first_rw_pos {
+            let placement = Placement::Before(pos);
             if !has_tls_in_script {
-                builder.add_sections(&custom.tdata);
-                builder.add_sections(&custom.tbss);
+                orphan_groups.push((placement, &custom.tdata));
+                orphan_groups.push((placement, &custom.tbss));
             }
-            builder.add_sections(&relro_data);
-            builder.add_sections(&relro_bss);
-            builder.add_sections(&non_relro_data);
-            builder.add_sections(&non_relro_bss);
+            orphan_groups.push((placement, &relro_data));
+            orphan_groups.push((placement, &relro_bss));
+        }
+
+        if let Some(placement) = last_data
+            .map(Placement::After)
+            .or_else(|| first_bss.map(Placement::Before))
+        {
+            orphan_groups.push((placement, &non_relro_data));
+        }
+        if let Some(pos) = last_data.max(last_bss) {
+            orphan_groups.push((Placement::After(pos), &non_relro_bss));
+        }
+
+        // When one class is absent, its orphans follow the other class's orphans.
+        if last_ro.is_none() && last_exec.is_some() {
+            orphan_groups.push((exec_placement, &custom.exec));
+            orphan_groups.push((ro_placement, &custom.ro));
+        } else {
+            orphan_groups.push((ro_placement, &custom.ro));
+            orphan_groups.push((exec_placement, &custom.exec));
+        }
+
+        if first_rw_pos.is_none() {
+            if !has_tls_in_script {
+                orphan_groups.push((rw_fallback, &custom.tdata));
+                orphan_groups.push((rw_fallback, &custom.tbss));
+            }
+            orphan_groups.push((rw_fallback, &relro_data));
+            orphan_groups.push((rw_fallback, &relro_bss));
+        }
+        if !has_data_in_script {
+            orphan_groups.push((rw_fallback, &non_relro_data));
+            orphan_groups.push((rw_fallback, &non_relro_bss));
+        }
+
+        let emit_orphans = |builder: &mut OutputOrderBuilder<Self>, placement| {
+            for &(group_placement, sections) in &orphan_groups {
+                if group_placement == placement {
+                    builder.add_sections(sections);
+                }
+            }
         };
 
+        builder.add_section(crate::output_section_id::FILE_HEADER);
+        builder.add_section(output_section_id::PROGRAM_HEADERS);
+
+        if let Some(first_alloc_id) = first_alloc {
+            let sec_info = output_sections.output_info(first_alloc_id);
+            if let Some(ref loc_info) = sec_info.location_info {
+                let (_, lc_stop) = loc_info.location_counters;
+                builder.emit_location_counters_up_to(lc_stop);
+            }
+        }
+        emit_orphans(&mut builder, Placement::BeforeStart);
+
         for (pos, &section_id) in ordered_sections.iter().enumerate() {
-            if first_tbss == Some(pos) {
-                builder.add_sections(&custom.tdata);
-            }
-
-            if first_rw_pos == Some(pos) {
-                if !has_tls_in_script {
-                    builder.add_sections(&custom.tdata);
-                    builder.add_sections(&custom.tbss);
-                }
-                builder.add_sections(&relro_data);
-                builder.add_sections(&relro_bss);
-            }
-
-            if last_data.is_none() && first_bss == Some(pos) {
-                builder.add_sections(&non_relro_data);
-            }
+            emit_orphans(&mut builder, Placement::Before(pos));
 
             let sec_info = output_sections.output_info(section_id);
             if let Some(ref loc_info) = sec_info.location_info {
                 let (_, lc_stop) = loc_info.location_counters;
                 builder.emit_location_counters_up_to(lc_stop);
             }
-
             builder.add_section(section_id);
 
-            if first_tbss.is_none() && last_tdata == Some(pos) {
-                builder.add_sections(&custom.tdata);
-            }
-
-            if last_tbss == Some(pos) || (last_tbss.is_none() && last_tdata == Some(pos)) {
-                builder.add_sections(&custom.tbss);
-            }
-
-            if last_data == Some(pos) {
-                builder.add_sections(&non_relro_data);
-                if last_bss.is_none_or(|b| b < pos) {
-                    builder.add_sections(&non_relro_bss);
-                }
-            }
-
-            if last_bss == Some(pos) && last_data.is_none_or(|d| pos > d) {
-                builder.add_sections(&non_relro_bss);
-            }
-
-            if Some(pos) == last_ro {
-                builder.add_sections(&custom.ro);
-                if exec_anchor == Anchor::After(pos) && Some(pos) != last_exec {
-                    builder.add_sections(&custom.exec);
-                }
-            }
-            if Some(pos) == last_exec {
-                builder.add_sections(&custom.exec);
-                if ro_anchor == Anchor::After(pos) && Some(pos) != last_ro {
-                    builder.add_sections(&custom.ro);
-                }
-            }
-            if rw_anchor == Anchor::After(pos) && !has_data_in_script {
-                emit_unplaced_rw(&mut builder);
-            }
+            emit_orphans(&mut builder, Placement::After(pos));
         }
-
-        if rw_anchor == Anchor::AfterEnd {
-            emit_unplaced_rw(&mut builder);
-        }
+        emit_orphans(&mut builder, Placement::AfterEnd);
 
         builder.emit_location_counters_up_to(builder.num_location_counters());
 
