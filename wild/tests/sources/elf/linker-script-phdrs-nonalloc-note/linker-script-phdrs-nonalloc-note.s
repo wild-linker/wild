@@ -6,10 +6,14 @@
 //#ExpectSection:.debug_test2 flags=''
 //#ExpectSection:.debug_test3 flags=''
 //#ExpectSection:.debug_test4 flags=''
-//#ExpectProgramHeader:NOTE sections=[.note.one,.note.two]
+//#ExpectProgramHeader:NOTE sections=[.note.one,.note.two],vaddr=0x400004,file-size=0x28,mem-size=0x28
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.data.one,.data.two,*]
 //#ExpectProgramHeader:TLS sections=[.tdata.one,.tdata.two]
 //#ExpectProgramHeader:NULL sections=[.null.one,.null.two]
+
+//#Config:only-keep-debug:default
+//#LinkArgs:--only-keep-debug
+//#ReferenceLinkers:
 
 .text
 .globl _start

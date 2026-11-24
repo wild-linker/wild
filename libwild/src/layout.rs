@@ -2491,13 +2491,10 @@ fn compute_segment_layout<'data, P: Platform>(
                     continue;
                 }
 
-                if file_layout == SegmentFileLayout::Compacted {
+                if file_layout == SegmentFileLayout::Compacted
+                    && !output_order.is_file_layout_deferred(section_id)
+                {
                     file_offset = section_layout.file_end();
-                    if section_layout.file_size > 0 {
-                        for record in active_segments.iter_mut().flatten() {
-                            record.file_end = record.file_end.max(file_offset);
-                        }
-                    }
                 }
 
                 let section_flags = output_sections.section_flags(merge_target);
@@ -2550,6 +2547,10 @@ fn compute_segment_layout<'data, P: Platform>(
 
                         if file_layout == SegmentFileLayout::FromSections {
                             rec.file_start = rec.file_start.min(section_layout.file_offset);
+                        }
+                        if file_layout == SegmentFileLayout::FromSections
+                            || section_layout.file_size > 0
+                        {
                             rec.file_end = rec.file_end.max(section_layout.file_end());
                         }
                         rec.mem_start = rec.mem_start.min(section_layout.mem_offset);
