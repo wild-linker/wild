@@ -251,6 +251,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
         args: &'data P::Args,
         output_kind: OutputKind,
         should_emit_linker_symbols: bool,
+        linker_scripts: &[ProcessedLinkerScript<P>],
     ) -> Result<Self> {
         verbose_timing_phase!("Construct prelude");
 
@@ -261,6 +262,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
             output_kind,
             args,
             should_emit_linker_symbols,
+            linker_scripts,
         );
 
         args.force_undefined_symbol_names().iter().for_each(|name| {

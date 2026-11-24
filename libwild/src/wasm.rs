@@ -7854,6 +7854,7 @@ impl platform::Platform for Wasm {
         _output_kind: crate::output_kind::OutputKind,
         args: &Self::Args,
         _should_emit_linker_symbols: bool,
+        _linker_scripts: &[crate::parsing::ProcessedLinkerScript<Self>],
     ) {
         // Reserve SymbolId 0 as the linker’s undefined sentinel (Wasm objects have no null symbol
         // entry).

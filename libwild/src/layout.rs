@@ -2501,7 +2501,7 @@ fn compute_segment_layout<'data, P: Platform>(
                 let section_info = output_sections.output_info(section_id);
 
                 if active_segments.iter().all(|s| s.is_none()) {
-                    if output_order.has_custom_phdrs() {
+                    if output_order.has_custom_phdrs() || section_id.is_header::<P>() {
                         continue;
                     }
                     ensure!(
@@ -6704,11 +6704,9 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::Section(section_id) => {
                 let merge_target = output_sections.primary_output_section(section_id);
                 let is_alloc = output_sections.section_flags(merge_target).is_alloc();
-                let is_regular_section = section_id != crate::output_section_id::FILE_HEADER
-                    && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id);
                 let is_deferred = output_order.is_file_layout_deferred(section_id);
 
-                if is_regular_section && is_alloc && !has_reset_base_address {
+                if !section_id.is_header::<P>() && is_alloc && !has_reset_base_address {
                     if let Some(header_start) = header_start_mem_offset {
                         mem_offset = base_address;
                         file_offset = (base_address - header_start) as usize;
