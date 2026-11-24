@@ -17,11 +17,11 @@ use crate::error::Error;
 use crate::error::MultiErrorBuilder;
 use crate::error::Result;
 use crate::export_list::ExportList;
+use crate::expression_eval::ExpressionContext;
 use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
 use crate::expression_eval::evaluate_early_expression;
-use crate::expression_eval::evaluate_expression;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileId;
@@ -727,44 +727,43 @@ fn update_internal_symbols_resolutions<'data, P: Platform>(
             merged_section_layouts
         };
 
-        let evaluated = evaluate_expression(
-            &redirect.expression,
-            &redirect.loc,
+        let evaluated = ExpressionContext {
+            expr_loc: &redirect.loc,
             input_ref,
-            cur_section_layouts,
+            section_layouts: cur_section_layouts,
             output_sections,
             memory_regions,
             symbol_db,
             sizeof_headers,
             resolved_location_counters,
             // During late evaluation of linker scripts, we don't have any part relative symbols.
-            &OutputSectionPartMap::default(),
-            &mut |name| {
-                let Some(target_symbol_id) =
-                    symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
-                else {
-                    return Err(redirect.missing_target(name));
-                };
+            laid_out_mem_offsets: &OutputSectionPartMap::default(),
+        }
+        .evaluate(&redirect.expression, &mut |name| {
+            let Some(target_symbol_id) =
+                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+            else {
+                return Err(redirect.missing_target(name));
+            };
 
-                let canonical_target_id = symbol_db.definition(target_symbol_id);
+            let canonical_target_id = symbol_db.definition(target_symbol_id);
 
-                let resolution = resolutions[canonical_target_id.as_usize()]
-                    .as_ref()
-                    .ok_or_else(|| redirect.missing_resolution(name))?;
+            let resolution = resolutions[canonical_target_id.as_usize()]
+                .as_ref()
+                .ok_or_else(|| redirect.missing_resolution(name))?;
 
-                let section_id = if range.contains(canonical_target_id)
-                    && let SymbolPlacement::Redirect(r) = &internal_symbols.symbol_definitions
-                        [range.id_to_offset(canonical_target_id)]
-                    .placement
-                {
-                    r.loc.section_id()
-                } else {
-                    symbol_db.output_section_id(canonical_target_id)
-                };
+            let section_id = if range.contains(canonical_target_id)
+                && let SymbolPlacement::Redirect(r) = &internal_symbols.symbol_definitions
+                    [range.id_to_offset(canonical_target_id)]
+                .placement
+            {
+                r.loc.section_id()
+            } else {
+                symbol_db.output_section_id(canonical_target_id)
+            };
 
-                Ok(SymbolValue::new(resolution.raw_value, section_id))
-            },
-        )?;
+            Ok(SymbolValue::new(resolution.raw_value, section_id))
+        })?;
 
         let def_info = &mut internal_symbols.symbol_definitions[i];
         let SymbolPlacement::Redirect(redirect) = &mut def_info.placement else {
