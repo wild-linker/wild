@@ -284,6 +284,44 @@ pub(crate) struct Matcher<'a> {
     pub(crate) input_section_name_patterns: Vec<SectionPattern<'a>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ArithmeticOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    LeftShift,
+    RightShift,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CompareOp {
+    LessThan,
+    GreaterThan,
+    LessEqual,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+    LogicalAnd,
+    LogicalOr,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MinMaxOp {
+    Min,
+    Max,
+}
+
+pub(crate) enum UnaryOp {
+    LogicalNot,
+    BitwiseNot,
+    Negate,
+}
+
 impl<'a> Expression<'a> {
     pub(crate) fn visit_expressions(&self, cb: &mut impl FnMut(&Self) -> bool) {
         if !cb(self) {
