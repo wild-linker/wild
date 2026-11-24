@@ -1,7 +1,6 @@
 /*
- * checking that __global_pointer$ is set the same in symtab and relocations: .data + 0x800
 //#AbstractConfig:default
-//#ReferenceLinkers: bfd
+//#ReferenceLinkers: lld
 //#LinkArgs: -nostdlib -static --no-relax
 //#RunEnabled: true
 
@@ -19,10 +18,10 @@
 .type _start, @function
 _start:
     lla     a0, __global_pointer$
-    lla     a1, data_start
+    lla     a1, sdata_start
     sub     a0, a0, a1
-    li      a1, 0x800
-    bne     a0, a1, Lfail
+    li      a2, 0x800
+    bne     a0, a2, Lfail
     li      a0, 42
     li      a7, 93
     ecall
@@ -32,8 +31,7 @@ Lfail:
     ecall
 .size _start, .-_start
 
-.section .data, "aw", @progbits
+.section .sdata, "aw", @progbits
 .p2align 3
-data_start:
+sdata_start:
     .quad 1
-

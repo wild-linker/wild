@@ -404,6 +404,8 @@ enum RegularSectionId {
     DataRelRo,
     Toc,
     PartialLinkingSingletons,
+    Sdata,
+    Sbss,
 
     // Must be last.
     Count,
@@ -516,6 +518,8 @@ pub(crate) mod output_section_id {
     pub(crate) const TDATA: OutputSectionId = RegularSectionId::Tdata.output_section_id();
     pub(crate) const TBSS: OutputSectionId = RegularSectionId::Tbss.output_section_id();
     pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
+    pub(crate) const SDATA: OutputSectionId = RegularSectionId::Sdata.output_section_id();
+    pub(crate) const SBSS: OutputSectionId = RegularSectionId::Sbss.output_section_id();
     pub(crate) const COMMENT: OutputSectionId = RegularSectionId::Comment.output_section_id();
     pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId =
         RegularSectionId::GccExceptTable.output_section_id();
@@ -1540,11 +1544,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         if matches!(
             args.architecture(),
             Architecture::RiscV64 | Architecture::RiscV32
-        ) {
+        ) && !output_kind.is_shared_object()
+        {
             symbols.section_start_offset(
-                output_section_id::DATA,
-                crate::elf::RISCV_GLOBAL_POINTER_OFFSET,
-                crate::elf::RISCV_GLOBAL_POINTER_SYMBOL_NAME,
+                output_section_id::SDATA,
+                RISCV_GLOBAL_POINTER_OFFSET,
+                RISCV_GLOBAL_POINTER_SYMBOL_NAME,
             );
         }
 
@@ -2792,6 +2797,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::RELRO_PADDING);
         builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::SDATA);
+        builder.add_section(output_section_id::SBSS);
         builder.add_section(output_section_id::BSS);
         builder.add_sections(&custom.bss);
 
@@ -7186,6 +7193,18 @@ impl<C: ElfClass> Elf<C> {
             is_relro: true,
             ..Self::DEFAULT_DEFS
         };
+        defs[output_section_id::SDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SDATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SBSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SBSS_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
         defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
             kind: Self::primary_section(TEXT_SECTION_NAME),
             ty: sht::PROGBITS,
@@ -8157,6 +8176,8 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
         secnames::DATA_REL_RO_SECTION_NAME,
         output_section_id::DATA_REL_RO,
     ),
+    SectionRule::prefix_section(secnames::SDATA_SECTION_NAME, output_section_id::SDATA),
+    SectionRule::prefix_section(secnames::SBSS_SECTION_NAME, output_section_id::SBSS),
     SectionRule::exact(
         secnames::TOC_SECTION_NAME,
         SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::regular(

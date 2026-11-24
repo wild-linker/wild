@@ -3958,7 +3958,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 
     fn determine_kept_sections(
-        &self,
+        &mut self,
         total_sizes: &OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
         output_sections: &OutputSections<P>,
@@ -3979,6 +3979,17 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
+
+        // Like LLD, a section-offset symbol (e.g. RISC-V's __global_pointer$) whose section has no
+        // content is placed relative to the file header instead, so that it doesn't force an empty
+        // section to be emitted.
+        for definition in &mut self.internal_symbols.symbol_definitions {
+            if let SymbolPlacement::SectionStartOffset(section_id, _) = &mut definition.placement
+                && !*keep_sections.get(*section_id)
+            {
+                *section_id = crate::output_section_id::FILE_HEADER;
+            }
+        }
 
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
