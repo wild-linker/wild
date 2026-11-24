@@ -105,6 +105,140 @@
 //#NoDynSym:protected_export
 //#NoSym:unreferenced_export
 
+//#AbstractConfig:llvm
+//#RequiresLlvmLto:true
+//#Compiler:clang
+//#LinkerDriver:clang
+//#ReferenceLinkers:lld
+// LLD fails to define .TOC. when it is first referenced by LTO-generated code.
+//#SkipArch:ppc64le
+// RISC-V LTO leaves an empty .text aligned to 4, while live code is aligned to 2.
+//#DiffIgnore:section.text.alignment
+//#DiffIgnore:dynsym.__global_pointer$.section
+
+//#Config:llvm-archive-export-all:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#Archive:lto-export-dynamic-def.c:-flto -O2
+//#LinkArgs:-nostdlib -pie -Wl,-z,now,--export-dynamic
+//#ExpectDynSym:foo
+//#ExpectDynSym:bar
+//#ExpectDynSym:protected_export
+//#ExpectDynSym:runtime_init
+//#ExpectDynSym:exit_syscall
+//#NoDynSym:hidden_export
+
+//#Config:llvm-archive-export-exact:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#Archive:lto-export-dynamic-def.c:-flto -O2
+//#LinkArgs:-nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=foo
+//#ExpectDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+
+//#Config:llvm-archive-export-list:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#Archive:lto-export-dynamic-def.c:-flto -O2
+//#LinkArgs:-nostdlib -pie -Wl,-z,now,--export-dynamic-symbol-list=./lto-export-dynamic.def
+//#ExpectDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+
+//#Config:llvm-object-export-exact:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#Object:lto-export-dynamic-def.c:-flto -O2
+//#LinkArgs:-nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=foo
+//#ExpectDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+
+//#Config:llvm-shared-default:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIC
+//#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
+//#LinkArgs:-nostdlib -shared -Wl,-z,now
+//#RunEnabled:false
+//#ExpectDynSym:foo
+//#ExpectDynSym:bar
+//#ExpectDynSym:protected_export
+//#ExpectDynSym:runtime_init
+//#ExpectDynSym:exit_syscall
+//#NoDynSym:hidden_export
+
+//#Config:llvm-shared-version-script:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIC
+//#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
+//#LinkArgs:-nostdlib -shared -Wl,-z,now,--version-script=./lto-export-dynamic.map
+//#RunEnabled:false
+//#ExpectDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+
+//#Config:llvm-shared-exclude-archive:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIC
+//#Archive:lto-export-dynamic-def.c:-flto -O2 -fPIC
+//#LinkArgs:-nostdlib -shared -Wl,-z,now,--exclude-libs=lto-export-dynamic-def.a
+//#RunEnabled:false
+//#ExpectDynSym:runtime_init
+//#ExpectDynSym:exit_syscall
+//#NoDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+
+//#Config:llvm-unreferenced-archive-export:llvm
+//#CompArgs:-flto -O2
+//#Object:runtime.c:-fno-lto
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got.plt.entsize
+//#CompArgs:-fPIE
+//#Archive:lto-export-dynamic-def.c:-flto -O2
+//#Archive:lto-export-dynamic-unreferenced.c:-flto -O2
+//#LinkArgs:-nostdlib -pie -Wl,-z,now,--export-dynamic-symbol=unreferenced_export
+//#NoDynSym:foo
+//#NoDynSym:bar
+//#NoDynSym:hidden_export
+//#NoDynSym:protected_export
+//#NoSym:unreferenced_export
+
 #include "../common/runtime.h"
 
 void foo(void);

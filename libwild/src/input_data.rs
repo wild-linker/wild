@@ -113,7 +113,15 @@ pub(crate) struct InputFile<D: InputFileData> {
 
     pub(crate) modifiers: Modifiers,
 
-    data: Option<D>,
+    data: InputStorage<D>,
+}
+
+#[derive(Debug)]
+enum InputStorage<D: InputFileData> {
+    Empty,
+    File(D),
+    #[cfg(feature = "llvm-lto")]
+    Llvm(crate::llvm_lto::Output),
 }
 
 // A type used for Type-erasure reasons.
@@ -137,11 +145,21 @@ impl InputFileRef<'_> {
 
 impl<I: InputFileData> InputFile<I> {
     fn data(&self) -> &[u8] {
-        self.data.as_ref().map_or(&[], InputFileData::bytes)
+        match &self.data {
+            InputStorage::Empty => &[],
+            InputStorage::File(data) => data.bytes(),
+            #[cfg(feature = "llvm-lto")]
+            InputStorage::Llvm(output) => output.bytes(),
+        }
     }
 
     pub(crate) fn storage(&self) -> Option<&I> {
-        self.data.as_ref()
+        match &self.data {
+            InputStorage::Empty => None,
+            InputStorage::File(data) => Some(data),
+            #[cfg(feature = "llvm-lto")]
+            InputStorage::Llvm(_) => None,
+        }
     }
 
     fn as_ref(&self) -> InputFileRef<'_> {
@@ -343,6 +361,38 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         })
     }
 
+    #[cfg(feature = "llvm-lto")]
+    pub(crate) fn generated_input(
+        &self,
+        output: crate::llvm_lto::Output,
+        index: usize,
+        args: &impl Args,
+    ) -> Result<InputRef<'data>> {
+        let path = if args.common().write_layout {
+            let mut path = args.common().output.as_os_str().to_os_string();
+            path.push(format!(".lto.{index}.o"));
+            let path = self.file_system.absolute_path(Path::new(&path))?;
+            self.file_system.write_auxiliary(&path, output.bytes())?;
+
+            path
+        } else {
+            PathBuf::from(format!("<llvm-lto-{index}.o>"))
+        };
+
+        let file = self.inputs_arena.alloc(InputFile {
+            original_filename: path.clone(),
+            filename: path,
+            modifiers: Modifiers::default(),
+            data: InputStorage::Llvm(output),
+        });
+
+        Ok(InputRef {
+            file: file.as_ref(),
+            data: file.data(),
+            entry: None,
+        })
+    }
+
     pub(crate) fn load_inputs<P: Platform>(
         &mut self,
         inputs: &[Input],
@@ -474,7 +524,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         timing_phase!("Verify inputs unchanged");
 
         self.loaded_files.par_iter().try_for_each(|file| {
-            let Some(data) = &file.data else {
+            let Some(data) = file.storage() else {
                 return Ok(());
             };
             if !data
@@ -532,7 +582,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
                     temporary: true,
                     ..Default::default()
                 },
-                data: None,
+                data: InputStorage::Empty,
             });
             let input_ref = InputRef {
                 file: input_file.as_ref(),
@@ -750,7 +800,7 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
                     archive_semantics: true,
                     ..modifiers
                 },
-                data: Some(input),
+                data: InputStorage::File(input),
             };
 
             let member_file = &*state.inputs_arena.alloc(member_file);
@@ -845,7 +895,7 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
             filename: input_path.to_owned(),
             original_filename: request.paths.original,
             modifiers: request.modifiers,
-            data: Some(data),
+            data: InputStorage::File(data),
         });
 
         let input_ref = InputRef {
@@ -1062,7 +1112,7 @@ fn read_auxiliary_data<'data, F: FileSystem>(
         filename: path.to_owned(),
         original_filename: path.to_owned(),
         modifiers: Default::default(),
-        data: Some(input),
+        data: InputStorage::File(input),
     });
 
     Ok(ScriptData { raw: file.data() })

@@ -533,7 +533,12 @@ impl CommonArgs {
     /// Returns a string that identifies this linker. This is written into the .comment
     /// section which usually also contains the versions of compilers that were used.
     pub(crate) fn linker_identity(&self) -> String {
-        format!("Wild {} (compatible with GNU linkers)", self.version)
+        let identity = format!("Wild {} (compatible with GNU linkers)", self.version);
+
+        #[cfg(feature = "llvm-lto")]
+        let identity = format!("{identity} (LLVM {})", crate::llvm_lto::version());
+
+        identity
     }
 
     /// Adds a linker script to our outputs. Note, this is only called for scripts specified via

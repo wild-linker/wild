@@ -66,12 +66,18 @@ perf-event.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
+[build-dependencies]
+cc = "1.2"
+
 [dev-dependencies]
 ar.workspace = true
 tempfile.workspace = true
 
 # When adding new features, please update version.rs.
 [features]
+
+# Direct LLVM bitcode support (requires LLVM development libraries).
+llvm-lto = ["lto"]
 
 # Shared LTO infrastructure; enabled by the backends.
 lto = []

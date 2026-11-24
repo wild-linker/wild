@@ -43,6 +43,8 @@ use rayon::iter::ParallelIterator as _;
 
 pub(crate) enum LtoBackend<'data> {
     Plugin(LinkerPlugin<'data>),
+    #[cfg(feature = "llvm-lto")]
+    Llvm(crate::llvm_lto::LlvmLto<'data>),
 }
 
 impl<'data> LtoBackend<'data> {
@@ -51,12 +53,22 @@ impl<'data> LtoBackend<'data> {
         arena: &'data Arena<LoadedPlugin>,
         herd: &'data Herd,
     ) -> Result<Option<Self>> {
-        Ok(LinkerPlugin::from_args::<C>(args, arena, herd)?.map(Self::Plugin))
+        if args.plugin_path.is_some() {
+            return Ok(LinkerPlugin::from_args::<C>(args, arena, herd)?.map(Self::Plugin));
+        }
+
+        #[cfg(feature = "llvm-lto")]
+        return Ok(Some(Self::Llvm(crate::llvm_lto::LlvmLto::new(args, herd)?)));
+
+        #[cfg(not(feature = "llvm-lto"))]
+        Ok(None)
     }
 
     pub(crate) fn uses_embedded_ir(&self) -> bool {
         match self {
             Self::Plugin(_) => true,
+            #[cfg(feature = "llvm-lto")]
+            Self::Llvm(_) => false,
         }
     }
 
@@ -72,12 +84,16 @@ impl<'data> LtoBackend<'data> {
                 file.context("Linker plugins require a native filesystem input")?,
                 kind,
             ),
+            #[cfg(feature = "llvm-lto")]
+            Self::Llvm(llvm) => llvm.process_input(input, kind).map(Some),
         }
     }
 
     pub(crate) fn is_initialised(&self) -> bool {
         match self {
             Self::Plugin(plugin) => plugin.is_initialised(),
+            #[cfg(feature = "llvm-lto")]
+            Self::Llvm(llvm) => llvm.is_initialised(),
         }
     }
 
@@ -92,6 +108,15 @@ impl<'data> LtoBackend<'data> {
     ) -> Result {
         match self {
             Self::Plugin(plugin) => plugin.all_symbols_read(
+                symbol_db,
+                resolver,
+                file_loader,
+                per_symbol_flags,
+                output_sections,
+                layout_rules_builder,
+            ),
+            #[cfg(feature = "llvm-lto")]
+            Self::Llvm(llvm) => llvm.all_symbols_read(
                 symbol_db,
                 resolver,
                 file_loader,
@@ -114,6 +139,8 @@ pub(crate) struct LtoInput<'data> {
     /// Set to false once symbols from this object should be ignored. This is done once LTO has
     /// been performed.
     pub(crate) enabled: bool,
+    #[cfg(feature = "llvm-lto")]
+    pub(crate) backend_index: usize,
 }
 
 #[derive(Debug)]
@@ -121,6 +148,8 @@ pub(crate) struct LtoInputInfo<'data> {
     pub(crate) input_ref: InputRef<'data>,
     pub(crate) symbols: Vec<LtoSymbol<'data>>,
     pub(crate) handle: Option<&'data AtomicCell<Option<FileId>>>,
+    #[cfg(feature = "llvm-lto")]
+    pub(crate) backend_index: usize,
 }
 
 impl<'data> LtoInputInfo<'data> {
@@ -144,6 +173,8 @@ impl<'data> LtoInputInfo<'data> {
             input_ref: self.input_ref,
             symbols: self.symbols,
             enabled: true,
+            #[cfg(feature = "llvm-lto")]
+            backend_index: self.backend_index,
         }
     }
 }
@@ -275,6 +306,46 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
                 Ok(())
             },
         )
+}
+
+#[cfg(feature = "llvm-lto")]
+pub(crate) fn resolve_roots<'data, 'names, C: ElfClass>(
+    symbol_db: &mut SymbolDb<'data, Elf<C>>,
+    resolver: &mut Resolver<'data, Elf<C>>,
+    flags: &mut PerSymbolFlags,
+    names: impl IntoIterator<Item = &'names [u8]>,
+) -> Result {
+    let mut roots = Vec::new();
+
+    for name in names {
+        if let Some(id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name)) {
+            let selected = symbol_db.definition(id);
+
+            if !selected.is_undefined()
+                && matches!(
+                    symbol_db.file(symbol_db.file_id_for_symbol(selected)),
+                    SequencedInput::LtoInput(_)
+                )
+            {
+                roots.push(selected);
+            }
+        }
+    }
+
+    if !roots.is_empty() {
+        roots.sort_unstable();
+        roots.dedup();
+
+        resolver.resolve_symbols_and_select_archive_entries(symbol_db, flags, &roots)?;
+
+        crate::symbol_db::resolve_alternative_symbol_definitions(
+            symbol_db,
+            flags,
+            &resolver.resolved_groups,
+        )?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn prepare_symbols_for_lto<C: ElfClass>(
@@ -506,7 +577,7 @@ pub(crate) fn ingest_generated_inputs<'data, C: ElfClass>(
     // output rather than the LTO input objects.
     symbol_db.apply_wrapped_symbol_overrides();
 
-    resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags)?;
+    resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags, &[])?;
 
     symbol_db.disable_lto_inputs();
 

@@ -819,6 +819,7 @@ dependencies = [
  "blake3",
  "bumpalo-herd",
  "bytesize",
+ "cc",
  "colored",
  "colosseum",
  "crossbeam-queue",

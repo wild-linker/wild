@@ -41,8 +41,10 @@ jobs:
           - runs-on: ubuntu-24.04
             container: ci-arch-cross-amd64
             cross: aarch64,riscv64
+            llvm-config: llvm-config
           - runs-on: ubuntu-24.04-arm
             container: ci-ubuntu-arm64
+            llvm-config: llvm-config-22
           - runs-on: ubuntu-24.04
             container: ci-alpine-amd64
           - runs-on: ubuntu-24.04
@@ -54,6 +56,9 @@ jobs:
 
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 10
+
+    env:
+      LLVM_CONFIG: ${{ matrix.llvm-config }}
 
     container:
       # Note: when updating this image hash, update the other occurrences in this file too.
@@ -70,18 +75,34 @@ jobs:
         with:
           persist-credentials: false
       - run: rm rust-toolchain.toml
+      - name: Select the LLVM LTO toolchain
+        if: matrix.llvm-config
+        run: |
+          llvm_bin_dir="$("$LLVM_CONFIG" --bindir)"
+          echo "$llvm_bin_dir" >> "$GITHUB_PATH"
+          sed "s|^llvm_tools_dir = .*|llvm_tools_dir = \"$llvm_bin_dir\"|" test-config-ci.toml > "$RUNNER_TEMP/wild-llvm-test-config.toml"
+          echo "WILD_TEST_CONFIG=$RUNNER_TEMP/wild-llvm-test-config.toml" >> "$GITHUB_ENV"
+          "$LLVM_CONFIG" --version
       - uses: wild-linker/action@latest
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-${{ matrix.llvm-config || 'no-llvm-lto' }}
       - run: cargo build --profile ci --workspace --no-default-features
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
-      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace --features '${{ matrix.features }}' -- --skip wasm/
+      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace --features '${{ matrix.features }}' ${{ matrix.llvm-config && '--features llvm-lto' || '' }} -- --skip wasm/
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.rust-cache.outputs.cache-hit != 'true'
         env:
           WILD_TEST_TIMEOUT: ${{ matrix.test-timeout || 10 }}
+      - name: Test direct LLVM LTO without GNU plugins
+        if: matrix.container == 'ci-arch-cross-amd64'
+        env:
+          WILD_TEST_CROSS: ''
+          WILD_VERIFY_PLATFORM_REQUIREMENTS: 1
+        run: cargo test --profile ci -p wild-linker --no-default-features --features llvm-lto --test integration_tests -- llvm
+      - run: cargo clippy --all-targets --workspace --features llvm-lto
+        if: matrix.container == 'ci-arch-cross-amd64'
 
   external-tests:
     name: Test Linux (external tests)

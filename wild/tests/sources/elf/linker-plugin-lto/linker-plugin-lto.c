@@ -88,6 +88,7 @@
 //#Config:clang-no-plugin:error
 //#RequiresLinkerPlugin:false
 //#RequiresCompilerFlags:-flto
+//#RequiresLlvmLto:false
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkerDriver:clang

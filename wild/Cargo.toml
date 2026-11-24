@@ -57,6 +57,9 @@ which.workspace = true
 wait-timeout.workspace = true
 
 [features]
+# Direct LLVM bitcode support (requires LLVM development libraries).
+llvm-lto = ["libwild/llvm-lto"]
+
 default = ["fork", "plugins", "wasm", "zstd"]
 
 fork = ["libwild/fork"]

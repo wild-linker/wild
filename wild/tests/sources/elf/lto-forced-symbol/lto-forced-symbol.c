@@ -45,6 +45,26 @@
 //#Object:weak.c:-flto=thin
 //#Object:retained.c:-flto=thin
 
+//#AbstractConfig:llvm:clang
+//#RequiresLinkerPlugin:false
+//#RequiresLlvmLto:true
+//#ReferenceLinkers:lld
+//#LinkArgs:-fno-lto
+
+//#Config:llvm-archive:llvm
+//#Archive:retained.c:-flto
+
+//#Config:llvm-thin-archive:llvm
+//#Archive:retained.c:-flto=thin
+
+//#Config:llvm-weak-first:llvm
+//#Object:weak.c:-flto
+//#Object:retained.c:-flto
+
+//#Config:llvm-thin-weak-first:llvm
+//#Object:weak.c:-flto=thin
+//#Object:retained.c:-flto=thin
+
 #include "../common/runtime.h"
 
 void _start(void) { exit_syscall(42); }
