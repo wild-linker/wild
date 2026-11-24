@@ -786,12 +786,16 @@ pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
         Expression::RightShift(l, r) => {
             Ok(evaluate_const(l)?.wrapping_shr(evaluate_const(r)? as u32))
         }
-        Expression::LogicalAnd(l, r) => Ok(u64::from(
-            evaluate_const(l)? != 0 && evaluate_const(r)? != 0,
-        )),
-        Expression::LogicalOr(l, r) => Ok(u64::from(
-            evaluate_const(l)? != 0 || evaluate_const(r)? != 0,
-        )),
+        Expression::LogicalAnd(l, r) => {
+            let l = evaluate_const(l)?;
+            let r = evaluate_const(r)?;
+            Ok(u64::from(l != 0 && r != 0))
+        }
+        Expression::LogicalOr(l, r) => {
+            let l = evaluate_const(l)?;
+            let r = evaluate_const(r)?;
+            Ok(u64::from(l != 0 || r != 0))
+        }
         Expression::LogicalNot(expression) => Ok(u64::from(evaluate_const(expression)? == 0)),
         Expression::BitwiseNot(expression) => Ok(!evaluate_const(expression)?),
         Expression::Negate(expression) => Ok(evaluate_const(expression)?.wrapping_neg()),
