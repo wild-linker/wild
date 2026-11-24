@@ -216,19 +216,10 @@ pub(crate) enum Expression<'a> {
     Symbol(&'a [u8]),
     /// The location counter '.'
     LocationCounter,
-    /// Binary arithmetic: +, -, *, /, %
-    Add(Box<Expression<'a>>, Box<Expression<'a>>),
-    Subtract(Box<Expression<'a>>, Box<Expression<'a>>),
-    Multiply(Box<Expression<'a>>, Box<Expression<'a>>),
-    Divide(Box<Expression<'a>>, Box<Expression<'a>>),
-    Modulo(Box<Expression<'a>>, Box<Expression<'a>>),
-    /// Comparison operators: <, >, <=, >=, ==, !=
-    LessThan(Box<Expression<'a>>, Box<Expression<'a>>),
-    GreaterThan(Box<Expression<'a>>, Box<Expression<'a>>),
-    LessEqual(Box<Expression<'a>>, Box<Expression<'a>>),
-    GreaterEqual(Box<Expression<'a>>, Box<Expression<'a>>),
-    Equal(Box<Expression<'a>>, Box<Expression<'a>>),
-    NotEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    Arithmetic(ArithmeticOp, Box<Expression<'a>>, Box<Expression<'a>>),
+    Compare(CompareOp, Box<Expression<'a>>, Box<Expression<'a>>),
+    MinMax(MinMaxOp, Box<Expression<'a>>, Box<Expression<'a>>),
+    Unary(UnaryOp, Box<Expression<'a>>),
     /// Function calls
     Sizeof(&'a [u8]),
     Alignof(&'a [u8]),
@@ -237,27 +228,10 @@ pub(crate) enum Expression<'a> {
     Addr(&'a [u8]),
     Loadaddr(&'a [u8]),
     Align(Box<Expression<'a>>, Option<Box<Expression<'a>>>),
-    /// MIN and MAX functions (take two expressions)
-    Min(Box<Expression<'a>>, Box<Expression<'a>>),
-    Max(Box<Expression<'a>>, Box<Expression<'a>>),
     /// SEGMENT_START("segment-name", default) — returns the `-T` command-line override for the
     /// named segment if one was provided, otherwise returns `default`.
     /// Unknown segment names always return `default` (matching GNU ld behavior).
     SegmentStart(crate::parsing::SegmentName, Box<Expression<'a>>),
-    /// Bitwise AND, OR and XOR
-    BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
-    BitwiseOr(Box<Expression<'a>>, Box<Expression<'a>>),
-    BitwiseXor(Box<Expression<'a>>, Box<Expression<'a>>),
-    /// Shift Operators
-    LeftShift(Box<Expression<'a>>, Box<Expression<'a>>),
-    RightShift(Box<Expression<'a>>, Box<Expression<'a>>),
-    /// Logical Operators
-    LogicalAnd(Box<Expression<'a>>, Box<Expression<'a>>),
-    LogicalOr(Box<Expression<'a>>, Box<Expression<'a>>),
-    /// Unary Operators
-    LogicalNot(Box<Expression<'a>>),
-    BitwiseNot(Box<Expression<'a>>),
-    Negate(Box<Expression<'a>>),
     SizeofHeaders,
     Ternary(
         Box<Expression<'a>>,
@@ -284,7 +258,7 @@ pub(crate) struct Matcher<'a> {
     pub(crate) input_section_name_patterns: Vec<SectionPattern<'a>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum ArithmeticOp {
     Add,
     Subtract,
@@ -298,7 +272,7 @@ pub(crate) enum ArithmeticOp {
     RightShift,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum CompareOp {
     LessThan,
     GreaterThan,
@@ -310,12 +284,13 @@ pub(crate) enum CompareOp {
     LogicalOr,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum MinMaxOp {
     Min,
     Max,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum UnaryOp {
     LogicalNot,
     BitwiseNot,
@@ -339,34 +314,15 @@ impl<'a> Expression<'a> {
             | Expression::Symbol(_)
             | Expression::SizeofHeaders
             | Expression::Defined(_) => {}
-            Expression::Add(l, r)
-            | Expression::Subtract(l, r)
-            | Expression::Multiply(l, r)
-            | Expression::Divide(l, r)
-            | Expression::Modulo(l, r)
-            | Expression::LessThan(l, r)
-            | Expression::GreaterThan(l, r)
-            | Expression::LessEqual(l, r)
-            | Expression::GreaterEqual(l, r)
-            | Expression::Equal(l, r)
-            | Expression::NotEqual(l, r)
-            | Expression::Min(l, r)
-            | Expression::Max(l, r)
-            | Expression::BitwiseAnd(l, r)
-            | Expression::BitwiseOr(l, r)
-            | Expression::BitwiseXor(l, r)
-            | Expression::LeftShift(l, r)
-            | Expression::RightShift(l, r)
-            | Expression::LogicalAnd(l, r)
-            | Expression::LogicalOr(l, r)
+            Expression::Arithmetic(_, l, r)
+            | Expression::Compare(_, l, r)
+            | Expression::MinMax(_, l, r)
             | Expression::Align(l, Some(r)) => {
                 l.visit_expressions(cb);
                 r.visit_expressions(cb);
             }
             Expression::Align(e, None)
-            | Expression::LogicalNot(e)
-            | Expression::BitwiseNot(e)
-            | Expression::Negate(e)
+            | Expression::Unary(_, e)
             | Expression::Assert(AssertCommand { expression: e, .. })
             | Expression::Absolute(e) => e.visit_expressions(cb),
             Expression::SegmentStart(_, default_expr) => default_expr.visit_expressions(cb),
@@ -723,7 +679,7 @@ fn parse_logical_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     while opt("||").parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_logical_and.parse_next(input)?;
-        left = Expression::LogicalOr(Box::new(left), Box::new(right));
+        left = Expression::Compare(CompareOp::LogicalOr, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -739,7 +695,7 @@ fn parse_logical_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
     while opt("&&").parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_comparison.parse_next(input)?;
-        left = Expression::LogicalAnd(Box::new(left), Box::new(right));
+        left = Expression::Compare(CompareOp::LogicalAnd, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -753,25 +709,18 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     multispace0.parse_next(input)?;
 
     if let Some(op) = opt(alt((
-        "<=".map(|_| CompOp::LessEqual),
-        ">=".map(|_| CompOp::GreaterEqual),
-        "==".map(|_| CompOp::Equal),
-        "!=".map(|_| CompOp::NotEqual),
-        '<'.map(|_| CompOp::LessThan),
-        '>'.map(|_| CompOp::GreaterThan),
+        "<=".map(|_| CompareOp::LessEqual),
+        ">=".map(|_| CompareOp::GreaterEqual),
+        "==".map(|_| CompareOp::Equal),
+        "!=".map(|_| CompareOp::NotEqual),
+        '<'.map(|_| CompareOp::LessThan),
+        '>'.map(|_| CompareOp::GreaterThan),
     )))
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_or.parse_next(input)?;
-        left = match op {
-            CompOp::LessThan => Expression::LessThan(Box::new(left), Box::new(right)),
-            CompOp::GreaterThan => Expression::GreaterThan(Box::new(left), Box::new(right)),
-            CompOp::LessEqual => Expression::LessEqual(Box::new(left), Box::new(right)),
-            CompOp::GreaterEqual => Expression::GreaterEqual(Box::new(left), Box::new(right)),
-            CompOp::Equal => Expression::Equal(Box::new(left), Box::new(right)),
-            CompOp::NotEqual => Expression::NotEqual(Box::new(left), Box::new(right)),
-        };
+        left = Expression::Compare(op, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -785,17 +734,14 @@ fn parse_shift<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     multispace0.parse_next(input)?;
 
     while let Some(op) = opt(alt((
-        "<<".map(|_| ShiftOp::Left),
-        ">>".map(|_| ShiftOp::Right),
+        "<<".map(|_| ArithmeticOp::LeftShift),
+        ">>".map(|_| ArithmeticOp::RightShift),
     )))
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
         let right = parse_additive.parse_next(input)?;
-        left = match op {
-            ShiftOp::Left => Expression::LeftShift(Box::new(left), Box::new(right)),
-            ShiftOp::Right => Expression::RightShift(Box::new(left), Box::new(right)),
-        };
+        left = Expression::Arithmetic(op, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -814,7 +760,7 @@ fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_xor.parse_next(input)?;
-        left = Expression::BitwiseOr(Box::new(left), Box::new(right));
+        left = Expression::Arithmetic(ArithmeticOp::BitwiseOr, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -830,7 +776,7 @@ fn parse_bitwise_xor<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
     while opt('^').parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_and.parse_next(input)?;
-        left = Expression::BitwiseXor(Box::new(left), Box::new(right));
+        left = Expression::Arithmetic(ArithmeticOp::BitwiseXor, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -849,7 +795,7 @@ fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
     {
         multispace0.parse_next(input)?;
         let right = parse_shift.parse_next(input)?;
-        left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
+        left = Expression::Arithmetic(ArithmeticOp::BitwiseAnd, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -862,15 +808,15 @@ fn parse_additive<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
 
     multispace0.parse_next(input)?;
 
-    while let Some(op) =
-        opt(alt(('+'.map(|_| AddOp::Add), '-'.map(|_| AddOp::Subtract)))).parse_next(input)?
+    while let Some(op) = opt(alt((
+        '+'.map(|_| ArithmeticOp::Add),
+        '-'.map(|_| ArithmeticOp::Subtract),
+    )))
+    .parse_next(input)?
     {
         multispace0.parse_next(input)?;
         let right = parse_multiplicative.parse_next(input)?;
-        left = match op {
-            AddOp::Add => Expression::Add(Box::new(left), Box::new(right)),
-            AddOp::Subtract => Expression::Subtract(Box::new(left), Box::new(right)),
-        };
+        left = Expression::Arithmetic(op, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -884,19 +830,15 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     multispace0.parse_next(input)?;
 
     while let Some(op) = opt(alt((
-        '*'.map(|_| MulOp::Multiply),
-        '/'.map(|_| MulOp::Divide),
-        '%'.map(|_| MulOp::Modulo),
+        '*'.map(|_| ArithmeticOp::Multiply),
+        '/'.map(|_| ArithmeticOp::Divide),
+        '%'.map(|_| ArithmeticOp::Modulo),
     )))
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
         let right = parse_unary.parse_next(input)?;
-        left = match op {
-            MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
-            MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
-            MulOp::Modulo => Expression::Modulo(Box::new(left), Box::new(right)),
-        };
+        left = Expression::Arithmetic(op, Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -912,17 +854,17 @@ fn parse_unary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
         .is_some()
     {
         let operand = parse_unary.parse_next(input)?;
-        return Ok(Expression::LogicalNot(Box::new(operand)));
+        return Ok(Expression::Unary(UnaryOp::LogicalNot, Box::new(operand)));
     }
 
     if opt('~').parse_next(input)?.is_some() {
         let operand = parse_unary.parse_next(input)?;
-        return Ok(Expression::BitwiseNot(Box::new(operand)));
+        return Ok(Expression::Unary(UnaryOp::BitwiseNot, Box::new(operand)));
     }
 
     if opt('-').parse_next(input)?.is_some() {
         let operand = parse_unary.parse_next(input)?;
-        return Ok(Expression::Negate(Box::new(operand)));
+        return Ok(Expression::Unary(UnaryOp::Negate, Box::new(operand)));
     }
 
     parse_primary.parse_next(input)
@@ -1041,7 +983,11 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 let second = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
-                Ok(Expression::Min(Box::new(first), Box::new(second)))
+                Ok(Expression::MinMax(
+                    MinMaxOp::Min,
+                    Box::new(first),
+                    Box::new(second),
+                ))
             }
             b"MAX" => {
                 // MAX takes two expressions separated by comma
@@ -1053,7 +999,11 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 let second = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
-                Ok(Expression::Max(Box::new(first), Box::new(second)))
+                Ok(Expression::MinMax(
+                    MinMaxOp::Max,
+                    Box::new(first),
+                    Box::new(second),
+                ))
             }
             b"SEGMENT_START" => {
                 '('.parse_next(input)?;
@@ -1120,62 +1070,25 @@ fn parse_function_arg<'a>(input: &mut &'a BStr) -> winnow::Result<&'a [u8]> {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CompOp {
-    LessThan,
-    GreaterThan,
-    LessEqual,
-    GreaterEqual,
-    Equal,
-    NotEqual,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ShiftOp {
-    Left,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum AddOp {
-    Add,
-    Subtract,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MulOp {
-    Multiply,
-    Divide,
-    Modulo,
-}
-
-#[derive(Debug, Clone, Copy)]
 enum AssignmentOp {
     Assign,
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    LeftShift,
-    RightShift,
-    BitwiseAnd,
-    BitwiseOr,
-    BitwiseXor,
+    Arithmetic(ArithmeticOp),
 }
 
 fn parse_assignment_op(input: &mut &BStr) -> winnow::Result<AssignmentOp> {
     alt((
         alt((
-            "+=".value(AssignmentOp::Add),
-            "-=".value(AssignmentOp::Subtract),
-            "*=".value(AssignmentOp::Multiply),
-            "/=".value(AssignmentOp::Divide),
-            "<<=".value(AssignmentOp::LeftShift),
+            "+=".value(AssignmentOp::Arithmetic(ArithmeticOp::Add)),
+            "-=".value(AssignmentOp::Arithmetic(ArithmeticOp::Subtract)),
+            "*=".value(AssignmentOp::Arithmetic(ArithmeticOp::Multiply)),
+            "/=".value(AssignmentOp::Arithmetic(ArithmeticOp::Divide)),
+            "<<=".value(AssignmentOp::Arithmetic(ArithmeticOp::LeftShift)),
         )),
         alt((
-            ">>=".value(AssignmentOp::RightShift),
-            "&=".value(AssignmentOp::BitwiseAnd),
-            "|=".value(AssignmentOp::BitwiseOr),
-            "^=".value(AssignmentOp::BitwiseXor),
+            ">>=".value(AssignmentOp::Arithmetic(ArithmeticOp::RightShift)),
+            "&=".value(AssignmentOp::Arithmetic(ArithmeticOp::BitwiseAnd)),
+            "|=".value(AssignmentOp::Arithmetic(ArithmeticOp::BitwiseOr)),
+            "^=".value(AssignmentOp::Arithmetic(ArithmeticOp::BitwiseXor)),
             ("=", winnow::combinator::not(alt(('=', '/')))).value(AssignmentOp::Assign),
         )),
     ))
@@ -1191,15 +1104,9 @@ impl AssignmentOp {
         };
         match self {
             AssignmentOp::Assign => rhs,
-            AssignmentOp::Add => Expression::Add(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::Subtract => Expression::Subtract(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::Multiply => Expression::Multiply(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::Divide => Expression::Divide(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::LeftShift => Expression::LeftShift(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::RightShift => Expression::RightShift(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::BitwiseAnd => Expression::BitwiseAnd(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::BitwiseOr => Expression::BitwiseOr(Box::new(lhs), Box::new(rhs)),
-            AssignmentOp::BitwiseXor => Expression::BitwiseXor(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::Arithmetic(op) => {
+                Expression::Arithmetic(op, Box::new(lhs), Box::new(rhs))
+            }
         }
     }
 }
@@ -2122,7 +2029,8 @@ mod tests {
                         }))],
                     }),
                     Command::Assert(AssertCommand {
-                        expression: Box::new(Expression::LessThan(
+                        expression: Box::new(Expression::Compare(
+                            CompareOp::LessThan,
                             Box::new(Expression::LocationCounter),
                             Box::new(Expression::Number(0x10000)),
                         )),
@@ -2165,7 +2073,8 @@ mod tests {
                             attributes: None,
                         })),
                         SectionCommand::Assert(AssertCommand {
-                            expression: Box::new(Expression::LessThan(
+                            expression: Box::new(Expression::Compare(
+                                CompareOp::LessThan,
                                 Box::new(Expression::Sizeof(b".text")),
                                 Box::new(Expression::Number(0x1000)),
                             )),
@@ -2188,8 +2097,10 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::LessEqual(
-                        Box::new(Expression::Subtract(
+                    Expression::Compare(
+                        CompareOp::LessEqual,
+                        Box::new(Expression::Arithmetic(
+                            ArithmeticOp::Subtract,
                             Box::new(Expression::Symbol(b"__bss_end")),
                             Box::new(Expression::Symbol(b"__bss_start")),
                         )),
@@ -2211,10 +2122,13 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
-                        Box::new(Expression::Add(
+                    Expression::Compare(
+                        CompareOp::Equal,
+                        Box::new(Expression::Arithmetic(
+                            ArithmeticOp::Add,
                             Box::new(Expression::Number(1)),
-                            Box::new(Expression::Multiply(
+                            Box::new(Expression::Arithmetic(
+                                ArithmeticOp::Multiply,
                                 Box::new(Expression::Number(2)),
                                 Box::new(Expression::Number(3)),
                             )),
@@ -2240,10 +2154,13 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // Verify it parsed as LessThan with MIN function
-                assert_matches!(*assert_cmd.expression, Expression::LessThan(_, _));
-                if let Expression::LessThan(left, _) = &*assert_cmd.expression {
+                assert_matches!(
+                    *assert_cmd.expression,
+                    Expression::Compare(CompareOp::LessThan, _, _)
+                );
+                if let Expression::Compare(CompareOp::LessThan, left, _) = &*assert_cmd.expression {
                     // The left side should be a MIN expression with two SIZEOF calls
-                    assert_matches!(**left, Expression::Min(_, _));
+                    assert_matches!(**left, Expression::MinMax(MinMaxOp::Min, _, _));
                 }
                 assert_eq!(assert_cmd.message, b"Section too large");
             }
@@ -2259,8 +2176,10 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
-                        Box::new(Expression::BitwiseAnd(
+                    Expression::Compare(
+                        CompareOp::Equal,
+                        Box::new(Expression::Arithmetic(
+                            ArithmeticOp::BitwiseAnd,
                             Box::new(Expression::Number(0xFF)),
                             Box::new(Expression::Number(0x0F)),
                         )),
@@ -2277,13 +2196,24 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // The == binds loosest, so the top level is Equal
-                assert_matches!(*assert_cmd.expression, Expression::Equal(_, _));
-                if let Expression::Equal(left, _) = &*assert_cmd.expression {
+                assert_matches!(
+                    *assert_cmd.expression,
+                    Expression::Compare(CompareOp::Equal, _, _)
+                );
+                if let Expression::Compare(CompareOp::Equal, left, _) = &*assert_cmd.expression {
                     // Left side should be BitwiseOr(1, BitwiseXor(2, 3))
-                    assert_matches!(**left, Expression::BitwiseOr(_, _));
-                    if let Expression::BitwiseOr(or_left, or_right) = &**left {
+                    assert_matches!(
+                        **left,
+                        Expression::Arithmetic(ArithmeticOp::BitwiseOr, _, _)
+                    );
+                    if let Expression::Arithmetic(ArithmeticOp::BitwiseOr, or_left, or_right) =
+                        &**left
+                    {
                         assert_eq!(**or_left, Expression::Number(1));
-                        assert_matches!(**or_right, Expression::BitwiseXor(_, _));
+                        assert_matches!(
+                            **or_right,
+                            Expression::Arithmetic(ArithmeticOp::BitwiseXor, _, _)
+                        );
                     }
                 }
             }
@@ -2300,8 +2230,10 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
-                        Box::new(Expression::LeftShift(
+                    Expression::Compare(
+                        CompareOp::Equal,
+                        Box::new(Expression::Arithmetic(
+                            ArithmeticOp::LeftShift,
                             Box::new(Expression::Number(1)),
                             Box::new(Expression::Number(3)),
                         )),
@@ -2323,8 +2255,10 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::LogicalOr(
-                        Box::new(Expression::LogicalAnd(
+                    Expression::Compare(
+                        CompareOp::LogicalOr,
+                        Box::new(Expression::Compare(
+                            CompareOp::LogicalAnd,
                             Box::new(Expression::Number(1)),
                             Box::new(Expression::Number(0)),
                         )),
@@ -2344,7 +2278,7 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::LogicalNot(Box::new(Expression::Number(0)))
+                    Expression::Unary(UnaryOp::LogicalNot, Box::new(Expression::Number(0)))
                 );
             }
             _ => panic!("Expected Assert command"),
@@ -2356,8 +2290,12 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
-                        Box::new(Expression::BitwiseNot(Box::new(Expression::Number(0xFF)))),
+                    Expression::Compare(
+                        CompareOp::Equal,
+                        Box::new(Expression::Unary(
+                            UnaryOp::BitwiseNot,
+                            Box::new(Expression::Number(0xFF))
+                        )),
                         Box::new(Expression::Number(0)),
                     )
                 );
@@ -2371,8 +2309,12 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
-                        Box::new(Expression::Negate(Box::new(Expression::Number(1)))),
+                    Expression::Compare(
+                        CompareOp::Equal,
+                        Box::new(Expression::Unary(
+                            UnaryOp::Negate,
+                            Box::new(Expression::Number(1))
+                        )),
                         Box::new(Expression::Number(0)),
                     )
                 );
@@ -2388,11 +2330,15 @@ mod tests {
         let script = parse_script(r#"ASSERT(~0xFF & 0xFF == 0, "unary precedence");"#).unwrap();
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
-                if let Expression::Equal(left, _) = &*assert_cmd.expression {
+                if let Expression::Compare(CompareOp::Equal, left, _) = &*assert_cmd.expression {
                     assert_eq!(
                         **left,
-                        Expression::BitwiseAnd(
-                            Box::new(Expression::BitwiseNot(Box::new(Expression::Number(0xFF)))),
+                        Expression::Arithmetic(
+                            ArithmeticOp::BitwiseAnd,
+                            Box::new(Expression::Unary(
+                                UnaryOp::BitwiseNot,
+                                Box::new(Expression::Number(0xFF))
+                            )),
                             Box::new(Expression::Number(0xFF)),
                         )
                     );
@@ -2411,7 +2357,8 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
+                    Expression::Compare(
+                        CompareOp::Equal,
                         Box::new(Expression::Alignof(b".text")),
                         Box::new(Expression::Number(8)),
                     )
@@ -2428,7 +2375,8 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     *assert_cmd.expression,
-                    Expression::Equal(
+                    Expression::Compare(
+                        CompareOp::Equal,
                         Box::new(Expression::Loadaddr(b".text")),
                         Box::new(Expression::Number(8)),
                     )
@@ -2491,7 +2439,8 @@ mod tests {
             };
             assert_eq!(
                 *cmd.expression,
-                Expression::Equal(
+                Expression::Compare(
+                    CompareOp::Equal,
                     Box::new(expected_fn),
                     Box::new(Expression::Number(expected_val))
                 )
