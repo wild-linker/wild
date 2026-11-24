@@ -2451,6 +2451,7 @@ fn write_rela_section<'data, C: ElfClass>(
 
     let target_sec_idx = object::SectionIndex(header.sh_info(e) as usize);
     let target_is_singleton = object.sections[target_sec_idx.0].singleton().is_some();
+    let relax_deltas = object.section_relax_deltas.get(target_sec_idx.0);
 
     let section_address = if target_is_singleton {
         0
@@ -2537,7 +2538,8 @@ fn write_rela_section<'data, C: ElfClass>(
             })
             .map_or(addend, |offset| addend + offset as i64);
 
-        out.set_offset(section_address + rel.offset())?;
+        let rel_offset = opt_input_to_output(relax_deltas, rel.offset());
+        out.set_offset(section_address + rel_offset)?;
         out.set_addend(addend)?;
         out.set_info(sym_idx, rel.raw_type())?;
     }
