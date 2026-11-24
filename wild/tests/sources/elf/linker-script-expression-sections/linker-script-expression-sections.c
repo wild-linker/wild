@@ -124,6 +124,11 @@
 //#ExpectSym:in_sec_align section=".text",address=0x10000
 //#ExpectSym:in_sec_align_expr section=".text",address=0x10100
 //#ExpectSym:mid_align section=".data",address=0x20200
+//#ExpectSym:mid_align_dot section=".data",address=0x20200
+//#ExpectSym:mid_align_expr section=".data",address=0x20100
+//#ExpectSym:mid_align_num is_abs=true,address=0x30
+//#ExpectSym:mid_abs is_abs=true,address=0x20
+//#ExpectSym:mid_loc section=".data",address=0x20019
 //#ExpectSym:out_add is_abs=true,address=0x11000
 //#ExpectSym:out_sub is_abs=true,address=0xf000
 //#ExpectSym:out_sub_rev is_abs=true,address=0x20000

@@ -199,25 +199,6 @@ impl<'data> LocationCounter<'data> {
     }
 }
 
-fn loc_for_global_expr<'data>(
-    expr: &crate::linker_script::Expression<'data>,
-    section_id: Option<OutputSectionId>,
-) -> SymbolLoc {
-    let mut loc = SymbolLoc::None;
-    expr.visit_expressions(&mut |e| match e {
-        crate::linker_script::Expression::SegmentStart(..) => {
-            if let Some(section_id) = section_id {
-                loc = SymbolLoc::SectionEnd(section_id);
-            } else {
-                loc = SymbolLoc::FirstSection;
-            }
-            false
-        }
-        _ => true,
-    });
-    loc
-}
-
 impl<'data> LayoutRulesBuilder<'data> {
     /// Records information about any sections and symbols declared by the linker script.
     pub(crate) fn process_linker_script<P: Platform>(
@@ -242,7 +223,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 let placement = SymbolPlacement::Redirect(Redirect {
                     kind: RedirectKind::Provide,
                     expression: provide.value.clone(),
-                    loc: loc_for_global_expr(&provide.value, current_section_id),
+                    loc: SymbolLoc::None,
                 });
                 symbol_defs.push(
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
@@ -252,14 +233,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                 let placement = SymbolPlacement::Redirect(Redirect {
                     kind: RedirectKind::Script,
                     expression: value.to_owned(),
-                    loc: loc_for_global_expr(value, current_section_id),
+                    loc: SymbolLoc::None,
                 });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::SetLocation(loc) = cmd {
                 let placement = SymbolPlacement::Redirect(Redirect {
                     kind: RedirectKind::Script,
                     expression: loc.address.clone(),
-                    loc: loc_for_global_expr(&loc.address, current_section_id),
+                    loc: SymbolLoc::None,
                 });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Sections(sections) = cmd {
@@ -504,7 +485,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 let placement = SymbolPlacement::Redirect(Redirect {
                     kind: RedirectKind::Script,
                     expression: Expression::Assert(assert_cmd.clone()),
-                    loc: loc_for_global_expr(&assert_cmd.expression, None),
+                    loc: SymbolLoc::None,
                 });
                 symbol_defs.push(InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Memory(regions) = cmd {

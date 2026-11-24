@@ -752,17 +752,24 @@ fn update_internal_symbols_resolutions<'data, P: Platform>(
                     .as_ref()
                     .ok_or_else(|| redirect.missing_resolution(name))?;
 
-                let section_id = if range.contains(canonical_target_id)
+                let symbol_value = if range.contains(canonical_target_id)
                     && let SymbolPlacement::Redirect(r) = &internal_symbols.symbol_definitions
                         [range.id_to_offset(canonical_target_id)]
                     .placement
                 {
-                    r.loc.section_id()
+                    if r.loc == SymbolLoc::FirstSection {
+                        SymbolValue::FirstSection(resolution.raw_value)
+                    } else {
+                        SymbolValue::new(resolution.raw_value, r.loc.section_id())
+                    }
                 } else {
-                    symbol_db.output_section_id(canonical_target_id)
+                    SymbolValue::new(
+                        resolution.raw_value,
+                        symbol_db.output_section_id(canonical_target_id),
+                    )
                 };
 
-                Ok(SymbolValue::new(resolution.raw_value, section_id))
+                Ok(symbol_value)
             },
         )?;
 

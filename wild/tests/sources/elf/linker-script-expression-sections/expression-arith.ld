@@ -8,6 +8,11 @@ SECTIONS {
         data_end = .;
     }
     mid_align = ALIGN(0x200);
+    mid_align_dot = ALIGN(., 0x200);
+    mid_align_expr = ALIGN(. + 1, 0x100);
+    mid_align_num = ALIGN(33, 16);
+    mid_abs = 32;
+    mid_loc = . + 21;
     .text 0x10000 : {
         sec_start = .;
         in_sec_add = sec_start + 0x10;

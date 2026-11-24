@@ -17,6 +17,8 @@
 // Defaults are 0x10/0x11/0x12/0x13 — distinct from actual section addresses
 // to prove SEGMENT_START returns the default, not the actual segment address.
 //#Config:no-overrides:default
+//#ExpectSym:abs_text_start is_abs=true,address=0x10
+//#ExpectSym:mid_abs_text_start is_abs=true,address=0x10
 // This script relies on GNU orphan placement and segment permissions for execution.
 // TODO: Make the script's segment permissions and page boundaries explicit while preserving
 // its address assertions, then restore LLD coverage.
@@ -29,6 +31,8 @@
 // alongside a linker script. lld ignores -T* when a linker script is present,
 // so we skip it here.
 //#Config:with-T-overrides:default
+//#ExpectSym:abs_text_start is_abs=true,address=0x700000
+//#ExpectSym:mid_abs_text_start is_abs=true,address=0x700000
 //#ReferenceLinkers:bfd
 //#LinkArgs:-Ttext=0x700000 -Tdata=0x800000 -Tbss=0x900000
 //#Variant:1
@@ -39,6 +43,8 @@
 #include "../common/runtime.h"
 
 extern char text_start;
+extern char abs_text_start;
+extern char mid_abs_text_start;
 extern char rodata_start;
 extern char data_start;
 extern char bss_start;
@@ -65,6 +71,14 @@ void _start(void) {
 
   if (ptr_to_int(&text_start) != expect_text) {
     exit_syscall(10);
+  }
+
+  if (ptr_to_int(&abs_text_start) != expect_text) {
+    exit_syscall(16);
+  }
+
+  if (ptr_to_int(&mid_abs_text_start) != expect_text) {
+    exit_syscall(17);
   }
 
   if (ptr_to_int(&rodata_start) != expect_rodata) {
