@@ -1414,12 +1414,6 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 "Missing memory offset for section {} present in a program segment.",
                 output_sections.section_debug(section_id),
             );
-            ensure!(
-                section_flags.is_alloc(),
-                "Missing SHF_ALLOC section flag for section {} present in a program \
-                         segment.",
-                output_sections.section_debug(section_id)
-            );
         }
 
         Ok(())
@@ -2920,7 +2914,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                             segment.as_usize()
                         );
                     }
-                    if entry.has_explicit_flags || !info.section_attributes.is_alloc() {
+                    if entry.has_explicit_flags {
                         continue;
                     }
                     entry.flags |=
