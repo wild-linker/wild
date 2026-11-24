@@ -326,6 +326,10 @@ pub mod secnames {
     pub const DATA_REL_RO_SECTION_NAME: &[u8] = DATA_REL_RO_SECTION_NAME_STR.as_bytes();
     pub const TOC_SECTION_NAME_STR: &str = ".toc";
     pub const TOC_SECTION_NAME: &[u8] = TOC_SECTION_NAME_STR.as_bytes();
+    pub const SDATA_SECTION_NAME_STR: &str = ".sdata";
+    pub const SDATA_SECTION_NAME: &[u8] = SDATA_SECTION_NAME_STR.as_bytes();
+    pub const SBSS_SECTION_NAME_STR: &str = ".sbss";
+    pub const SBSS_SECTION_NAME: &[u8] = SBSS_SECTION_NAME_STR.as_bytes();
     pub const RISCV_ATTRIBUTES_SECTION_NAME_STR: &str = ".riscv.attributes";
     pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
 

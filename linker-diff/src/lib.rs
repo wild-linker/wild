@@ -323,6 +323,9 @@ impl Config {
                 [
                     // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
+                    // When there is no .sdata, wild places __global_pointer$ relative to the first
+                    // section (.interp) like LLD, where GNU ld reports it as having no section.
+                    "dynsym.__global_pointer$.section",
                     // GOT entries may differ due to unimplemented relaxations
                     "section.got.*",
                     // Dynamic relocations may differ
