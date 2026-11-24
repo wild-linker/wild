@@ -2686,6 +2686,8 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         resources,
         per_symbol_flags,
     );
+    prelude.relocate_symbols_in_unkept_sections(&keep_sections, output_sections);
+
     let (output_order, program_segments) = output_sections.output_order(
         resources.symbol_db.output_kind,
         linker_scripts,
@@ -3958,7 +3960,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 
     fn determine_kept_sections(
-        &mut self,
+        &self,
         total_sizes: &OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
         output_sections: &OutputSections<P>,
@@ -3980,17 +3982,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Keep any sections that we've said we want to keep regardless.
         P::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
-        // Like LLD, a section-offset symbol (e.g. RISC-V's __global_pointer$) whose section has no
-        // content is placed relative to the file header instead, so that it doesn't force an empty
-        // section to be emitted.
-        for definition in &mut self.internal_symbols.symbol_definitions {
-            if let SymbolPlacement::SectionStartOffset(section_id, _) = &mut definition.placement
-                && !*keep_sections.get(*section_id)
-            {
-                *section_id = crate::output_section_id::FILE_HEADER;
-            }
-        }
-
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
             .raw_range(self.symbol_id_range())
@@ -3998,6 +3989,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             .zip(self.internal_symbols.symbol_definitions.iter())
             .for_each(|(raw_flags, definition)| {
                 if raw_flags.get().has_resolution()
+                    && !matches!(
+                        definition.placement,
+                        SymbolPlacement::SectionStartOffset(..)
+                    )
                     && let Some(section_id) = definition.section_id()
                 {
                     *keep_sections.get_mut(section_id) = true;
@@ -4016,6 +4011,27 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         keep_sections
+    }
+
+    fn relocate_symbols_in_unkept_sections(
+        &mut self,
+        keep_sections: &OutputSectionMap<bool>,
+        output_sections: &OutputSections<P>,
+    ) {
+        // Like LLD, a section-offset symbol (e.g. RISC-V's __global_pointer$) whose section isn't
+        // kept is placed relative to the file header instead, so that it doesn't force an empty
+        // section to be emitted.
+        for definition in &mut self.internal_symbols.symbol_definitions {
+            if let SymbolPlacement::SectionStartOffset(section_id, _) = &mut definition.placement {
+                let kept = match output_sections.merge_target(*section_id) {
+                    Some(primary_id) => *keep_sections.get(primary_id),
+                    None => *keep_sections.get(*section_id),
+                };
+                if !kept {
+                    *section_id = crate::output_section_id::FILE_HEADER;
+                }
+            }
+        }
     }
 
     fn determine_header_sizes(
