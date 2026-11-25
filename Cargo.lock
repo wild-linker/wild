@@ -554,6 +554,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "fixedbitset"
+version = "0.5.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5905ec755cc8386d7928353e4d356d2be3e89e81e5ca01fe630a1ca4d08dc175"
+
+[[package]]
 name = "flate2"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -825,6 +831,7 @@ dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
  "derive_more",
+ "fixedbitset",
  "flate2",
  "foldhash",
  "gimli 0.34.0",
@@ -848,6 +855,7 @@ dependencies = [
  "perf-event",
  "perfetto-recorder",
  "rayon",
+ "regex-syntax",
  "serde",
  "sha2",
  "sharded-offset-map",

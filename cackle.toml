@@ -214,6 +214,9 @@ allow_unsafe = true
 [pkg.symbolic-common]
 allow_unsafe = true
 
+[pkg.fixedbitset]
+allow_unsafe = true
+
 [pkg.regex-automata]
 allow_unsafe = true
 

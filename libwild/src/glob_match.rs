@@ -1,5 +1,16 @@
+use fixedbitset::FixedBitSet;
 use glob::Pattern;
+use regex_syntax::hir::Class;
+use regex_syntax::hir::ClassBytes;
+use regex_syntax::hir::ClassBytesRange;
+use regex_syntax::hir::Dot;
+use regex_syntax::hir::Hir;
+use regex_syntax::hir::Repetition;
+use std::iter::Peekable;
+use std::mem::take;
+use std::ops::RangeInclusive;
 use std::str;
+
 pub(crate) enum GlobPatternType {
     Exact,
     EscapedExact,
@@ -179,6 +190,106 @@ fn render_bracket(negate: bool, members: &[bool; 256]) -> Vec<u8> {
     out.extend(body);
     out.push(b']');
     out
+}
+
+/// Parses a byte glob into HIR fragments, without adding anchors.
+#[allow(dead_code, reason = "the glob compiler still uses glob::Pattern")]
+pub(crate) fn parse_glob(pattern: &[u8]) -> Result<Vec<Hir>, &'static str> {
+    let mut items = Vec::new();
+    let mut literal = Vec::new();
+    let mut bytes = pattern.iter().copied().peekable();
+
+    while let Some(byte) = bytes.next() {
+        let item = match byte {
+            b'\\' => {
+                literal.push(bytes.next().ok_or("Trailing escape in glob pattern")?);
+                continue;
+            }
+            b'?' => Hir::dot(Dot::AnyByte),
+            b'*' => {
+                while bytes.next_if_eq(&b'*').is_some() {}
+                Hir::repetition(Repetition {
+                    min: 0,
+                    max: None,
+                    greedy: true,
+                    sub: Box::new(Hir::dot(Dot::AnyByte)),
+                })
+            }
+            b'[' => {
+                let members = parse_brackets(&mut bytes)?;
+                let ranges = bitset_one_ranges(&members)
+                    .map(|range| ClassBytesRange::new(*range.start() as u8, *range.end() as u8));
+                Hir::class(Class::Bytes(ClassBytes::new(ranges)))
+            }
+            b']' => return Err("Unmatched closing bracket in glob pattern"),
+            _ => {
+                literal.push(byte);
+                continue;
+            }
+        };
+
+        // Flush a collected literal before we insert a new item!
+        if !literal.is_empty() {
+            items.push(Hir::literal(take(&mut literal)));
+        }
+        items.push(item);
+    }
+    if !literal.is_empty() {
+        items.push(Hir::literal(literal));
+    }
+    Ok(items)
+}
+
+/// Yields one inclusive range for each consecutive run of set bits.
+fn bitset_one_ranges(members: &FixedBitSet) -> impl Iterator<Item = RangeInclusive<usize>> {
+    let mut ones = members.ones().peekable();
+    std::iter::from_fn(move || {
+        let start = ones.next()?;
+        let mut end = start;
+        while ones.next_if_eq(&(end + 1)).is_some() {
+            end += 1;
+        }
+        Some(start..=end)
+    })
+}
+
+/// Parses a bracket class after the caller has consumed its opening `[`.
+fn parse_brackets(
+    input: &mut Peekable<impl Iterator<Item = u8>>,
+) -> Result<FixedBitSet, &'static str> {
+    const UNCLOSED_CLASS: &str = "Unclosed bracket class in glob pattern";
+    const TRAILING_ESCAPE: &str = "Trailing escape in glob bracket class";
+
+    let negate = input.next_if(|byte| matches!(byte, b'!' | b'^')).is_some();
+    let mut members = FixedBitSet::with_capacity(256);
+    let mut start = input.next().ok_or(UNCLOSED_CLASS)?;
+    loop {
+        if start == b'\\' {
+            start = input.next().ok_or(TRAILING_ESCAPE)?;
+        }
+        if input.next_if_eq(&b'-').is_some() {
+            let end = match input.next().ok_or(UNCLOSED_CLASS)? {
+                b']' => return Err("Missing range endpoint in glob bracket class"),
+                b'\\' => input.next().ok_or(TRAILING_ESCAPE)?,
+                byte => byte,
+            };
+            if start <= end {
+                members.insert_range(start as usize..end as usize + 1);
+            }
+        } else {
+            members.insert(start as usize);
+        }
+
+        start = input.next().ok_or(UNCLOSED_CLASS)?;
+        if start == b']' {
+            break;
+        }
+    }
+
+    if negate {
+        members.toggle_range(..);
+    }
+    Ok(members)
 }
 
 pub(crate) fn compile_glob_pattern(token: &[u8]) -> Result<Pattern, &'static str> {

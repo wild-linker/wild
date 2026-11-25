@@ -22,6 +22,7 @@ colosseum.workspace = true
 crossbeam-queue.workspace = true
 crossbeam-utils.workspace = true
 derive_more.workspace = true
+fixedbitset.workspace = true
 flate2.workspace = true
 foldhash.workspace = true
 gimli.workspace = true
@@ -40,6 +41,7 @@ memmap2.workspace = true
 object = { workspace = true, features = ["write_std"] }
 perfetto-recorder.workspace = true
 rayon.workspace = true
+regex-syntax.workspace = true
 serde.workspace = true
 sha2.workspace = true
 sharded-offset-map.workspace = true
