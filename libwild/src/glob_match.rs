@@ -1,15 +1,49 @@
 use fixedbitset::FixedBitSet;
-use glob::Pattern;
+use regex_automata::meta::Regex;
 use regex_syntax::hir::Class;
 use regex_syntax::hir::ClassBytes;
 use regex_syntax::hir::ClassBytesRange;
 use regex_syntax::hir::Dot;
 use regex_syntax::hir::Hir;
+use regex_syntax::hir::HirKind;
+use regex_syntax::hir::Look;
 use regex_syntax::hir::Repetition;
 use std::iter::Peekable;
 use std::mem::take;
 use std::ops::RangeInclusive;
-use std::str;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GlobSyntax {
+    Gnu,
+    // Backslashes are always literal, as are closing brackets outside classes.
+    MachO,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GlobPattern {
+    source: Vec<u8>,
+    syntax: GlobSyntax,
+    regex: Regex,
+}
+
+impl GlobPattern {
+    pub(crate) fn matches(&self, name: &[u8]) -> bool {
+        self.regex.is_match(name)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source(&self) -> &[u8] {
+        &self.source
+    }
+}
+
+impl PartialEq for GlobPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.syntax == other.syntax && self.source == other.source
+    }
+}
+
+impl Eq for GlobPattern {}
 
 pub(crate) enum GlobPatternType {
     Exact,
@@ -51,157 +85,27 @@ pub(crate) fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
     pattern_type
 }
 
-#[derive(Clone, Copy)]
-enum Unescape {
-    /// Keep the escaped byte as itself. The result is compared literally.
-    Literal,
-    /// Quote `* ? [ ]` as a one-character class.
-    QuoteGlobMeta,
+pub(crate) fn unescape_pattern(pattern: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut unescaped = Vec::with_capacity(pattern.len());
+    for item in parse_glob(pattern, GlobSyntax::Gnu)? {
+        match item.kind() {
+            HirKind::Literal(literal) => unescaped.extend_from_slice(&literal.0),
+            HirKind::Look(Look::Start | Look::End) => {}
+            _ => return Err("An escaped exact pattern cannot contain glob metacharacters"),
+        }
+    }
+    Ok(unescaped)
 }
 
-pub(crate) fn unescape_pattern(pattern: &[u8]) -> Vec<u8> {
-    rewrite_escapes(pattern, Unescape::Literal)
-}
-
-fn rewrite_escapes(pattern: &[u8], mode: Unescape) -> Vec<u8> {
-    let quote = matches!(mode, Unescape::QuoteGlobMeta);
-    let mut result = Vec::with_capacity(pattern.len());
-    let mut i = 0;
-    while i < pattern.len() {
-        if pattern[i] != b'\\' {
-            if quote
-                && pattern[i] == b'['
-                && let Some((negate, members, consumed)) = parse_bracket(&pattern[i..])
-            {
-                result.extend(render_bracket(negate, &members));
-                i += consumed;
-                continue;
-            }
-            result.push(pattern[i]);
-            i += 1;
-            continue;
-        }
-
-        let Some(escaped) = pattern.get(i + 1).copied() else {
-            result.push(b'\\');
-            break;
-        };
-        i += 2;
-        if quote && matches!(escaped, b'*' | b'?' | b'[' | b']') {
-            // `glob::Pattern` does not treat `\` as an escape. A one-character
-            // class is the supported way to match these bytes literally.
-            result.extend_from_slice(&[b'[', escaped, b']']);
-        } else {
-            result.push(escaped);
-        }
-    }
-    result
-}
-
-fn parse_bracket(input: &[u8]) -> Option<(bool, [bool; 256], usize)> {
-    if input.first() != Some(&b'[') {
-        return None;
-    }
-    let mut i = 1;
-    // The glob crate only treats `!` as negation, not `^`.
-    // https://github.com/rust-lang/glob/issues/116
-    let negate = matches!(input.get(i), Some(b'!' | b'^'));
-    if negate {
-        i += 1;
-    }
-
-    let mut members = [false; 256];
-    let mut c = *input.get(i)?;
-    i += 1;
-    loop {
-        if c == b'\\' {
-            c = *input.get(i)?;
-            i += 1;
-        }
-        let start = c;
-        let range =
-            input.get(i) == Some(&b'-') && matches!(input.get(i + 1), Some(n) if *n != b']');
-        if range {
-            i += 1;
-            let mut end = *input.get(i)?;
-            i += 1;
-            if end == b'\\' {
-                end = *input.get(i)?;
-                i += 1;
-            }
-            if start <= end {
-                for byte in start..=end {
-                    members[byte as usize] = true;
-                }
-            }
-        } else {
-            members[start as usize] = true;
-        }
-
-        c = *input.get(i)?;
-        i += 1;
-        if c == b']' {
-            return Some((negate, members, i));
-        }
-    }
-}
-
-fn render_bracket(negate: bool, members: &[bool; 256]) -> Vec<u8> {
-    let any = members.iter().any(|member| *member);
-    if !any {
-        // An empty range matches nothing. Negated, it matches any one byte.
-        return if negate {
-            vec![b'?']
-        } else {
-            b"[z-a]".to_vec()
-        };
-    }
-    if !negate && members[b'!' as usize] && members.iter().filter(|member| **member).count() == 1 {
-        return vec![b'!'];
-    }
-
-    let mut body = Vec::new();
-    if members[b']' as usize] {
-        body.push(b']');
-    }
-    for byte in 0u8..=255 {
-        if members[byte as usize] && !matches!(byte, b']' | b'!' | b'-') {
-            body.push(byte);
-        }
-    }
-    let has_bang = members[b'!' as usize];
-    let has_dash = members[b'-' as usize];
-    if !negate && body.is_empty() && has_bang && has_dash {
-        body.extend_from_slice(b"-!");
-    } else if has_bang {
-        body.push(b'!');
-        if has_dash {
-            body.push(b'-');
-        }
-    } else if has_dash {
-        body.push(b'-');
-    }
-
-    let mut out = Vec::with_capacity(body.len() + 3);
-    out.push(b'[');
-    if negate {
-        out.push(b'!');
-    }
-    out.extend(body);
-    out.push(b']');
-    out
-}
-
-/// Parses a byte glob into HIR fragments, without adding anchors.
-#[allow(dead_code, reason = "the glob compiler still uses glob::Pattern")]
-pub(crate) fn parse_glob(pattern: &[u8]) -> Result<Vec<Hir>, &'static str> {
-    let mut items = Vec::new();
+/// Parses a byte glob into HIR fragments, anchored at both ends.
+fn parse_glob(pattern: &[u8], syntax: GlobSyntax) -> Result<Vec<Hir>, &'static str> {
+    let mut items = vec![Hir::look(Look::Start)];
     let mut literal = Vec::new();
     let mut bytes = pattern.iter().copied().peekable();
 
     while let Some(byte) = bytes.next() {
         let item = match byte {
-            b'\\' => {
+            b'\\' if syntax == GlobSyntax::Gnu => {
                 literal.push(bytes.next().ok_or("Trailing escape in glob pattern")?);
                 continue;
             }
@@ -216,12 +120,14 @@ pub(crate) fn parse_glob(pattern: &[u8]) -> Result<Vec<Hir>, &'static str> {
                 })
             }
             b'[' => {
-                let members = parse_brackets(&mut bytes)?;
+                let members = parse_brackets(&mut bytes, syntax)?;
                 let ranges = bitset_one_ranges(&members)
                     .map(|range| ClassBytesRange::new(*range.start() as u8, *range.end() as u8));
                 Hir::class(Class::Bytes(ClassBytes::new(ranges)))
             }
-            b']' => return Err("Unmatched closing bracket in glob pattern"),
+            b']' if syntax == GlobSyntax::Gnu => {
+                return Err("Unmatched closing bracket in glob pattern");
+            }
             _ => {
                 literal.push(byte);
                 continue;
@@ -237,6 +143,7 @@ pub(crate) fn parse_glob(pattern: &[u8]) -> Result<Vec<Hir>, &'static str> {
     if !literal.is_empty() {
         items.push(Hir::literal(literal));
     }
+    items.push(Hir::look(Look::End));
     Ok(items)
 }
 
@@ -256,6 +163,7 @@ fn bitset_one_ranges(members: &FixedBitSet) -> impl Iterator<Item = RangeInclusi
 /// Parses a bracket class after the caller has consumed its opening `[`.
 fn parse_brackets(
     input: &mut Peekable<impl Iterator<Item = u8>>,
+    syntax: GlobSyntax,
 ) -> Result<FixedBitSet, &'static str> {
     const UNCLOSED_CLASS: &str = "Unclosed bracket class in glob pattern";
     const TRAILING_ESCAPE: &str = "Trailing escape in glob bracket class";
@@ -264,13 +172,18 @@ fn parse_brackets(
     let mut members = FixedBitSet::with_capacity(256);
     let mut start = input.next().ok_or(UNCLOSED_CLASS)?;
     loop {
-        if start == b'\\' {
+        if start == b'\\' && syntax == GlobSyntax::Gnu {
             start = input.next().ok_or(TRAILING_ESCAPE)?;
         }
         if input.next_if_eq(&b'-').is_some() {
             let end = match input.next().ok_or(UNCLOSED_CLASS)? {
-                b']' => return Err("Missing range endpoint in glob bracket class"),
-                b'\\' => input.next().ok_or(TRAILING_ESCAPE)?,
+                b']' => {
+                    // A dash at the end of a class is literal.
+                    members.insert(start as usize);
+                    members.insert(b'-' as usize);
+                    break;
+                }
+                b'\\' if syntax == GlobSyntax::Gnu => input.next().ok_or(TRAILING_ESCAPE)?,
                 byte => byte,
             };
             if start <= end {
@@ -292,85 +205,63 @@ fn parse_brackets(
     Ok(members)
 }
 
-pub(crate) fn compile_glob_pattern(token: &[u8]) -> Result<Pattern, &'static str> {
-    let pattern = rewrite_escapes(token, Unescape::QuoteGlobMeta);
-    let pattern = str::from_utf8(&pattern).map_err(|_| "Invalid UTF-8 string")?;
-    Pattern::new(pattern).map_err(|_| "Invalid Glob Pattern")
-}
-
-/// Normalizes repeated stars to a single wildcard outside character classes. Mach-O symbol
-/// patterns do not use the glob crate's directory-recursion syntax, and backslashes are literal.
-pub(crate) fn compile_macho_glob_pattern(token: &[u8]) -> Result<Pattern, &'static str> {
-    let mut normalized = Vec::with_capacity(token.len());
-    let mut bytes = token.iter().copied().peekable();
-
-    while let Some(byte) = bytes.next() {
-        normalized.push(byte);
-
-        match byte {
-            b'*' => while bytes.next_if_eq(&b'*').is_some() {},
-            b'[' => {
-                // Preserve character classes as-is.
-                normalized.extend(bytes.next_if(|byte| matches!(byte, b'!' | b'^')));
-                // A leading `]` (after any negation) is a literal member of the class.
-                normalized.extend(bytes.next());
-                for byte in bytes.by_ref() {
-                    normalized.push(byte);
-                    if byte == b']' {
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let pattern = str::from_utf8(&normalized).map_err(|_| "Invalid UTF-8 string")?;
-    let pattern = pattern.replace("[^", "[!");
-    Pattern::new(pattern.as_str()).map_err(|_| "Invalid Glob Pattern")
+pub(crate) fn compile_pattern(
+    token: &[u8],
+    syntax: GlobSyntax,
+) -> Result<GlobPattern, &'static str> {
+    let items = parse_glob(token, syntax)?;
+    let regex = Regex::builder()
+        .configure(Regex::config().utf8_empty(false))
+        .build_from_hir(&Hir::concat(items))
+        .map_err(|_| "Failed to compile glob pattern")?;
+    Ok(GlobPattern {
+        source: token.into(),
+        syntax,
+        regex,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::compile_macho_glob_pattern;
+    use super::*;
 
     #[test]
     fn macho_repeated_stars() {
-        let pattern = compile_macho_glob_pattern(b"***_prefix***suffix**").unwrap();
-        assert!(pattern.matches("_prefixsuffix"));
-        assert!(pattern.matches("leading_prefix_middle_suffix_trailing"));
-        assert!(!pattern.matches("_prefix_other"));
-        assert!(!pattern.matches("_other_suffix"));
+        let pattern = compile_pattern(b"***_prefix***suffix**", GlobSyntax::MachO).unwrap();
+        assert!(pattern.matches(b"_prefixsuffix"));
+        assert!(pattern.matches(b"leading_prefix_middle_suffix_trailing"));
+        assert!(!pattern.matches(b"_prefix_other"));
+        assert!(!pattern.matches(b"_other_suffix"));
     }
 
     #[test]
     fn macho_stars_in_character_classes() {
-        let pattern = compile_macho_glob_pattern(b"_class_[**]**").unwrap();
-        assert!(pattern.matches("_class_*"));
-        assert!(pattern.matches("_class_*_tail"));
-        assert!(!pattern.matches("_class_x_tail"));
-        assert!(!pattern.matches("_class_"));
+        let pattern = compile_pattern(b"_class_[**]**", GlobSyntax::MachO).unwrap();
+        assert!(pattern.matches(b"_class_*"));
+        assert!(pattern.matches(b"_class_*_tail"));
+        assert!(!pattern.matches(b"_class_x_tail"));
+        assert!(!pattern.matches(b"_class_"));
     }
 
     #[test]
     fn macho_leading_close_bracket_in_character_classes() {
-        let pattern = compile_macho_glob_pattern(b"_class_[]*]**").unwrap();
-        assert!(pattern.matches("_class_]_tail"));
-        assert!(pattern.matches("_class_*_tail"));
-        assert!(!pattern.matches("_class_x_tail"));
+        let pattern = compile_pattern(b"_class_[]*]**", GlobSyntax::MachO).unwrap();
+        assert!(pattern.matches(b"_class_]_tail"));
+        assert!(pattern.matches(b"_class_*_tail"));
+        assert!(!pattern.matches(b"_class_x_tail"));
 
-        let negated = compile_macho_glob_pattern(b"_class_[!]*]**").unwrap();
-        assert!(negated.matches("_class_x_tail"));
-        assert!(!negated.matches("_class_]_tail"));
-        assert!(!negated.matches("_class_*_tail"));
+        let negated = compile_pattern(b"_class_[!]*]**", GlobSyntax::MachO).unwrap();
+        assert!(negated.matches(b"_class_x_tail"));
+        assert!(!negated.matches(b"_class_]_tail"));
+        assert!(!negated.matches(b"_class_*_tail"));
     }
 
     #[test]
     fn macho_backslashes_are_literal() {
-        let pattern = compile_macho_glob_pattern(br"_prefix\**").unwrap();
-        assert!(pattern.matches(r"_prefix\"));
-        assert!(pattern.matches(r"_prefix\suffix"));
-        assert!(!pattern.matches("_prefixsuffix"));
-        assert!(!pattern.matches("_prefix*"));
+        let pattern = compile_pattern(br"_prefix\**", GlobSyntax::MachO).unwrap();
+        assert!(pattern.matches(br"_prefix\"));
+        assert!(pattern.matches(br"_prefix\suffix"));
+        assert!(!pattern.matches(b"_prefixsuffix"));
+        assert!(!pattern.matches(b"_prefix*"));
     }
 }

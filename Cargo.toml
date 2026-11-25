@@ -59,7 +59,6 @@ foldhash = { version = "0.2.0", default-features = false, features = ["std"] }
 gimli = { version = "0.34.0", default-features = false, features = [
   "read-all",
 ] }
-glob = { version = "0.3.2", default-features = false }
 hashbrown = { version = "0.17.1", default-features = false, features = [
   "default-hasher",
   "inline-more",
@@ -118,6 +117,11 @@ rand = { version = "0.10.2", default-features = false, features = [
 ] }
 rayon = { version = "1.5.1", default-features = false }
 regex = { version = "1.12.0", default-features = false, features = ["std"] }
+regex-automata = { version = "0.4", default-features = false, features = [
+  "std",
+  "meta",
+  "hybrid",
+] }
 regex-syntax = { version = "0.8.0", default-features = false }
 serde = { version = "1.0.225", default-features = false, features = ["derive"] }
 serde-keyvalue = { version = "0.1.0", default-features = false }

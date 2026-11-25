@@ -322,9 +322,6 @@ allow_apis = ["fs"]
 [pkg.linker-diff]
 allow_apis = ["fs"]
 
-[pkg.glob]
-allow_apis = ["fs"]
-
 [pkg.proc-macro-crate]
 allow_apis = ["fs", "process"]
 

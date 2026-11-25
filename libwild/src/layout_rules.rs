@@ -6,9 +6,11 @@ use crate::arch::Architecture;
 use crate::error::Context;
 use crate::error::Result;
 use crate::expression_eval::evaluate_const;
+use crate::glob_match::GlobPattern;
 use crate::glob_match::GlobPatternType;
+use crate::glob_match::GlobSyntax;
 use crate::glob_match::analyze_glob_pattern;
-use crate::glob_match::compile_glob_pattern;
+use crate::glob_match::compile_pattern;
 use crate::glob_match::unescape_pattern;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
@@ -30,7 +32,6 @@ use crate::parsing::SymbolPlacement;
 use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::platform::SectionHeader;
-use glob::Pattern;
 use hashbrown::HashTable;
 use std::borrow::Cow;
 
@@ -94,7 +95,7 @@ pub(crate) enum SectionNameMatcher<'data> {
 
     /// Matches sections whose name matches the glob pattern. The byte slice is the
     /// literal prefix used as hash table key.
-    Glob(&'data [u8], Pattern),
+    Glob(&'data [u8], GlobPattern),
 }
 
 /// Return the literal byte prefix of this matcher, used for hash table keying.
@@ -115,7 +116,7 @@ pub(crate) struct SectionRule<'data> {
 
     /// Pre-compiled glob pattern for matching input filenames. `None` means the rule matches all
     /// files.
-    input_file_pattern: Option<Pattern>,
+    input_file_pattern: Option<GlobPattern>,
 
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
@@ -582,15 +583,17 @@ impl<'data> SectionRule<'data> {
         input_file_pattern: Option<&'data [u8]>,
         outcome: SectionRuleOutcome,
     ) -> Result<Self> {
-        let compiled_file_pattern = input_file_pattern.map(compile_glob_pattern).transpose()?;
+        let compiled_file_pattern = input_file_pattern
+            .map(|pattern| compile_pattern(pattern, GlobSyntax::Gnu))
+            .transpose()?;
 
         let name_matcher = match analyze_glob_pattern(pattern) {
             GlobPatternType::Exact => SectionNameMatcher::Exact(Cow::Borrowed(pattern)),
             GlobPatternType::EscapedExact => {
-                SectionNameMatcher::Exact(Cow::Owned(unescape_pattern(pattern)))
+                SectionNameMatcher::Exact(Cow::Owned(unescape_pattern(pattern)?))
             }
             GlobPatternType::Star | GlobPatternType::NonStar => {
-                let compiled_pattern = compile_glob_pattern(pattern)?;
+                let compiled_pattern = compile_pattern(pattern, GlobSyntax::Gnu)?;
 
                 SectionNameMatcher::Glob(pattern, compiled_pattern)
             }
@@ -609,12 +612,7 @@ impl<'data> SectionRule<'data> {
         let section_matches = match &self.name_matcher {
             SectionNameMatcher::Exact(name) => section_name == name.as_ref(),
             SectionNameMatcher::Prefix(prefix) => section_name.starts_with(prefix),
-            SectionNameMatcher::Glob(_, pattern)
-                if let Ok(name_str) = std::str::from_utf8(section_name) =>
-            {
-                pattern.matches(name_str)
-            }
-            SectionNameMatcher::Glob(_, _) => false,
+            SectionNameMatcher::Glob(_, pattern) => pattern.matches(section_name),
         };
 
         if !section_matches {
@@ -631,12 +629,7 @@ impl<'data> SectionRule<'data> {
             return false;
         };
 
-        // Convert the filename bytes to a string for glob matching.
-        let Ok(name_str) = std::str::from_utf8(name) else {
-            return false;
-        };
-
-        pattern.matches(name_str)
+        pattern.matches(name)
     }
 
     pub(crate) const fn exact_section_keep(
