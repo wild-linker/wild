@@ -552,6 +552,7 @@ impl Platform for Coff {
         _output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
         _should_emit_linker_symbols: bool,
+        _linker_scripts: &[crate::parsing::ProcessedLinkerScript<Self>],
     ) {
         // The undefined symbol must always be symbol 0.
         symbols

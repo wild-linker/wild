@@ -825,6 +825,7 @@ pub(crate) trait Platform:
         output_kind: OutputKind,
         args: &Self::Args,
         should_emit_linker_symbols: bool,
+        linker_scripts: &[crate::parsing::ProcessedLinkerScript<Self>],
     );
 
     fn built_in_section_infos<'data>()

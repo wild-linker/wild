@@ -238,8 +238,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     pub(crate) fn add_section(&mut self, section_id: OutputSectionId) {
         let section_info = self.output_sections.output_info(section_id);
         if self.first_section.is_none()
-            && section_id != crate::output_section_id::FILE_HEADER
-            && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&section_id)
+            && !section_id.is_header::<P>()
             && section_info.section_attributes.is_alloc()
         {
             self.first_section = Some(section_id);
@@ -645,6 +644,10 @@ impl OutputSectionId {
 
     pub(crate) fn is_regular<P: Platform>(self) -> bool {
         self.0 >= regular_section_base::<P>().0
+    }
+
+    pub(crate) fn is_header<P: Platform>(self) -> bool {
+        self == FILE_HEADER || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&self)
     }
 
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
@@ -1075,10 +1078,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                     return;
                 }
 
-                if id == FILE_HEADER
-                    || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id)
-                    || Some(id) == P::RELRO_PADDING_SECTION_ID
-                {
+                if id.is_header::<P>() || Some(id) == P::RELRO_PADDING_SECTION_ID {
                     return;
                 } else if id.as_usize() < num_built_in_sections::<P>()
                     && let Some(identity) = self.identity(id)
@@ -1369,9 +1369,6 @@ impl<'data> OutputOrder<'data> {
     }
 
     fn init_file_order<P: Platform>(&mut self, output_sections: &OutputSections<'data, P>) {
-        let is_regular =
-            |id| id != FILE_HEADER && !P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id);
-
         let is_alloc = |id| {
             output_sections
                 .section_flags(output_sections.primary_output_section(id))
@@ -1380,7 +1377,7 @@ impl<'data> OutputOrder<'data> {
 
         let last_alloc_idx = if self.has_custom_layout {
             self.events.iter().rposition(|event| {
-                matches!(event, OrderEvent::Section(id) if is_regular(*id) && is_alloc(*id))
+                matches!(event, OrderEvent::Section(id) if !id.is_header::<P>() && is_alloc(*id))
             })
         } else {
             None
@@ -1394,7 +1391,7 @@ impl<'data> OutputOrder<'data> {
                 continue;
             };
 
-            let regular = is_regular(id);
+            let regular = !id.is_header::<P>();
             let alloc = is_alloc(id);
 
             if regular && alloc {

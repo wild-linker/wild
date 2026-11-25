@@ -56,6 +56,7 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
 use crate::part_id::PartId;
 use crate::platform;
@@ -1513,6 +1514,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         output_kind: OutputKind,
         args: &ElfArgs,
         should_emit_linker_symbols: bool,
+        linker_scripts: &[ProcessedLinkerScript<Self>],
     ) {
         // The undefined symbol must always be symbol 0.
         symbols
@@ -1571,9 +1573,11 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             ))
             .hide();
 
-        symbols
-            .section_start(crate::output_section_id::FILE_HEADER, "__ehdr_start")
-            .hide();
+        if Self::should_map_file_header(linker_scripts.iter()) {
+            symbols
+                .section_start(crate::output_section_id::FILE_HEADER, "__ehdr_start")
+                .hide();
+        }
 
         symbols
             .section_start(crate::output_section_id::FILE_HEADER, "__dso_handle")
@@ -3281,8 +3285,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
         };
 
-        builder.add_section(crate::output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::PROGRAM_HEADERS);
+        if Self::should_map_file_header(linker_scripts.iter().map(|script| &script.parsed)) {
+            builder.add_section(crate::output_section_id::FILE_HEADER);
+            builder.add_section(output_section_id::PROGRAM_HEADERS);
+        } else {
+            // Add header sections without creating a LOAD segment, otherwise we'll end up putting
+            // them at the default base address which might cause them to overlap with other
+            // content.
+            builder.push_event(OrderEvent::Section(crate::output_section_id::FILE_HEADER));
+            builder.push_event(OrderEvent::Section(output_section_id::PROGRAM_HEADERS));
+        }
 
         if let Some(first_alloc_id) = first_alloc {
             let sec_info = output_sections.output_info(first_alloc_id);
@@ -6882,6 +6894,28 @@ pub(crate) struct BuiltInSectionDetails<C: ElfClass> {
 }
 
 impl<C: ElfClass> Elf<C> {
+    fn should_map_file_header<'scope, 'data: 'scope>(
+        linker_scripts: impl Iterator<Item = &'scope ProcessedLinkerScript<'data, Self>>,
+    ) -> bool {
+        let mut has_custom_phdrs = false;
+        let mut has_filehdr = false;
+        let mut has_sections = false;
+        let mut has_memory_regions = false;
+
+        for script in linker_scripts {
+            has_custom_phdrs |= !script.program_headers.is_empty();
+            has_filehdr |= script.program_headers.iter().any(|phdr| phdr.has_filehdr);
+            has_sections |= !script.ordered_sections.is_empty();
+            has_memory_regions |= !script.memory_regions.is_empty();
+        }
+
+        if has_custom_phdrs {
+            has_filehdr
+        } else {
+            !(has_sections && has_memory_regions)
+        }
+    }
+
     const DEFAULT_DEFS: BuiltInSectionDetails<C> = BuiltInSectionDetails {
         kind: Self::primary_section(&[]),
         section_flags: SectionFlags(0),

@@ -425,6 +425,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                     self.args,
                     self.output_kind,
                     !has_section_table,
+                    &processed_linker_scripts,
                 )?));
         }
 
