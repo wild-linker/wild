@@ -135,17 +135,13 @@ pub fn run(args: Args) -> error::Result {
 
 /// Like [`run`], using the supplied filesystem for linker inputs and outputs.
 pub fn run_with_file_system<F: FileSystem>(mut args: Args, file_system: F) -> error::Result {
-    let _thread_guard = timing::enter_linker_thread();
-    let thread_pool = args.common_mut().build_thread_pool()?;
-    thread_pool.install(move || -> error::Result {
+    args.with_thread_pool(move |args| {
         let linker = Linker::with_file_system(file_system);
-        linker.run(&args)?;
+        linker.run(args)?;
         drop(linker);
         timing::finalise_perfetto_trace()?;
         Ok(())
-    })?;
-
-    Ok(())
+    })
 }
 
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
@@ -236,6 +232,7 @@ impl<F: FileSystem> Linker<F> {
     /// the value of `--threads` in `args` has no effect. If you want a thread pool configured from
     /// the supplied arguments, use the top-level [`run`] function instead, which creates such a
     /// pool, runs the linker in it, then tears it down together with other associated resources.
+    /// Alternatively, you can use [`Args::with_thread_pool`] then call this function.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
         args: &'layout_inputs Args,
