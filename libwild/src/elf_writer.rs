@@ -2368,6 +2368,35 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
     map
 }
 
+fn active_internal_symbols<'a, C: ElfClass>(
+    internal_symbols: &'a InternalSymbols<elf::Elf<C>>,
+    layout: &'a ElfLayout<C>,
+) -> impl Iterator<
+    Item = (
+        SymbolId,
+        &'a InternalSymDefInfo<'a, elf::Elf<C>>,
+        Resolution<elf::Elf<C>>,
+        bool,
+    ),
+> + 'a {
+    internal_symbols
+        .symbol_definitions
+        .iter()
+        .enumerate()
+        .filter_map(move |(local_index, def_info)| {
+            if def_info.name.is_empty() {
+                return None;
+            }
+            let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
+            if !layout.symbol_db.is_canonical(symbol_id) {
+                return None;
+            }
+            let resolution = *layout.local_symbol_resolution(symbol_id)?;
+            let is_local = platform::Symbol::is_hidden(&def_info.symbol);
+            Some((symbol_id, def_info, resolution, is_local))
+        })
+}
+
 fn assign_internal_symbol_indices<C: ElfClass>(
     internal_symbols: &InternalSymbols<elf::Elf<C>>,
     layout: &ElfLayout<C>,
@@ -2376,18 +2405,7 @@ fn assign_internal_symbol_indices<C: ElfClass>(
     local_base: &mut u32,
     group_global_base: &mut u32,
 ) {
-    for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
-        if def_info.name.is_empty() {
-            continue;
-        }
-        let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
-        if !layout.symbol_db.is_canonical(symbol_id) {
-            continue;
-        }
-        if layout.local_symbol_resolution(symbol_id).is_none() {
-            continue;
-        }
-        let is_local = platform::Symbol::is_hidden(&def_info.symbol);
+    for (symbol_id, _, _, is_local) in active_internal_symbols(internal_symbols, layout) {
         if is_local {
             map[symbol_id.as_usize() - start_symbol_index] = Some(*local_base);
             *local_base += 1;
@@ -2398,23 +2416,28 @@ fn assign_internal_symbol_indices<C: ElfClass>(
     }
 }
 
+fn emitted_section_symbols<'a, C: ElfClass>(
+    layout: &'a ElfLayout<C>,
+) -> impl Iterator<Item = (OutputSectionId, u32)> + 'a {
+    (&layout.output_order).into_iter().filter_map(|event| {
+        let OrderEvent::Section(section_id) = event else {
+            return None;
+        };
+        let shndx = layout.output_sections.output_index_of_section(section_id)?;
+        if !layout
+            .output_sections
+            .will_emit_section_symbol_for_partial_objects(section_id)
+        {
+            return None;
+        }
+        Some((section_id, shndx))
+    })
+}
+
 fn build_section_sym_indices<C: ElfClass>(layout: &ElfLayout<C>) -> (OutputSectionMap<u32>, u32) {
     let mut map = OutputSectionMap::with_size(layout.output_sections.num_sections());
     let mut next_sym_idx: u32 = 1;
-    for event in &layout.output_order {
-        let OrderEvent::Section(section_id) = event else {
-            continue;
-        };
-        if layout
-            .output_sections
-            .output_index_of_section(section_id)
-            .is_none()
-            || !layout
-                .output_sections
-                .will_emit_section_symbol_for_partial_objects(section_id)
-        {
-            continue;
-        }
+    for (section_id, _) in emitted_section_symbols(layout) {
         *map.get_mut(section_id) = next_sym_idx;
         next_sym_idx += 1;
     }
@@ -5353,20 +5376,9 @@ fn write_section_symbols<C: ElfClass>(
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
     layout: &ElfLayout<C>,
 ) -> Result {
-    for event in &layout.output_order {
-        let OrderEvent::Section(section_id) = event else {
-            continue;
-        };
-        let Some(shndx) = layout.output_sections.output_index_of_section(section_id) else {
-            continue;
-        };
-        if !layout
-            .output_sections
-            .will_emit_section_symbol_for_partial_objects(section_id)
-        {
-            continue;
-        }
-        let address = if layout.args().should_output_partial_object() {
+    let is_partial = layout.args().should_output_partial_object();
+    for (section_id, shndx) in emitted_section_symbols(layout) {
+        let address = if is_partial {
             0
         } else {
             layout.section_layouts.get(section_id).mem_offset
@@ -6469,18 +6481,9 @@ fn write_internal_symbols<C: ElfClass>(
     layout: &ElfLayout<C>,
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
 ) -> Result {
-    for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
-        if def_info.name.is_empty() {
-            continue;
-        }
-        let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
-        if !layout.symbol_db.is_canonical(symbol_id) {
-            continue;
-        }
-        let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
-            continue;
-        };
-
+    for (symbol_id, def_info, resolution, is_local) in
+        active_internal_symbols(internal_symbols, layout)
+    {
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
         let (shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
@@ -6492,24 +6495,18 @@ fn write_internal_symbols<C: ElfClass>(
         }
 
         // PROVIDE_HIDDEN symbols should be local, not global
-        let st_bind = if platform::Symbol::is_hidden(&def_info.symbol) {
+        let st_bind = if is_local {
             object::elf::STB_LOCAL
         } else {
             object::elf::STB_GLOBAL
         };
 
         let entry = symbol_writer
-            .define_symbol(
-                st_bind == object::elf::STB_LOCAL,
-                shndx,
-                address,
-                0,
-                Some(symbol_name.bytes()),
-            )
+            .define_symbol(is_local, shndx, address, 0, Some(symbol_name.bytes()))
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
         entry.set_binding_and_type(st_bind, st_type);
-        if platform::Symbol::is_hidden(&def_info.symbol) {
+        if is_local {
             entry.set_other(object::elf::STV_HIDDEN.into());
         }
     }
