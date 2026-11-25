@@ -6,7 +6,7 @@ use crate::arch::Architecture;
 use crate::error::Context;
 use crate::error::Result;
 use crate::expression_eval::evaluate_const;
-use crate::glob_match::GlobPattern;
+use crate::glob_match::Pattern;
 use crate::glob_match::GlobPatternType;
 use crate::glob_match::GlobSyntax;
 use crate::glob_match::analyze_glob_pattern;
@@ -95,7 +95,7 @@ pub(crate) enum SectionNameMatcher<'data> {
 
     /// Matches sections whose name matches the glob pattern. The byte slice is the
     /// literal prefix used as hash table key.
-    Glob(&'data [u8], GlobPattern),
+    Glob(&'data [u8], Pattern),
 }
 
 /// Return the literal byte prefix of this matcher, used for hash table keying.
@@ -116,7 +116,7 @@ pub(crate) struct SectionRule<'data> {
 
     /// Pre-compiled glob pattern for matching input filenames. `None` means the rule matches all
     /// files.
-    input_file_pattern: Option<GlobPattern>,
+    input_file_pattern: Option<Pattern>,
 
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,

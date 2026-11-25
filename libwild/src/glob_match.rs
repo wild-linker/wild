@@ -20,13 +20,13 @@ pub(crate) enum GlobSyntax {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct GlobPattern {
+pub(crate) struct Pattern {
     #[cfg(test)]
     source: Vec<u8>,
     regex: Regex,
 }
 
-impl GlobPattern {
+impl Pattern {
     pub(crate) fn matches(&self, name: &[u8]) -> bool {
         self.regex.is_match(name)
     }
@@ -197,16 +197,13 @@ fn parse_brackets(
     Ok(members)
 }
 
-pub(crate) fn compile_pattern(
-    token: &[u8],
-    syntax: GlobSyntax,
-) -> Result<GlobPattern, &'static str> {
+pub(crate) fn compile_pattern(token: &[u8], syntax: GlobSyntax) -> Result<Pattern, &'static str> {
     let items = parse_glob(token, syntax)?;
     let regex = Regex::builder()
         .configure(Regex::config().utf8_empty(false))
         .build_from_hir(&Hir::concat(items))
         .map_err(|_| "Failed to compile glob pattern")?;
-    Ok(GlobPattern {
+    Ok(Pattern {
         #[cfg(test)]
         source: token.into(),
         regex,

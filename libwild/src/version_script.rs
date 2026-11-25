@@ -7,9 +7,9 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::glob_match::GlobPattern;
 use crate::glob_match::GlobPatternType;
 use crate::glob_match::GlobSyntax;
+use crate::glob_match::Pattern;
 use crate::glob_match::analyze_glob_pattern;
 use crate::glob_match::compile_pattern;
 use crate::glob_match::unescape_pattern;
@@ -86,9 +86,9 @@ pub(crate) enum SymbolMatcher<'data> {
     // Exact match with escape sequences already unescaped.
     EscapedExact(Vec<u8>),
     // A glob pattern with a '*' token.
-    StarGlob(GlobPattern),
+    StarGlob(Pattern),
     // A glob pattern without any '*' token.
-    NonstarGlob(GlobPattern),
+    NonstarGlob(Pattern),
     /// Glob pattern equal to '*'
     MatchesAll,
 }
@@ -97,8 +97,8 @@ pub(crate) enum SymbolMatcher<'data> {
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
-    star_globs: Vec<GlobPattern>,
-    nonstar_globs: Vec<GlobPattern>,
+    star_globs: Vec<Pattern>,
+    nonstar_globs: Vec<Pattern>,
     matches_all: bool,
 }
 
@@ -843,7 +843,7 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(GlobPattern::source),
+                .map(Pattern::source),
             [b"bar*".as_slice(), b"best_*_fn*", b"*_wrapper"],
         );
 
@@ -892,7 +892,7 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(GlobPattern::source),
+                .map(Pattern::source),
             [b"old*".as_slice()],
         );
 
@@ -958,7 +958,7 @@ mod tests {
                 .cxx
                 .star_globs
                 .iter()
-                .map(GlobPattern::source),
+                .map(Pattern::source),
             [b"ns::*".as_slice()],
         );
 
@@ -1147,7 +1147,7 @@ mod tests {
             .general
             .star_globs
             .iter()
-            .map(GlobPattern::source)
+            .map(Pattern::source)
             .collect();
 
         assert!(star_patterns.contains(&b"b*".as_slice()));
@@ -1158,7 +1158,7 @@ mod tests {
             .general
             .nonstar_globs
             .iter()
-            .map(GlobPattern::source)
+            .map(Pattern::source)
             .collect();
 
         assert!(nonstar_patterns.contains(&b"f?".as_slice()));
