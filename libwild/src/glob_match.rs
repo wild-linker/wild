@@ -264,4 +264,18 @@ mod tests {
         assert!(!pattern.matches(b"_prefixsuffix"));
         assert!(!pattern.matches(b"_prefix*"));
     }
+
+    #[test]
+    fn gnu_glob_errors() {
+        assert!(parse_glob(br"prefix\", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(b"prefix]", GlobSyntax::Gnu).is_err());
+
+        assert!(parse_glob(b"[", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(b"[!", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(b"[a", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(b"[a-", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(b"[a-z", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(br"[\", GlobSyntax::Gnu).is_err());
+        assert!(parse_glob(br"[a-\", GlobSyntax::Gnu).is_err());
+    }
 }
