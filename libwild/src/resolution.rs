@@ -1773,6 +1773,8 @@ fn resolve_section<'data, P: Platform>(
 
     let rule_outcome = if args.should_output_partial_object() {
         P::lookup_for_partial_link(section_name, input_section, args)
+    } else if args.emit_relocs() && input_section.is_crel() {
+        bail!("CREL with --emit-relocs isn't yet supported: {obj}");
     } else if args.emit_relocs() && input_section.is_rela() {
         SectionRuleOutcome::Custom
     } else {

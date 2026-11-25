@@ -4750,6 +4750,10 @@ macro_rules! impl_section_header {
                 self.sh_type(LittleEndian) == sht::RELA
             }
 
+            fn is_crel(&self) -> bool {
+                self.sh_type(LittleEndian) == object::elf::SHT_CREL
+            }
+
             fn relocation_target(&self) -> Option<object::SectionIndex> {
                 if self.sh_type(LittleEndian) == sht::RELA {
                     Some(object::SectionIndex(self.sh_info(LittleEndian) as usize))

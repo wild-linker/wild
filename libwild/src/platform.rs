@@ -1650,6 +1650,10 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    fn is_crel(&self) -> bool {
+        false
+    }
+
     fn relocation_target(&self) -> Option<object::SectionIndex> {
         None
     }
