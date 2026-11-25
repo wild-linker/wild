@@ -30,19 +30,19 @@ use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct MatchRules<'data> {
     pub(crate) general: BasicMatchRules<'data>,
     pub(crate) cxx: BasicMatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct VersionBody<'data> {
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct Version<'data> {
     pub(crate) name: &'data [u8],
     pub(crate) parent_index: Option<u16>,
@@ -50,7 +50,7 @@ pub(crate) struct Version<'data> {
 }
 
 /// A general version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct RegularVersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
@@ -65,7 +65,7 @@ pub(crate) struct RustVersionScript<'data> {
     pub(crate) global: Vec<&'data [u8]>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 /// Possibly specialized version script.
 /// See `RegularVersionScript` for the general case.
 pub(crate) enum VersionScript<'data> {
@@ -79,7 +79,7 @@ impl Default for VersionScript<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
@@ -93,7 +93,7 @@ pub(crate) enum SymbolMatcher<'data> {
     MatchesAll,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
@@ -419,6 +419,10 @@ impl<'data> VersionScript<'data> {
         parse_version_script
             .parse(BStr::new(data.raw))
             .context("Failed to parse version script")
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        matches!(self, Self::Regular(script) if script.versions.is_empty())
     }
 
     pub(crate) fn version_count(&self) -> u16 {

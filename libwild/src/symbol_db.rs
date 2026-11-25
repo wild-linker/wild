@@ -1075,7 +1075,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         for script in linker_scripts {
             // Check if the linker script contains a VERSION command
             if let Some(version_content) = script.script.get_version_script_content() {
-                if self.version_script != VersionScript::default() {
+                if !self.version_script.is_empty() {
                     bail!("Multiple version scripts provided");
                 }
 

@@ -21,8 +21,8 @@ pub(crate) enum GlobSyntax {
 
 #[derive(Clone, Debug)]
 pub(crate) struct GlobPattern {
+    #[cfg(test)]
     source: Vec<u8>,
-    syntax: GlobSyntax,
     regex: Regex,
 }
 
@@ -36,14 +36,6 @@ impl GlobPattern {
         &self.source
     }
 }
-
-impl PartialEq for GlobPattern {
-    fn eq(&self, other: &Self) -> bool {
-        self.syntax == other.syntax && self.source == other.source
-    }
-}
-
-impl Eq for GlobPattern {}
 
 pub(crate) enum GlobPatternType {
     Exact,
@@ -215,8 +207,8 @@ pub(crate) fn compile_pattern(
         .build_from_hir(&Hir::concat(items))
         .map_err(|_| "Failed to compile glob pattern")?;
     Ok(GlobPattern {
+        #[cfg(test)]
         source: token.into(),
-        syntax,
         regex,
     })
 }
