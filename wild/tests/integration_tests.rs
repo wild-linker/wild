@@ -2435,8 +2435,18 @@ struct ExpectedSectionBytes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedReloc {
     section_name: String,
-    offset_symbol: String,
-    target_symbol: String,
+    assertions: RelocationAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelocationAssertions {
+    at: Option<String>,
+    offset: Option<u64>,
+    target: String,
+    #[serde(rename = "type")]
+    r_type: Option<u32>,
+    addend: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3305,20 +3315,18 @@ fn process_directive(
             });
         }
         "ExpectReloc" => {
-            let mut parts = arg.split_whitespace();
-            let section_name = parts
-                .next()
-                .context("ExpectReloc requires section_name, offset_symbol, target_symbol")?;
-            let offset_symbol = parts.next().context("ExpectReloc requires offset_symbol")?;
-            let target_symbol = parts.next().context("ExpectReloc requires target_symbol")?;
+            let (section_name, props) = arg
+                .trim()
+                .split_once(char::is_whitespace)
+                .context("ExpectReloc requires a section name and properties")?;
+            let assertions: RelocationAssertions = serde_keyvalue::from_key_values(props.trim())?;
             ensure!(
-                parts.next().is_none(),
-                "ExpectReloc takes exactly 3 arguments: section_name offset_symbol target_symbol"
+                assertions.at.is_some() != assertions.offset.is_some(),
+                "ExpectReloc requires exactly one of `at` or `offset`"
             );
             config.assertions.expected_relocs.push(ExpectedReloc {
                 section_name: section_name.to_owned(),
-                offset_symbol: offset_symbol.to_owned(),
-                target_symbol: target_symbol.to_owned(),
+                assertions,
             });
         }
         "RelrCount" => {
@@ -6767,39 +6775,67 @@ impl Assertions {
             let section = obj
                 .section_by_name(&expected.section_name)
                 .with_context(|| format!("Section `{}` not found", expected.section_name))?;
-            let offset_sym = obj
-                .symbols()
-                .find(|s| s.name() == Ok(&expected.offset_symbol))
-                .with_context(|| {
-                    format!("ExpectReloc symbol `{}` not found", expected.offset_symbol)
-                })?;
-            let expected_offset = offset_sym.address();
-
+            let expected_offset = if let Some(offset) = expected.assertions.offset {
+                section.address() + offset
+            } else {
+                let name = expected
+                    .assertions
+                    .at
+                    .as_deref()
+                    .expect("validated location");
+                obj.symbols()
+                    .find(|s| s.name() == Ok(name))
+                    .with_context(|| format!("ExpectReloc symbol `{name}` not found"))?
+                    .address()
+            };
             let mut actual = Vec::new();
             let mut found = false;
             for (offset, reloc) in section.relocations() {
                 let target_name = match reloc.target() {
-                    object::RelocationTarget::Symbol(sym_idx) => obj
-                        .symbol_by_index(sym_idx)
-                        .and_then(|s| s.name().map(str::to_owned))?,
+                    object::RelocationTarget::Symbol(sym_idx) => {
+                        let symbol = obj.symbol_by_index(sym_idx)?;
+                        if symbol.kind() == object::SymbolKind::Section {
+                            obj.section_by_index(
+                                symbol
+                                    .section_index()
+                                    .context("Section symbol has no section")?,
+                            )?
+                            .name()?
+                        } else {
+                            symbol.name()?
+                        }
+                    }
                     _ => continue,
                 };
-                if target_name == expected.target_symbol {
-                    if offset == expected_offset {
+
+                if target_name == expected.assertions.target {
+                    let r_type = match reloc.flags() {
+                        object::RelocationFlags::Elf { r_type } => Some(r_type.0),
+                        _ => None,
+                    };
+                    if offset == expected_offset
+                        && expected.assertions.r_type.is_none_or(|t| r_type == Some(t))
+                        && expected
+                            .assertions
+                            .addend
+                            .is_none_or(|a| reloc.addend() == a)
+                    {
                         found = true;
                         break;
                     } else {
-                        actual.push(format!("{offset:#x} -> {target_name}"));
+                        actual.push(format!(
+                            "{offset:#x} -> {target_name}, type={r_type:?}, addend={}",
+                            reloc.addend()
+                        ));
                     }
                 }
             }
 
             ensure!(
                 found,
-                "Expected relocation in `{}` at `{}` ({expected_offset:#x}) referencing `{}`, got: {:?}",
+                "Expected relocation in `{}` at {expected_offset:#x} matching {:?}, got: {:?}",
                 expected.section_name,
-                expected.offset_symbol,
-                expected.target_symbol,
+                expected.assertions,
                 actual,
             );
         }

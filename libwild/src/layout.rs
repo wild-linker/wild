@@ -5158,6 +5158,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         );
         common.store_section_attributes(part_id, header, resources.output_sections);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
+        self.load_relocation_section(common, section_index, resources)?;
 
         Ok(())
     }

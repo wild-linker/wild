@@ -215,6 +215,32 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
             .is_ok_and(|sym| sym.st_other().contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
+    fn relaxed_relocation_type(
+        raw_type: object::elf::RelocationType,
+        input_offset: u64,
+        relax_deltas: Option<&SectionRelaxDeltas>,
+    ) -> object::elf::RelocationType {
+        if let Some(deltas) = relax_deltas {
+            match raw_type {
+                object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
+                    if C::ADDRESS_SIZE == 4 && deltas.delta_bytes_at(input_offset + 2) == 6 {
+                        return object::elf::R_RISCV_RVC_JUMP;
+                    } else if deltas.delta_bytes_at(input_offset + 4) == 4 {
+                        return object::elf::R_RISCV_JAL;
+                    }
+                }
+                object::elf::R_RISCV_HI20 if deltas.has_delta_at(input_offset) => {
+                    return object::elf::R_RISCV_NONE;
+                }
+                object::elf::R_RISCV_RELAX if deltas.has_delta_at(input_offset) => {
+                    return object::elf::R_RISCV_NONE;
+                }
+                _ => {}
+            }
+        }
+        raw_type
+    }
+
     #[inline(always)]
     fn new_relaxation(
         relocation_kind: object::elf::RelocationType,

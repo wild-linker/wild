@@ -297,6 +297,14 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Fill `buf` with NOP padding.
     fn fill_nop_padding(_buf: &mut [u8]) {}
 
+    fn relaxed_relocation_type(
+        raw_type: <Self::Platform as Platform>::RelocationInfo,
+        _input_offset: u64,
+        _relax_deltas: Option<&SectionRelaxDeltas>,
+    ) -> <Self::Platform as Platform>::RelocationInfo {
+        raw_type
+    }
+
     fn process_riscv_attributes<'data>(
         _object: &<Self::Platform as Platform>::File<'data>,
         _format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
