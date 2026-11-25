@@ -828,6 +828,20 @@ impl Platform for Coff {
         kind == FileKind::CoffObject
     }
 
+    fn should_sort_sorted_section(section_name: &[u8]) -> bool {
+        section_name.starts_with(b".idata$")
+    }
+
+    fn sort_sorted_sections(sections: &mut [layout::HarvestedSortedSection<'_>]) {
+        sections.sort_by_key(|section| {
+            (
+                section.section_name,
+                section.archive_name.unwrap_or_default(),
+                section.member_name.unwrap_or_default(),
+            )
+        });
+    }
+
     fn section_identity<'data>(
         _file: &Self::File<'data>,
         name: SectionName<'data>,

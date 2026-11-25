@@ -1350,6 +1350,16 @@ pub(crate) trait Platform:
         _output_sections: &mut OutputSections<'_, Self>,
     ) {
     }
+
+    /// Returns whether an input section matched by a built-in sorted-section rule should be ordered
+    /// by `sort_sorted_sections`.
+    fn should_sort_sorted_section(_section_name: &[u8]) -> bool {
+        false
+    }
+
+    fn sort_sorted_sections(sections: &mut [layout::HarvestedSortedSection<'_>]) {
+        sections.sort_by_key(|section| section.section_name);
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

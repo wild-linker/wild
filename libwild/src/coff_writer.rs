@@ -1215,12 +1215,30 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
 
 fn write_epilogue<A: Arch<Platform = Coff>>(
     _epilogue: &EpilogueLayout<Coff>,
-    _buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     _table_writer: &mut TableWriter<'_, '_>,
-    _layout: &CoffLayout<'_>,
-    _trace: &TraceOutput,
+    layout: &CoffLayout<'_>,
+    trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
+
+    for sorted_section in &layout.script_sorted_sections {
+        let FileLayout::Object(object) = layout.file_layout(sorted_section.file_id) else {
+            unreachable!();
+        };
+
+        if let SectionSlot::Sorted(sec) = &object.sections[sorted_section.section_index.as_usize()]
+        {
+            write_object_section::<A>(
+                object,
+                layout,
+                sec.section,
+                sorted_section.section_index.into(),
+                buffers,
+                trace,
+            )?;
+        }
+    }
 
     Ok(())
 }
