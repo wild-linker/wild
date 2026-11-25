@@ -15,7 +15,11 @@ use crate::layout::HandlerData;
 use crate::layout::InputSectionPositions;
 use crate::layout::MemoryRegion;
 use crate::layout::OutputRecordLayout;
+use crate::linker_script::ArithmeticOp;
+use crate::linker_script::CompareOp;
 use crate::linker_script::Expression;
+use crate::linker_script::MinMaxOp;
+use crate::linker_script::UnaryOp;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -184,6 +188,69 @@ fn evaluate_symbol_value<P: Platform>(
     }
 }
 
+impl ArithmeticOp {
+    fn check_rhs(self, right: u64) -> Result {
+        if right == 0 {
+            match self {
+                Self::Divide => bail!("Division by zero in linker script expression"),
+                Self::Modulo => bail!("Modulo by zero in linker script expression"),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(self, left: u64, right: u64) -> Result<u64> {
+        self.check_rhs(right)?;
+        Ok(match self {
+            Self::Add => left.wrapping_add(right),
+            Self::Subtract => left.wrapping_sub(right),
+            Self::Multiply => left.wrapping_mul(right),
+            Self::Divide => (left as i64).wrapping_div(right as i64) as u64,
+            Self::Modulo => (left as i64).wrapping_rem(right as i64) as u64,
+            Self::BitwiseAnd => left & right,
+            Self::BitwiseOr => left | right,
+            Self::BitwiseXor => left ^ right,
+            Self::LeftShift => left.wrapping_shl(right as u32),
+            Self::RightShift => left.wrapping_shr(right as u32),
+        })
+    }
+}
+
+impl CompareOp {
+    fn apply(self, left: u64, right: u64) -> u64 {
+        match self {
+            Self::LessThan => u64::from(left < right),
+            Self::GreaterThan => u64::from(left > right),
+            Self::LessEqual => u64::from(left <= right),
+            Self::GreaterEqual => u64::from(left >= right),
+            Self::Equal => u64::from(left == right),
+            Self::NotEqual => u64::from(left != right),
+            Self::LogicalAnd => u64::from(left != 0 && right != 0),
+            Self::LogicalOr => u64::from(left != 0 || right != 0),
+        }
+    }
+}
+
+impl MinMaxOp {
+    fn apply(self, left: u64, right: u64) -> u64 {
+        match self {
+            Self::Min => left.min(right),
+            Self::Max => left.max(right),
+        }
+    }
+}
+
+impl UnaryOp {
+    fn apply(self, value: u64) -> u64 {
+        match self {
+            Self::LogicalNot => u64::from(value == 0),
+            Self::BitwiseNot => !value,
+            Self::Negate => value.wrapping_neg(),
+        }
+    }
+}
+
 fn arithmetic_binary_op(
     mut val_l: u64,
     mut kind_l: ExpressionValueKind,
@@ -191,7 +258,7 @@ fn arithmetic_binary_op(
     mut kind_r: ExpressionValueKind,
     current_section: Option<OutputSectionId>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    op: impl FnOnce(u64, u64) -> Result<u64>,
+    op: ArithmeticOp,
 ) -> Result<EvaluatedValue> {
     let is_in_section = current_section.is_some();
     let normalize_rel = |val: &mut u64, kind: &mut ExpressionValueKind, sec: OutputSectionId| {
@@ -260,7 +327,7 @@ fn arithmetic_binary_op(
     };
 
     Ok(EvaluatedValue {
-        value: op(val_l, val_r)?,
+        value: op.apply(val_l, val_r)?,
         value_kind,
     })
 }
@@ -272,7 +339,7 @@ fn compare_binary_op(
     kind_r: ExpressionValueKind,
     current_section: Option<OutputSectionId>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    op: impl FnOnce(u64, u64) -> bool,
+    op: CompareOp,
 ) -> EvaluatedValue {
     let to_address = |val: &mut u64, kind: ExpressionValueKind| {
         if let ExpressionValueKind::Relative(sec) = kind {
@@ -307,7 +374,7 @@ fn compare_binary_op(
         to_address(&mut val_r, kind_r);
     }
 
-    let res = op(val_l, val_r);
+    let res = op.apply(val_l, val_r);
 
     let value_kind = if current_section.is_some() {
         ExpressionValueKind::Number
@@ -316,7 +383,7 @@ fn compare_binary_op(
     };
 
     EvaluatedValue {
-        value: u64::from(res),
+        value: res,
         value_kind,
     }
 }
@@ -328,7 +395,7 @@ fn min_max_binary_op(
     r_kind: ExpressionValueKind,
     current_section: Option<OutputSectionId>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    op: impl FnOnce(u64, u64) -> u64,
+    op: MinMaxOp,
 ) -> EvaluatedValue {
     if let Some(curr_sec) = current_section
         && !l_kind.is_absolute()
@@ -346,7 +413,7 @@ fn min_max_binary_op(
         };
         let addr_l = to_addr(val_l, l_kind);
         let addr_r = to_addr(val_r, r_kind);
-        let res_addr = op(addr_l, addr_r);
+        let res_addr = op.apply(addr_l, addr_r);
         return EvaluatedValue {
             value: res_addr.wrapping_sub(curr_base),
             value_kind: ExpressionValueKind::Relative(curr_sec),
@@ -375,7 +442,7 @@ fn min_max_binary_op(
     };
 
     EvaluatedValue {
-        value: op(val_l, val_r),
+        value: op.apply(val_l, val_r),
         value_kind,
     }
 }
@@ -467,22 +534,6 @@ impl<'data, P: Platform> ExpressionContext<'_, 'data, P> {
         expr: &Expression<'data>,
         symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<SymbolValue>,
     ) -> Result<EvaluatedValue> {
-        macro_rules! eval_binary_op {
-            ($l:expr, $r:expr, $func:ident, $op:expr) => {{
-                let left = self.evaluate_value($l, symbol_resolution_callback)?;
-                let right = self.evaluate_value($r, symbol_resolution_callback)?;
-                $func(
-                    left.value,
-                    left.value_kind,
-                    right.value,
-                    right.value_kind,
-                    self.current_section(),
-                    self.section_layouts,
-                    $op,
-                )
-            }};
-        }
-
         match expr {
             Expression::Number(n) => Ok(EvaluatedValue::number(*n)),
             Expression::LocationCounter => evaluate_location(
@@ -502,46 +553,45 @@ impl<'data, P: Platform> ExpressionContext<'_, 'data, P> {
                     name,
                 )
             }
-            Expression::Add(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a.wrapping_add(b)))
+            Expression::Arithmetic(op, l, r) => {
+                let left = self.evaluate_value(l, symbol_resolution_callback)?;
+                let right = self.evaluate_value(r, symbol_resolution_callback)?;
+                arithmetic_binary_op(
+                    left.value,
+                    left.value_kind,
+                    right.value,
+                    right.value_kind,
+                    self.current_section(),
+                    self.section_layouts,
+                    *op,
+                )
             }
-            Expression::Subtract(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a.wrapping_sub(b)))
+            Expression::Compare(op, l, r) => {
+                let left = self.evaluate_value(l, symbol_resolution_callback)?;
+                let right = self.evaluate_value(r, symbol_resolution_callback)?;
+                Ok(compare_binary_op(
+                    left.value,
+                    left.value_kind,
+                    right.value,
+                    right.value_kind,
+                    self.current_section(),
+                    self.section_layouts,
+                    *op,
+                ))
             }
-            Expression::Multiply(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a.wrapping_mul(b)))
+            Expression::MinMax(op, l, r) => {
+                let left = self.evaluate_value(l, symbol_resolution_callback)?;
+                let right = self.evaluate_value(r, symbol_resolution_callback)?;
+                Ok(min_max_binary_op(
+                    left.value,
+                    left.value_kind,
+                    right.value,
+                    right.value_kind,
+                    self.current_section(),
+                    self.section_layouts,
+                    *op,
+                ))
             }
-            Expression::Divide(l, r) => eval_binary_op!(l, r, arithmetic_binary_op, |a, b| {
-                if b == 0 {
-                    bail!("Division by zero in linker script expression");
-                }
-                Ok(((a as i64).wrapping_div(b as i64)) as u64)
-            }),
-            Expression::Modulo(l, r) => eval_binary_op!(l, r, arithmetic_binary_op, |a, b| {
-                if b == 0 {
-                    bail!("Modulo by zero in linker script expression");
-                }
-                Ok(((a as i64).wrapping_rem(b as i64)) as u64)
-            }),
-
-            // Comparisons return 1 (true) or 0 (false)
-            Expression::LessThan(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a < b))
-            }
-            Expression::GreaterThan(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a > b))
-            }
-            Expression::LessEqual(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a <= b))
-            }
-            Expression::GreaterEqual(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a >= b))
-            }
-            Expression::Equal(l, r) => Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a == b)),
-            Expression::NotEqual(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a != b))
-            }
-
             Expression::Sizeof(name) => Ok(EvaluatedValue::number(section_size(
                 name,
                 self.section_layouts,
@@ -597,60 +647,24 @@ impl<'data, P: Platform> ExpressionContext<'_, 'data, P> {
                 };
                 Ok(evaluated)
             }
-            Expression::Min(l, r) => Ok(eval_binary_op!(l, r, min_max_binary_op, u64::min)),
-            Expression::Max(l, r) => Ok(eval_binary_op!(l, r, min_max_binary_op, u64::max)),
-            Expression::BitwiseAnd(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a & b))
-            }
-            Expression::BitwiseOr(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a | b))
-            }
-            Expression::BitwiseXor(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| Ok(a ^ b))
-            }
-            Expression::LeftShift(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| {
-                    Ok(a.wrapping_shl(b as u32))
-                })
-            }
-            Expression::RightShift(l, r) => {
-                eval_binary_op!(l, r, arithmetic_binary_op, |a, b| {
-                    Ok(a.wrapping_shr(b as u32))
-                })
-            }
-            Expression::LogicalAnd(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a != 0 && b != 0))
-            }
-            Expression::LogicalOr(l, r) => {
-                Ok(eval_binary_op!(l, r, compare_binary_op, |a, b| a != 0 || b != 0))
-            }
-
-            Expression::LogicalNot(e) => {
+            Expression::Unary(op, e) => {
                 let mut evaluated = self.evaluate_value(e, symbol_resolution_callback)?;
-                if self.current_section().is_none()
-                    && let Some(sec) = evaluated.section_id()
-                {
-                    evaluated.value = evaluated
-                        .value
-                        .wrapping_add(self.section_layouts.get(sec).mem_offset);
+                if matches!(op, UnaryOp::LogicalNot) {
+                    if self.current_section().is_none()
+                        && let Some(sec) = evaluated.section_id()
+                    {
+                        evaluated.value = evaluated
+                            .value
+                            .wrapping_add(self.section_layouts.get(sec).mem_offset);
+                    }
+                    evaluated.value_kind =
+                        if self.current_section().is_some() && !evaluated.is_absolute() {
+                            ExpressionValueKind::Number
+                        } else {
+                            ExpressionValueKind::Absolute
+                        };
                 }
-                evaluated.value_kind =
-                    if self.current_section().is_some() && !evaluated.is_absolute() {
-                        ExpressionValueKind::Number
-                    } else {
-                        ExpressionValueKind::Absolute
-                    };
-                evaluated.value = u64::from(evaluated.value == 0);
-                Ok(evaluated)
-            }
-            Expression::BitwiseNot(e) => {
-                let mut evaluated = self.evaluate_value(e, symbol_resolution_callback)?;
-                evaluated.value = !evaluated.value;
-                Ok(evaluated)
-            }
-            Expression::Negate(e) => {
-                let mut evaluated = self.evaluate_value(e, symbol_resolution_callback)?;
-                evaluated.value = evaluated.value.wrapping_neg();
+                evaluated.value = op.apply(evaluated.value);
                 Ok(evaluated)
             }
             Expression::Origin(name) => {
@@ -752,53 +766,10 @@ impl<'data, P: Platform> ExpressionContext<'_, 'data, P> {
 pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
     match expr {
         Expression::Number(n) => Ok(*n),
-        Expression::Add(l, r) => Ok(evaluate_const(l)?.wrapping_add(evaluate_const(r)?)),
-        Expression::Subtract(l, r) => Ok(evaluate_const(l)?.wrapping_sub(evaluate_const(r)?)),
-        Expression::Multiply(l, r) => Ok(evaluate_const(l)?.wrapping_mul(evaluate_const(r)?)),
-        Expression::Divide(l, r) => {
-            let divisor = evaluate_const(r)?;
-            if divisor == 0 {
-                bail!("Division by zero in linker script expression");
-            }
-            Ok(((evaluate_const(l)? as i64).wrapping_div(divisor as i64)) as u64)
-        }
-        Expression::Modulo(l, r) => {
-            let divisor = evaluate_const(r)?;
-            if divisor == 0 {
-                bail!("Modulo by zero in linker script expression");
-            }
-            Ok(((evaluate_const(l)? as i64).wrapping_rem(divisor as i64)) as u64)
-        }
-        Expression::LessThan(l, r) => Ok(u64::from(evaluate_const(l)? < evaluate_const(r)?)),
-        Expression::GreaterThan(l, r) => Ok(u64::from(evaluate_const(l)? > evaluate_const(r)?)),
-        Expression::LessEqual(l, r) => Ok(u64::from(evaluate_const(l)? <= evaluate_const(r)?)),
-        Expression::GreaterEqual(l, r) => Ok(u64::from(evaluate_const(l)? >= evaluate_const(r)?)),
-        Expression::Equal(l, r) => Ok(u64::from(evaluate_const(l)? == evaluate_const(r)?)),
-        Expression::NotEqual(l, r) => Ok(u64::from(evaluate_const(l)? != evaluate_const(r)?)),
-        Expression::Min(l, r) => Ok(evaluate_const(l)?.min(evaluate_const(r)?)),
-        Expression::Max(l, r) => Ok(evaluate_const(l)?.max(evaluate_const(r)?)),
-        Expression::BitwiseAnd(l, r) => Ok(evaluate_const(l)? & evaluate_const(r)?),
-        Expression::BitwiseOr(l, r) => Ok(evaluate_const(l)? | evaluate_const(r)?),
-        Expression::BitwiseXor(l, r) => Ok(evaluate_const(l)? ^ evaluate_const(r)?),
-        Expression::LeftShift(l, r) => {
-            Ok(evaluate_const(l)?.wrapping_shl(evaluate_const(r)? as u32))
-        }
-        Expression::RightShift(l, r) => {
-            Ok(evaluate_const(l)?.wrapping_shr(evaluate_const(r)? as u32))
-        }
-        Expression::LogicalAnd(l, r) => {
-            let l = evaluate_const(l)?;
-            let r = evaluate_const(r)?;
-            Ok(u64::from(l != 0 && r != 0))
-        }
-        Expression::LogicalOr(l, r) => {
-            let l = evaluate_const(l)?;
-            let r = evaluate_const(r)?;
-            Ok(u64::from(l != 0 || r != 0))
-        }
-        Expression::LogicalNot(expression) => Ok(u64::from(evaluate_const(expression)? == 0)),
-        Expression::BitwiseNot(expression) => Ok(!evaluate_const(expression)?),
-        Expression::Negate(expression) => Ok(evaluate_const(expression)?.wrapping_neg()),
+        Expression::Arithmetic(op, l, r) => evaluate_const_arithmetic(*op, l, r),
+        Expression::Compare(op, l, r) => Ok(op.apply(evaluate_const(l)?, evaluate_const(r)?)),
+        Expression::MinMax(op, l, r) => Ok(op.apply(evaluate_const(l)?, evaluate_const(r)?)),
+        Expression::Unary(op, expression) => Ok(op.apply(evaluate_const(expression)?)),
         Expression::Ternary(cond, if_true, if_false) => {
             let cond = evaluate_const(cond)?;
             if cond != 0 {
@@ -810,6 +781,21 @@ pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
         Expression::Absolute(expression) => evaluate_const(expression),
 
         _ => bail!("Expected constant expression"),
+    }
+}
+
+fn evaluate_const_arithmetic(
+    op: ArithmeticOp,
+    left: &Expression,
+    right: &Expression,
+) -> Result<u64> {
+    if matches!(op, ArithmeticOp::Divide | ArithmeticOp::Modulo) {
+        // Constant division and modulo diagnose an invalid divisor before evaluating the numerator.
+        let right = evaluate_const(right)?;
+        op.check_rhs(right)?;
+        op.apply(evaluate_const(left)?, right)
+    } else {
+        op.apply(evaluate_const(left)?, evaluate_const(right)?)
     }
 }
 
@@ -1112,25 +1098,29 @@ mod tests {
 
     #[test]
     fn test_arithmetic() {
-        let add = Expression::Add(
+        let add = Expression::Arithmetic(
+            ArithmeticOp::Add,
             Box::new(Expression::Number(2)),
             Box::new(Expression::Number(3)),
         );
         assert_eq!(eval_const(&add).unwrap(), 5);
 
-        let sub = Expression::Subtract(
+        let sub = Expression::Arithmetic(
+            ArithmeticOp::Subtract,
             Box::new(Expression::Number(10)),
             Box::new(Expression::Number(4)),
         );
         assert_eq!(eval_const(&sub).unwrap(), 6);
 
-        let mul = Expression::Multiply(
+        let mul = Expression::Arithmetic(
+            ArithmeticOp::Multiply,
             Box::new(Expression::Number(3)),
             Box::new(Expression::Number(4)),
         );
         assert_eq!(eval_const(&mul).unwrap(), 12);
 
-        let div = Expression::Divide(
+        let div = Expression::Arithmetic(
+            ArithmeticOp::Divide,
             Box::new(Expression::Number(10)),
             Box::new(Expression::Number(2)),
         );
@@ -1140,14 +1130,16 @@ mod tests {
     #[test]
     fn test_wrapping_arithmetic() {
         // u64::MAX + 1 should wrap to 0, not panic
-        let expr = Expression::Add(
+        let expr = Expression::Arithmetic(
+            ArithmeticOp::Add,
             Box::new(Expression::Number(u64::MAX)),
             Box::new(Expression::Number(1)),
         );
         assert_eq!(eval_const(&expr).unwrap(), 0);
 
         // 0 - 1 should wrap to u64::MAX
-        let expr = Expression::Subtract(
+        let expr = Expression::Arithmetic(
+            ArithmeticOp::Subtract,
             Box::new(Expression::Number(0)),
             Box::new(Expression::Number(1)),
         );
@@ -1157,9 +1149,11 @@ mod tests {
     #[test]
     fn test_operator_precedence() {
         // 1 + (2 * 3) = 7
-        let expr = Expression::Add(
+        let expr = Expression::Arithmetic(
+            ArithmeticOp::Add,
             Box::new(Expression::Number(1)),
-            Box::new(Expression::Multiply(
+            Box::new(Expression::Arithmetic(
+                ArithmeticOp::Multiply,
                 Box::new(Expression::Number(2)),
                 Box::new(Expression::Number(3)),
             )),
@@ -1171,7 +1165,8 @@ mod tests {
     fn test_comparisons() {
         // LessThan
         assert_eq!(
-            eval_const(&Expression::LessThan(
+            eval_const(&Expression::Compare(
+                CompareOp::LessThan,
                 Box::new(Expression::Number(1)),
                 Box::new(Expression::Number(2))
             ))
@@ -1179,7 +1174,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::LessThan(
+            eval_const(&Expression::Compare(
+                CompareOp::LessThan,
                 Box::new(Expression::Number(2)),
                 Box::new(Expression::Number(1))
             ))
@@ -1187,7 +1183,8 @@ mod tests {
             0
         );
         assert_eq!(
-            eval_const(&Expression::LessThan(
+            eval_const(&Expression::Compare(
+                CompareOp::LessThan,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1197,7 +1194,8 @@ mod tests {
 
         // GreaterThan
         assert_eq!(
-            eval_const(&Expression::GreaterThan(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterThan,
                 Box::new(Expression::Number(3)),
                 Box::new(Expression::Number(2))
             ))
@@ -1205,7 +1203,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::GreaterThan(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterThan,
                 Box::new(Expression::Number(2)),
                 Box::new(Expression::Number(3))
             ))
@@ -1213,7 +1212,8 @@ mod tests {
             0
         );
         assert_eq!(
-            eval_const(&Expression::GreaterThan(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterThan,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1223,7 +1223,8 @@ mod tests {
 
         // LessEqual
         assert_eq!(
-            eval_const(&Expression::LessEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::LessEqual,
                 Box::new(Expression::Number(1)),
                 Box::new(Expression::Number(2))
             ))
@@ -1231,7 +1232,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::LessEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::LessEqual,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1239,7 +1241,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::LessEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::LessEqual,
                 Box::new(Expression::Number(6)),
                 Box::new(Expression::Number(5))
             ))
@@ -1249,7 +1252,8 @@ mod tests {
 
         // GreaterEqual
         assert_eq!(
-            eval_const(&Expression::GreaterEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterEqual,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1257,7 +1261,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::GreaterEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterEqual,
                 Box::new(Expression::Number(6)),
                 Box::new(Expression::Number(5))
             ))
@@ -1265,7 +1270,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::GreaterEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::GreaterEqual,
                 Box::new(Expression::Number(4)),
                 Box::new(Expression::Number(5))
             ))
@@ -1275,7 +1281,8 @@ mod tests {
 
         // Equal / NotEqual
         assert_eq!(
-            eval_const(&Expression::Equal(
+            eval_const(&Expression::Compare(
+                CompareOp::Equal,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1283,7 +1290,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::Equal(
+            eval_const(&Expression::Compare(
+                CompareOp::Equal,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(6))
             ))
@@ -1291,7 +1299,8 @@ mod tests {
             0
         );
         assert_eq!(
-            eval_const(&Expression::NotEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::NotEqual,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(6))
             ))
@@ -1299,7 +1308,8 @@ mod tests {
             1
         );
         assert_eq!(
-            eval_const(&Expression::NotEqual(
+            eval_const(&Expression::Compare(
+                CompareOp::NotEqual,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1311,7 +1321,8 @@ mod tests {
     #[test]
     fn test_min_max() {
         assert_eq!(
-            eval_const(&Expression::Min(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Min,
                 Box::new(Expression::Number(3)),
                 Box::new(Expression::Number(7))
             ))
@@ -1319,7 +1330,8 @@ mod tests {
             3
         );
         assert_eq!(
-            eval_const(&Expression::Min(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Min,
                 Box::new(Expression::Number(7)),
                 Box::new(Expression::Number(3))
             ))
@@ -1327,7 +1339,8 @@ mod tests {
             3
         );
         assert_eq!(
-            eval_const(&Expression::Max(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Max,
                 Box::new(Expression::Number(3)),
                 Box::new(Expression::Number(7))
             ))
@@ -1335,7 +1348,8 @@ mod tests {
             7
         );
         assert_eq!(
-            eval_const(&Expression::Max(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Max,
                 Box::new(Expression::Number(7)),
                 Box::new(Expression::Number(3))
             ))
@@ -1344,7 +1358,8 @@ mod tests {
         );
         // equal values
         assert_eq!(
-            eval_const(&Expression::Min(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Min,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1352,7 +1367,8 @@ mod tests {
             5
         );
         assert_eq!(
-            eval_const(&Expression::Max(
+            eval_const(&Expression::MinMax(
+                MinMaxOp::Max,
                 Box::new(Expression::Number(5)),
                 Box::new(Expression::Number(5))
             ))
@@ -1382,7 +1398,8 @@ mod tests {
 
     #[test]
     fn test_divide_by_zero() {
-        let expr = Expression::Divide(
+        let expr = Expression::Arithmetic(
+            ArithmeticOp::Divide,
             Box::new(Expression::Number(10)),
             Box::new(Expression::Number(0)),
         );
@@ -1391,7 +1408,8 @@ mod tests {
 
     #[test]
     fn test_modulo_by_zero() {
-        let expr = Expression::Modulo(
+        let expr = Expression::Arithmetic(
+            ArithmeticOp::Modulo,
             Box::new(Expression::Number(10)),
             Box::new(Expression::Number(0)),
         );
@@ -1479,7 +1497,8 @@ mod tests {
     fn test_evaluate_assertions_passes() {
         with_dummy_context(|layouts, sections, symbol_db| {
             let script = make_script(&[AssertCommand {
-                expression: Box::new(Expression::Equal(
+                expression: Box::new(Expression::Compare(
+                    CompareOp::Equal,
                     Box::new(Expression::Number(1)),
                     Box::new(Expression::Number(1)),
                 )),
@@ -1564,7 +1583,8 @@ mod tests {
             assert_eq!(eval(&Expression::Origin(b"ram")).unwrap(), 0x20000000);
             assert_eq!(eval(&Expression::Length(b"ram")).unwrap(), 0x40000);
             // end of rom = origin + length
-            let end = Expression::Add(
+            let end = Expression::Arithmetic(
+                ArithmeticOp::Add,
                 Box::new(Expression::Origin(b"rom")),
                 Box::new(Expression::Length(b"rom")),
             );
