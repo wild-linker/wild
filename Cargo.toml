@@ -79,7 +79,7 @@ itertools = { version = "0.15.0", default-features = false, features = [
 ] }
 jobserver = { version = "0.1.30", default-features = false }
 leb128 = { version = "0.2.7", default-features = false }
-libc = { version = "0.2.180", default-features = false }
+libc = { version = "0.2.186", default-features = false }
 libloading = { version = "0.9.0", default-features = false, features = ["std"] }
 libtest-mimic = { version = "0.8.2", default-features = false }
 memchr = { version = "2.7.0", default-features = false }
