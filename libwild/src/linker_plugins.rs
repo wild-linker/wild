@@ -65,6 +65,7 @@ use std::ops::Not as _;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// Whether linker plugins can be used: the `plugins` feature is on and the host can load them.
 pub(crate) const ENABLED: bool = crate::host::linker_plugin::SUPPORTED;
@@ -458,7 +459,7 @@ impl LoadedPlugin {
                     return Err(error);
                 }
                 // If the plugin reported an error to us, then attach that as context.
-                if let Some(message) = ERROR_MESSAGE.take() {
+                if let Some(message) = take_plugin_error() {
                     return Err(error).with_context(|| format!("Linker plugin error: {message}"));
                 }
                 return Err(error);
@@ -466,7 +467,7 @@ impl LoadedPlugin {
         };
         // If the plugin reported an error to us, but then returned a successful return code, still
         // propagate the error.
-        if let Some(error) = ERROR_MESSAGE.take() {
+        if let Some(error) = take_plugin_error() {
             bail!("Linker plugin error: {error}");
         }
         Ok(r)
@@ -476,7 +477,7 @@ impl LoadedPlugin {
 /// Checks for any errors reported by the linker plugin during a callback. Should be called after
 /// each callback.
 fn check_for_errors() -> Result {
-    if let Some(message) = ERROR_MESSAGE.take() {
+    if let Some(message) = take_plugin_error() {
         bail!("Error from linker plugin: {message}");
     }
     Ok(())
@@ -506,7 +507,6 @@ thread_local! {
     static VERSION_INFO: Cell<Option<VersionInfo>> = const { Cell::new(None) };
     static PLUGIN_OUTPUTS: RefCell<PluginOutputs> = const { RefCell::new(PluginOutputs::new()) };
     static ERROR: RefCell<Option<Error>>  = const { RefCell::new(None) };
-    static ERROR_MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
 
     // Holds a ClaimContext. We store this as a void pointer since the actual type has non-static
     // lifetimes that we wouldn't be able to store here.
@@ -514,6 +514,26 @@ thread_local! {
 
     // Same thing, but this one holds an AllSymbolsReadContext.
     static ALL_SYMBOLS_READ_CONTEXT: Cell<*const c_void> = const { Cell::new(std::ptr::null()) };
+}
+
+// Plugin diagnostics are reported from ThinLTO backend threads. The message callback has no context
+// pointer, so this is process-global.
+static PLUGIN_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_plugin_error(message: String) {
+    let mut slot = PLUGIN_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.is_none() {
+        *slot = Some(message);
+    }
+}
+
+fn take_plugin_error() -> Option<String> {
+    PLUGIN_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
 }
 
 #[repr(C)]
@@ -742,9 +762,7 @@ extern "C" fn get_api_version(
 }
 
 extern "C" fn unsupported_api_version() -> Status {
-    ERROR_MESSAGE.replace(Some(
-        "Compiler plugin uses an older, unsupported version of the API".to_owned(),
-    ));
+    set_plugin_error("Compiler plugin uses an older, unsupported version of the API".to_owned());
     Status::Err
 }
 
@@ -1020,7 +1038,7 @@ unsafe extern "C" fn message(level: c_int, format: *const c_char, args: ...) -> 
         eprintln!("Linker plugin {level}: {text}");
 
         if level == MessageLevel::Error || level == MessageLevel::Fatal {
-            ERROR_MESSAGE.replace(Some(text));
+            set_plugin_error(text);
         }
 
         status
@@ -1061,7 +1079,7 @@ fn format_with_vsnprintf(format: *const c_char, args: core::ffi::VaList) -> Resu
 /// the linker-plugin which would be undefined behaviour.
 fn catch_panics(body: impl FnOnce() -> Status) -> Status {
     std::panic::catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| {
-        ERROR_MESSAGE.replace(Some("Panic in plugin callback".to_owned()));
+        set_plugin_error("Panic in plugin callback".to_owned());
         Status::Err
     })
 }
@@ -1076,7 +1094,7 @@ impl ClaimContext<'_> {
     fn with_current(cb: impl FnOnce(&mut ClaimContext) -> Status) -> Status {
         let ptr = CLAIM_CONTEXT.get();
         if ptr.is_null() {
-            ERROR_MESSAGE.set(Some("Tried to obtain ClaimContext when not set".to_owned()));
+            set_plugin_error("Tried to obtain ClaimContext when not set".to_owned());
             return Status::Err;
         }
         let ctx = unsafe { &mut *ptr.cast::<ClaimContext>() };
@@ -1103,9 +1121,7 @@ impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
     ) -> Status {
         let ptr = ALL_SYMBOLS_READ_CONTEXT.get();
         if ptr.is_null() {
-            ERROR_MESSAGE.set(Some(
-                "Tried to obtain AllSymbolsReadContext when not set".to_owned(),
-            ));
+            set_plugin_error("Tried to obtain AllSymbolsReadContext when not set".to_owned());
             return Status::Err;
         }
         let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext<'scope, 'data, P>) };
@@ -1296,5 +1312,23 @@ impl<'data> Store<'data> {
             }
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_plugin_error;
+    use super::take_plugin_error;
+
+    #[test]
+    fn plugin_errors_are_visible_across_threads() {
+        take_plugin_error();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| set_plugin_error("from backend thread".to_owned()));
+        });
+
+        assert_eq!(take_plugin_error().as_deref(), Some("from backend thread"));
+        assert_eq!(take_plugin_error(), None);
     }
 }
