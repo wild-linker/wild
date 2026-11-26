@@ -117,7 +117,7 @@ rand = { version = "0.10.2", default-features = false, features = [
 ] }
 rayon = { version = "1.5.1", default-features = false }
 regex = { version = "1.13", default-features = false, features = ["std"] }
-regex-automata = { version = "0.4.12", default-features = false, features = [
+regex-automata = { version = "0.4.19", default-features = false, features = [
   "std",
   "meta",
   "hybrid",
