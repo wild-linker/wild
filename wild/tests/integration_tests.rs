@@ -329,8 +329,14 @@
 //! ExpectMinAllocAddress: {address} Asserts the minimum address of all sections with the alloc
 //! flag.
 //!
-//! ExpectReloc:{section_name} {offset_symbol} {target_symbol} Checks that `section_name` has a
-//! relocation at the address of `offset_symbol` referencing `target_symbol`.
+//! ExpectReloc:{section_name} [properties] Checks that the specified section contains a
+//! relocation matching the properties. Properties:
+//!   target=name: Asserts the relocation references the specified symbol or section.
+//!   at=symbol_name: Asserts the relocation is at the address of the specified symbol.
+//!   offset=int: Asserts the relocation is at the specified byte offset within the section
+//!   (mutually exclusive with `at`).
+//!   type=int: Asserts the ELF relocation type.
+//!   addend=int: Asserts the relocation addend.
 //!
 //! DriverMode:{mode} Links using a non-standard mode. See Driver Modes section below.
 //!
