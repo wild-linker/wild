@@ -138,7 +138,7 @@ dependencies = [
  "clap",
  "indexmap",
  "indicatif",
- "nix",
+ "nix 0.32.0",
  "postcard",
  "serde",
  "tempfile",
@@ -843,7 +843,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "nix",
+ "nix 0.32.0",
  "object 0.41.0",
  "perf-event",
  "perfetto-recorder",
@@ -1020,6 +1020,18 @@ name = "nix"
 version = "0.31.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -1258,7 +1270,7 @@ checksum = "9cf20a545b305cf1da722b236b5155c9bb35f1d5ceb28c048bd96ca842f41b5b"
 dependencies = [
  "android_system_properties",
  "log",
- "nix",
+ "nix 0.31.4",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
@@ -1331,7 +1343,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee50f00666bf0c681a805a241afcf131ca3b9da28e79c49d3563be86099e002f"
 dependencies = [
  "libc",
- "nix",
+ "nix 0.31.4",
  "prost",
  "rand",
  "windows-sys",
@@ -1357,9 +1369,9 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postcard"
-version = "1.1.3"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+checksum = "5431b3dcfdf6d1985c87d11f267a171c0dec0a8cd544c6727b747d36365f1fca"
 dependencies = [
  "cobs",
  "embedded-io 0.4.0",
