@@ -8,7 +8,6 @@ use crate::coff_writer;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
-use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::HandlerData as _;
 use crate::layout::Resolution;
@@ -40,7 +39,6 @@ use crate::platform::RelocationSequence as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
-use crate::resolution::LoadedMetrics;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
@@ -58,7 +56,6 @@ use object::pe::ImageRelocation;
 use object::pe::RelocationType;
 use object::pe::SectionFlags;
 use std::borrow::Cow;
-use std::marker::PhantomData;
 
 pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
@@ -276,7 +273,7 @@ impl Platform for Coff {
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
-    type SectionType = SectionType;
+    type SectionType = ();
     type SegmentType = ();
     type ProgramSegmentDef = ProgramSegmentDef;
     type BuiltInSectionDetails = BuiltInSectionDetails;
@@ -285,7 +282,7 @@ impl Platform for Coff {
     type DynamicSymbolDefinitionExt = ();
     type RelocationInfo = RelocationType;
     type RelocationKindInfo = RelocationKindInfo;
-    type NonAddressableIndexes = NonAddressableIndexes;
+    type NonAddressableIndexes = ();
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
     type GroupLayoutExt = ();
@@ -305,7 +302,7 @@ impl Platform for Coff {
     type SymbolVersionIndex = ();
     type LayoutExt<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
-    type DynamicTagValues<'data> = DynamicTagValues;
+    type DynamicTagValues<'data> = ();
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
     type DynamicLayoutExt<'data> = ();
@@ -315,7 +312,7 @@ impl Platform for Coff {
     type ObjectLayoutStateExt<'data> = ObjectLayoutStateExt;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
-    type VerneedTable<'data> = VerneedTable<'data>;
+    type VerneedTable<'data> = ();
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -332,16 +329,6 @@ impl Platform for Coff {
             flags: header.characteristics.get(LittleEndian),
             is_null: header.is_null(),
         }
-    }
-
-    fn apply_force_keep_sections(
-        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        _args: &Self::Args,
-    ) {
-    }
-
-    fn is_zero_sized_section_content(_section_id: OutputSectionId) -> bool {
-        false
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
@@ -371,20 +358,6 @@ impl Platform for Coff {
         todo!()
     }
 
-    fn align_load_segment_start(
-        _segment_def: Self::ProgramSegmentDef,
-        _segment_alignment: Alignment,
-        _file_offset: &mut usize,
-        _mem_offset: &mut u64,
-    ) {
-    }
-
-    fn activate_dynamic<'data>(
-        _state: &mut layout::DynamicLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-    ) {
-    }
-
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         _prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -394,25 +367,6 @@ impl Platform for Coff {
             // The first 4 bytes in string table specify its size.
             common.allocate(part_id::STRTAB, size_of::<u32>() as u64);
         }
-    }
-
-    fn finalise_sizes_dynamic<'data>(
-        _object: &mut layout::DynamicLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-    ) -> Result {
-        Ok(())
-    }
-
-    fn finalise_object_sizes<'data>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-    ) {
-    }
-
-    fn finalise_object_layout<'data>(
-        _object: &layout::ObjectLayoutState<'data, Self>,
-        _memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) {
     }
 
     fn finalise_layout_dynamic<'data>(
@@ -429,12 +383,6 @@ impl Platform for Coff {
         _section_layouts: &crate::output_section_map::OutputSectionMap<layout::OutputRecordLayout>,
     ) -> Result<u32> {
         todo!()
-    }
-
-    fn compute_object_addresses<'data>(
-        _object: &layout::ObjectLayoutState<'data, Self>,
-        _memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) {
     }
 
     fn layout_resources_ext<'data>(
@@ -523,19 +471,8 @@ impl Platform for Coff {
         todo!()
     }
 
-    fn update_segment_keep_list(
-        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        _keep_segments: &mut [bool],
-        _args: &Self::Args,
-    ) {
-    }
-
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[ProgramSegmentDef {}]
-    }
-
-    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        &[]
     }
 
     fn program_segment_should_include_section(
@@ -612,36 +549,12 @@ impl Platform for Coff {
         todo!()
     }
 
-    fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data, Self>,
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _queue: &mut layout::LocalWorkQueue<Self>,
-        _unloaded: crate::resolution::UnloadedSection,
-        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        _scope: &rayon::Scope<'scope>,
-    ) -> Result {
-        Ok(())
-    }
-
     fn new_epilogue_layout<'data>(
         _args: &Self::Args,
         _output_kind: crate::output_kind::OutputKind,
         _dynamic_symbol_definitions: &mut [layout::DynamicSymbolDefinition<'data, Self>],
         _group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
-    }
-
-    fn apply_non_addressable_indexes_epilogue(
-        _counts: &mut Self::NonAddressableCounts,
-        _state: &mut Self::EpilogueLayoutExt,
-    ) {
-    }
-
-    fn apply_non_addressable_indexes<'data, 'groups>(
-        _symbol_db: &SymbolDb<'data, Self>,
-        _counts: &Self::NonAddressableCounts,
-        _mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
-    ) {
     }
 
     fn finalise_sizes_epilogue<'data>(
@@ -652,12 +565,6 @@ impl Platform for Coff {
         _symbol_db: &SymbolDb<'data, Self>,
     ) -> Result<()> {
         Ok(())
-    }
-
-    fn finalise_sizes_all<'data>(
-        _mem_sizes: &mut OutputSectionPartMap<u64>,
-        _symbol_db: &SymbolDb<'data, Self>,
-    ) {
     }
 
     fn finalise_layout_epilogue<'data>(
@@ -701,24 +608,6 @@ impl Platform for Coff {
         sizes.increment(part_id::DOS_STUB, DOS_STUB.len() as u64);
         sizes.increment(part_id::NT_HEADER, SIZE_OF_NT_HEADERS64 as u64);
         sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
-    }
-
-    fn finalise_sizes_for_symbol<'data>(
-        _common: &mut layout::CommonGroupState<'data, Self>,
-        _symbol_db: &SymbolDb<'data, Self>,
-        _symbol_id: crate::symbol_db::SymbolId,
-        _flags: crate::value_flags::ValueFlags,
-    ) -> Result {
-        Ok(())
-    }
-
-    fn allocate_resolution(
-        _flags: crate::value_flags::ValueFlags,
-        _mem_sizes: &mut OutputSectionPartMap<u64>,
-        _output_kind: crate::output_kind::OutputKind,
-        _args: &Self::Args,
-        _is_linker_script_symbol: bool,
-    ) {
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -778,17 +667,6 @@ impl Platform for Coff {
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
 
-        Ok(())
-    }
-
-    fn allocate_prelude(_common: &mut layout::CommonGroupState<Self>, _symbol_db: &SymbolDb<Self>) {
-    }
-
-    fn finalise_prelude_layout<'data>(
-        _prelude: &layout::PreludeLayoutState<Self>,
-        _memory_offsets: &mut OutputSectionPartMap<u64>,
-        _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
-    ) -> Result<Self::PreludeLayoutExt> {
         Ok(())
     }
 
@@ -1088,28 +966,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(symbol.raw.section().map(|i| SectionIndex(i.0 - 1)))
     }
 
-    fn symbol_versions(&self) -> &[()] {
-        &[]
-    }
-
-    fn finalise_sizes_dynamic(
-        &self,
-        _lib_name: &[u8],
-        _state: &mut (),
-        _mem_sizes: &mut OutputSectionPartMap<u64>,
-    ) -> Result {
-        todo!()
-    }
-
-    fn apply_non_addressable_indexes_dynamic(
-        &self,
-        _indexes: &mut NonAddressableIndexes,
-        _counts: &mut (),
-        _state: &mut (),
-    ) -> Result {
-        todo!()
-    }
-
     fn section_name(&self, index: SectionIndex) -> Result<&'data [u8]> {
         let section = self.sections.section(SectionIndex(index.0 + 1))?;
         Ok(section.name(self.symbol_table.strings())?)
@@ -1125,25 +981,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(&self.data[ptr..ptr + size])
     }
 
-    fn section_data(
-        &self,
-        section: &SectionHeader,
-        _member: &bumpalo_herd::Member<'data>,
-        _loaded_metrics: &LoadedMetrics,
-    ) -> Result<&'data [u8]> {
-        self.raw_section_data(section)
-    }
-
-    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
-        let bytes = self.raw_section_data(section)?;
-        out.copy_from_slice(bytes);
-        Ok(())
-    }
-
-    fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
-        Ok(Cow::Borrowed(self.raw_section_data(section)?))
-    }
-
     fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.coff_alignment())
     }
@@ -1154,24 +991,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(RelocationList(raw))
     }
 
-    fn parse_relocations(&self) -> Result<()> {
-        // TODO: Just so we can forward right now
-        Ok(())
-    }
-
-    fn symbol_version_debug(&self, _symbol_index: SymbolIndex) -> Option<String> {
-        None
-    }
-
     fn section_display_name(&self, index: SectionIndex) -> Cow<'data, str> {
         self.section_name(index).map_or_else(
             |_| format!("<index {}>", index.0).into(),
             String::from_utf8_lossy,
         )
-    }
-
-    fn dynamic_tag_values(&self) -> Option<DynamicTagValues> {
-        None
     }
 
     fn get_version_names(&self) -> Result<VersionNames> {
@@ -1194,8 +1018,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn verneed_table(&self) -> Result<VerneedTable<'data>> {
-        Ok(VerneedTable::default())
+    fn verneed_table(&self) -> Result<()> {
+        Ok(())
     }
 
     fn process_gnu_note_section(
@@ -1204,10 +1028,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _section_index: SectionIndex,
     ) -> Result {
         todo!()
-    }
-
-    fn dynamic_tags(&self) -> Result<&'data [()]> {
-        Ok(&[])
     }
 }
 
@@ -1240,30 +1060,10 @@ impl platform::SectionHeader for SectionHeader {
         todo!()
     }
 
-    fn is_merge_section(&self) -> bool {
-        false
-    }
-
-    fn is_strings(&self) -> bool {
-        false
-    }
-
-    fn should_retain(&self) -> bool {
-        false
-    }
-
     fn should_exclude(&self) -> bool {
         self.characteristics
             .get(LittleEndian)
             .contains(object::pe::IMAGE_SCN_LNK_REMOVE)
-    }
-
-    fn is_group(&self) -> bool {
-        false
-    }
-
-    fn is_note(&self) -> bool {
-        false
     }
 
     fn is_prog_bits(&self) -> bool {
@@ -1280,27 +1080,6 @@ impl platform::SectionHeader for SectionHeader {
 
     fn is_null(&self) -> bool {
         self.raw_name().is_empty()
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionType {}
-
-impl platform::SectionType for SectionType {
-    fn is_rela(&self) -> bool {
-        todo!()
-    }
-
-    fn is_rel(&self) -> bool {
-        todo!()
-    }
-
-    fn is_symtab(&self) -> bool {
-        todo!()
-    }
-
-    fn is_strtab(&self) -> bool {
-        todo!()
     }
 }
 
@@ -1384,38 +1163,17 @@ impl platform::Symbol for SymtabEntry {
         todo!()
     }
 
-    fn is_interposable(&self) -> bool {
-        false
-    }
-
     fn is_func(&self) -> bool {
         todo!()
-    }
-
-    fn is_ifunc(&self) -> bool {
-        false
     }
 
     fn is_hidden(&self) -> bool {
         self.is_hidden
     }
 
-    fn is_gnu_unique(&self) -> bool {
-        false
-    }
-
     fn with_hidden(mut self, hidden: bool) -> Self {
         self.is_hidden = hidden;
         self
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct DynamicTagValues {}
-
-impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues {
-    fn lib_name(&self, _input: &InputRef<'data>) -> &'data [u8] {
-        todo!()
     }
 }
 
@@ -1496,10 +1254,6 @@ impl platform::SectionAttributes for SectionAttributes {
         false
     }
 
-    fn occupies_only_tls_address_space(&self) -> bool {
-        false
-    }
-
     fn is_writable(&self) -> bool {
         self.flags.contains(object::pe::IMAGE_SCN_MEM_WRITE)
     }
@@ -1512,12 +1266,6 @@ impl platform::SectionAttributes for SectionAttributes {
     fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
         self.flags
     }
-
-    fn ty(&self) -> <Self::Platform as Platform>::SectionType {
-        SectionType::default()
-    }
-
-    fn set_to_default_type(&mut self) {}
 }
 
 pub(crate) type VersionNames = ();
@@ -1552,26 +1300,6 @@ impl std::fmt::Display for RawSymbolName<'_> {
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct VerneedTable<'data> {
-    _phantom: PhantomData<&'data ()>,
-}
-
-impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
-    fn version_name(&self, _local_symbol_index: SymbolIndex) -> Option<&'data [u8]> {
-        None
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct NonAddressableIndexes {}
-
-impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<P: Platform>(_symbol_db: &SymbolDb<P>) -> Self {
-        Self::default()
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct ProgramSegmentDef {}
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
@@ -1589,14 +1317,6 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn is_loadable(self) -> bool {
         true
-    }
-
-    fn is_stack(self) -> bool {
-        false
-    }
-
-    fn is_tls(self) -> bool {
-        false
     }
 
     fn order_key(self) -> usize {
