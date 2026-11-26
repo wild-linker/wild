@@ -21,6 +21,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use bumpalo_herd::Member;
 
 pub(crate) fn process_linker_scripts<'data, P: Platform>(
     linker_scripts_in: &[InputLinkerScript<'data>],
@@ -224,13 +225,17 @@ impl<'data, P: Platform> InternalSymDefInfo<'data, P> {
 }
 
 impl<'data, P: Platform> ParsedInputObject<'data, P> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &P::Args) -> Result<Box<Self>> {
+    pub(crate) fn new(
+        input: &InputBytes<'data>,
+        args: &P::Args,
+        allocator: &Member<'data>,
+    ) -> Result<&'data mut Self> {
         verbose_timing_phase!("Parse file");
 
         let object = P::File::parse(input, args)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
 
-        Ok(Box::new(Self {
+        Ok(allocator.alloc(Self {
             input: input.input,
             object,
             modifiers: input.modifiers,

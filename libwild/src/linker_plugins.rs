@@ -230,8 +230,12 @@ impl<'data> LinkerPlugin<'data> {
             plugin_outputs.save_to(Path::new(&dir_name))?;
         }
 
-        let plugin_loaded =
-            file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
+        let plugin_loaded = file_loader.load_inputs(
+            &plugin_outputs.generated_inputs,
+            symbol_db.args,
+            &mut None,
+            symbol_db.herd,
+        )?;
 
         crate::lto::ingest_generated_inputs(
             plugin_loaded,

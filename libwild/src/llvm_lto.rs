@@ -582,6 +582,7 @@ impl<'data> LlvmLto<'data> {
             lto_objects: Vec::new(),
         };
 
+        let allocator = self.herd.get();
         for (index, output) in outputs.into_iter().enumerate() {
             if output.bytes().is_empty() {
                 continue;
@@ -599,6 +600,7 @@ impl<'data> LlvmLto<'data> {
                     kind: FileKind::ElfObject,
                 },
                 self.args,
+                &allocator,
             ));
         }
 

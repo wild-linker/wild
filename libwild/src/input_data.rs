@@ -27,6 +27,8 @@ use crate::platform::Args;
 use crate::platform::Platform;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use bumpalo_herd::Herd;
+use bumpalo_herd::Member;
 use colosseum::sync::Arena;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -42,6 +44,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use thread_local::ThreadLocal;
 
 pub(crate) struct FileLoader<'data, F: FileSystem> {
     /// The files that we've loaded so far.
@@ -71,7 +74,7 @@ pub(crate) struct LoadedInputs<'data, P: Platform> {
     /// The results of parsing all the input files and archive entries. We defer checking for
     /// success until later, since otherwise a parse error would mean that the save-dir mechanism
     /// wouldn't capture all the input files.
-    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data, P>>>>,
+    pub(crate) objects: Vec<Result<&'data mut ParsedInputObject<'data, P>>>,
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
 
@@ -205,6 +208,8 @@ struct TemporaryState<'data, 'paths, P: Platform, F: FileSystem> {
     logical_sysroot: Option<&'paths Path>,
     physical_sysroot: Option<&'paths Path>,
     has_plugin: bool,
+    herd: &'data Herd,
+    allocators: ThreadLocal<Member<'data>>,
 
     inputs_by_path: Mutex<HashMap<PathBuf, InputLoadInfo>>,
 
@@ -238,7 +243,7 @@ enum LoadedFileState<'data, P: Platform, I: InputFileData> {
 }
 
 enum InputRecord<'data, P: Platform> {
-    Object(Result<Box<ParsedInputObject<'data, P>>>),
+    Object(Result<&'data mut ParsedInputObject<'data, P>>),
     LtoInput(Box<UnclaimedLtoInput<'data>>),
 }
 
@@ -398,6 +403,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         inputs: &[Input],
         args: &'data P::Args,
         plugin: &mut Option<LtoBackend<'data>>,
+        herd: &'data Herd,
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
@@ -474,6 +480,8 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             logical_sysroot: self.logical_sysroot.as_deref(),
             physical_sysroot: self.physical_sysroot.as_deref(),
             has_plugin: plugin.as_ref().is_some_and(LtoBackend::uses_embedded_ir),
+            herd,
+            allocators: ThreadLocal::new(),
             inputs_by_path: Mutex::new(inputs_by_path),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
@@ -512,7 +520,7 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
             *entry = Some(file.state);
         }
         let mut loaded = self.extract_all(&mut files_by_index, plugin)?;
-        self.include_synthetic_objects(args, &mut loaded, plugin)?;
+        self.include_synthetic_objects(args, &mut loaded, plugin, herd)?;
         Ok(loaded)
     }
 
@@ -571,7 +579,9 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
         args: &'data P::Args,
         loaded: &mut LoadedInputs<'data, P>,
         plugin: &mut Option<LtoBackend<'data>>,
+        herd: &'data Herd,
     ) -> Result {
+        let allocator = herd.get();
         for (path, bytes) in args.synthetic_objects() {
             let input_file = &*self.inputs_arena.alloc(InputFile {
                 filename: path.to_owned(),
@@ -597,7 +607,8 @@ impl<'data, F: FileSystem> FileLoader<'data, F> {
                 data: bytes,
                 modifiers: input_ref.file.modifiers,
             };
-            let record = InputRecord::Object(ParsedInputObject::new(&input_bytes, args));
+            let record =
+                InputRecord::Object(ParsedInputObject::new(&input_bytes, args, &allocator));
             loaded.add_record(record, plugin);
             self.loaded_files.push(input_file);
         }
@@ -1049,7 +1060,9 @@ impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, '_, P, F> {
             modifiers: input_ref.file.modifiers,
         };
 
-        let object = InputRecord::Object(ParsedInputObject::new(&input_bytes, self.args));
+        let allocator = self.allocators.get_or(|| self.herd.get());
+        let object =
+            InputRecord::Object(ParsedInputObject::new(&input_bytes, self.args, allocator));
 
         if object.is_dynamic_object() && !input_ref.file.modifiers.allow_shared {
             bail!(
@@ -1417,6 +1430,7 @@ mod tests {
     use crate::fs::OsOutputFile;
     use crate::fs::OutputOptions;
     use crate::platform::Args as _;
+    use bumpalo_herd::Herd;
     use colosseum::sync::Arena;
     use hashbrown::HashMap;
     use std::path::Path;
@@ -1588,8 +1602,13 @@ mod tests {
             .unwrap();
             let arena = Arena::new();
             let mut loader = FileLoader::new(&arena, Arc::new(file_system));
-            let result =
-                loader.load_inputs::<crate::macho::MachO>(&args.common.inputs, &args, &mut None);
+            let herd = Herd::new();
+            let result = loader.load_inputs::<crate::macho::MachO>(
+                &args.common.inputs,
+                &args,
+                &mut None,
+                &herd,
+            );
             assert!(
                 result
                     .err()
