@@ -648,6 +648,36 @@ pub(crate) enum RelocationList<'data, C: ElfClass> {
     Crel(CrelIterator<'data>),
 }
 
+impl<C: ElfClass> RelocationList<'_, C> {
+    pub(crate) fn for_each(
+        self,
+        mut process: impl FnMut(ElfCrel<C>) -> Result<RelocationModifier>,
+    ) -> Result {
+        let mut modifier = RelocationModifier::Normal;
+
+        let mut visit = {
+            #[inline(always)]
+            |relocation: ElfCrel<C>| {
+                if modifier == RelocationModifier::SkipNextRelocation {
+                    modifier = RelocationModifier::Normal;
+                } else {
+                    modifier = process(relocation)?;
+                }
+                Ok(())
+            }
+        };
+
+        match self {
+            Self::Rela(relocations) => relocations
+                .iter()
+                .try_for_each(|raw| visit(ElfCrel::new(Crel::from_rela(raw, LittleEndian, false)))),
+            Self::Crel(mut relocations) => {
+                relocations.try_for_each(|raw| visit(ElfCrel::new(raw?)))
+            }
+        }
+    }
+}
+
 impl<'data, C: ElfClass> platform::RelocationList<'data> for RelocationList<'data, C> {
     fn num_relocations(&self) -> usize {
         match self {
@@ -1330,35 +1360,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             }
             return Ok(());
         }
-        match state.relocations(section_index)? {
-            RelocationList::Rela(relocations) => {
-                load_section_relocations::<C, A, ElfRela<C>>(
-                    state,
-                    common,
-                    queue,
-                    resources,
-                    section_index,
-                    RelaSequence(relocations).rel_iter(),
-                    scope,
-                )?;
-            }
-            RelocationList::Crel(relocations) => {
-                load_section_relocations::<C, A, ElfCrel<C>>(
-                    state,
-                    common,
-                    queue,
-                    resources,
-                    section_index,
-                    relocations.filter_map(|r| {
-                        r.ok().map(|raw| ElfCrel {
-                            raw,
-                            class: PhantomData,
-                        })
-                    }),
-                    scope,
-                )?;
-            }
-        }
+        load_section_relocations::<C, A>(state, common, queue, resources, section_index, scope)?;
 
         Ok(())
     }
@@ -7308,52 +7310,45 @@ pub(crate) struct DynamicSymbolDefinitionExt {
     pub(crate) version: object::elf::VersymIndex,
 }
 
-fn load_section_relocations<
-    'scope,
-    'data,
-    C: ElfClass,
-    A: Arch<Platform = Elf<C>>,
-    R: Relocation<Platform = Elf<C>>,
->(
+fn load_section_relocations<'scope, 'data, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     state: &layout::ObjectLayoutState<'data, Elf<C>>,
     common: &mut CommonGroupState<'data, Elf<C>>,
     queue: &mut layout::LocalWorkQueue<Elf<C>>,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     section_index: object::SectionIndex,
-    relocations: impl Iterator<Item = R>,
     scope: &Scope<'scope>,
 ) -> Result {
-    let mut modifier = RelocationModifier::Normal;
     let mut relr_writer = RelrEncoder::default();
-    for rel in relocations {
-        if modifier == RelocationModifier::SkipNextRelocation {
-            modifier = RelocationModifier::Normal;
-            continue;
-        }
-        let section_header = state.object.section(section_index)?;
-        let section_part_id =
-            state.section_part_id(section_index, &resources.symbol_db.section_part_ids);
-        modifier = process_relocation::<C, A, R>(
-            state,
-            common,
-            &rel,
-            section_header,
-            section_part_id,
-            resources,
-            queue,
-            false,
-            scope,
-            &mut relr_writer,
-        )
+    let section_header = state.object.section(section_index)?;
+
+    let section_part_id =
+        state.section_part_id(section_index, &resources.symbol_db.section_part_ids);
+
+    state
+        .relocations(section_index)?
+        .for_each({
+            #[inline(always)]
+            |rel| {
+                process_relocation::<C, A, _>(
+                    state,
+                    common,
+                    &rel,
+                    section_header,
+                    section_part_id,
+                    resources,
+                    queue,
+                    false,
+                    scope,
+                    &mut relr_writer,
+                )
+            }
+        })
         .with_context(|| {
             format!(
                 "Failed to copy section {} from file {state}",
                 layout::section_debug::<Elf<C>>(state.object, section_index)
             )
-        })?;
-    }
-
-    Ok(())
+        })
 }
 
 pub(crate) const fn relr_bitmap_slots<C: ElfClass>() -> u64 {
