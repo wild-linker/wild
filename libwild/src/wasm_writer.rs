@@ -27,7 +27,6 @@ use crate::wasm::output_section_id;
 use crate::wasm::remap_wasm_index;
 use crate::wasm::tls_reloc_value;
 use crate::wasm::wasm_symbol_name_str;
-use hashbrown::HashMap;
 use hashbrown::HashSet;
 use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
@@ -543,13 +542,13 @@ pub(crate) fn compute_data_section_size(
     if segment_count == 0 {
         return 0;
     }
-    wasm_section_size(data_section_payload_size(object_data_layouts, segment_count))
+    wasm_section_size(data_section_payload_size(
+        object_data_layouts,
+        segment_count,
+    ))
 }
 
-fn data_segment_encoded_size(
-    data_len: usize,
-    active_header: Option<(u32, u32)>,
-) -> Result<u32> {
+fn data_segment_encoded_size(data_len: usize, active_header: Option<(u32, u32)>) -> Result<u32> {
     let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
     let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
     let Some((memory_index, init_len)) = active_header else {
@@ -582,7 +581,8 @@ pub(crate) fn wasm_data_segment_encoded_size(
         } => {
             let body = const_expr_body(offset_expr)
                 .context("Wasm const expression is missing end opcode")?;
-            let init_len = u32::try_from(body.len() + 1).context("Wasm const expression too large")?;
+            let init_len =
+                u32::try_from(body.len() + 1).context("Wasm const expression too large")?;
             Some((*memory_index, init_len))
         }
     };
@@ -1652,29 +1652,14 @@ pub(crate) fn build_target_features_section<'a>(
     explicit_features: Option<&'a [String]>,
     check_features: bool,
 ) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
-    let mut used: HashSet<&'a str> = HashSet::new();
-    let mut disallowed: HashMap<&'a str, crate::input_data::FileId> = HashMap::new();
     // `--no-check-features` with `--features` keeps only the explicit names.
-    if explicit_features.is_none() || check_features {
-        for entry in features {
-            match entry.feature.prefix {
-                object::wasm::FEATURE_PREFIX_USED => {
-                    used.insert(entry.feature.name);
-                }
-                object::wasm::FEATURE_PREFIX_DISALLOWED => {
-                    disallowed
-                        .entry(entry.feature.name)
-                        .or_insert(entry.file_id);
-                }
-                other => {
-                    bail!(
-                        "unrecognized target_features prefix 0x{other:02x} for feature `{}`",
-                        entry.feature.name
-                    );
-                }
-            }
-        }
-    }
+    let (mut used, disallowed) = if explicit_features.is_none() || check_features {
+        crate::wasm::collect_target_feature_sets(
+            features.iter().map(|entry| (entry.file_id, entry.feature)),
+        )?
+    } else {
+        (HashSet::new(), Default::default())
+    };
 
     if check_features {
         let mut object_used: Vec<&str> = used.iter().copied().collect();
