@@ -30,7 +30,6 @@ use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
-use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::wasm::RelocationKindInfo;
@@ -558,7 +557,8 @@ impl<'data> File<'data> {
             .context("Wasm data count LEB")?;
         for res in reader {
             let d = res?;
-            let encoded_size = wasm_data_segment_encoded_size(&d.kind, d.data.len())?;
+            let encoded_size =
+                crate::wasm_writer::wasm_data_segment_encoded_size(&d.kind, d.data.len())?;
             segments.push(WasmDataSegment {
                 kind: d.kind.clone(),
                 data: d.data,
@@ -1284,68 +1284,6 @@ impl<'data> WasmLayout<'data> {
     }
 }
 
-fn const_expr_encoded_size(expr: &ConstExpr<'_>) -> Result<u32> {
-    let body = crate::wasm_writer::const_expr_body(expr)
-        .context("Wasm const expression is missing end opcode")?;
-    // instruction bytes plus the trailing `end` (0x0B) opcode
-    u32::try_from(body.len() + 1).context("Wasm const expression too large")
-}
-
-/// Encoded size of one segment in the data section payload. See `data` in
-/// <https://webassembly.github.io/spec/core/binary/modules.html#data-section>.
-fn wasm_data_segment_encoded_size(kind: &DataKind<'_>, data_len: usize) -> Result<u32> {
-    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
-    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
-    match kind {
-        DataKind::Passive => Ok(1 + payload_len),
-        DataKind::Active {
-            memory_index,
-            offset_expr,
-        } => {
-            let init_len = const_expr_encoded_size(offset_expr)?;
-            let header = if *memory_index == 0 {
-                1
-            } else {
-                1 + uleb128_size(u64::from(*memory_index)) as u32
-            };
-            Ok(header
-                .checked_add(init_len)
-                .and_then(|n| n.checked_add(payload_len))
-                .context("Wasm data segment size overflow")?)
-        }
-    }
-}
-
-/// Byte length of the offset `expr` we emit (`i32.const` + SLEB + `end`).
-fn output_i32_const_init_expr_size(offset: u32) -> u32 {
-    1 + sleb128_size(i64::from(offset)) as u32 + 1
-}
-
-fn output_data_segment_encoded_size(
-    data_len: usize,
-    output_memory_offset: u32,
-    output_memory_index: u32,
-    passive: bool,
-) -> Result<u32> {
-    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
-    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
-    if passive {
-        return payload_len
-            .checked_add(1)
-            .context("Wasm data segment size overflow");
-    }
-    let init_len = output_i32_const_init_expr_size(output_memory_offset);
-    let header = if output_memory_index == 0 {
-        1
-    } else {
-        1 + uleb128_size(u64::from(output_memory_index)) as u32
-    };
-    header
-        .checked_add(init_len)
-        .and_then(|n| n.checked_add(payload_len))
-        .context("Wasm data segment size overflow")
-}
-
 /// Map data-section relocations onto owning segments as ranges into `relocs`.
 fn classify_data_reloc_ranges(
     segments: &[WasmDataSegment<'_>],
@@ -1498,7 +1436,7 @@ fn max_tls_alignment(inputs: &[WasmObjectLayoutInput<'_>]) -> Alignment {
         .unwrap_or(crate::alignment::MIN)
 }
 
-fn tls_reloc_value(addr: WasmDataAddress, tls_base: u32, addend: i64) -> Result<u32> {
+pub(crate) fn tls_reloc_value(addr: WasmDataAddress, tls_base: u32, addend: i64) -> Result<u32> {
     let offset = match addr {
         WasmDataAddress::Missing => return Ok(0),
         WasmDataAddress::TlsOffset(offset) => offset,
@@ -1576,7 +1514,7 @@ fn layout_object_data<'data>(
                     }
                 }
             };
-        let encoded_output_size = output_data_segment_encoded_size(
+        let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
             segment.data.len(),
             output_memory_offset,
             output_memory_index,
@@ -1600,24 +1538,6 @@ fn layout_object_data<'data>(
         });
     }
     Ok(segments)
-}
-
-pub(crate) fn output_data_segment_count(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-) -> u32 {
-    object_data_layouts
-        .iter()
-        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
-        .sum()
-}
-
-pub(crate) fn output_data_has_passive(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-) -> bool {
-    object_data_layouts
-        .iter()
-        .flatten()
-        .any(|segment| segment.passive)
 }
 
 /// Original data-segment index to output index. Missing entries were removed by GC.
@@ -1831,44 +1751,6 @@ fn remap_data_segment_immediates(
     Ok(referenced)
 }
 
-fn compute_data_section_size(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u64 {
-    let segment_count = output_data_segment_count(object_data_layouts);
-    if segment_count == 0 {
-        return 0;
-    }
-    let count_leb_size = uleb128_size(u64::from(segment_count)) as u64;
-    let segments_total: u64 = object_data_layouts
-        .iter()
-        .flatten()
-        .map(|segment| u64::from(segment.encoded_output_size))
-        .sum();
-    let payload_size = count_leb_size + segments_total;
-    let payload_size_leb_size = uleb128_size(payload_size) as u64;
-
-    // `section` envelope. See <https://webassembly.github.io/spec/core/binary/modules.html#binary-section>
-    1 + payload_size_leb_size + payload_size
-}
-
-fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
-    if bodies.is_empty() {
-        return 0;
-    }
-    let count = bodies.len() as u32;
-    let count_leb_size = uleb128_size(u64::from(count)) as u64;
-    let bodies_with_prefix_total: u64 = bodies
-        .iter()
-        .map(|b| {
-            let body_len = b.bytes.len() as u64;
-            uleb128_size(body_len) as u64 + body_len
-        })
-        .sum();
-    let payload_size = count_leb_size + bodies_with_prefix_total;
-    let payload_size_leb_size = uleb128_size(payload_size) as u64;
-
-    // section id (1 byte) + payload size LEB + payload
-    1 + payload_size_leb_size + payload_size
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectIndexMap {
     /// Maps this object's local type index to the final output type index.
@@ -1885,158 +1767,12 @@ pub(crate) struct WasmObjectIndexMap {
 }
 
 impl WasmObjectIndexMap {
-    /// Resolve a code/data relocation to its output value using the symbol table from the same
-    /// object.
-    pub(crate) fn resolve_reloc(
-        &self,
-        reloc: &object::wasm::Relocation,
-        symbols: &[WasmSymbol],
-        function_table_slots: &[u32],
-        memory_base: u32,
-        table_base: u32,
-        tls_base: u32,
-    ) -> Result<u32> {
-        if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
-            return remap_wasm_index(&self.type_indices, reloc.r_index, "type");
-        }
-
-        let sym = symbols
-            .get(reloc.r_index as usize)
-            .with_context(|| format!("relocation symbol index {} out of range", reloc.r_index))?;
-
-        match reloc.r_type {
-            object::wasm::R_WASM_FUNCTION_INDEX_LEB | object::wasm::R_WASM_FUNCTION_INDEX_I32 => {
-                ensure!(
-                    sym.kind == object::wasm::SYM_TYPE_FUNCTION,
-                    "R_WASM_FUNCTION_INDEX_* references non-function symbol"
-                );
-                self.output_function_index(reloc.r_index as usize, sym)
-            }
-            object::wasm::R_WASM_GLOBAL_INDEX_LEB | object::wasm::R_WASM_GLOBAL_INDEX_I32 => {
-                match sym.kind {
-                    object::wasm::SYM_TYPE_GLOBAL => {
-                        if self
-                            .undefined_globals
-                            .get(sym.index as usize)
-                            .copied()
-                            .unwrap_or(false)
-                        {
-                            return Ok(u32::MAX);
-                        }
-                        remap_wasm_index(&self.global_indices, sym.index, "global")
-                    }
-                    object::wasm::SYM_TYPE_DATA => self
-                        .got_mem_globals
-                        .get(reloc.r_index as usize)
-                        .copied()
-                        .flatten()
-                        .with_context(|| {
-                            format!(
-                                "missing GOT.mem global for data symbol index {}",
-                                reloc.r_index
-                            )
-                        }),
-                    object::wasm::SYM_TYPE_FUNCTION => self
-                        .got_func_globals
-                        .get(reloc.r_index as usize)
-                        .copied()
-                        .flatten()
-                        .with_context(|| {
-                            format!(
-                                "missing GOT.func global for function symbol index {}",
-                                reloc.r_index
-                            )
-                        }),
-                    other => {
-                        bail!("R_WASM_GLOBAL_INDEX_* references unsupported symbol kind {other:?}")
-                    }
-                }
-            }
-            object::wasm::R_WASM_TABLE_NUMBER_LEB => {
-                ensure!(
-                    sym.kind == object::wasm::SYM_TYPE_TABLE,
-                    "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
-                );
-                remap_wasm_index(&self.table_indices, sym.index, "table")
-            }
-            object::wasm::R_WASM_MEMORY_ADDR_LEB
-            | object::wasm::R_WASM_MEMORY_ADDR_SLEB
-            | object::wasm::R_WASM_MEMORY_ADDR_I32
-            | object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
-            | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB => {
-                ensure!(
-                    sym.kind == object::wasm::SYM_TYPE_DATA,
-                    "R_WASM_MEMORY_ADDR_* references non-data symbol"
-                );
-                let addr = self
-                    .data_addresses
-                    .get(reloc.r_index as usize)
-                    .copied()
-                    .with_context(|| {
-                        format!(
-                            "data address for symbol index {} out of range",
-                            reloc.r_index
-                        )
-                    })?;
-                if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB {
-                    tls_reloc_value(addr, tls_base, reloc.r_addend)
-                } else if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB {
-                    let addr = memory_address_base(addr)?;
-                    let relative =
-                        i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.r_addend;
-                    let relative =
-                        i32::try_from(relative).context("Wasm REL_SLEB relocation out of range")?;
-                    Ok(relative as u32)
-                } else {
-                    Ok(memory_address_base(addr)?.unwrap_or(0))
-                }
-            }
-            object::wasm::R_WASM_TABLE_INDEX_SLEB
-            | object::wasm::R_WASM_TABLE_INDEX_I32
-            | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB => {
-                ensure!(
-                    sym.kind == object::wasm::SYM_TYPE_FUNCTION,
-                    "R_WASM_TABLE_INDEX_* references non-function symbol"
-                );
-                let func_out = self.output_function_index(reloc.r_index as usize, sym)?;
-                let slot = function_table_slots
-                    .get(func_out as usize)
-                    .copied()
-                    .unwrap_or(u32::MAX);
-                ensure!(
-                    slot != u32::MAX,
-                    "function {func_out} has no indirect table slot"
-                );
-                if reloc.r_type == object::wasm::R_WASM_TABLE_INDEX_REL_SLEB {
-                    if slot == 0 {
-                        return Ok(0);
-                    }
-                    let relative = slot
-                        .checked_sub(table_base)
-                        .context("Wasm TABLE_INDEX_REL_SLEB relocation out of range")?;
-                    Ok(relative)
-                } else {
-                    Ok(slot)
-                }
-            }
-            object::wasm::R_WASM_EVENT_INDEX_LEB => {
-                bail!("event index relocations are not supported yet");
-            }
-            object::wasm::R_WASM_FUNCTION_OFFSET_I32 => {
-                bail!("function offset relocations are not supported yet");
-            }
-            object::wasm::R_WASM_SECTION_OFFSET_I32 => {
-                bail!("section offset relocations are not supported yet");
-            }
-            other => bail!(
-                "unsupported Wasm relocation type {}",
-                other.name().unwrap_or("unknown")
-            ),
-        }
-    }
-
     /// Output function index for a linking-section symbol.
-    fn output_function_index(&self, symbol_offset: usize, sym: &WasmSymbol) -> Result<u32> {
+    pub(crate) fn output_function_index(
+        &self,
+        symbol_offset: usize,
+        sym: &WasmSymbol,
+    ) -> Result<u32> {
         if let Some(out) = self
             .function_symbol_redirects
             .get(symbol_offset)
@@ -6672,8 +6408,10 @@ where
     }
     {
         timing_phase!("Compute Wasm code/data section sizes");
-        layout.code_section_size = compute_code_section_size(&layout.function_bodies);
-        layout.data_section_size = compute_data_section_size(&layout.object_data_layouts);
+        layout.code_section_size =
+            crate::wasm_writer::compute_code_section_size(&layout.function_bodies);
+        layout.data_section_size =
+            crate::wasm_writer::compute_data_section_size(&layout.object_data_layouts);
     }
     let encoded_metadata =
         crate::wasm_writer::encode_metadata_sections(&layout, emit_name, emit_target_features)?;
@@ -6859,7 +6597,7 @@ const SHARED_TLS_RELOC_ERROR: &str =
 
 const SHARED_TLS_TEMPLATE_RELOC_ERROR: &str = "only R_WASM_MEMORY_ADDR_I32 relocations to a TLS symbol are supported in a shared-memory TLS template";
 
-fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
+pub(crate) fn memory_address_base(addr: WasmDataAddress) -> Result<Option<u32>> {
     match addr {
         WasmDataAddress::Placed(value) => Ok(Some(value)),
         WasmDataAddress::Missing => Ok(None),
@@ -7247,7 +6985,7 @@ fn classify_code_relocations(
     }
 }
 
-fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
+pub(crate) fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
     let mapped = indices.get(index as usize).copied().with_context(|| {
         format!(
             "Wasm {kind} index {index} out of range (map len {})",

@@ -22,12 +22,14 @@ use crate::wasm::WasmSymbol;
 use crate::wasm::count_output_imports;
 use crate::wasm::deferred_tls_template_pointer;
 use crate::wasm::demangle_symbol_name;
-use crate::wasm::output_data_has_passive;
-use crate::wasm::output_data_segment_count;
+use crate::wasm::memory_address_base;
 use crate::wasm::output_section_id;
+use crate::wasm::remap_wasm_index;
+use crate::wasm::tls_reloc_value;
 use crate::wasm::wasm_symbol_name_str;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -146,6 +148,155 @@ fn finalize_reloc_value(reloc: &object::wasm::Relocation, base: u32) -> Result<u
     }
 }
 
+/// Resolve a code/data relocation to its output value using the symbol table from the same object.
+fn resolve_reloc(
+    index_map: &WasmObjectIndexMap,
+    reloc: &object::wasm::Relocation,
+    symbols: &[WasmSymbol],
+    function_table_slots: &[u32],
+    memory_base: u32,
+    table_base: u32,
+    tls_base: u32,
+) -> Result<u32> {
+    if reloc.r_type == object::wasm::R_WASM_TYPE_INDEX_LEB {
+        return remap_wasm_index(&index_map.type_indices, reloc.r_index, "type");
+    }
+
+    let sym = symbols
+        .get(reloc.r_index as usize)
+        .with_context(|| format!("relocation symbol index {} out of range", reloc.r_index))?;
+
+    match reloc.r_type {
+        object::wasm::R_WASM_FUNCTION_INDEX_LEB | object::wasm::R_WASM_FUNCTION_INDEX_I32 => {
+            ensure!(
+                sym.kind == object::wasm::SYM_TYPE_FUNCTION,
+                "R_WASM_FUNCTION_INDEX_* references non-function symbol"
+            );
+            index_map.output_function_index(reloc.r_index as usize, sym)
+        }
+        object::wasm::R_WASM_GLOBAL_INDEX_LEB | object::wasm::R_WASM_GLOBAL_INDEX_I32 => {
+            match sym.kind {
+                object::wasm::SYM_TYPE_GLOBAL => {
+                    if index_map
+                        .undefined_globals
+                        .get(sym.index as usize)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        return Ok(u32::MAX);
+                    }
+                    remap_wasm_index(&index_map.global_indices, sym.index, "global")
+                }
+                object::wasm::SYM_TYPE_DATA => index_map
+                    .got_mem_globals
+                    .get(reloc.r_index as usize)
+                    .copied()
+                    .flatten()
+                    .with_context(|| {
+                        format!(
+                            "missing GOT.mem global for data symbol index {}",
+                            reloc.r_index
+                        )
+                    }),
+                object::wasm::SYM_TYPE_FUNCTION => index_map
+                    .got_func_globals
+                    .get(reloc.r_index as usize)
+                    .copied()
+                    .flatten()
+                    .with_context(|| {
+                        format!(
+                            "missing GOT.func global for function symbol index {}",
+                            reloc.r_index
+                        )
+                    }),
+                other => {
+                    bail!("R_WASM_GLOBAL_INDEX_* references unsupported symbol kind {other:?}")
+                }
+            }
+        }
+        object::wasm::R_WASM_TABLE_NUMBER_LEB => {
+            ensure!(
+                sym.kind == object::wasm::SYM_TYPE_TABLE,
+                "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
+            );
+            remap_wasm_index(&index_map.table_indices, sym.index, "table")
+        }
+        object::wasm::R_WASM_MEMORY_ADDR_LEB
+        | object::wasm::R_WASM_MEMORY_ADDR_SLEB
+        | object::wasm::R_WASM_MEMORY_ADDR_I32
+        | object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB
+        | object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB => {
+            ensure!(
+                sym.kind == object::wasm::SYM_TYPE_DATA,
+                "R_WASM_MEMORY_ADDR_* references non-data symbol"
+            );
+            let addr = index_map
+                .data_addresses
+                .get(reloc.r_index as usize)
+                .copied()
+                .with_context(|| {
+                    format!(
+                        "data address for symbol index {} out of range",
+                        reloc.r_index
+                    )
+                })?;
+            if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_TLS_SLEB {
+                tls_reloc_value(addr, tls_base, reloc.r_addend)
+            } else if reloc.r_type == object::wasm::R_WASM_MEMORY_ADDR_REL_SLEB {
+                let addr = memory_address_base(addr)?;
+                let relative =
+                    i64::from(addr.unwrap_or(0)) - i64::from(memory_base) + reloc.r_addend;
+                let relative =
+                    i32::try_from(relative).context("Wasm REL_SLEB relocation out of range")?;
+                Ok(relative as u32)
+            } else {
+                Ok(memory_address_base(addr)?.unwrap_or(0))
+            }
+        }
+        object::wasm::R_WASM_TABLE_INDEX_SLEB
+        | object::wasm::R_WASM_TABLE_INDEX_I32
+        | object::wasm::R_WASM_TABLE_INDEX_REL_SLEB => {
+            ensure!(
+                sym.kind == object::wasm::SYM_TYPE_FUNCTION,
+                "R_WASM_TABLE_INDEX_* references non-function symbol"
+            );
+            let func_out = index_map.output_function_index(reloc.r_index as usize, sym)?;
+            let slot = function_table_slots
+                .get(func_out as usize)
+                .copied()
+                .unwrap_or(u32::MAX);
+            ensure!(
+                slot != u32::MAX,
+                "function {func_out} has no indirect table slot"
+            );
+            if reloc.r_type == object::wasm::R_WASM_TABLE_INDEX_REL_SLEB {
+                if slot == 0 {
+                    return Ok(0);
+                }
+                let relative = slot
+                    .checked_sub(table_base)
+                    .context("Wasm TABLE_INDEX_REL_SLEB relocation out of range")?;
+                Ok(relative)
+            } else {
+                Ok(slot)
+            }
+        }
+        object::wasm::R_WASM_EVENT_INDEX_LEB => {
+            bail!("event index relocations are not supported yet");
+        }
+        object::wasm::R_WASM_FUNCTION_OFFSET_I32 => {
+            bail!("function offset relocations are not supported yet");
+        }
+        object::wasm::R_WASM_SECTION_OFFSET_I32 => {
+            bail!("section offset relocations are not supported yet");
+        }
+        other => bail!(
+            "unsupported Wasm relocation type {}",
+            other.name().unwrap_or("unknown")
+        ),
+    }
+}
+
 fn apply_resolved_reloc(
     index_map: &WasmObjectIndexMap,
     reloc: &object::wasm::Relocation,
@@ -156,7 +307,8 @@ fn apply_resolved_reloc(
     tls_base: u32,
     buf: &mut [u8],
 ) -> Result<()> {
-    let base = index_map.resolve_reloc(
+    let base = resolve_reloc(
+        index_map,
         reloc,
         symbols,
         function_table_slots,
@@ -333,6 +485,124 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
     Ok(())
 }
 
+/// Section envelope size: 1-byte id + payload size LEB + payload.
+fn wasm_section_size(payload_size: u64) -> u64 {
+    1 + uleb128_size(payload_size) as u64 + payload_size
+}
+
+fn code_section_payload_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
+    let count_leb_size = uleb128_size(bodies.len() as u64) as u64;
+    let bodies_with_prefix_total: u64 = bodies
+        .iter()
+        .map(|b| {
+            let body_len = b.bytes.len() as u64;
+            uleb128_size(body_len) as u64 + body_len
+        })
+        .sum();
+    count_leb_size + bodies_with_prefix_total
+}
+
+pub(crate) fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
+    if bodies.is_empty() {
+        return 0;
+    }
+    wasm_section_size(code_section_payload_size(bodies))
+}
+
+fn output_data_segment_count(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u32 {
+    object_data_layouts
+        .iter()
+        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
+        .sum()
+}
+
+fn output_data_has_passive(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> bool {
+    object_data_layouts
+        .iter()
+        .flatten()
+        .any(|segment| segment.passive)
+}
+
+fn data_section_payload_size(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+    segment_count: u32,
+) -> u64 {
+    let count_leb_size = uleb128_size(u64::from(segment_count)) as u64;
+    let segments_total: u64 = object_data_layouts
+        .iter()
+        .flatten()
+        .map(|segment| u64::from(segment.encoded_output_size))
+        .sum();
+    count_leb_size + segments_total
+}
+
+pub(crate) fn compute_data_section_size(
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+) -> u64 {
+    let segment_count = output_data_segment_count(object_data_layouts);
+    if segment_count == 0 {
+        return 0;
+    }
+    wasm_section_size(data_section_payload_size(object_data_layouts, segment_count))
+}
+
+fn data_segment_encoded_size(
+    data_len: usize,
+    active_header: Option<(u32, u32)>,
+) -> Result<u32> {
+    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
+    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
+    let Some((memory_index, init_len)) = active_header else {
+        return payload_len
+            .checked_add(1)
+            .context("Wasm data segment size overflow");
+    };
+    let header = if memory_index == 0 {
+        1
+    } else {
+        1 + uleb128_size(u64::from(memory_index)) as u32
+    };
+    header
+        .checked_add(init_len)
+        .and_then(|n| n.checked_add(payload_len))
+        .context("Wasm data segment size overflow")
+}
+
+/// Encoded size of one segment in the data section payload. See `data` in
+/// <https://webassembly.github.io/spec/core/binary/modules.html#data-section>.
+pub(crate) fn wasm_data_segment_encoded_size(
+    kind: &wasmparser::DataKind<'_>,
+    data_len: usize,
+) -> Result<u32> {
+    let active_header = match kind {
+        wasmparser::DataKind::Passive => None,
+        wasmparser::DataKind::Active {
+            memory_index,
+            offset_expr,
+        } => {
+            let body = const_expr_body(offset_expr)
+                .context("Wasm const expression is missing end opcode")?;
+            let init_len = u32::try_from(body.len() + 1).context("Wasm const expression too large")?;
+            Some((*memory_index, init_len))
+        }
+    };
+    data_segment_encoded_size(data_len, active_header)
+}
+
+pub(crate) fn output_data_segment_encoded_size(
+    data_len: usize,
+    output_memory_offset: u32,
+    output_memory_index: u32,
+    passive: bool,
+) -> Result<u32> {
+    let active_header = (!passive).then(|| {
+        // `i32.const` + SLEB + `end`
+        let init_len = 1 + sleb128_size(i64::from(output_memory_offset)) as u32 + 1;
+        (output_memory_index, init_len)
+    });
+    data_segment_encoded_size(data_len, active_header)
+}
+
 // Each `WasmFunctionBody.bytes` is the raw body content (locals + operators) without a size prefix.
 fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
     let bodies = &wasm_layout.function_bodies;
@@ -360,15 +630,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     pos += 1;
 
     let count = bodies.len() as u64;
-    let count_leb_size = uleb128_size(count);
-    let bodies_with_prefix_total: usize = bodies
-        .iter()
-        .map(|b| {
-            let body_len = b.bytes.len() as u64;
-            uleb128_size(body_len) + b.bytes.len()
-        })
-        .sum();
-    let payload_size = (count_leb_size + bodies_with_prefix_total) as u64;
+    let payload_size = code_section_payload_size(bodies);
 
     pos += write_uleb128(&mut out[pos..], payload_size);
     pos += write_uleb128(&mut out[pos..], count);
@@ -437,10 +699,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
 
 fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
     let object_data_layouts = &wasm_layout.object_data_layouts;
-    let segment_count: u32 = object_data_layouts
-        .iter()
-        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
-        .sum();
+    let segment_count = output_data_segment_count(object_data_layouts);
     if segment_count == 0 {
         ensure!(
             out.is_empty(),
@@ -465,12 +724,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     out[pos] = object::wasm::SEC_DATA.0;
     pos += 1;
 
-    let segments_total: u64 = flat
-        .iter()
-        .map(|(_, seg)| u64::from(seg.encoded_output_size))
-        .sum();
-    let count_leb_size = uleb128_size(u64::from(segment_count));
-    let payload_size = count_leb_size as u64 + segments_total;
+    let payload_size = data_section_payload_size(object_data_layouts, segment_count);
     pos += write_uleb128(&mut out[pos..], payload_size);
     pos += write_uleb128(&mut out[pos..], u64::from(segment_count));
     let segments_region_start = pos;
