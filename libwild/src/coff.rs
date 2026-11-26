@@ -779,13 +779,13 @@ impl Platform for Coff {
         builder.add_sections(&custom.ro);
         builder.add_section(output_section_id::DATA);
         builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::BSS);
+        builder.add_sections(&custom.bss);
         builder.add_section(output_section_id::IDATA);
         builder.add_section(output_section_id::TLS);
         builder.add_sections(&custom.tbss);
         builder.add_sections(&custom.tdata);
         builder.add_sections(&custom.nonalloc);
-        builder.add_section(output_section_id::BSS);
-        builder.add_sections(&custom.bss);
 
         builder.add_section(output_section_id::SYMTAB);
         builder.add_section(output_section_id::STRTAB);
