@@ -1379,7 +1379,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn is_loadable(self) -> bool {
-        true
+        false
     }
 
     fn order_key(self) -> usize {
