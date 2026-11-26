@@ -4844,20 +4844,19 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                     );
                 }
                 SectionSlot::Unloaded(_) | SectionSlot::UnloadedDebugInfo { must_load: false } => {
-                    if no_gc {
-                        if !(resources.symbol_db.args.emit_relocs()
+                    if no_gc
+                        && !(resources.symbol_db.args.emit_relocs()
                             && self
                                 .object
                                 .section(object::SectionIndex(i))
                                 .is_ok_and(|s| s.is_rela()))
-                        {
-                            queue.send_gc_unit_request::<A>(
-                                self.file_id,
-                                SectionGcUnit::new(object::SectionIndex(i)),
-                                resources,
-                                scope,
-                            );
-                        }
+                    {
+                        queue.send_gc_unit_request::<A>(
+                            self.file_id,
+                            SectionGcUnit::new(object::SectionIndex(i)),
+                            resources,
+                            scope,
+                        );
                     }
                 }
                 SectionSlot::MergeStrings(_) => {
