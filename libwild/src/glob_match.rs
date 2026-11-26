@@ -1,4 +1,6 @@
 use fixedbitset::FixedBitSet;
+use regex_automata::Input;
+use regex_automata::meta::Cache;
 use regex_automata::meta::Regex;
 use regex_syntax::hir::Class;
 use regex_syntax::hir::ClassBytes;
@@ -8,9 +10,12 @@ use regex_syntax::hir::Hir;
 use regex_syntax::hir::HirKind;
 use regex_syntax::hir::Look;
 use regex_syntax::hir::Repetition;
+use std::cell::RefCell;
 use std::iter::Peekable;
 use std::mem::take;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
+use thread_local::ThreadLocal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GlobSyntax {
@@ -21,19 +26,33 @@ pub(crate) enum GlobSyntax {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Pattern {
+    inner: Arc<PatternInner>,
+}
+
+#[derive(Debug)]
+struct PatternInner {
     #[cfg(test)]
     source: Vec<u8>,
     regex: Regex,
+    cache: ThreadLocal<RefCell<Cache>>,
 }
 
 impl Pattern {
     pub(crate) fn matches(&self, name: &[u8]) -> bool {
-        self.regex.is_match(name)
+        // Keep one cache per pattern per thread: a cache created from an empty regex
+        // cannot reliably be reused across patterns (https://github.com/rust-lang/regex/issues/1155).
+        let cache = self
+            .inner
+            .cache
+            .get_or(|| RefCell::new(self.inner.regex.create_cache()));
+        self.inner
+            .regex
+            .is_match_with(&mut cache.borrow_mut(), &Input::new(name))
     }
 
     #[cfg(test)]
     pub(crate) fn source(&self) -> &[u8] {
-        &self.source
+        &self.inner.source
     }
 }
 
@@ -204,9 +223,12 @@ pub(crate) fn compile_pattern(token: &[u8], syntax: GlobSyntax) -> Result<Patter
         .build_from_hir(&Hir::concat(items))
         .map_err(|_| "Failed to compile glob pattern")?;
     Ok(Pattern {
-        #[cfg(test)]
-        source: token.into(),
-        regex,
+        inner: Arc::new(PatternInner {
+            #[cfg(test)]
+            source: token.into(),
+            regex,
+            cache: ThreadLocal::new(),
+        }),
     })
 }
 
