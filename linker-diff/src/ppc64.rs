@@ -22,14 +22,98 @@ impl Arch for Ppc64 {
     type RawInstruction = Option<String>;
 
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
-    const MAX_RELAX_MODIFY_AFTER: u64 = 0;
+    const MAX_RELAX_MODIFY_AFTER: u64 = 4;
 
     fn possible_relaxations_do(
-        _r_type: Self::RType,
+        r_type: Self::RType,
         _section_kind: object::SectionKind,
-        _cb: impl FnMut(Relaxation<Self>),
+        mut cb: impl FnMut(Relaxation<Self>),
     ) {
-        // No relaxations are implemented for ppc64 yet.
+        let mut relax = |relaxation_kind, new_r_type| {
+            cb(Relaxation {
+                relaxation_kind,
+                new_r_type: RType(new_r_type),
+                alt_r_type: None,
+            });
+        };
+
+        match r_type.0 {
+            object::elf::R_PPC64_GOT_TLSGD16_HA => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+                relax(RelaxationKind::NoOp, object::elf::R_PPC64_GOT_TPREL16_HA);
+            }
+            object::elf::R_PPC64_GOT_TLSGD16_HI => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+                relax(RelaxationKind::NoOp, object::elf::R_PPC64_GOT_TPREL16_HI);
+            }
+            object::elf::R_PPC64_GOT_TLSGD16_LO => {
+                relax(RelaxationKind::AddisR3R13, object::elf::R_PPC64_TPREL16_HA);
+                relax(
+                    RelaxationKind::AddiToLd,
+                    object::elf::R_PPC64_GOT_TPREL16_LO_DS,
+                );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+            }
+            object::elf::R_PPC64_GOT_TLSGD16 => {
+                relax(RelaxationKind::AddisR3R13, object::elf::R_PPC64_TPREL16_HA);
+                relax(
+                    RelaxationKind::AddiToLd,
+                    object::elf::R_PPC64_GOT_TPREL16_DS,
+                );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+            }
+            object::elf::R_PPC64_TLSGD => {
+                relax(
+                    RelaxationKind::AddiR3R3SkipNext,
+                    object::elf::R_PPC64_TPREL16_LO,
+                );
+                relax(
+                    RelaxationKind::AddR3R3R13SkipNext,
+                    object::elf::R_PPC64_NONE,
+                );
+                relax(
+                    RelaxationKind::ReplaceWithNopSkipNext,
+                    object::elf::R_PPC64_NONE,
+                );
+            }
+            object::elf::R_PPC64_GOT_TLSLD16_HA
+            | object::elf::R_PPC64_GOT_TLSLD16_HI
+            | object::elf::R_PPC64_GOT_TLSLD16_LO
+            | object::elf::R_PPC64_GOT_TLSLD16 => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+            }
+            object::elf::R_PPC64_TLSLD => {
+                relax(
+                    RelaxationKind::AddiR3R13DtpBiasSkipNext,
+                    object::elf::R_PPC64_NONE,
+                );
+                relax(
+                    RelaxationKind::ReplaceWithNopSkipNext,
+                    object::elf::R_PPC64_NONE,
+                );
+            }
+            object::elf::R_PPC64_GOT_TPREL16_HA | object::elf::R_PPC64_GOT_TPREL16_HI => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+            }
+            object::elf::R_PPC64_GOT_TPREL16_LO_DS | object::elf::R_PPC64_GOT_TPREL16_DS => {
+                relax(
+                    RelaxationKind::LdToAddisR13,
+                    object::elf::R_PPC64_TPREL16_HA,
+                );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_PPC64_NONE);
+            }
+            object::elf::R_PPC64_TLS => {
+                relax(
+                    RelaxationKind::TlsXFormToDForm,
+                    object::elf::R_PPC64_TPREL16_LO,
+                );
+                relax(
+                    RelaxationKind::TlsXFormToDForm,
+                    object::elf::R_PPC64_TPREL16_LO_DS,
+                );
+            }
+            _ => {}
+        }
     }
 
     fn relaxation_byte_range(_relaxation: Relaxation<Self>) -> RelaxationByteRange {
@@ -148,6 +232,9 @@ impl crate::arch::RelaxationKind for RelaxationKind {
     }
 
     fn is_replace_with_no_op(self) -> bool {
-        false
+        matches!(
+            self,
+            RelaxationKind::ReplaceWithNop | RelaxationKind::ReplaceWithNopSkipNext
+        )
     }
 }

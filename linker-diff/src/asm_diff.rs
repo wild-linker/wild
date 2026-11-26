@@ -2824,6 +2824,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
             | RelocationKind::TlsDescCall
+            | RelocationKind::TlsMarker
             | RelocationKind::PairSubtractionULEB128RiscV
             | RelocationKind::PairSubtractionULEB128LoongArch
             | RelocationKind::None
@@ -3061,6 +3062,7 @@ fn value_kind_for_relocation<A: Arch>(
         }
         RelocationKind::SymbolSize
         | RelocationKind::TlsDescCall
+        | RelocationKind::TlsMarker
         | RelocationKind::None
         | RelocationKind::PairSubtractionULEB128RiscV
         | RelocationKind::PairSubtractionULEB128LoongArch
@@ -4207,6 +4209,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
                 | RelocationKind::GotRelativeLoongArch64
+                | RelocationKind::TlsMarker
                 | RelocationKind::None
                 | RelocationKind::PairSubtractionULEB128RiscV
                 | RelocationKind::PairSubtractionULEB128LoongArch

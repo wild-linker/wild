@@ -18,27 +18,172 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
+use crate::utils::u32_from_slice;
 
 // TODO: Upstream to `object` and use constants here once available.
 pub const R_PPC64_PLTSEQ: object::elf::RelocationType = object::elf::RelocationType(119);
 pub const R_PPC64_PLTCALL: object::elf::RelocationType = object::elf::RelocationType(120);
 
+/// `nop` (`ori 0, 0, 0`).
+pub const INSN_NOP: u32 = 0x6000_0000;
+/// `addis r3, r13, 0`.
+pub const INSN_ADDIS_R3_R13: u32 = 0x3c6d_0000;
+/// `addi r3, r3, 0`.
+pub const INSN_ADDI_R3_R3: u32 = 0x3863_0000;
+/// `add r3, r3, r13`.
+pub const INSN_ADD_R3_R3_R13: u32 = 0x7c63_6a14;
+/// `addi r3, r13, 0x1000` (adds `DTP - TP = 0x8000 - 0x7000` to `r13`).
+pub const INSN_ADDI_R3_R13_DTP_BIAS: u32 = 0x386d_1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
+
+    /// Replace the instruction with `nop`.
+    ReplaceWithNop,
+
+    /// Replace with `nop` and skip the paired relocation at the same offset (used for `-fno-plt`
+    /// `__tls_get_addr` call setup instructions carrying `R_PPC64_TLSGD` / `R_PPC64_TLSLD`).
+    ReplaceWithNopSkipNext,
+
+    /// Replace `addi r3, rA, 0` with `addis r3, r13, 0` (`R_PPC64_TPREL16_HA`).
+    AddisR3R13,
+
+    /// Replace `bl __tls_get_addr` / `bctrl` with `addi r3, r3, 0` (`R_PPC64_TPREL16_LO`) and skip
+    /// the paired call relocation.
+    AddiR3R3SkipNext,
+
+    /// Replace `addi rD, rA, 0` with `ld rD, 0(rA)` (`R_PPC64_GOT_TPREL16_LO_DS` /
+    /// `R_PPC64_GOT_TPREL16_DS`).
+    AddiToLd,
+
+    /// Replace `bl __tls_get_addr` / `bctrl` with `add r3, r3, r13` and skip the paired call
+    /// relocation.
+    AddR3R3R13SkipNext,
+
+    /// Replace `bl __tls_get_addr` / `bctrl` with `addi r3, r13, 0x1000` and skip the paired call
+    /// relocation.
+    AddiR3R13DtpBiasSkipNext,
+
+    /// Replace `ld rD, 0(rA)` with `addis rD, r13, 0` (`R_PPC64_TPREL16_HA`).
+    LdToAddisR13,
+
+    /// Replace an X-form TLS instruction (`add` / indexed load / indexed store with `r13`) with
+    /// its D-form or DS-form equivalent using the non-`r13` register as base.
+    TlsXFormToDForm,
+}
+
+/// Converts a ppc64 X-form instruction marked with `R_PPC64_TLS` (operating on `r13` and a base
+/// register) into its D-form or DS-form template `(insn, is_ds_form)` with a zero displacement.
+#[must_use]
+pub fn tls_xform_to_dform(insn: u32) -> Option<(u32, bool)> {
+    // Must be primary opcode 31 (X-form) with Rc=0.
+    if (insn >> 26) != 31 || (insn & 1) != 0 {
+        return None;
+    }
+
+    let rt = (insn >> 21) & 0x1f;
+    let ra = (insn >> 16) & 0x1f;
+    let rb = (insn >> 11) & 0x1f;
+    let xo = (insn >> 1) & 0x3ff;
+
+    // (template_opcode_and_low_xo, is_ds_form, allow_ra_is_r13)
+    // Update-form loads/stores modify RA, so RA cannot be r13.
+    let (template, is_ds, allow_ra_is_r13) = match xo {
+        266 => (0x3800_0000, false, true),  // add   -> addi
+        87 => (0x8800_0000, false, true),   // lbzx  -> lbz
+        119 => (0x8c00_0000, false, false), // lbzux -> lbzu
+        279 => (0xa000_0000, false, true),  // lhzx  -> lhz
+        311 => (0xa400_0000, false, false), // lhzux -> lhzu
+        343 => (0xa800_0000, false, true),  // lhax  -> lha
+        375 => (0xac00_0000, false, false), // lhaux -> lhau
+        23 => (0x8000_0000, false, true),   // lwzx  -> lwz
+        55 => (0x8400_0000, false, false),  // lwzux -> lwzu
+        341 => (0xe800_0002, true, true),   // lwax  -> lwa
+        21 => (0xe800_0000, true, true),    // ldx   -> ld
+        53 => (0xe800_0001, true, false),   // ldux  -> ldu
+        215 => (0x9800_0000, false, true),  // stbx  -> stb
+        247 => (0x9c00_0000, false, false), // stbux -> stbu
+        407 => (0xb000_0000, false, true),  // sthx  -> sth
+        439 => (0xb400_0000, false, false), // sthux -> sthu
+        151 => (0x9000_0000, false, true),  // stwx  -> stw
+        183 => (0x9400_0000, false, false), // stwux -> stwu
+        149 => (0xf800_0000, true, true),   // stdx  -> std
+        181 => (0xf800_0001, true, false),  // stdux -> stdu
+        535 => (0xc000_0000, false, true),  // lfsx  -> lfs
+        567 => (0xc400_0000, false, false), // lfsux -> lfsu
+        599 => (0xc800_0000, false, true),  // lfdx  -> lfd
+        631 => (0xcc00_0000, false, false), // lfdux -> lfdu
+        663 => (0xd000_0000, false, true),  // stfsx -> stfs
+        695 => (0xd400_0000, false, false), // stfsux -> stfsu
+        727 => (0xd800_0000, false, true),  // stfdx -> stfd
+        759 => (0xdc00_0000, false, false), // stfdux -> stfdu
+        _ => return None,
+    };
+
+    let base_reg = if rb == 13 && ra != 0 {
+        ra
+    } else if allow_ra_is_r13 && ra == 13 && rb != 0 {
+        rb
+    } else {
+        return None;
+    };
+
+    Some((template | (rt << 21) | (base_reg << 16), is_ds))
 }
 
 impl RelaxationKind {
-    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
+    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, _addend: &mut i64) {
+        let offset = *offset_in_section as usize;
+        let write_insn = |bytes: &mut [u8], insn: u32| {
+            bytes[offset..offset + 4].copy_from_slice(&insn.to_le_bytes());
+        };
         match self {
             RelaxationKind::NoOp => {}
+            RelaxationKind::ReplaceWithNop | RelaxationKind::ReplaceWithNopSkipNext => {
+                write_insn(section_bytes, INSN_NOP);
+            }
+            RelaxationKind::AddisR3R13 => {
+                write_insn(section_bytes, INSN_ADDIS_R3_R13);
+            }
+            RelaxationKind::AddiR3R3SkipNext => {
+                write_insn(section_bytes, INSN_ADDI_R3_R3);
+            }
+            RelaxationKind::AddiToLd => {
+                let insn = u32_from_slice(&section_bytes[offset..offset + 4]);
+                // Keep RT and RA from `addi rD, rA, 0`; rewrite opcode to `ld` (58, XO=0).
+                write_insn(section_bytes, 0xe800_0000 | (insn & 0x03ff_0000));
+            }
+            RelaxationKind::AddR3R3R13SkipNext => {
+                write_insn(section_bytes, INSN_ADD_R3_R3_R13);
+            }
+            RelaxationKind::AddiR3R13DtpBiasSkipNext => {
+                write_insn(section_bytes, INSN_ADDI_R3_R13_DTP_BIAS);
+            }
+            RelaxationKind::LdToAddisR13 => {
+                let insn = u32_from_slice(&section_bytes[offset..offset + 4]);
+                // Keep RT from `ld rD, 0(rA)`; rewrite to `addis rD, r13, 0`.
+                write_insn(section_bytes, 0x3c0d_0000 | (insn & 0x03e0_0000));
+            }
+            RelaxationKind::TlsXFormToDForm => {
+                let insn = u32_from_slice(&section_bytes[offset..offset + 4]);
+                if let Some((new_insn, _)) = tls_xform_to_dform(insn) {
+                    write_insn(section_bytes, new_insn);
+                }
+            }
         }
     }
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        match self {
+            RelaxationKind::ReplaceWithNopSkipNext
+            | RelaxationKind::AddiR3R3SkipNext
+            | RelaxationKind::AddR3R3R13SkipNext
+            | RelaxationKind::AddiR3R13DtpBiasSkipNext => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
+        }
     }
 }
 
@@ -375,12 +520,16 @@ pub const fn relocation_type_from_raw(
             1,
             0x8000,
         ),
-        // Markers. The address calculation is a separate relocation.
-        object::elf::R_PPC64_TLS
-        | object::elf::R_PPC64_TLSGD
-        | object::elf::R_PPC64_TLSLD
-        | R_PPC64_PLTSEQ
-        | R_PPC64_PLTCALL => (
+        // TLS markers. They carry no direct fixup unless relaxed by the linker.
+        object::elf::R_PPC64_TLS | object::elf::R_PPC64_TLSGD | object::elf::R_PPC64_TLSLD => (
+            RelocationKind::TlsMarker,
+            RelocationSize::ByteSize(0),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        // Non-TLS markers and no-op relocations.
+        object::elf::R_PPC64_NONE | R_PPC64_PLTSEQ | R_PPC64_PLTCALL => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             AllowedRange::no_check(),
