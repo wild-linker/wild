@@ -614,9 +614,11 @@ pub(crate) trait Platform:
 
     /// Returns attributes of the supplied section, including its type, flags and alignment.
     fn section_attributes(
-        header: &Self::SectionHeader,
-        alignment: Alignment,
-    ) -> Self::SectionAttributes;
+        _header: &Self::SectionHeader,
+        _alignment: Alignment,
+    ) -> Self::SectionAttributes {
+        Self::SectionAttributes::default()
+    }
 
     /// Validate that the supplied sizes are internally consistent.
     fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
@@ -625,27 +627,32 @@ pub(crate) trait Platform:
 
     /// Implementations can force certain sections to be kept. Only needs to be done for sections
     /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Self::Args);
+    fn apply_force_keep_sections(_keep_sections: &mut OutputSectionMap<bool>, _args: &Self::Args) {}
 
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
-    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
+    fn is_zero_sized_section_content(_section_id: OutputSectionId) -> bool {
+        false
+    }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
 
     /// Resolves a reference to the frame data section.
-    fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
+    fn frame_data_base_address(_memory_offsets: &OutputSectionPartMap<u64>) -> u64 {
+        0
+    }
 
     /// Aligns the start of a load segment. Platforms may override this to coordinate file and
     /// memory offsets when a segment boundary is introduced.
     fn align_load_segment_start(
         _segment_def: Self::ProgramSegmentDef,
-        segment_alignment: Alignment,
-        file_offset: &mut usize,
-        mem_offset: &mut u64,
-    );
+        _segment_alignment: Alignment,
+        _file_offset: &mut usize,
+        _mem_offset: &mut u64,
+    ) {
+    }
 
     /// Called after GC phase has completed.
     fn post_gc<'data>(
@@ -658,30 +665,36 @@ pub(crate) trait Platform:
     /// The dynamic object will be linked against. This is a chance to perform extra initialisation
     /// of `state`.
     fn activate_dynamic<'data>(
-        state: &mut layout::DynamicLayoutState<'data, Self>,
-        common: &mut CommonGroupState<'data, Self>,
-    );
+        _state: &mut layout::DynamicLayoutState<'data, Self>,
+        _common: &mut CommonGroupState<'data, Self>,
+    ) {
+    }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
-        prelude: &mut layout::PreludeLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        resources: &layout::GraphResources<'data, 'scope, Self>,
-    );
+        _prelude: &mut layout::PreludeLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _resources: &layout::GraphResources<'data, 'scope, Self>,
+    ) {
+    }
 
     fn finalise_sizes_dynamic<'data>(
-        object: &mut layout::DynamicLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-    ) -> Result;
+        _object: &mut layout::DynamicLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+    ) -> Result {
+        Ok(())
+    }
 
     fn finalise_object_sizes<'data>(
-        object: &mut layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-    );
+        _object: &mut layout::ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+    ) {
+    }
 
     fn finalise_object_layout<'data>(
-        object: &layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-    );
+        _object: &layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) {
+    }
 
     /// Return the thunk configuration for the given object file, or `None` if range-extension
     /// thunks are not needed for this file's architecture.
@@ -690,11 +703,13 @@ pub(crate) trait Platform:
     }
 
     fn finalise_layout_dynamic<'data>(
-        state: &mut layout::DynamicLayoutState<'data, Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
-        resolutions_out: &mut layout::ResolutionWriter<Self>,
-    ) -> Result<Option<Self::DynamicLayoutExt<'data>>>;
+        _state: &mut layout::DynamicLayoutState<'data, Self>,
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
+        _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut layout::ResolutionWriter<Self>,
+    ) -> Result<Option<Self::DynamicLayoutExt<'data>>> {
+        Ok(None)
+    }
 
     fn finalise_layout_stub<'data>(
         _state: layout::StubLibraryLayoutState<'data, Self>,
@@ -708,14 +723,17 @@ pub(crate) trait Platform:
     /// Returns the next dynamic symbol index, bumping `memory_offsets` to point to the subsequent
     /// one.
     fn take_dynsym_index(
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> Result<u32>;
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
+        _section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Result<u32> {
+        bail!("Platform does not emit a dynamic symbol table")
+    }
 
     fn compute_object_addresses<'data>(
-        object: &layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-    );
+        _object: &layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) {
+    }
 
     fn layout_resources_ext<'data>(
         groups: &[Group<'data, Self>],
@@ -775,19 +793,23 @@ pub(crate) trait Platform:
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &mut layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue<Self>,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        section: layout::Section,
-        section_index: object::SectionIndex,
-        scope: &Scope<'scope>,
-    ) -> Result;
+        _state: &mut layout::ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _section: layout::Section,
+        _section_index: object::SectionIndex,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
 
     fn create_dynamic_symbol_definition<'data>(
-        symbol_db: &SymbolDb<'data, Self>,
-        symbol_id: SymbolId,
-    ) -> Result<layout::DynamicSymbolDefinition<'data, Self>>;
+        _symbol_db: &SymbolDb<'data, Self>,
+        _symbol_id: SymbolId,
+    ) -> Result<layout::DynamicSymbolDefinition<'data, Self>> {
+        bail!("Platform does not emit dynamic symbol definitions")
+    }
 
     fn validate_section<'data>(
         _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
@@ -802,15 +824,18 @@ pub(crate) trait Platform:
 
     /// Updates the list of segments to keep.
     fn update_segment_keep_list(
-        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
-        keep_segments: &mut [bool],
-        args: &Self::Args,
-    );
+        _program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
+        _keep_segments: &mut [bool],
+        _args: &Self::Args,
+    ) {
+    }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
 
     /// Returns segment definitions that should be unconditionally emitted without content.
-    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        &[]
+    }
 
     /// Returns whether the specified section should be included in the specified segment.
     fn program_segment_should_include_section(
@@ -866,13 +891,15 @@ pub(crate) trait Platform:
     ) -> Self::LayoutExt<'data>;
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
-        object: &mut ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        queue: &mut layout::LocalWorkQueue<Self>,
-        scope: &Scope<'scope>,
-    ) -> Result;
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _eh_frame_section_index: object::SectionIndex,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Processes an input section containing initializer function pointers (Mach-O specific).
     fn process_init_func_section<'data, 'scope, A: Arch<Platform = Self>>(
@@ -901,13 +928,15 @@ pub(crate) trait Platform:
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
-        object: &mut layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue<Self>,
-        unloaded: UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        scope: &Scope<'scope>,
-    ) -> Result;
+        _object: &mut layout::ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _unloaded: UnloadedSection,
+        _resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
 
     fn new_epilogue_layout<'data>(
         args: &Self::Args,
@@ -917,15 +946,17 @@ pub(crate) trait Platform:
     ) -> Self::EpilogueLayoutExt;
 
     fn apply_non_addressable_indexes_epilogue(
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
-    );
+        _counts: &mut Self::NonAddressableCounts,
+        _state: &mut Self::EpilogueLayoutExt,
+    ) {
+    }
 
     fn apply_non_addressable_indexes<'data, 'groups>(
-        symbol_db: &SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
-        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
-    );
+        _symbol_db: &SymbolDb<'data, Self>,
+        _counts: &Self::NonAddressableCounts,
+        _mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
+    ) {
+    }
 
     fn finalise_sizes_epilogue<'data>(
         state: &mut Self::EpilogueLayoutExt,
@@ -936,9 +967,10 @@ pub(crate) trait Platform:
     ) -> Result<()>;
 
     fn finalise_sizes_all<'data>(
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<'data, Self>,
-    );
+        _mem_sizes: &mut OutputSectionPartMap<u64>,
+        _symbol_db: &SymbolDb<'data, Self>,
+    ) {
+    }
 
     fn apply_late_size_adjustments_epilogue(
         _state: &mut Self::EpilogueLayoutExt,
@@ -1046,26 +1078,31 @@ pub(crate) trait Platform:
     }
 
     fn finalise_sizes_for_symbol<'data>(
-        common: &mut CommonGroupState<'data, Self>,
-        symbol_db: &SymbolDb<'data, Self>,
-        symbol_id: SymbolId,
-        flags: ValueFlags,
-    ) -> Result;
+        _common: &mut CommonGroupState<'data, Self>,
+        _symbol_db: &SymbolDb<'data, Self>,
+        _symbol_id: SymbolId,
+        _flags: ValueFlags,
+    ) -> Result {
+        Ok(())
+    }
 
     fn allocate_resolution(
-        flags: ValueFlags,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        output_kind: OutputKind,
-        args: &Self::Args,
-        is_linker_script_symbol: bool,
-    );
+        _flags: ValueFlags,
+        _mem_sizes: &mut OutputSectionPartMap<u64>,
+        _output_kind: OutputKind,
+        _args: &Self::Args,
+        _is_linker_script_symbol: bool,
+    ) {
+    }
 
     fn allocate_object_symtab_space<'data>(
-        state: &ObjectLayoutState<'data, Self>,
-        common: &mut CommonGroupState<'data, Self>,
-        symbol_db: &SymbolDb<'data, Self>,
-        per_symbol_flags: &AtomicPerSymbolFlags,
-    ) -> Result;
+        _state: &ObjectLayoutState<'data, Self>,
+        _common: &mut CommonGroupState<'data, Self>,
+        _symbol_db: &SymbolDb<'data, Self>,
+        _per_symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        Ok(())
+    }
 
     fn allocate_thunk_symbol_sizes(
         _sizes: &mut OutputSectionPartMap<u64>,
@@ -1075,13 +1112,15 @@ pub(crate) trait Platform:
     }
 
     fn allocate_internal_symbol(
-        symbol_id: SymbolId,
-        def_info: &InternalSymDefInfo<Self>,
-        sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<Self>,
-    ) -> Result;
+        _symbol_id: SymbolId,
+        _def_info: &InternalSymDefInfo<Self>,
+        _sizes: &mut OutputSectionPartMap<u64>,
+        _symbol_db: &SymbolDb<Self>,
+    ) -> Result {
+        Ok(())
+    }
 
-    fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>);
+    fn allocate_prelude(_common: &mut CommonGroupState<Self>, _symbol_db: &SymbolDb<Self>) {}
 
     /// Loads extra symbols that must be kept as GC roots, beyond the entry point, so that garbage
     /// collection doesn't discard them. Called while traversing the reference graph.
@@ -1093,10 +1132,12 @@ pub(crate) trait Platform:
     }
 
     fn finalise_prelude_layout<'data>(
-        prelude: &layout::PreludeLayoutState<Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
-    ) -> Result<Self::PreludeLayoutExt>;
+        _prelude: &layout::PreludeLayoutState<Self>,
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
+        _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Self::PreludeLayoutExt> {
+        Ok(Self::PreludeLayoutExt::default())
+    }
 
     fn create_resolution(
         flags: ValueFlags,
@@ -1321,7 +1362,9 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     /// based on `args`.
     fn parse(input: &InputBytes<'data>, args: &<Self::Platform as Platform>::Args) -> Result<Self>;
 
-    fn is_dynamic(&self) -> bool;
+    fn is_dynamic(&self) -> bool {
+        false
+    }
 
     fn section_groups(&self) -> Result<Vec<crate::comdat::SectionGroup<'data>>> {
         Ok(Vec::new())
@@ -1395,7 +1438,9 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
 
-    fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
+    fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex] {
+        &[]
+    }
 
     fn dynamic_symbol_used(
         &self,
@@ -1407,17 +1452,21 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn finalise_sizes_dynamic(
         &self,
-        lib_name: &[u8],
-        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-    ) -> Result;
+        _lib_name: &[u8],
+        _state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
+        _mem_sizes: &mut OutputSectionPartMap<u64>,
+    ) -> Result {
+        Ok(())
+    }
 
     fn apply_non_addressable_indexes_dynamic(
         &self,
-        indexes: &mut <Self::Platform as Platform>::NonAddressableIndexes,
-        counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-    ) -> Result;
+        _indexes: &mut <Self::Platform as Platform>::NonAddressableIndexes,
+        _counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
+        _state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
+    ) -> Result {
+        Ok(())
+    }
 
     fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]>;
 
@@ -1430,9 +1479,11 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     fn section_data(
         &self,
         section: &<Self::Platform as Platform>::SectionHeader,
-        member: &bumpalo_herd::Member<'data>,
-        loaded_metrics: &LoadedMetrics,
-    ) -> Result<&'data [u8]>;
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &LoadedMetrics,
+    ) -> Result<&'data [u8]> {
+        self.raw_section_data(section)
+    }
 
     /// Copies the data for the specified section into `out`, which must be the correct size.
     /// Decompresses the data if necessary.
@@ -1440,18 +1491,32 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         &self,
         section: &<Self::Platform as Platform>::SectionHeader,
         out: &mut [u8],
-    ) -> Result;
+    ) -> Result {
+        let bytes = self.raw_section_data(section)?;
+        crate::ensure!(
+            out.len() == bytes.len(),
+            "copy_section_data: output buffer size {} does not match section size {}",
+            out.len(),
+            bytes.len()
+        );
+        out.copy_from_slice(bytes);
+        Ok(())
+    }
 
     /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
     fn section_data_cow(
         &self,
         section: &<Self::Platform as Platform>::SectionHeader,
-    ) -> Result<Cow<'data, [u8]>>;
+    ) -> Result<Cow<'data, [u8]>> {
+        Ok(Cow::Borrowed(self.raw_section_data(section)?))
+    }
 
     fn section_alignment(
         &self,
-        section: &<Self::Platform as Platform>::SectionHeader,
-    ) -> Result<u64>;
+        _section: &<Self::Platform as Platform>::SectionHeader,
+    ) -> Result<u64> {
+        Ok(1)
+    }
 
     fn relocations(
         &self,
@@ -1459,15 +1524,21 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         relocations: &<Self::Platform as Platform>::RelocationSections,
     ) -> Result<<Self::Platform as Platform>::RelocationList<'data>>;
 
-    fn parse_relocations(&self) -> Result<<Self::Platform as Platform>::RelocationSections>;
+    fn parse_relocations(&self) -> Result<<Self::Platform as Platform>::RelocationSections> {
+        Ok(Default::default())
+    }
 
     /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
     /// quite slow.
-    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String>;
+    fn symbol_version_debug(&self, _symbol_index: object::SymbolIndex) -> Option<String> {
+        None
+    }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
 
-    fn dynamic_tag_values(&self) -> Option<<Self::Platform as Platform>::DynamicTagValues<'data>>;
+    fn dynamic_tag_values(&self) -> Option<<Self::Platform as Platform>::DynamicTagValues<'data>> {
+        None
+    }
 
     fn get_version_names(&self) -> Result<<Self::Platform as Platform>::VersionNames<'data>>;
 
@@ -1482,18 +1553,24 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     /// objects.
     fn should_enforce_undefined(
         &self,
-        resources: &layout::GraphResources<'data, '_, Self::Platform>,
-    ) -> bool;
+        _resources: &layout::GraphResources<'data, '_, Self::Platform>,
+    ) -> bool {
+        false
+    }
 
     fn verneed_table(&self) -> Result<<Self::Platform as Platform>::VerneedTable<'data>>;
 
     fn process_gnu_note_section(
         &self,
-        state: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
-        section_index: object::SectionIndex,
-    ) -> Result;
+        _state: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
+        _section_index: object::SectionIndex,
+    ) -> Result {
+        Ok(())
+    }
 
-    fn dynamic_tags(&self) -> Result<&'data [<Self::Platform as Platform>::DynamicEntry]>;
+    fn dynamic_tags(&self) -> Result<&'data [<Self::Platform as Platform>::DynamicEntry]> {
+        Ok(&[])
+    }
 }
 
 pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
@@ -1503,44 +1580,76 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
         !self.is_alloc()
     }
 
-    fn is_writable(&self) -> bool;
+    fn is_writable(&self) -> bool {
+        false
+    }
 
-    fn is_executable(&self) -> bool;
+    fn is_executable(&self) -> bool {
+        false
+    }
 
-    fn is_tls(&self) -> bool;
+    fn is_tls(&self) -> bool {
+        false
+    }
 
-    fn is_merge_section(&self) -> bool;
+    fn is_merge_section(&self) -> bool {
+        false
+    }
 
-    fn is_strings(&self) -> bool;
+    fn is_strings(&self) -> bool {
+        false
+    }
 
-    fn should_retain(&self) -> bool;
+    fn should_retain(&self) -> bool {
+        false
+    }
 
-    fn should_exclude(&self) -> bool;
+    fn should_exclude(&self) -> bool {
+        false
+    }
 
-    fn is_group(&self) -> bool;
+    fn is_group(&self) -> bool {
+        false
+    }
 
     fn is_group_header(&self) -> bool {
         false
     }
 
-    fn is_note(&self) -> bool;
+    fn is_note(&self) -> bool {
+        false
+    }
 
     fn is_prog_bits(&self) -> bool;
 
     /// Returns whether the section has no contents in the file (zero initialised).
-    fn is_no_bits(&self) -> bool;
+    fn is_no_bits(&self) -> bool {
+        false
+    }
 
-    fn is_null(&self) -> bool;
+    fn is_null(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) trait SectionType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
 {
-    fn is_rela(&self) -> bool;
-    fn is_rel(&self) -> bool;
-    fn is_symtab(&self) -> bool;
-    fn is_strtab(&self) -> bool;
+    fn is_rela(&self) -> bool {
+        false
+    }
+    fn is_rel(&self) -> bool {
+        false
+    }
+    fn is_symtab(&self) -> bool {
+        false
+    }
+    fn is_strtab(&self) -> bool {
+        false
+    }
 }
+
+impl SectionType for () {}
 
 pub(crate) trait SegmentType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
@@ -1556,7 +1665,9 @@ pub(crate) trait SectionFlags:
 pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
     /// Returns information about the symbol if it's a common symbol. Platforms that don't have
     /// common symbols can just return None.
-    fn as_common(&self) -> Option<CommonSymbol>;
+    fn as_common(&self) -> Option<CommonSymbol> {
+        None
+    }
 
     fn is_common(&self) -> bool {
         self.as_common().is_some()
@@ -1579,7 +1690,9 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
     fn has_name(&self) -> bool;
 
     /// Returns whether this symbol should be omitted from the output symtab by default.
-    fn is_default_strippable(&self, name: &[u8]) -> bool;
+    fn is_default_strippable(&self, _name: &[u8]) -> bool {
+        false
+    }
 
     fn debug_string(&self) -> String;
 
@@ -1588,15 +1701,21 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
 
     /// Returns whether this symbol can be interposed (overridden) at runtime by DSOs earlier in the
     /// load order.
-    fn is_interposable(&self) -> bool;
+    fn is_interposable(&self) -> bool {
+        false
+    }
 
     fn is_func(&self) -> bool;
 
-    fn is_ifunc(&self) -> bool;
+    fn is_ifunc(&self) -> bool {
+        false
+    }
 
     fn is_hidden(&self) -> bool;
 
-    fn is_gnu_unique(&self) -> bool;
+    fn is_gnu_unique(&self) -> bool {
+        false
+    }
 
     fn with_hidden(self, hidden: bool) -> Self;
 }
@@ -1646,12 +1765,28 @@ pub(crate) trait VerneedTable<'data>: Send + Sync + 'data {
     fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]>;
 }
 
+impl<'data> VerneedTable<'data> for () {
+    fn version_name(&self, _local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+        None
+    }
+}
+
 pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync + 'data {
     fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8];
 }
 
+impl<'data> DynamicTagValues<'data> for () {
+    fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
+        input.lib_name()
+    }
+}
+
 pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
     fn new<P: Platform>(symbol_db: &SymbolDb<P>) -> Self;
+}
+
+impl NonAddressableIndexes for () {
+    fn new<P: Platform>(_symbol_db: &SymbolDb<P>) -> Self {}
 }
 
 pub(crate) trait SectionAttributes:
@@ -1664,34 +1799,51 @@ pub(crate) trait SectionAttributes:
 
     type Platform: Platform;
 
-    fn merge(&mut self, rhs: Self);
+    fn merge(&mut self, _rhs: Self) {}
 
     fn apply(
         &self,
-        output_sections: &mut OutputSections<Self::Platform>,
-        section_id: OutputSectionId,
-    );
+        _output_sections: &mut OutputSections<Self::Platform>,
+        _section_id: OutputSectionId,
+    ) {
+    }
 
-    fn is_null(&self) -> bool;
+    fn is_null(&self) -> bool {
+        false
+    }
 
     fn is_alloc(&self) -> bool;
 
-    fn is_executable(&self) -> bool;
+    fn is_executable(&self) -> bool {
+        false
+    }
 
-    fn is_tls(&self) -> bool;
+    fn is_tls(&self) -> bool {
+        false
+    }
 
-    fn occupies_only_tls_address_space(&self) -> bool;
+    fn occupies_only_tls_address_space(&self) -> bool {
+        false
+    }
 
-    fn is_writable(&self) -> bool;
+    fn is_writable(&self) -> bool {
+        false
+    }
 
-    fn is_no_bits(&self) -> bool;
+    fn is_no_bits(&self) -> bool {
+        false
+    }
 
-    fn flags(&self) -> <Self::Platform as Platform>::SectionFlags;
+    fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
+        Default::default()
+    }
 
-    fn ty(&self) -> <Self::Platform as Platform>::SectionType;
+    fn ty(&self) -> <Self::Platform as Platform>::SectionType {
+        Default::default()
+    }
 
     /// Called for custom sections that return true to `is_null`.
-    fn set_to_default_type(&mut self);
+    fn set_to_default_type(&mut self) {}
 }
 
 pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);
@@ -1718,17 +1870,27 @@ impl FrameIndex {
 }
 
 pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
-    fn is_writable(self) -> bool;
+    fn is_writable(self) -> bool {
+        false
+    }
 
-    fn is_executable(self) -> bool;
+    fn is_executable(self) -> bool {
+        false
+    }
 
     fn always_keep(self) -> bool;
 
-    fn is_loadable(self) -> bool;
+    fn is_loadable(self) -> bool {
+        false
+    }
 
-    fn is_stack(self) -> bool;
+    fn is_stack(self) -> bool {
+        false
+    }
 
-    fn is_tls(self) -> bool;
+    fn is_tls(self) -> bool {
+        false
+    }
 
     /// Returns a numeric value that can be used to sort the segments as they should appear in the
     /// program headers table. Segments with lower values will appear first.
