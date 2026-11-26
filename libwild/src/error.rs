@@ -56,6 +56,8 @@ macro_rules! ensure {
 }
 
 impl Error {
+    #[cold]
+    #[inline(never)]
     pub fn with_message(msg: impl Into<String>) -> Self {
         Error(Box::new(vec![ErrorPayload {
             messages: vec![msg.into()],
