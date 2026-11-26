@@ -10823,6 +10823,8 @@ impl WineEnvironment {
             .env("WINEARCH", "win64")
             .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
             .env("WINEDEBUG", "-all")
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
             .stdin(Stdio::null());
         command
     }
