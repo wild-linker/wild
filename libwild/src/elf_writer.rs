@@ -2483,6 +2483,27 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let (out, instruction_mapping) =
         write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
 
+    relocate_section::<C, A>(
+        object,
+        layout,
+        section_index,
+        out,
+        &instruction_mapping,
+        table_writer,
+        trace,
+    )
+}
+
+fn relocate_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<'data, C>,
+    section_index: object::SectionIndex,
+    out: &mut [u8],
+    instruction_mapping: &HashMap<u64, u64>,
+    table_writer: &mut TableWriter<'_, '_, C>,
+    trace: &TraceOutput,
+) -> Result {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
     if should_reverse_contents(
@@ -2512,7 +2533,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             out,
             section_index,
             rela.iter().map(|rela| Ok(elf::ElfRela::new(*rela))),
-            &instruction_mapping,
+            instruction_mapping,
             layout,
             table_writer,
             trace,
@@ -2522,7 +2543,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             out,
             section_index,
             crel_iter.map(|r| r.map(elf::ElfCrel::new)),
-            &instruction_mapping,
+            instruction_mapping,
             layout,
             table_writer,
             trace,
@@ -2671,82 +2692,92 @@ fn write_section_raw<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             );
         }
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
-        let object_section = object.object.section(section_index)?;
-        if object_section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
-            return Ok((out, HashMap::new()));
-        }
-        let relax_deltas = object.section_relax_deltas.get(section_index.0);
-
-        let section_info = layout
-            .output_sections
-            .output_info(part_id.output_section_id::<elf::Elf<C>>());
-        let effective_size = match relax_deltas {
-            None => {
-                let section_size = object.object.section_size(object_section)?;
-                let section_size = section_size as usize;
-                object
-                    .object
-                    .copy_section_data(object_section, &mut out[..section_size])?;
-                fill_section_padding::<C, A>(&mut out[section_size..], section_info);
-                section_size
-            }
-            Some(deltas) => {
-                let input_data = object.object.raw_section_data(object_section)?;
-                let effective_size = sec.size as usize;
-
-                let mut input_pos: usize = 0;
-                let mut output_pos: usize = 0;
-
-                for delta in deltas.deltas() {
-                    let skip_start = delta.input_offset as usize;
-                    // Copy everything from input_pos up to the deletion point.
-                    let copy_len = skip_start - input_pos;
-                    if copy_len > 0 {
-                        out[output_pos..output_pos + copy_len]
-                            .copy_from_slice(&input_data[input_pos..skip_start]);
-                        output_pos += copy_len;
-                    }
-                    // Skip over the deleted bytes in the input.
-                    input_pos = skip_start + delta.bytes_deleted as usize;
-                }
-
-                // Copy the remainder after the last deletion.
-                let remaining = input_data.len() - input_pos;
-                if remaining > 0 {
-                    out[output_pos..output_pos + remaining]
-                        .copy_from_slice(&input_data[input_pos..]);
-                    output_pos += remaining;
-                }
-                fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
-
-                effective_size
-            }
-        };
-
-        // AArch64 erratum is mutually exclusive from architectures using relax relocations.
-        if let Some(info) = object.erratum_sections.get(&section_index.0) {
-            debug_assert!(!layout.args().should_output_partial_object());
-            let address = object.section_resolutions[section_index.0]
-                .address()
-                .context("Missing erratum section address")?;
-            let instruction_mapping = crate::erratum843419::patch_erratum_sequences(
-                out,
-                effective_size,
-                address,
-                &info.offsets,
-                object.object,
-                section_index,
-                &layout.erratum_patches,
-            )?;
-            layout
-                .erratum_padding
-                .fetch_add(info.maximal_padding as u64, Relaxed);
-            Ok((out, instruction_mapping))
-        } else {
-            Ok((&mut out[..effective_size], HashMap::new()))
-        }
+        write_section_contents::<C, A>(object, layout, sec, section_index, out)
     } else {
         Ok((&mut [], HashMap::new()))
+    }
+}
+
+fn write_section_contents<'out, 'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    sec: Section,
+    section_index: object::SectionIndex,
+    out: &'out mut [u8],
+) -> Result<(&'out mut [u8], HashMap<u64, u64>)> {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let object_section = object.object.section(section_index)?;
+    if object_section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
+        return Ok((out, HashMap::new()));
+    }
+    let relax_deltas = object.section_relax_deltas.get(section_index.0);
+
+    let section_info = layout
+        .output_sections
+        .output_info(part_id.output_section_id::<elf::Elf<C>>());
+    let effective_size = match relax_deltas {
+        None => {
+            let section_size = object.object.section_size(object_section)?;
+            let section_size = section_size as usize;
+            object
+                .object
+                .copy_section_data(object_section, &mut out[..section_size])?;
+            fill_section_padding::<C, A>(&mut out[section_size..], section_info);
+            section_size
+        }
+        Some(deltas) => {
+            let input_data = object.object.raw_section_data(object_section)?;
+            let effective_size = sec.size as usize;
+
+            let mut input_pos: usize = 0;
+            let mut output_pos: usize = 0;
+
+            for delta in deltas.deltas() {
+                let skip_start = delta.input_offset as usize;
+                // Copy everything from input_pos up to the deletion point.
+                let copy_len = skip_start - input_pos;
+                if copy_len > 0 {
+                    out[output_pos..output_pos + copy_len]
+                        .copy_from_slice(&input_data[input_pos..skip_start]);
+                    output_pos += copy_len;
+                }
+                // Skip over the deleted bytes in the input.
+                input_pos = skip_start + delta.bytes_deleted as usize;
+            }
+
+            // Copy the remainder after the last deletion.
+            let remaining = input_data.len() - input_pos;
+            if remaining > 0 {
+                out[output_pos..output_pos + remaining].copy_from_slice(&input_data[input_pos..]);
+                output_pos += remaining;
+            }
+            fill_section_padding::<C, A>(&mut out[output_pos..], section_info);
+
+            effective_size
+        }
+    };
+
+    // AArch64 erratum is mutually exclusive from architectures using relax relocations.
+    if let Some(info) = object.erratum_sections.get(&section_index.0) {
+        debug_assert!(!layout.args().should_output_partial_object());
+        let address = object.section_resolutions[section_index.0]
+            .address()
+            .context("Missing erratum section address")?;
+        let instruction_mapping = crate::erratum843419::patch_erratum_sequences(
+            out,
+            effective_size,
+            address,
+            &info.offsets,
+            object.object,
+            section_index,
+            &layout.erratum_patches,
+        )?;
+        layout
+            .erratum_padding
+            .fetch_add(info.maximal_padding as u64, Relaxed);
+        Ok((out, instruction_mapping))
+    } else {
+        Ok((&mut out[..effective_size], HashMap::new()))
     }
 }
 
