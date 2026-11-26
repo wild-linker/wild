@@ -587,11 +587,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Self::parse_bytes(input.data, false)
     }
 
-    fn is_dynamic(&self) -> bool {
-        // Wasm has no notion of "dynamic objects" in the ELF sense yet.
-        false
-    }
-
     fn num_symbols(&self) -> usize {
         self.symbols.len()
     }
@@ -701,29 +696,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(None)
     }
 
-    fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
-        // Wasm doesn't have ELF-style symbol versioning.
-        &[]
-    }
-
-    fn finalise_sizes_dynamic(
-        &self,
-        _lib_name: &[u8],
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn apply_non_addressable_indexes_dynamic(
-        &self,
-        _indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
-        _counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
     fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
         let header = self
             .sections
@@ -744,47 +716,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(&self.data[section.payload_range_usize()])
     }
 
-    fn section_data(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-        _member: &bumpalo_herd::Member<'data>,
-        _loaded_metrics: &crate::resolution::LoadedMetrics,
-    ) -> crate::error::Result<&'data [u8]> {
-        // Wasm sections are never compressed.
-        self.raw_section_data(section)
-    }
-
-    fn copy_section_data(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-        out: &mut [u8],
-    ) -> crate::error::Result {
-        let bytes = self.raw_section_data(section)?;
-        ensure!(
-            out.len() == bytes.len(),
-            "copy_section_data: output buffer size {} does not match section size {}",
-            out.len(),
-            bytes.len()
-        );
-        out.copy_from_slice(bytes);
-        Ok(())
-    }
-
-    fn section_data_cow(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<std::borrow::Cow<'data, [u8]>> {
-        Ok(std::borrow::Cow::Borrowed(self.raw_section_data(section)?))
-    }
-
-    fn section_alignment(
-        &self,
-        _section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<u64> {
-        // Wasm sections themselves don't carry an alignment requirement.
-        Ok(1)
-    }
-
     fn relocations(
         &self,
         index: object::SectionIndex,
@@ -798,28 +729,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn parse_relocations(
-        &self,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationSections> {
-        Ok(())
-    }
-
-    fn symbol_version_debug(&self, _symbol_index: object::SymbolIndex) -> Option<String> {
-        // Wasm doesn't have ELF-style symbol versioning.
-        None
-    }
-
     fn section_display_name(&self, index: object::SectionIndex) -> std::borrow::Cow<'data, str> {
         self.section_name(index).map_or_else(
             |_| format!("<index {}>", index.0).into(),
             String::from_utf8_lossy,
         )
-    }
-
-    fn dynamic_tag_values(
-        &self,
-    ) -> Option<<Self::Platform as platform::Platform>::DynamicTagValues<'data>> {
-        None
     }
 
     fn get_version_names(
@@ -839,33 +753,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn should_enforce_undefined(
-        &self,
-        _resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
-    ) -> bool {
-        // Wasm has no dynamic objects yet, so this is never reached in practice.
-        false
-    }
-
     fn verneed_table(
         &self,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::VerneedTable<'data>> {
-        Ok(VerneedTable { _phantom: &[] })
-    }
-
-    fn process_gnu_note_section(
-        &self,
-        _state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
-        _section_index: object::SectionIndex,
-    ) -> crate::error::Result {
-        // Wasm objects don't carry GNU property notes.
         Ok(())
-    }
-
-    fn dynamic_tags(
-        &self,
-    ) -> crate::error::Result<&'data [<Self::Platform as platform::Platform>::DynamicEntry]> {
-        Ok(&[])
     }
 }
 
@@ -874,76 +765,8 @@ impl platform::SectionHeader for SectionHeader {
         true
     }
 
-    fn is_writable(&self) -> bool {
-        // Wasm sections are not classified into RW vs RO at the section level.
-        false
-    }
-
-    fn is_executable(&self) -> bool {
-        // Code lives in the dedicated CODE section.
-        false
-    }
-
-    fn is_tls(&self) -> bool {
-        // Wasm has no TLS yet.
-        false
-    }
-
-    fn is_merge_section(&self) -> bool {
-        false
-    }
-
-    fn is_strings(&self) -> bool {
-        false
-    }
-
-    fn should_retain(&self) -> bool {
-        false
-    }
-
-    fn should_exclude(&self) -> bool {
-        false
-    }
-
-    fn is_group(&self) -> bool {
-        false
-    }
-
-    fn is_note(&self) -> bool {
-        false
-    }
-
     fn is_prog_bits(&self) -> bool {
         true
-    }
-
-    fn is_no_bits(&self) -> bool {
-        false
-    }
-
-    fn is_null(&self) -> bool {
-        false
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionType {}
-
-impl platform::SectionType for SectionType {
-    fn is_rela(&self) -> bool {
-        false
-    }
-
-    fn is_rel(&self) -> bool {
-        false
-    }
-
-    fn is_symtab(&self) -> bool {
-        false
-    }
-
-    fn is_strtab(&self) -> bool {
-        false
     }
 }
 
@@ -958,11 +781,6 @@ impl platform::SectionFlags for SectionFlags {
 }
 
 impl platform::Symbol for WasmSymbol {
-    fn as_common(&self) -> Option<platform::CommonSymbol> {
-        // Wasm has no COMMON symbols.
-        None
-    }
-
     fn is_undefined(&self) -> bool {
         WasmSymbol::is_undefined(self)
     }
@@ -1002,11 +820,6 @@ impl platform::Symbol for WasmSymbol {
         WasmSymbol::has_name(self)
     }
 
-    fn is_default_strippable(&self, _name: &[u8]) -> bool {
-        // No equivalent of ELF's `.L` local symbol convention.
-        false
-    }
-
     fn debug_string(&self) -> String {
         format!("<Wasm symbol kind={:?} index={}>", self.kind, self.index)
     }
@@ -1015,25 +828,12 @@ impl platform::Symbol for WasmSymbol {
         self.flags.contains(object::wasm::SYM_TLS)
     }
 
-    fn is_interposable(&self) -> bool {
-        // No dynamic linking yet; symbols can't be interposed at runtime.
-        false
-    }
-
     fn is_func(&self) -> bool {
         self.kind == object::wasm::SYM_TYPE_FUNCTION
     }
 
-    fn is_ifunc(&self) -> bool {
-        false
-    }
-
     fn is_hidden(&self) -> bool {
         WasmSymbol::is_hidden(self)
-    }
-
-    fn is_gnu_unique(&self) -> bool {
-        false
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
@@ -1053,65 +853,8 @@ impl platform::SectionAttributes for SectionAttributes {
     const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = SectionFlags {};
     type Platform = Wasm;
 
-    fn merge(&mut self, _rhs: Self) {
-        // No per-section attributes to merge yet.
-    }
-
-    fn apply(
-        &self,
-        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        _section_id: crate::output_section_id::OutputSectionId,
-    ) {
-        // No-op: Wasm output sections inherit their attributes from `SECTION_DEFINITIONS`.
-    }
-
-    fn is_null(&self) -> bool {
-        false
-    }
-
     fn is_alloc(&self) -> bool {
         true
-    }
-
-    fn is_executable(&self) -> bool {
-        false
-    }
-
-    fn is_tls(&self) -> bool {
-        false
-    }
-
-    fn occupies_only_tls_address_space(&self) -> bool {
-        false
-    }
-
-    fn is_writable(&self) -> bool {
-        false
-    }
-
-    fn is_no_bits(&self) -> bool {
-        false
-    }
-
-    fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
-        SectionFlags::default()
-    }
-
-    fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
-        SectionType::default()
-    }
-
-    fn set_to_default_type(&mut self) {
-        // Wasm has no per-section type to reset.
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct NonAddressableIndexes {}
-
-impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<P: platform::Platform>(_symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
-        Self {}
     }
 }
 
@@ -1142,28 +885,8 @@ impl std::fmt::Display for ProgramSegmentDef {
 }
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    fn is_writable(self) -> bool {
-        false
-    }
-
-    fn is_executable(self) -> bool {
-        false
-    }
-
     fn always_keep(self) -> bool {
         true
-    }
-
-    fn is_loadable(self) -> bool {
-        false
-    }
-
-    fn is_stack(self) -> bool {
-        false
-    }
-
-    fn is_tls(self) -> bool {
-        false
     }
 
     fn order_key(self) -> usize {
@@ -1277,17 +1000,6 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];
 
-#[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct DynamicTagValues<'data> {
-    _phantom: std::marker::PhantomData<&'data [u8]>,
-}
-
-impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
-    fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
-        input.lib_name()
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct RawSymbolName<'data> {
     pub(crate) name: &'data [u8],
@@ -1314,16 +1026,6 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
 impl std::fmt::Display for RawSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&String::from_utf8_lossy(self.name), f)
-    }
-}
-
-pub(crate) struct VerneedTable<'data> {
-    _phantom: &'data [u8],
-}
-
-impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
-    fn version_name(&self, _local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
-        None
     }
 }
 
@@ -7573,7 +7275,7 @@ impl platform::Platform for Wasm {
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
-    type SectionType = SectionType;
+    type SectionType = ();
     type SegmentType = SegmentType;
     type ProgramSegmentDef = ProgramSegmentDef;
     type BuiltInSectionDetails = BuiltInSectionDetails;
@@ -7582,7 +7284,7 @@ impl platform::Platform for Wasm {
     type DynamicSymbolDefinitionExt = ();
     type RelocationInfo = object::wasm::RelocationType;
     type RelocationKindInfo = RelocationKindInfo;
-    type NonAddressableIndexes = NonAddressableIndexes;
+    type NonAddressableIndexes = ();
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
     type GroupLayoutExt = ();
@@ -7600,7 +7302,7 @@ impl platform::Platform for Wasm {
     type LayoutExt<'data> = WasmLayout<'data>;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
-    type DynamicTagValues<'data> = DynamicTagValues<'data>;
+    type DynamicTagValues<'data> = ();
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
     type DynamicLayoutExt<'data> = ();
@@ -7610,7 +7312,7 @@ impl platform::Platform for Wasm {
     type ObjectLayoutStateExt<'data> = WasmObjectLayout<'data>;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
-    type VerneedTable<'data> = VerneedTable<'data>;
+    type VerneedTable<'data> = ();
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
     type SectionIdentityExt = ();
     type GcUnit = WasmGcUnit;
@@ -7622,26 +7324,6 @@ impl platform::Platform for Wasm {
         output.write(layout, crate::wasm_writer::write::<A>)
     }
 
-    fn section_attributes(
-        _header: &Self::SectionHeader,
-        _alignment: Alignment,
-    ) -> Self::SectionAttributes {
-        SectionAttributes::default()
-    }
-
-    fn apply_force_keep_sections(
-        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        _args: &Self::Args,
-    ) {
-        // No `-u` / `--require-defined` analogue is wired through for Wasm yet.
-    }
-
-    fn is_zero_sized_section_content(
-        _section_id: crate::output_section_id::OutputSectionId,
-    ) -> bool {
-        false
-    }
-
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
         &SECTION_DEFINITIONS
     }
@@ -7649,12 +7331,6 @@ impl platform::Platform for Wasm {
     fn finalise_group_layout(
         _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> Self::GroupLayoutExt {
-    }
-
-    fn frame_data_base_address(
-        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
-    ) -> u64 {
-        0
     }
 
     fn post_gc<'data>(
@@ -7669,63 +7345,6 @@ impl platform::Platform for Wasm {
             }
         }
         Ok(())
-    }
-
-    fn activate_dynamic<'data>(
-        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-    ) {
-        // Dynamic Wasm objects are not emitted by this backend.
-    }
-
-    fn pre_finalise_sizes_prelude<'scope, 'data>(
-        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
-    ) {
-    }
-
-    fn finalise_sizes_dynamic<'data>(
-        _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn finalise_object_sizes<'data>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-    ) {
-    }
-
-    fn finalise_object_layout<'data>(
-        _object: &crate::layout::ObjectLayoutState<'data, Self>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    ) {
-    }
-
-    fn finalise_layout_dynamic<'data>(
-        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
-    ) -> crate::error::Result<Option<Self::DynamicLayoutExt<'data>>> {
-        Ok(None)
-    }
-
-    fn take_dynsym_index(
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _section_layouts: &crate::output_section_map::OutputSectionMap<
-            crate::layout::OutputRecordLayout,
-        >,
-    ) -> crate::error::Result<u32> {
-        crate::bail!("Wasm dynamic symbol table is not emitted")
-    }
-
-    fn compute_object_addresses<'data>(
-        _object: &crate::layout::ObjectLayoutState<'data, Self>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    ) {
     }
 
     fn layout_resources_ext<'data>(
@@ -7784,38 +7403,8 @@ impl platform::Platform for Wasm {
         Ok(())
     }
 
-    fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _state: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
-        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        _section: crate::layout::Section,
-        _section_index: object::SectionIndex,
-        _scope: &rayon::Scope<'scope>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn create_dynamic_symbol_definition<'data>(
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _symbol_id: crate::symbol_db::SymbolId,
-    ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        crate::bail!("Wasm dynamic symbol definitions are not emitted")
-    }
-
-    fn update_segment_keep_list(
-        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        _keep_segments: &mut [bool],
-        _args: &Self::Args,
-    ) {
-    }
-
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         PROGRAM_SEGMENT_DEFS
-    }
-
-    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        &[]
     }
 
     fn program_segment_should_include_section(
@@ -7904,23 +7493,7 @@ impl platform::Platform for Wasm {
         WasmObjectLayout {
             symbol_id_range,
             file_id,
-            gc_states_ready: false,
-            gc_defined_functions: Vec::new(),
-            gc_defined_globals: Vec::new(),
-            gc_data_segments: Vec::new(),
-            gc_function_imports: Vec::new(),
-            gc_global_imports: Vec::new(),
-            func_import_symbol_offsets: Vec::new(),
-            global_import_symbol_offsets: Vec::new(),
-            relocs_ready: false,
-            code_relocations: Vec::new(),
-            data_relocations: Vec::new(),
-            function_bodies: Vec::new(),
-            data_segments: Vec::new(),
-            function_body_spans: Vec::new(),
-            data_segment_spans: Vec::new(),
-            defined_function_live_ordinal: Vec::new(),
-            defined_global_live_ordinal: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -7949,52 +7522,12 @@ impl platform::Platform for Wasm {
         finalise_sizes_ext
     }
 
-    fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _eh_frame_section_index: object::SectionIndex,
-        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
-        _scope: &rayon::Scope<'scope>,
-    ) -> crate::error::Result {
-        // Wasm doesn't have ELF-style `.eh_frame`.
-        Ok(())
-    }
-
-    fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
-        _unloaded: crate::resolution::UnloadedSection,
-        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        _scope: &rayon::Scope<'scope>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
     fn new_epilogue_layout<'data>(
         _args: &Self::Args,
         _output_kind: crate::output_kind::OutputKind,
         _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
         _group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
-    }
-
-    fn apply_non_addressable_indexes_epilogue(
-        _counts: &mut Self::NonAddressableCounts,
-        _state: &mut Self::EpilogueLayoutExt,
-    ) {
-        // No-op: Wasm has no version table.
-    }
-
-    fn apply_non_addressable_indexes<'data, 'groups>(
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _counts: &Self::NonAddressableCounts,
-        _mem_sizes_iter: impl Iterator<
-            Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        >,
-    ) {
-        // Wasm has no non-addressable side tables.
     }
 
     fn finalise_sizes_epilogue<'data>(
@@ -8008,12 +7541,6 @@ impl platform::Platform for Wasm {
         properties.add_code_section_size(mem_sizes);
         properties.add_data_section_size(mem_sizes);
         Ok(())
-    }
-
-    fn finalise_sizes_all<'data>(
-        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-    ) {
     }
 
     fn finalise_layout_epilogue<'data>(
@@ -8059,56 +7586,6 @@ impl platform::Platform for Wasm {
         );
     }
 
-    fn finalise_sizes_for_symbol<'data>(
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _symbol_id: crate::symbol_db::SymbolId,
-        _flags: crate::value_flags::ValueFlags,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn allocate_resolution(
-        _flags: crate::value_flags::ValueFlags,
-        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _output_kind: crate::output_kind::OutputKind,
-        _args: &Self::Args,
-        _is_linker_script_symbol: bool,
-    ) {
-    }
-
-    fn allocate_object_symtab_space<'data>(
-        _state: &crate::layout::ObjectLayoutState<'data, Self>,
-        _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn allocate_internal_symbol(
-        _symbol_id: crate::symbol_db::SymbolId,
-        _def_info: &crate::parsing::InternalSymDefInfo<Self>,
-        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
-    fn allocate_prelude(
-        _common: &mut crate::layout::CommonGroupState<Self>,
-        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
-    ) {
-    }
-
-    fn finalise_prelude_layout<'data>(
-        _prelude: &crate::layout::PreludeLayoutState<Self>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-    ) -> crate::error::Result<Self::PreludeLayoutExt> {
-        Ok(())
-    }
-
     fn create_resolution(
         flags: crate::value_flags::ValueFlags,
         raw_value: u64,
@@ -8136,15 +7613,6 @@ impl platform::Platform for Wasm {
 
     fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
         DEFAULT_SECTION_RULES.to_vec()
-    }
-
-    fn align_load_segment_start(
-        _segment_def: Self::ProgramSegmentDef,
-        _segment_alignment: crate::alignment::Alignment,
-        _file_offset: &mut usize,
-        _mem_offset: &mut u64,
-    ) {
-        // Wasm has no load segments in the ELF sense.
     }
 
     fn build_output_order_and_program_segments<'data>(
