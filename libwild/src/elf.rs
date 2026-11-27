@@ -3407,6 +3407,11 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     output_section_id::NOTE_ABI_TAG,
                 ));
             }
+            secnames::COMMENT_SECTION_NAME => {
+                return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                    output_section_id::COMMENT,
+                ));
+            }
             secnames::DEBUG_GNU_PUBNAMES | secnames::DEBUG_GNU_PUBTYPES if args.gdb_index => {
                 return SectionRuleOutcome::DebugIndex;
             }
