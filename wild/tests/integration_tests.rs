@@ -153,6 +153,11 @@
 //!
 //! ExpectModuleName:{name} (Wasm) Asserts the `name` section's module name. `$OUTPUT` is the
 //! output file's filename, which is used when `--soname` is omitted or empty.
+//!
+//! ExpectDataSegmentCount:{count} (Wasm) Asserts the data section has exactly {count} segments.
+//!
+//! ExpectDataSegmentName:{index}={name} (Wasm) Asserts the `name` section's data segment name at
+//! {index} is {name}. May be repeated.
 
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
@@ -691,6 +696,7 @@ struct WasmModuleInfo {
     memory_imports: Vec<(String, String, wasmparser::MemoryType)>,
     tables: Vec<wasmparser::TableType>,
     table_imports: Vec<(String, String, wasmparser::TableType)>,
+    data_segment_count: usize,
 }
 
 fn i32_const_from_expr(expr: &wasmparser::ConstExpr<'_>) -> Option<i32> {
@@ -720,6 +726,7 @@ impl WasmModuleInfo {
         let mut memory_imports = Vec::new();
         let mut tables = Vec::new();
         let mut table_imports = Vec::new();
+        let mut data_segment_count = 0usize;
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -825,8 +832,9 @@ impl WasmModuleInfo {
                 Payload::CodeSectionStart { .. } => {
                     section_names.insert("Code".to_owned());
                 }
-                Payload::DataSection(_) => {
+                Payload::DataSection(section) => {
                     section_names.insert("Data".to_owned());
+                    data_segment_count += section.count() as usize;
                 }
                 Payload::DataCountSection { .. } => {
                     section_names.insert("DataCount".to_owned());
@@ -852,6 +860,7 @@ impl WasmModuleInfo {
             memory_imports,
             tables,
             table_imports,
+            data_segment_count,
         })
     }
 
@@ -1246,6 +1255,75 @@ impl WasmModuleInfo {
                 self.path.display()
             ),
         }
+    }
+
+    fn ensure_data_segment_count(&self, expected: Option<usize>, linker_name: &str) -> Result {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        ensure!(
+            self.data_segment_count == expected,
+            "Expected {expected} data segment(s) in {linker_name} output ({}), found {}",
+            self.path.display(),
+            self.data_segment_count
+        );
+        Ok(())
+    }
+
+    fn read_data_segment_names(&self) -> Result<HashMap<u32, String>> {
+        let mut names_map = HashMap::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&self.bytes) {
+            let wasmparser::Payload::CustomSection(reader) =
+                payload.with_context(|| format!("Invalid Wasm module {}", self.path.display()))?
+            else {
+                continue;
+            };
+            if reader.name() != "name" {
+                continue;
+            }
+            let wasmparser::KnownCustom::Name(names) = reader.as_known() else {
+                bail!(
+                    "Custom section `name` in {} is not a name section",
+                    self.path.display()
+                );
+            };
+            for subsection in names {
+                let subsection = subsection
+                    .with_context(|| format!("Invalid name section in {}", self.path.display()))?;
+                if let wasmparser::Name::Data(map) = subsection {
+                    for entry in map {
+                        let entry = entry.with_context(|| {
+                            format!("Invalid data segment name entry in {}", self.path.display())
+                        })?;
+                        names_map.insert(entry.index, entry.name.to_owned());
+                    }
+                }
+            }
+        }
+        Ok(names_map)
+    }
+
+    fn ensure_data_segment_names(&self, expected: &[(u32, String)], linker_name: &str) -> Result {
+        if expected.is_empty() {
+            return Ok(());
+        }
+        let actual = self.read_data_segment_names()?;
+        for (index, expected_name) in expected {
+            match actual.get(index) {
+                Some(name) if name == expected_name => {}
+                Some(name) => bail!(
+                    "Expected data segment name `{expected_name}` at index {index} in \
+                     {linker_name} output ({}), found `{name}`",
+                    self.path.display()
+                ),
+                None => bail!(
+                    "Expected data segment name `{expected_name}` at index {index} in \
+                     {linker_name} output ({}), found none (all: {actual:?})",
+                    self.path.display()
+                ),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2395,6 +2473,10 @@ struct Assertions {
     expected_table_maximum: Option<ExpectedTableMaximum>,
     /// Wasm: required `name` section module name.
     expected_module_name: Option<ExpectedModuleName>,
+    /// Wasm: total number of segments in the data section.
+    expected_data_segment_count: Option<usize>,
+    /// Wasm: `(index, name)` pairs expected in the `name` section's DataSegmentNames subsection.
+    expected_data_segment_names: Vec<(u32, String)>,
 
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
@@ -3260,6 +3342,26 @@ fn process_directive(
                 );
                 ExpectedModuleName::Literal(name.to_owned())
             });
+        }
+        "ExpectDataSegmentCount" => {
+            config.assertions.expected_data_segment_count = Some(
+                arg.trim()
+                    .parse()
+                    .with_context(|| format!("Invalid ExpectDataSegmentCount: `{arg}`"))?,
+            );
+        }
+        "ExpectDataSegmentName" => {
+            let (idx_str, name) = arg.trim().split_once('=').with_context(|| {
+                format!("ExpectDataSegmentName requires index=name, got `{arg}`")
+            })?;
+            let index: u32 = idx_str
+                .trim()
+                .parse()
+                .with_context(|| format!("Invalid ExpectDataSegmentName index: `{idx_str}`"))?;
+            config
+                .assertions
+                .expected_data_segment_names
+                .push((index, name.trim().to_owned()));
         }
         "ExpectTableImport" => {
             // module/name [initial=<n>,max=<n>|none]
@@ -6463,6 +6565,8 @@ impl Assertions {
             expected_func_type_count: self.expected_func_type_count,
             expected_table_maximum: self.expected_table_maximum,
             expected_module_name: self.expected_module_name.clone(),
+            expected_data_segment_count: self.expected_data_segment_count,
+            expected_data_segment_names: self.expected_data_segment_names.clone(),
             ..Default::default()
         };
         ensure!(
@@ -6500,6 +6604,8 @@ impl Assertions {
         info.ensure_table_import(self.expected_table_import.as_ref(), linker_name)?;
         info.ensure_table(self.expected_table_maximum, linker_name)?;
         info.ensure_module_name(self.expected_module_name.as_ref(), linker_name)?;
+        info.ensure_data_segment_count(self.expected_data_segment_count, linker_name)?;
+        info.ensure_data_segment_names(&self.expected_data_segment_names, linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
