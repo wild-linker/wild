@@ -2625,7 +2625,8 @@ fn write_rela_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             .flatten()
             .unwrap_or(addend);
 
-        let can_relax = target_is_exec
+        let can_relax = !layout.args().should_output_partial_object()
+            && target_is_exec
             && sym.is_some_and(|s| {
                 let symbol_id = object.symbol_id_range.input_to_id(s);
                 let flags = layout.flags_for_symbol(symbol_id);
