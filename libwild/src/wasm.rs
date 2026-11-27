@@ -1798,14 +1798,14 @@ fn layout_data_segments<'data>(
     let mut tdata = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Tdata as usize]);
     let mut tbss = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Tbss as usize]);
     let mut bss = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Bss as usize]);
-    let mut custom_groups: indexmap::IndexMap<
-        (u32, &'data str),
-        Vec<(u32, ClassifiedInputSegment<'data>)>,
-    > = indexmap::IndexMap::new();
-    let mut unmerged: Vec<(u32, ClassifiedInputSegment<'data>)> = Vec::new();
-    let mut input_passive: Vec<(u32, ClassifiedInputSegment<'data>)> = Vec::new();
-    let mut bss_other_mem: indexmap::IndexMap<u32, Vec<(u32, ClassifiedInputSegment<'data>)>> =
-        indexmap::IndexMap::new();
+    type ClassifiedSegmentEntry<'a> = (u32, ClassifiedInputSegment<'a>);
+    let mut custom_group_indices: HashMap<(u32, &'data str), usize> = HashMap::new();
+    let mut custom_groups: Vec<((u32, &'data str), Vec<ClassifiedSegmentEntry<'data>>)> =
+        Vec::new();
+    let mut unmerged: Vec<ClassifiedSegmentEntry<'data>> = Vec::new();
+    let mut input_passive: Vec<ClassifiedSegmentEntry<'data>> = Vec::new();
+    let mut bss_other_mem_indices: HashMap<u32, usize> = HashMap::new();
+    let mut bss_other_mem: Vec<(u32, Vec<ClassifiedSegmentEntry<'data>>)> = Vec::new();
 
     for (obj_idx, obj) in classified.into_iter().enumerate() {
         let obj_idx = u32::try_from(obj_idx).context("too many Wasm objects")?;
@@ -1817,18 +1817,25 @@ fn layout_data_segments<'data>(
                 SegmentBucket::BuiltIn(BuiltInSegmentKind::Tbss) => tbss.push((obj_idx, item)),
                 SegmentBucket::BuiltIn(BuiltInSegmentKind::Bss) => bss.push((obj_idx, item)),
                 SegmentBucket::Custom { memory_index, name } => {
-                    custom_groups
-                        .entry((memory_index, name))
-                        .or_default()
-                        .push((obj_idx, item));
+                    let key = (memory_index, name);
+                    if let Some(&idx) = custom_group_indices.get(&key) {
+                        custom_groups[idx].1.push((obj_idx, item));
+                    } else {
+                        let idx = custom_groups.len();
+                        custom_group_indices.insert(key, idx);
+                        custom_groups.push((key, vec![(obj_idx, item)]));
+                    }
                 }
                 SegmentBucket::Unmerged { .. } => unmerged.push((obj_idx, item)),
                 SegmentBucket::InputPassive { .. } => input_passive.push((obj_idx, item)),
                 SegmentBucket::BssOtherMemory { memory_index } => {
-                    bss_other_mem
-                        .entry(memory_index)
-                        .or_default()
-                        .push((obj_idx, item));
+                    if let Some(&idx) = bss_other_mem_indices.get(&memory_index) {
+                        bss_other_mem[idx].1.push((obj_idx, item));
+                    } else {
+                        let idx = bss_other_mem.len();
+                        bss_other_mem_indices.insert(memory_index, idx);
+                        bss_other_mem.push((memory_index, vec![(obj_idx, item)]));
+                    }
                 }
             }
         }
