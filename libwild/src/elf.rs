@@ -7519,8 +7519,18 @@ fn process_relocation<
         return Ok(RelocationModifier::Normal);
     };
 
-    let mut classified =
-        classify_symbol_relocation::<C, A, R>(object, rel, section, local_sym_index, resources)?;
+    let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+    let symbol_id = resources.symbol_db.definition(local_symbol_id);
+    let mut flags = resources.local_flags_for_symbol(symbol_id);
+    flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+    let mut classified = classify_symbol_relocation::<C, A, R>(
+        object.object,
+        rel,
+        section,
+        resources.symbol_db.args,
+        resources.symbol_db.output_kind,
+        flags,
+    )?;
 
     materialize_relocation_requirements::<C, A>(
         common,
@@ -7530,17 +7540,18 @@ fn process_relocation<
         is_debug_section,
         relr_writer,
         &mut classified,
+        symbol_id,
     )?;
 
     let previous_flags =
-        note_relocation_symbol_reference::<C, A>(&classified, resources, queue, scope);
+        note_relocation_symbol_reference::<C, A>(&classified, symbol_id, resources, queue, scope);
 
     if !is_debug_section {
         crate::thunks::handle_thunk_extensions_for_relocation::<A>(
             section_part_id,
             resources,
-            classified.local_symbol_id,
-            classified.symbol_id,
+            local_symbol_id,
+            symbol_id,
             classified.r_type,
         );
     }
@@ -7551,27 +7562,25 @@ fn process_relocation<
         classified.rel_offset,
         local_sym_index,
         classified.flags,
-        classified.symbol_id,
+        symbol_id,
         resources,
     )?;
 
     if classified.flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-        queue.send_copy_relocation_request::<A>(classified.symbol_id, resources, scope);
+        queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
     }
 
     Ok(classified.next_modifier)
 }
 
 /// Symbol and relocation-kind info needed for both GC edges and output accounting.
-struct ClassifiedSymbolRelocation {
-    local_symbol_id: SymbolId,
-    symbol_id: SymbolId,
+pub(crate) struct ClassifiedSymbolRelocation {
     /// Definition (and local) value flags before this relocation's contributions.
     flags: ValueFlags,
-    flags_to_add: ValueFlags,
+    pub(crate) flags_to_add: ValueFlags,
     rel_offset: u64,
     r_type: object::elf::RelocationType,
-    rel_kind: linker_utils::elf::RelocationKind,
+    pub(crate) rel_kind: linker_utils::elf::RelocationKind,
     rel_size: RelocationSize,
     next_modifier: RelocationModifier,
     section_is_writable: bool,
@@ -7592,26 +7601,21 @@ pub(crate) fn should_apply_relaxation(
     args.should_relax() || relaxation.is_mandatory()
 }
 
-/// Resolve the relocated symbol and determine the effective relocation kind / initial flags.
+/// Determine the effective relocation kind and initial requirements for a symbol reference.
 #[inline(always)]
-fn classify_symbol_relocation<
+pub(crate) fn classify_symbol_relocation<
     'data,
     C: ElfClass,
     A: Arch<Platform = Elf<C>>,
     R: Relocation<Platform = Elf<C>>,
 >(
-    object: &ObjectLayoutState<'data, Elf<C>>,
+    object: &File<'data, C>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
-    local_sym_index: object::SymbolIndex,
-    resources: &layout::GraphResources<'data, '_, Elf<C>>,
+    args: &ElfArgs,
+    output_kind: OutputKind,
+    flags: ValueFlags,
 ) -> Result<ClassifiedSymbolRelocation> {
-    let args = resources.symbol_db.args;
-    let symbol_db = resources.symbol_db;
-    let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
-    let symbol_id = symbol_db.definition(local_symbol_id);
-    let mut flags = resources.local_flags_for_symbol(symbol_id);
-    flags.merge(resources.local_flags_for_symbol(local_symbol_id));
     let rel_offset = rel.offset();
     let r_type = rel.raw_type();
     let section_flags = section.sh_flags(LittleEndian);
@@ -7619,15 +7623,15 @@ fn classify_symbol_relocation<
     let mut next_modifier = RelocationModifier::Normal;
     let mut flags_to_add = ValueFlags::empty();
     let is_linker_script_symbol = flags.is_linker_script_symbol();
-    let can_relax = can_relax_symbol(flags, symbol_db.output_kind, is_linker_script_symbol);
+    let can_relax = can_relax_symbol(flags, output_kind, is_linker_script_symbol);
 
     let relaxation = if can_relax {
         A::new_relaxation(
             r_type,
-            object.object.raw_section_data(section)?,
+            object.raw_section_data(section)?,
             rel_offset,
             flags,
-            symbol_db.output_kind,
+            output_kind,
             section_flags,
             None,
             1,
@@ -7651,8 +7655,6 @@ fn classify_symbol_relocation<
     };
 
     Ok(ClassifiedSymbolRelocation {
-        local_symbol_id,
-        symbol_id,
         flags,
         flags_to_add: flags_to_add | layout::resolution_flags(rel_info.kind),
         rel_offset,
@@ -7674,49 +7676,117 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     is_debug_section: bool,
     relr_writer: &mut RelrEncoder<C>,
     classified: &mut ClassifiedSymbolRelocation,
+    symbol_id: SymbolId,
 ) -> Result {
     let args = resources.symbol_db.args;
-    let symbol_db = resources.symbol_db;
+    let rel_offset = classified.rel_offset;
+    relocation_requirements::<C, A, _, _>(
+        args,
+        resources.symbol_db.output_kind,
+        section,
+        is_debug_section,
+        classified,
+        || resources.symbol_db.symbol_name_for_display(symbol_id),
+        || resources.symbol_debug(symbol_id),
+        |requirement| {
+            match requirement {
+                RelocationRequirement::StaticTls => {
+                    resources
+                        .has_static_tls
+                        .store(true, atomic::Ordering::Relaxed);
+                }
+                RelocationRequirement::Tlsld => {
+                    if !resources
+                        .layout_resources_ext
+                        .uses_tlsld
+                        .load(atomic::Ordering::Relaxed)
+                    {
+                        resources
+                            .layout_resources_ext
+                            .uses_tlsld
+                            .store(true, atomic::Ordering::Relaxed);
+                    }
+                }
+                RelocationRequirement::Textrel => {
+                    resources.has_textrel.store(true, atomic::Ordering::Relaxed);
+                }
+                RelocationRequirement::DynamicRelocation => {
+                    common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+                }
+                RelocationRequirement::RelativeRelocation => {
+                    // The .eh_frame writer always emits RELA because it can move individual
+                    // entries.
+                    if args.is_relr_enabled()
+                        && section_part_id != part_id::EH_FRAME
+                        && can_pack_relative_relocation(
+                            section.sh_addralign(LittleEndian).into(),
+                            rel_offset,
+                        )
+                    {
+                        relr_writer.encode(rel_offset, |_, encoding| {
+                            if matches!(encoding, RelrEntryEncoding::New) {
+                                common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
+                            }
+                            Ok(())
+                        })?;
+                    } else {
+                        common.allocate(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
+                    }
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Effects on output state beyond the bytes of the relocated section.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelocationRequirement {
+    DynamicRelocation,
+    RelativeRelocation,
+    StaticTls,
+    Tlsld,
+    Textrel,
+}
+
+#[inline(always)]
+pub(crate) fn relocation_requirements<
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    N: std::fmt::Display,
+    D: std::fmt::Display,
+>(
+    args: &ElfArgs,
+    output_kind: OutputKind,
+    section: &<A::Platform as Platform>::SectionHeader,
+    is_debug_section: bool,
+    classified: &mut ClassifiedSymbolRelocation,
+    symbol_name: impl Fn() -> N,
+    symbol_debug: impl Fn() -> D,
+    mut require: impl FnMut(RelocationRequirement) -> Result,
+) -> Result {
     let section_flags = section.sh_flags(LittleEndian);
     let flags = classified.flags;
-    let symbol_id = classified.symbol_id;
     let r_type = classified.r_type;
     let section_is_writable = classified.section_is_writable;
     let flags_to_add = &mut classified.flags_to_add;
     let rel_kind = classified.rel_kind;
 
-    let allocate_relative = |common: &mut CommonGroupState<'data, Elf<C>>,
-                             relr_writer: &mut RelrEncoder<C>| {
-        // The .eh_frame writer always emits RELA because it can move individual entries.
-        if args.is_relr_enabled()
-            && section_part_id != part_id::EH_FRAME
-            && can_pack_relative_relocation(
-                section.sh_addralign(LittleEndian).into(),
-                classified.rel_offset,
-            )
-        {
-            relr_writer.encode(classified.rel_offset, |_, encoding| {
-                if matches!(encoding, RelrEntryEncoding::New) {
-                    common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
-                }
-                Ok(())
-            })
-        } else {
-            common.allocate(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
-            Ok(())
+    let require_address_sized_relocation = {
+        #[inline(always)]
+        || -> Result {
+            (classified.rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as u8))
+                .then_some(())
+                .with_context(|| {
+                    format!(
+                        "Relocation {} against symbol `{}` cannot use a runtime address relocation: \
+                         a full {}-byte address field is required",
+                        A::rel_type_to_string(r_type),
+                        symbol_name(),
+                        C::ADDRESS_SIZE,
+                    )
+                })
         }
-    };
-
-    let require_address_sized_relocation = || -> Result {
-        ensure!(
-            classified.rel_size == RelocationSize::ByteSize(C::ADDRESS_SIZE as u8),
-            "Relocation {} against symbol `{}` cannot use a runtime address relocation: \
-             a full {}-byte address field is required",
-            A::rel_type_to_string(r_type),
-            symbol_db.symbol_name_for_display(symbol_id),
-            C::ADDRESS_SIZE,
-        );
-        Ok(())
     };
 
     if !section_flags.is_alloc() {
@@ -7724,48 +7794,36 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
     } else if rel_kind.is_tls() {
         // A local-exec access is an offset from the thread pointer into the executable's TLS
         // block. A shared object's TLS block is placed at runtime, so that offset can't be known.
-        if rel_kind == RelocationKind::TpOff && symbol_db.output_kind.is_shared_object() {
+        if rel_kind == RelocationKind::TpOff && output_kind.is_shared_object() {
             bail!(
                 "relocation {} against symbol `{}` cannot be used when making a shared object; \
                 recompile with -fPIC",
                 A::rel_type_to_string(r_type),
-                symbol_db.symbol_name_for_display(symbol_id),
+                symbol_name(),
             );
         }
 
         if does_relocation_require_static_tls(rel_kind) {
-            resources
-                .has_static_tls
-                .store(true, atomic::Ordering::Relaxed);
+            require(RelocationRequirement::StaticTls)?;
         }
 
-        if layout::needs_tlsld(rel_kind)
-            && !resources
-                .layout_resources_ext
-                .uses_tlsld
-                .load(atomic::Ordering::Relaxed)
-        {
-            resources
-                .layout_resources_ext
-                .uses_tlsld
-                .store(true, atomic::Ordering::Relaxed);
+        if layout::needs_tlsld(rel_kind) {
+            require(RelocationRequirement::Tlsld)?;
         }
     } else if rel_kind == RelocationKind::SymbolSize
-        && needs_dynamic_symbol_size_relocation(flags, symbol_db.output_kind)
+        && needs_dynamic_symbol_size_relocation(flags, output_kind)
     {
         if !section_is_writable {
             bail!(
                 "Cannot apply dynamic relocation {} to read-only section for symbol `{}`",
                 A::rel_type_to_string(r_type),
-                resources.symbol_db.symbol_name_for_display(symbol_id),
+                symbol_name(),
             );
         }
 
-        common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+        require(RelocationRequirement::DynamicRelocation)?;
     } else if flags_to_add.needs_direct() && flags.is_interposable() {
-        if symbol_db.output_kind.is_shared_object()
-            && A::is_disallowed_for_interposable_symbols(r_type)
-        {
+        if output_kind.is_shared_object() && A::is_disallowed_for_interposable_symbols(r_type) {
             bail!(
                 "relocation {} cannot be used when making a shared object; \
                 recompile with -fPIC",
@@ -7778,14 +7836,14 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         let is_narrow_absolute = rel_kind == RelocationKind::Absolute
             && classified.rel_size != RelocationSize::ByteSize(C::ADDRESS_SIZE as u8);
 
-        if rel_kind == RelocationKind::Absolute && symbol_db.output_kind.is_position_independent() {
+        if rel_kind == RelocationKind::Absolute && output_kind.is_position_independent() {
             require_address_sized_relocation()?;
         }
 
         let needs_plt_for_call = classified.rel_size.is_ppc64_branch();
 
         if !needs_plt_for_call && section_is_writable && !is_narrow_absolute {
-            common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+            require(RelocationRequirement::DynamicRelocation)?;
         } else if needs_plt_for_call {
             flags_to_add.remove(ValueFlags::DIRECT);
             // Omit CANONICAL_PLT. Its non-zero st_value would be a definition to glibc, so ld.so
@@ -7806,42 +7864,42 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
                         "Direct relocation ({}) to dynamic symbol requires a copy relocation, \
                         but copy relocations are disabled because {reason}. {}",
                         A::rel_type_to_string(r_type),
-                        resources.symbol_debug(symbol_id),
+                        symbol_debug(),
                     );
                 }
             }
         }
 
         if rel_kind == RelocationKind::Absolute
-            && symbol_db.output_kind.is_position_independent()
+            && output_kind.is_position_independent()
             && !section_is_writable
             && !flags.is_absolute()
         {
-            resources.has_textrel.store(true, atomic::Ordering::Relaxed);
-            allocate_relative(common, relr_writer)?;
+            require(RelocationRequirement::Textrel)?;
+            require(RelocationRequirement::RelativeRelocation)?;
         }
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
-        && A::absolute_ifunc_needs_irelative(symbol_db.output_kind, section_is_writable)
+        && A::absolute_ifunc_needs_irelative(output_kind, section_is_writable)
     {
         require_address_sized_relocation()?;
 
         if !section_is_writable {
-            resources.has_textrel.store(true, atomic::Ordering::Relaxed);
+            require(RelocationRequirement::Textrel)?;
         }
-        common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-    } else if symbol_db.output_kind.is_position_independent()
+        require(RelocationRequirement::DynamicRelocation)?;
+    } else if output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
         && (flags.has_link_time_address()
-            || (flags.is_ifunc() && A::ifunc_address_uses_plt(symbol_db.output_kind)))
+            || (flags.is_ifunc() && A::ifunc_address_uses_plt(output_kind)))
     {
         if section_is_writable {
             require_address_sized_relocation()?;
 
             if flags.is_linker_script_symbol() {
-                common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
+                require(RelocationRequirement::DynamicRelocation)?;
             } else {
-                allocate_relative(common, relr_writer)?;
+                require(RelocationRequirement::RelativeRelocation)?;
             }
         } else if !is_debug_section {
             bail!(
@@ -7864,27 +7922,26 @@ fn materialize_relocation_requirements<'data, C: ElfClass, A: Arch<Platform = El
         *flags_to_add |= ValueFlags::GOT_FOR_PLT_ENTRY;
     }
 
-    if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
+    if flags.is_ifunc() && !output_kind.is_static_executable() {
         *flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
     }
 
-    if flags.is_ifunc() && relocation_needs_got && A::ifunc_address_uses_plt(symbol_db.output_kind)
-    {
+    if flags.is_ifunc() && relocation_needs_got && A::ifunc_address_uses_plt(output_kind) {
         *flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
     }
 
     Ok(())
 }
 
-/// Record that a live section references `classified.symbol_id` and enqueue graph work if needed.
+/// Record a reference from a live section and enqueue graph work if needed.
 #[inline(always)]
 fn note_relocation_symbol_reference<'data, 'scope, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     classified: &ClassifiedSymbolRelocation,
+    symbol_id: SymbolId,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     queue: &mut layout::LocalWorkQueue<Elf<C>>,
     scope: &Scope<'scope>,
 ) -> ValueFlags {
-    let symbol_id = classified.symbol_id;
     let flags = classified.flags;
     let flags_to_add = classified.flags_to_add;
 
