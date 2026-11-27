@@ -77,6 +77,7 @@ pub struct WasmArgs {
     // Export all defined, non-hidden symbols (`--export-dynamic`).
     pub(crate) export_dynamic: bool,
     pub(crate) gc_sections: bool,
+    pub(crate) merge_data_segments: bool,
     pub(crate) import_undefined: bool,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) allow_multiple_definition: bool,
@@ -159,6 +160,7 @@ impl Default for WasmArgs {
             import_table: false,
             export_dynamic: false,
             gc_sections: true,
+            merge_data_segments: true,
             import_undefined: false,
             unresolved_symbols: UnresolvedSymbols::Error,
             allow_multiple_definition: false,
@@ -235,8 +237,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn should_merge_sections(&self) -> bool {
-        // TODO
-        true
+        self.merge_data_segments
     }
 
     fn should_output_executable(&self) -> bool {
@@ -808,18 +809,20 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
     parser
         .declare()
         .long("merge-data-segments")
-        .help("Merge data segments")
+        .help("Merge data segments (default)")
         .execute(|args, _modifier_stack| {
-            // TODO: implement and make it default.
-            args.warn_unsupported("--merge-data-segments")?;
+            args.merge_data_segments = true;
             Ok(())
         });
 
     parser
         .declare()
         .long("no-merge-data-segments")
-        .help("Disable data segment merging (default)")
-        .execute(|_args, _modifier_stack| Ok(()));
+        .help("Disable data segment merging")
+        .execute(|args, _modifier_stack| {
+            args.merge_data_segments = false;
+            Ok(())
+        });
 
     super::declare_common_args(&mut parser);
 

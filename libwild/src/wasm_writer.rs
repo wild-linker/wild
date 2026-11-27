@@ -10,9 +10,10 @@ use crate::platform::Arch;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use crate::wasm::DebugSectionInput;
+use crate::wasm::OutputDataChunk;
+use crate::wasm::OutputDataSegment;
 use crate::wasm::WASM_DEAD_INDEX;
 use crate::wasm::Wasm;
-use crate::wasm::WasmDataSegmentLayout;
 use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmGotMemSource;
 use crate::wasm::WasmInputTargetFeature;
@@ -508,44 +509,29 @@ pub(crate) fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 
     wasm_section_size(code_section_payload_size(bodies))
 }
 
-fn output_data_segment_count(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u32 {
-    object_data_layouts
-        .iter()
-        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
-        .sum()
+fn output_data_segment_count(segments: &[OutputDataSegment<'_>]) -> u32 {
+    u32::try_from(segments.len()).unwrap_or(u32::MAX)
 }
 
-fn output_data_has_passive(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> bool {
-    object_data_layouts
-        .iter()
-        .flatten()
-        .any(|segment| segment.passive)
+fn output_data_has_passive(segments: &[OutputDataSegment<'_>]) -> bool {
+    segments.iter().any(|segment| segment.passive)
 }
 
-fn data_section_payload_size(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-    segment_count: u32,
-) -> u64 {
+fn data_section_payload_size(segments: &[OutputDataSegment<'_>], segment_count: u32) -> u64 {
     let count_leb_size = uleb128_size(u64::from(segment_count)) as u64;
-    let segments_total: u64 = object_data_layouts
+    let segments_total: u64 = segments
         .iter()
-        .flatten()
         .map(|segment| u64::from(segment.encoded_output_size))
         .sum();
     count_leb_size + segments_total
 }
 
-pub(crate) fn compute_data_section_size(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-) -> u64 {
-    let segment_count = output_data_segment_count(object_data_layouts);
+pub(crate) fn compute_data_section_size(segments: &[OutputDataSegment<'_>]) -> u64 {
+    let segment_count = output_data_segment_count(segments);
     if segment_count == 0 {
         return 0;
     }
-    wasm_section_size(data_section_payload_size(
-        object_data_layouts,
-        segment_count,
-    ))
+    wasm_section_size(data_section_payload_size(segments, segment_count))
 }
 
 fn data_segment_encoded_size(data_len: usize, active_header: Option<(u32, u32)>) -> Result<u32> {
@@ -697,9 +683,26 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     Ok(())
 }
 
+const DATA_BATCH_TARGET_BYTES: usize = 128 * 1024;
+const DATA_BATCH_MAX_CHUNKS: usize = 512;
+const ZERO_FILL_BATCH_BYTES: usize = 256 * 1024;
+
+enum DataWriteBatch<'out> {
+    Chunks {
+        buf: &'out mut [u8],
+        base_offset_in_seg: u32,
+        chunk_range: Range<u32>,
+        tls_template: bool,
+    },
+    ZeroFill {
+        buf: &'out mut [u8],
+    },
+}
+
 fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
-    let object_data_layouts = &wasm_layout.object_data_layouts;
-    let segment_count = output_data_segment_count(object_data_layouts);
+    let segments = &wasm_layout.output_data_segments;
+    let chunks = &wasm_layout.output_data_chunks;
+    let segment_count = output_data_segment_count(segments);
     if segment_count == 0 {
         ensure!(
             out.is_empty(),
@@ -709,25 +712,53 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
         return Ok(());
     }
 
-    // Flatten (object_index, segment) for parallel emit. Header is serial.
-    let flat: Vec<(usize, &WasmDataSegmentLayout<'_>)> = object_data_layouts
-        .iter()
-        .enumerate()
-        .flat_map(|(obj_idx, segs)| segs.iter().map(move |seg| (obj_idx, seg)))
-        .collect();
-    ensure!(
-        flat.len() == segment_count as usize,
-        "Wasm data segment count mismatch"
-    );
-
     let mut pos = 0;
     out[pos] = object::wasm::SEC_DATA.0;
     pos += 1;
 
-    let payload_size = data_section_payload_size(object_data_layouts, segment_count);
+    let payload_size = data_section_payload_size(segments, segment_count);
     pos += write_uleb128(&mut out[pos..], payload_size);
     pos += write_uleb128(&mut out[pos..], u64::from(segment_count));
-    let segments_region_start = pos;
+
+    let mut batches: Vec<DataWriteBatch<'_>> = Vec::new();
+    {
+        verbose_timing_phase!("Write Wasm data segment headers and split batches");
+        let mut rest = &mut out[pos..];
+        for segment in segments {
+            let slot_len = segment.encoded_output_size as usize;
+            ensure!(
+                rest.len() >= slot_len,
+                "Wasm data section segment slot overflow (need {slot_len}, have {})",
+                rest.len()
+            );
+            let (slot, next) = rest.split_at_mut(slot_len);
+            rest = next;
+
+            let header_len = write_data_segment_header(slot, segment)?;
+            let payload = &mut slot[header_len..];
+            ensure!(
+                payload.len() == segment.size as usize,
+                "Wasm data segment payload size {} != {}",
+                payload.len(),
+                segment.size
+            );
+            if segment.size == 0 {
+                continue;
+            }
+            if segment.zero_filled_bss {
+                for slice in payload.chunks_mut(ZERO_FILL_BATCH_BYTES) {
+                    batches.push(DataWriteBatch::ZeroFill { buf: slice });
+                }
+            } else {
+                split_segment_chunks_into_batches(payload, segment, chunks, &mut batches)?;
+            }
+        }
+        ensure!(
+            rest.is_empty(),
+            "Wasm data section has {} trailing unused bytes after segment slots",
+            rest.len()
+        );
+    }
 
     let object_index_maps = &wasm_layout.object_index_maps;
     let object_data_relocations = &wasm_layout.object_data_relocations;
@@ -737,72 +768,75 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let table_base = wasm_layout.table_base;
     let tls_base = wasm_layout.tls_base;
 
-    let mut segment_slots: Vec<(&mut [u8], usize, &WasmDataSegmentLayout<'_>)> =
-        Vec::with_capacity(flat.len());
-    {
-        verbose_timing_phase!("Split Wasm data segment slots");
-        let mut rest = &mut out[segments_region_start..];
-        for (obj_idx, segment) in flat {
-            let slot_len = segment.encoded_output_size as usize;
-            ensure!(
-                rest.len() >= slot_len,
-                "Wasm data section segment slot overflow (need {slot_len}, have {})",
-                rest.len()
-            );
-            let (slot, next) = rest.split_at_mut(slot_len);
-            segment_slots.push((slot, obj_idx, segment));
-            rest = next;
+    let emit_batch = |batch: DataWriteBatch<'_>| -> Result<()> {
+        verbose_timing_phase!("Emit Wasm data batch");
+        match batch {
+            DataWriteBatch::ZeroFill { buf } => {
+                buf.fill(0);
+            }
+            DataWriteBatch::Chunks {
+                buf,
+                base_offset_in_seg,
+                chunk_range,
+                tls_template,
+            } => {
+                let mut local_cursor = 0usize;
+                for chunk in &chunks[chunk_range.start as usize..chunk_range.end as usize] {
+                    let rel_start = (chunk.offset_in_segment - base_offset_in_seg) as usize;
+                    if rel_start > local_cursor {
+                        buf[local_cursor..rel_start].fill(0);
+                    }
+                    let rel_end = rel_start + chunk.data.len();
+                    let dst = &mut buf[rel_start..rel_end];
+                    dst.copy_from_slice(chunk.data);
+                    if !chunk.reloc_range.is_empty() {
+                        let obj_idx = chunk.object_index as usize;
+                        let index_map = &object_index_maps[obj_idx];
+                        let symbols = per_object_symbols[obj_idx];
+                        let object_relocs = object_data_relocations
+                            .get(obj_idx)
+                            .map_or(&[][..], Vec::as_slice);
+                        for reloc in relocs_in_index_range(object_relocs, chunk.reloc_range.clone())
+                        {
+                            apply_section_reloc(
+                                index_map,
+                                reloc,
+                                chunk.payload_start,
+                                symbols,
+                                function_table_slots,
+                                memory_base,
+                                table_base,
+                                tls_base,
+                                tls_template,
+                                dst,
+                            )?;
+                        }
+                    }
+                    local_cursor = rel_end;
+                }
+                if local_cursor < buf.len() {
+                    buf[local_cursor..].fill(0);
+                }
+            }
         }
-        ensure!(
-            rest.is_empty(),
-            "Wasm data section has {} trailing unused bytes after segment slots",
-            rest.len()
-        );
-    }
+        Ok(())
+    };
 
     {
         verbose_timing_phase!("Emit Wasm data segments");
-        segment_slots
-            .into_par_iter()
-            .try_for_each(|(slot, obj_idx, segment)| -> Result<()> {
-                verbose_timing_phase!("Emit Wasm data segment");
-                write_data_segment(
-                    slot,
-                    segment,
-                    &object_index_maps[obj_idx],
-                    object_data_relocations
-                        .get(obj_idx)
-                        .map_or(&[][..], Vec::as_slice),
-                    per_object_symbols[obj_idx],
-                    function_table_slots,
-                    memory_base,
-                    table_base,
-                    tls_base,
-                )
-            })?;
+        if batches.len() <= 1 {
+            for batch in batches {
+                emit_batch(batch)?;
+            }
+        } else {
+            batches.into_par_iter().try_for_each(emit_batch)?;
+        }
     }
 
     Ok(())
 }
 
-fn write_data_segment(
-    out: &mut [u8],
-    segment: &WasmDataSegmentLayout<'_>,
-    index_map: &WasmObjectIndexMap,
-    object_relocs: &[object::wasm::Relocation],
-    symbols: &[WasmSymbol],
-    function_table_slots: &[u32],
-    memory_base: u32,
-    table_base: u32,
-    tls_base: u32,
-) -> Result<()> {
-    ensure!(
-        out.len() == segment.encoded_output_size as usize,
-        "Wasm data segment buffer size {} != encoded_output_size {}",
-        out.len(),
-        segment.encoded_output_size
-    );
-
+fn write_data_segment_header(out: &mut [u8], segment: &OutputDataSegment<'_>) -> Result<usize> {
     let mut pos = 0;
     if segment.passive {
         out[pos] = 0x01;
@@ -817,31 +851,61 @@ fn write_data_segment(
         pos += write_uleb128(&mut out[pos..], u64::from(segment.output_memory_index));
         pos = write_active_offset_expr(out, pos, segment.output_memory_offset)?;
     }
+    pos += write_uleb128(&mut out[pos..], u64::from(segment.size));
+    Ok(pos)
+}
 
-    let data_len = segment.data.len() as u64;
-    pos += write_uleb128(&mut out[pos..], data_len);
-    let payload = &mut out[pos..pos + segment.data.len()];
-    payload.copy_from_slice(segment.data);
-    for reloc in relocs_in_index_range(object_relocs, segment.reloc_range.clone()) {
-        apply_section_reloc(
-            index_map,
-            reloc,
-            segment.payload_start,
-            symbols,
-            function_table_slots,
-            memory_base,
-            table_base,
-            tls_base,
-            segment.tls_template,
-            payload,
-        )?;
+fn split_segment_chunks_into_batches<'out>(
+    payload: &'out mut [u8],
+    segment: &OutputDataSegment<'_>,
+    chunks: &[OutputDataChunk<'_>],
+    batches: &mut Vec<DataWriteBatch<'out>>,
+) -> Result<()> {
+    let mut rest = payload;
+    let mut cursor_in_seg = 0usize;
+    let mut chunk_idx = segment.chunk_range.start as usize;
+    let chunk_end = segment.chunk_range.end as usize;
+    let seg_size = segment.size as usize;
+
+    while chunk_idx < chunk_end {
+        let batch_chunk_start = chunk_idx;
+        let batch_byte_start = cursor_in_seg;
+        let mut last_chunk_end = batch_byte_start;
+
+        while chunk_idx < chunk_end {
+            let chunk = &chunks[chunk_idx];
+            last_chunk_end = chunk.offset_in_segment as usize + chunk.data.len();
+            chunk_idx += 1;
+            if chunk_idx - batch_chunk_start >= DATA_BATCH_MAX_CHUNKS
+                || last_chunk_end - batch_byte_start >= DATA_BATCH_TARGET_BYTES
+            {
+                break;
+            }
+        }
+
+        let batch_byte_end = if chunk_idx == chunk_end {
+            seg_size
+        } else {
+            last_chunk_end
+        };
+        let batch_len = batch_byte_end
+            .checked_sub(batch_byte_start)
+            .context("Wasm data batch length underflow")?;
+        let (buf, next) = rest.split_at_mut(batch_len);
+        batches.push(DataWriteBatch::Chunks {
+            buf,
+            base_offset_in_seg: batch_byte_start as u32,
+            chunk_range: batch_chunk_start as u32..chunk_idx as u32,
+            tls_template: segment.tls_template,
+        });
+        rest = next;
+        cursor_in_seg = batch_byte_end;
     }
-    pos += segment.data.len();
 
     ensure!(
-        pos == out.len(),
-        "Wasm data segment wrote {pos} bytes but buffer is {} bytes",
-        out.len()
+        rest.is_empty(),
+        "Wasm data segment has {} trailing bytes after chunk batches",
+        rest.len()
     );
     Ok(())
 }
@@ -1233,9 +1297,9 @@ pub(crate) fn encode_metadata_sections(
         // Validators reject `memory.init` / `data.drop` without this section. A remaining
         // passive segment emits it too.
         if layout.code_references_data_segment
-            || output_data_has_passive(&layout.object_data_layouts)
+            || output_data_has_passive(&layout.output_data_segments)
         {
-            let count = output_data_segment_count(&layout.object_data_layouts);
+            let count = output_data_segment_count(&layout.output_data_segments);
             encoded.data_count = Some(encode_wasm_section(&wasm_encoder::DataCountSection {
                 count,
             }));
@@ -1465,9 +1529,20 @@ fn build_name_section(layout: &WasmLayout<'_>) -> Option<Vec<u8>> {
         }
     }
 
+    let data_names: Vec<Option<&str>> = layout
+        .output_data_segments
+        .iter()
+        .map(|segment| segment.name.filter(|name| !name.is_empty()))
+        .collect();
     let function_entries = collect_name_entries(&function_names, names.demangle);
     let global_entries = collect_name_entries(&global_names, names.demangle);
-    encode_name_custom_section(&names.module_name, function_entries, global_entries)
+    let data_entries = collect_name_entries(&data_names, false);
+    encode_name_custom_section(
+        &names.module_name,
+        function_entries,
+        global_entries,
+        data_entries,
+    )
 }
 
 fn set_name_first_wins<'a>(names: &mut Vec<Option<&'a str>>, index: u32, name: &'a str) {
@@ -1559,8 +1634,9 @@ fn encode_name_custom_section(
     module_name: &str,
     function_entries: Option<NameEntries<'_>>,
     global_entries: Option<NameEntries<'_>>,
+    data_entries: Option<NameEntries<'_>>,
 ) -> Option<Vec<u8>> {
-    if function_entries.is_none() && global_entries.is_none() {
+    if function_entries.is_none() && global_entries.is_none() && data_entries.is_none() {
         return None;
     }
     timing_phase!("Encode Wasm name custom section");
@@ -1570,6 +1646,9 @@ fn encode_name_custom_section(
         content_len += name_subsection_len(entries.count, entries.entries_len);
     }
     if let Some(entries) = &global_entries {
+        content_len += name_subsection_len(entries.count, entries.entries_len);
+    }
+    if let Some(entries) = &data_entries {
         content_len += name_subsection_len(entries.count, entries.entries_len);
     }
     let total = 1 + uleb128_size(content_len as u64) + content_len;
@@ -1587,6 +1666,9 @@ fn encode_name_custom_section(
     }
     if let Some(entries) = global_entries {
         pos = write_name_subsection(&mut out, pos, 7, entries);
+    }
+    if let Some(entries) = data_entries {
+        pos = write_name_subsection(&mut out, pos, 9, entries);
     }
     debug_assert_eq!(pos, out.len());
     Some(out)
@@ -1634,14 +1716,21 @@ fn fill_name_entries(dest: &mut [u8], entries: NameEntries<'_>) {
     }
     {
         timing_phase!("Emit Wasm name entries");
-        slots.into_par_iter().for_each(|(slot, index, name)| {
+        let emit_entry = |(slot, index, name): (&mut [u8], u32, Cow<'_, str>)| {
             verbose_timing_phase!("Emit Wasm name entry");
             let mut at = write_uleb128(slot, u64::from(index));
             at += write_uleb128(&mut slot[at..], name.len() as u64);
             let name_len = name.len();
             slot[at..at + name_len].copy_from_slice(name.as_bytes());
             debug_assert_eq!(at + name_len, slot.len());
-        });
+        };
+        if slots.len() <= 64 {
+            for entry in slots {
+                emit_entry(entry);
+            }
+        } else {
+            slots.into_par_iter().for_each(emit_entry);
+        }
     }
 }
 
