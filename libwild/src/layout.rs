@@ -1215,6 +1215,34 @@ pub(crate) struct SectionResolution {
     address: u64,
 }
 
+/// A symbol's value before allocating common storage or resolving merged sections.
+pub(crate) enum ObjectSymbolValue {
+    Value(u64),
+    Common(crate::platform::CommonSymbol),
+    UnloadedSection(object::SectionIndex),
+}
+
+pub(crate) fn object_symbol_value<'data, P: Platform>(
+    object: &P::File<'data>,
+    symbol: &P::SymtabEntry,
+    symbol_index: object::SymbolIndex,
+    section_resolutions: &[SectionResolution],
+    relax_deltas: &RelaxDeltaMap,
+) -> Result<ObjectSymbolValue> {
+    if let Some(section_index) = object.symbol_section(symbol, symbol_index)? {
+        let Some(address) = section_resolutions[section_index.0].address() else {
+            return Ok(ObjectSymbolValue::UnloadedSection(section_index));
+        };
+        let offset = object.symbol_offset_in_section(symbol, section_index)?;
+        let offset = opt_input_to_output(relax_deltas.get(section_index.0), offset);
+        Ok(ObjectSymbolValue::Value(address + offset))
+    } else if let Some(common) = symbol.as_common() {
+        Ok(ObjectSymbolValue::Common(common))
+    } else {
+        Ok(ObjectSymbolValue::Value(symbol.value()))
+    }
+}
+
 impl SectionResolution {
     /// Returns a resolution for a section that we didn't load, or for which we don't have an
     /// address (e.g. string-merge sections).
@@ -5356,44 +5384,46 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             return Ok(None);
         }
 
-        let raw_value = if let Some(section_index) = self
-            .object
-            .symbol_section(local_symbol, local_symbol_index)?
-        {
-            if let Some(section_address) = section_resolutions[section_index.0].address() {
-                self.symbol_output_offset(local_symbol, section_index)? + section_address
-            } else if let Some(x) = get_merged_string_output_address::<P>(
-                local_symbol_index,
-                0,
-                self.object,
-                &self.sections,
-                &resources.symbol_db.section_part_ids,
-                self.section_id_range,
-                resources.merged_strings,
-                resources.merged_string_start_addresses,
-                true,
-            )? {
-                x
-            } else {
-                // Don't error for mapping symbols. They cannot have relocations refer to
-                // them, so we don't need to produce a resolution.
-                if resources.symbol_db.is_mapping_symbol(symbol_id) {
-                    return Ok(None);
-                }
-                bail!(
-                    "Symbol is in a section that we didn't load. \
-                     Symbol: {} Section: {} Res: {flags}",
-                    resources.symbol_debug(symbol_id),
-                    section_debug::<P>(self.object, section_index),
-                );
+        let raw_value = match object_symbol_value::<P>(
+            self.object,
+            local_symbol,
+            local_symbol_index,
+            section_resolutions,
+            &self.section_relax_deltas,
+        )? {
+            ObjectSymbolValue::Value(value) => value,
+            ObjectSymbolValue::Common(common) => {
+                let offset = memory_offsets.get_mut(common.part_id);
+                let address = *offset;
+                *offset += common.size;
+                address
             }
-        } else if let Some(common) = local_symbol.as_common() {
-            let offset = memory_offsets.get_mut(common.part_id);
-            let address = *offset;
-            *offset += common.size;
-            address
-        } else {
-            local_symbol.value()
+            ObjectSymbolValue::UnloadedSection(section_index) => {
+                if let Some(value) = get_merged_string_output_address::<P>(
+                    local_symbol_index,
+                    0,
+                    self.object,
+                    &self.sections,
+                    &resources.symbol_db.section_part_ids,
+                    self.section_id_range,
+                    resources.merged_strings,
+                    resources.merged_string_start_addresses,
+                    true,
+                )? {
+                    value
+                } else {
+                    // Mapping symbols cannot have relocations refer to them.
+                    if resources.symbol_db.is_mapping_symbol(symbol_id) {
+                        return Ok(None);
+                    }
+                    bail!(
+                        "Symbol is in a section that we didn't load. \
+                         Symbol: {} Section: {} Res: {flags}",
+                        resources.symbol_debug(symbol_id),
+                        section_debug::<P>(self.object, section_index),
+                    );
+                }
+            }
         };
 
         let mut dynamic_symbol_index = None;
