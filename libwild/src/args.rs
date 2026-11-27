@@ -231,6 +231,22 @@ impl Args {
         self.common_mut().warning_callback = Box::new(warning_callback);
     }
 
+    /// Runs a callback in a linker thread pool configured from these arguments and the jobserver.
+    pub fn with_thread_pool<T: Send>(
+        &mut self,
+        f: impl FnOnce(&Self) -> Result<T> + Send,
+    ) -> Result<T> {
+        let _thread_guard = crate::timing::enter_linker_thread();
+        let pool = self.common_mut().build_thread_pool()?;
+        pool.install(|| f(self))
+    }
+
+    /// Returns the configured output path. Could be absolute or relative to current working
+    /// directory.
+    pub fn output_path(&self) -> &Path {
+        &self.common().output
+    }
+
     pub(crate) fn common(&self) -> &CommonArgs {
         match self {
             Args::Coff(coff_args) => &coff_args.common,

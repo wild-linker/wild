@@ -337,7 +337,11 @@ fn perfetto_output_file() -> Option<PathBuf> {
     env::var(PERFETTO_ENV_VAR).ok().map(PathBuf::from)
 }
 
-pub(crate) fn finalise_perfetto_trace() -> Result {
+/// Collects trace data from the current Rayon pool and writes it to `WILD_PERFETTO_OUT`.
+/// Does nothing if that environment variable is unset. Call [`crate::init_timing`] before
+/// recording, and call this function inside the pool after the work to be traced has finished,
+/// before the pool is destroyed.
+pub fn finalise_perfetto_trace() -> Result {
     let Some(path) = perfetto_output_file() else {
         return Ok(());
     };
