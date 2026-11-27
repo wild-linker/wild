@@ -169,7 +169,19 @@ impl crate::platform::Arch for ElfPpc64 {
     fn merge_eflags(
         eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
-        Ok(eflags.fold(object::elf::FileFlags(0), |merged, flags| merged | flags))
+        const EF_PPC64_ABI_V2: u32 = 2;
+
+        for flags in eflags {
+            if (flags.0 & !object::elf::EF_PPC64_ABI) != 0 {
+                bail!("Unrecognized ppc64 e_flags: {:#x}", flags.0);
+            }
+            match flags.ppc64_abi() {
+                0 | EF_PPC64_ABI_V2 => {}
+                1 => bail!("PPC64 ABI version 1 is not supported"),
+                _ => bail!("Unrecognized ppc64 e_flags: {:#x}", flags.0),
+            }
+        }
+        Ok(object::elf::FileFlags(EF_PPC64_ABI_V2))
     }
 
     fn high_part_relocations() -> &'static [object::elf::RelocationType] {
