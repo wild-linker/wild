@@ -1044,14 +1044,38 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     // addend into account up-front before we determine which string we're pointing at. This is a
     // bit weird, but seems to match what other linkers do.
     let symbol_has_name = symbol.has_name();
-    if !symbol_has_name {
+    if !symbol_has_name && zero_unnamed {
         // We're computing a resolution for an unnamed symbol, just use the value of 0 for now.
         // We'll compute the address later when we're processing relocations that reference the
         // section.
-        if zero_unnamed {
-            return Ok(Some(0));
-        }
-        input_offset = input_offset.wrapping_add(addend as u64);
+        return Ok(Some(0));
+    }
+
+    // An offset outside the input section can't refer to any string in it, so reject it rather than
+    // letting `find_string` search backwards from an offset for which no string can exist. Both GNU
+    // ld and LLD reject these.
+    let section_size = object.section_size(object.section(section_index)?)?;
+
+    if !symbol_has_name {
+        // The addend is signed, while an input offset isn't, so fold it in with checked arithmetic
+        // rather than wrapping. A wrapping result would be a huge offset that `find_string` would
+        // then search backwards from.
+        let Some(offset) = i64::try_from(input_offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(addend))
+            .and_then(|offset| u64::try_from(offset).ok())
+        else {
+            bail!(
+                "Merge-string offset {addend:#x} is outside its input section of size {section_size:#x}"
+            );
+        };
+        input_offset = offset;
+    }
+
+    if input_offset > section_size {
+        bail!(
+            "Merge-string offset {input_offset:#x} is outside its input section of size {section_size:#x}"
+        );
     }
 
     let part_id = section_part_ids[input_section_id.as_usize()];
