@@ -3682,9 +3682,10 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::PairSubtractionULEB128LoongArch
         | RelocationKind::MachoSubtraction => ValueFlags::DIRECT,
         RelocationKind::SymbolSize => ValueFlags::SYMBOL_SIZE,
-        RelocationKind::None | RelocationKind::Alignment | RelocationKind::MachoAddition => {
-            ValueFlags::empty()
-        }
+        RelocationKind::None
+        | RelocationKind::TlsMarker
+        | RelocationKind::Alignment
+        | RelocationKind::MachoAddition => ValueFlags::empty(),
     }
 }
 

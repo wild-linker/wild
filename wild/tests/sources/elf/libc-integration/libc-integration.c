@@ -20,7 +20,6 @@
 
 //#Config:clang-static:default
 //#CompArgs:-g -ftls-model=global-dynamic
-//#SkipArch: ppc64le
 //#LinkerDriver:clang
 //#LinkArgs:-static -Wl,--strip-debug -Wl,-z,now
 //#Object:libc-integration-0.c
@@ -50,7 +49,7 @@
 //#Object:libc-integration-1.c
 //#ReferenceLinkers:bfd,lld
 // Seems lld linked binary crashes under QEMU.
-//#SkipArch: loongarch64,riscv64,ppc64le
+//#SkipArch: loongarch64,riscv64
 //#DiffIgnore:rel.extra-got-plt-got
 //#CompArgs:-fPIE
 
@@ -63,11 +62,11 @@
 //#ReferenceLinkers:bfd,lld
 // riscv64: lld-linked binary crashes with SIGSEGV under QEMU.
 // loongarch64: wild produces output that differs from both ld and lld (#1702).
+// ppc64le: glibc does not provide rcrt1.o for -static-pie.
 //#SkipArch: loongarch64,riscv64,ppc64le
 //#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:clang-initial-exec:shared
-//#SkipArch: ppc64le
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkerDriver:clang
@@ -78,7 +77,6 @@
 //#LinkArgs:-pie
 
 //#Config:clang-global-dynamic:shared
-//#SkipArch: ppc64le
 //#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
@@ -99,7 +97,7 @@
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,-z,now -L./does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
-//#SkipArch: loongarch64, riscv64,ppc64le
+//#SkipArch: loongarch64, riscv64
 //#LinkArgs:-pie
 
 //#Config:gcc-dynamic-no-pie:shared
@@ -113,7 +111,7 @@
 //#ReferenceLinkers:bfd,lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,-z,now -L/does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
-//#SkipArch: loongarch64, riscv64,ppc64le
+//#SkipArch: loongarch64, riscv64
 //#CompArgs:-fPIE
 
 //#Config:gcc-dynamic-pie-large:shared
@@ -126,7 +124,6 @@
 //#LinkArgs:-pie
 
 //#Config:gcc-relr:shared
-//#SkipArch: ppc64le
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
@@ -139,7 +136,6 @@
 //#Contains:.relr.dyn
 
 //#Config:gcc-pack-dyn-relocs-relr:shared
-//#SkipArch: ppc64le
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
@@ -200,7 +196,7 @@ get_int_fn_t get_sometimes_weak_fn_ptr(void);
 // Make sure that we can refer to a non-default version of a symbol from libc.
 #if defined(__x86_64__)
 __asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.2.5");
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(__powerpc64__)
 __asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.17");
 #elif defined(__riscv)
 __asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.27");

@@ -9,8 +9,17 @@ use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::ppc64_rel_type_to_string;
+use linker_utils::elf::shf;
 use linker_utils::ppc64::RelaxationKind;
+use linker_utils::ppc64::relocation_type_from_raw;
+use linker_utils::ppc64::tls_xform_to_dform;
 use linker_utils::relaxation::RelocationModifier;
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 pub(crate) struct ElfPpc64;
 
@@ -175,7 +184,6 @@ impl crate::platform::Arch for ElfPpc64 {
         u64::from(((1u32 << k) >> 2) << 2)
     }
 
-    #[allow(unused_variables)]
     #[inline(always)]
     fn new_relaxation(
         relocation_kind: object::elf::RelocationType,
@@ -184,7 +192,7 @@ impl crate::platform::Arch for ElfPpc64 {
         flags: crate::value_flags::ValueFlags,
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
-        relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
         _sym_addr: u64,
         _section_address: u64,
         _rel_addend: i64,
@@ -193,7 +201,145 @@ impl crate::platform::Arch for ElfPpc64 {
     where
         Self: std::marker::Sized,
     {
-        None
+        if !section_flags.contains(shf::EXECINSTR) || !output_kind.is_executable() {
+            return None;
+        }
+
+        let offset = usize::try_from(offset_in_section).ok()?;
+        let insn = u32::from_le_bytes(section_bytes.get(offset..offset + 4)?.try_into().ok()?);
+        let interposable = flags.is_interposable();
+        let mandatory_for_static = output_kind.is_static_executable();
+
+        let (kind, rel_info, mandatory) = match relocation_kind {
+            // General Dynamic -> Local Exec (local TLS symbol in executable).
+            object::elf::R_PPC64_GOT_TLSGD16_HA | object::elf::R_PPC64_GOT_TLSGD16_HI
+                if !interposable && is_addis(insn) =>
+            {
+                (
+                    RelaxationKind::ReplaceWithNop,
+                    rel_info_from_type!(object::elf::R_PPC64_NONE),
+                    mandatory_for_static,
+                )
+            }
+            object::elf::R_PPC64_GOT_TLSGD16_LO | object::elf::R_PPC64_GOT_TLSGD16
+                if !interposable && is_addi_r3(insn) =>
+            {
+                (
+                    RelaxationKind::AddisR3R13,
+                    rel_info_from_type!(object::elf::R_PPC64_TPREL16_HA),
+                    mandatory_for_static,
+                )
+            }
+            object::elf::R_PPC64_TLSGD if !interposable && is_tls_get_addr_call(insn) => (
+                RelaxationKind::AddiR3R3SkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_TPREL16_LO),
+                mandatory_for_static,
+            ),
+            object::elf::R_PPC64_TLSGD if !interposable && is_tls_get_addr_plt_setup(insn) => (
+                RelaxationKind::ReplaceWithNopSkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_NONE),
+                mandatory_for_static,
+            ),
+
+            // General Dynamic -> Initial Exec (interposable TLS symbol in dynamic executable).
+            object::elf::R_PPC64_GOT_TLSGD16_HA if interposable && is_addis(insn) => (
+                RelaxationKind::NoOp,
+                rel_info_from_type!(object::elf::R_PPC64_GOT_TPREL16_HA),
+                false,
+            ),
+            object::elf::R_PPC64_GOT_TLSGD16_HI if interposable && is_addis(insn) => (
+                RelaxationKind::NoOp,
+                rel_info_from_type!(object::elf::R_PPC64_GOT_TPREL16_HI),
+                false,
+            ),
+            object::elf::R_PPC64_GOT_TLSGD16_LO if interposable && is_addi_r3(insn) => (
+                RelaxationKind::AddiToLd,
+                rel_info_from_type!(object::elf::R_PPC64_GOT_TPREL16_LO_DS),
+                false,
+            ),
+            object::elf::R_PPC64_GOT_TLSGD16 if interposable && is_addi_r3(insn) => (
+                RelaxationKind::AddiToLd,
+                rel_info_from_type!(object::elf::R_PPC64_GOT_TPREL16_DS),
+                false,
+            ),
+            object::elf::R_PPC64_TLSGD if interposable && is_tls_get_addr_call(insn) => (
+                RelaxationKind::AddR3R3R13SkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_NONE),
+                false,
+            ),
+            object::elf::R_PPC64_TLSGD if interposable && is_tls_get_addr_plt_setup(insn) => (
+                RelaxationKind::ReplaceWithNopSkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_NONE),
+                false,
+            ),
+
+            // Local Dynamic -> Local Exec (always targets the executable's own TLS module).
+            object::elf::R_PPC64_GOT_TLSLD16_HA | object::elf::R_PPC64_GOT_TLSLD16_HI
+                if is_addis(insn) =>
+            {
+                (
+                    RelaxationKind::ReplaceWithNop,
+                    rel_info_from_type!(object::elf::R_PPC64_NONE),
+                    mandatory_for_static,
+                )
+            }
+            object::elf::R_PPC64_GOT_TLSLD16_LO | object::elf::R_PPC64_GOT_TLSLD16
+                if is_addi(insn) =>
+            {
+                (
+                    RelaxationKind::ReplaceWithNop,
+                    rel_info_from_type!(object::elf::R_PPC64_NONE),
+                    mandatory_for_static,
+                )
+            }
+            object::elf::R_PPC64_TLSLD if is_tls_get_addr_call(insn) => (
+                RelaxationKind::AddiR3R13DtpBiasSkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_NONE),
+                mandatory_for_static,
+            ),
+            object::elf::R_PPC64_TLSLD if is_tls_get_addr_plt_setup(insn) => (
+                RelaxationKind::ReplaceWithNopSkipNext,
+                rel_info_from_type!(object::elf::R_PPC64_NONE),
+                mandatory_for_static,
+            ),
+
+            // Initial Exec -> Local Exec (local TLS symbol in executable).
+            object::elf::R_PPC64_GOT_TPREL16_HA | object::elf::R_PPC64_GOT_TPREL16_HI
+                if !interposable && is_addis(insn) =>
+            {
+                (
+                    RelaxationKind::ReplaceWithNop,
+                    rel_info_from_type!(object::elf::R_PPC64_NONE),
+                    false,
+                )
+            }
+            object::elf::R_PPC64_GOT_TPREL16_LO_DS | object::elf::R_PPC64_GOT_TPREL16_DS
+                if !interposable && is_ld(insn) =>
+            {
+                (
+                    RelaxationKind::LdToAddisR13,
+                    rel_info_from_type!(object::elf::R_PPC64_TPREL16_HA),
+                    false,
+                )
+            }
+            object::elf::R_PPC64_TLS if !interposable => {
+                let (_, is_ds) = tls_xform_to_dform(insn)?;
+                let rel_info = if is_ds {
+                    rel_info_from_type!(object::elf::R_PPC64_TPREL16_LO_DS)
+                } else {
+                    rel_info_from_type!(object::elf::R_PPC64_TPREL16_LO)
+                };
+                (RelaxationKind::TlsXFormToDForm, rel_info, false)
+            }
+
+            _ => return None,
+        };
+
+        Some(Relaxation {
+            kind,
+            rel_info,
+            mandatory,
+        })
     }
 
     fn get_source_info<'data>(
@@ -211,6 +357,34 @@ impl crate::platform::Arch for ElfPpc64 {
     }
 }
 
+fn is_addis(insn: u32) -> bool {
+    (insn >> 26) == 15
+}
+
+fn is_addi(insn: u32) -> bool {
+    (insn >> 26) == 14
+}
+
+fn is_addi_r3(insn: u32) -> bool {
+    // `addi r3, rA, imm`: opcode 14 (0x38), RT = 3 (0x0060_0000).
+    (insn & 0xffe0_0000) == 0x3860_0000
+}
+
+fn is_ld(insn: u32) -> bool {
+    // `ld rD, ds(rA)`: opcode 58 (0xe8), XO = 0.
+    (insn & 0xfc00_0003) == 0xe800_0000
+}
+
+fn is_tls_get_addr_call(insn: u32) -> bool {
+    // Direct `bl`/`b` (opcode 18, AA=0) or `-fno-plt` indirect `bctrl`/`bctr`.
+    (insn & 0xfc00_0002) == 0x4800_0000 || insn == 0x4e80_0421 || insn == 0x4e80_0420
+}
+
+fn is_tls_get_addr_plt_setup(insn: u32) -> bool {
+    // `-fno-plt` setup instructions loading `__tls_get_addr`: `addis`, `addi`, `ld`, `mtctr`.
+    is_addis(insn) || is_addi(insn) || is_ld(insn) || (insn & 0xfc1f_ffff) == 0x7c09_03a6
+}
+
 fn is_tprel(r_type: object::elf::RelocationType) -> bool {
     matches!(
         r_type,
@@ -224,8 +398,6 @@ fn is_tprel(r_type: object::elf::RelocationType) -> bool {
     )
 }
 
-// Relaxations are not yet implemented for ppc64, so `new_relaxation` always returns `None` and
-// this type is never constructed.
 #[derive(Debug, Clone)]
 pub(crate) struct Relaxation {
     kind: RelaxationKind,

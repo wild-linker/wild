@@ -4457,7 +4457,7 @@ fn apply_relocation<
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
-        RelocationKind::None | RelocationKind::TlsDescCall => 0,
+        RelocationKind::None | RelocationKind::TlsDescCall | RelocationKind::TlsMarker => 0,
         RelocationKind::Alignment
         | RelocationKind::MachoAddition
         | RelocationKind::MachoSubtraction => unreachable!(),
@@ -4634,7 +4634,7 @@ fn apply_debug_relocation<
     let rel_info = A::relocation_from_raw(r_type)?;
 
     match rel_info.kind {
-        RelocationKind::None => return Ok(()),
+        RelocationKind::None | RelocationKind::TlsMarker => return Ok(()),
         RelocationKind::Absolute if rel.symbol().is_none() => {
             rel_info.write_to_buffer(addend as u64, &mut out[offset_in_section as usize..])?;
             return Ok(());

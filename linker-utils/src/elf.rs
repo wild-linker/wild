@@ -558,6 +558,9 @@ pub enum RelocationKind {
     /// opportunity.
     TlsDescCall,
 
+    /// Architecture-specific TLS marker relocation that carries no direct fixup unless relaxed.
+    TlsMarker,
+
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
     /// optimisation.
     None,
@@ -586,6 +589,7 @@ impl RelocationKind {
                 | Self::TlsDescCall
                 | Self::TlsDescGot
                 | Self::TlsDescGotBase
+                | Self::TlsMarker
                 | Self::TlsGd
                 | Self::TlsGdGot
                 | Self::TlsGdGotBase
