@@ -22,6 +22,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RiscVInstruction;
 use linker_utils::elf::riscv_rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::relaxation::RelaxedRelocation;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::riscv::JAL_RANGE;
@@ -215,30 +216,69 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
             .is_ok_and(|sym| sym.st_other().contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
-    fn relaxed_relocation_type(
+    fn relaxed_relocation(
         raw_type: object::elf::RelocationType,
         input_offset: u64,
+        section_bytes: &[u8],
         relax_deltas: Option<&SectionRelaxDeltas>,
-    ) -> object::elf::RelocationType {
+        _can_relax: bool,
+        _addend: i64,
+    ) -> RelaxedRelocation<object::elf::RelocationType> {
+        // BFD internal relocation numbers emitted under `--emit-relocs` when `lui` is deleted.
+        const BFD_R_RISCV_TPREL_I: object::elf::RelocationType = object::elf::RelocationType(69);
+        const BFD_R_RISCV_TPREL_S: object::elf::RelocationType = object::elf::RelocationType(70);
+
         if let Some(deltas) = relax_deltas {
             match raw_type {
                 object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
-                    if C::ADDRESS_SIZE == 4 && deltas.delta_bytes_at(input_offset + 2) == 6 {
-                        return object::elf::R_RISCV_RVC_JUMP;
-                    } else if deltas.delta_bytes_at(input_offset + 4) == 4 {
-                        return object::elf::R_RISCV_JAL;
-                    }
+                    let new_type =
+                        if C::ADDRESS_SIZE == 4 && deltas.delta_bytes_at(input_offset + 2) == 6 {
+                            object::elf::R_RISCV_RVC_JUMP
+                        } else if deltas.delta_bytes_at(input_offset + 4) == 4 {
+                            object::elf::R_RISCV_JAL
+                        } else {
+                            raw_type
+                        };
+                    return RelaxedRelocation::unchanged(new_type);
                 }
                 object::elf::R_RISCV_HI20 if deltas.has_delta_at(input_offset) => {
-                    return object::elf::R_RISCV_NONE;
+                    return RelaxedRelocation {
+                        r_type: object::elf::R_RISCV_NONE,
+                        offset_delta: 0,
+                        clear_symbol: true,
+                        addend: Some(4),
+                    };
                 }
-                object::elf::R_RISCV_RELAX if deltas.has_delta_at(input_offset) => {
-                    return object::elf::R_RISCV_NONE;
+                object::elf::R_RISCV_LO12_I | object::elf::R_RISCV_LO12_S
+                    if input_offset >= 4 && deltas.delta_bytes_at(input_offset - 4) == 4 =>
+                {
+                    let off = input_offset as usize;
+                    let is_rs1_to_zero = if raw_type == object::elf::R_RISCV_LO12_S {
+                        true
+                    } else {
+                        off + 4 <= section_bytes.len() && {
+                            let word =
+                                u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
+                            let rd = (word >> 7) & 0x1f;
+                            let rs1 = (word >> 15) & 0x1f;
+                            rd == rs1
+                        }
+                    };
+                    let new_type = if is_rs1_to_zero {
+                        if raw_type == object::elf::R_RISCV_LO12_I {
+                            BFD_R_RISCV_TPREL_I
+                        } else {
+                            BFD_R_RISCV_TPREL_S
+                        }
+                    } else {
+                        raw_type
+                    };
+                    return RelaxedRelocation::unchanged(new_type);
                 }
                 _ => {}
             }
         }
-        raw_type
+        RelaxedRelocation::unchanged(raw_type)
     }
 
     #[inline(always)]
@@ -367,6 +407,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
         relocations: RelocationList<C>,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        emit_relocs: bool,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
             RelocationList::Rela(rela_list) => collect_relaxation_deltas::<C, _>(
@@ -375,6 +416,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
                 rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                emit_relocs,
             ),
             RelocationList::Crel(crel_iter) => collect_relaxation_deltas::<C, _>(
                 section_output_address,
@@ -382,6 +424,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
                 crel_iter.flatten().map(ElfCrel::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                emit_relocs,
             ),
         }
     }
@@ -470,6 +513,7 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+    emit_relocs: bool,
 ) -> (Vec<(u64, u32)>, Option<u64>) {
     let mut raw_deltas = Vec::new();
     let mut min_unrelaxed_margin: Option<u64> = None;
@@ -592,7 +636,7 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
                         if RelaxationKind::hi20_is_zero(value) {
                             raw_deltas.push((hi20_offset, 4));
                             new_cumulative_delta += 4;
-                        } else if RelaxationKind::rd_valid_for_clui(rd) {
+                        } else if !emit_relocs && RelaxationKind::rd_valid_for_clui(rd) {
                             if RelaxationKind::hi20_fits_clui(value) {
                                 raw_deltas.push((hi20_offset + 2, 2));
                                 new_cumulative_delta += 2;

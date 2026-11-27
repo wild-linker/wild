@@ -2249,6 +2249,7 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
                                 {
                                     SectionSlot::Loaded(_)
                                     | SectionSlot::Sorted(_)
+                                    | SectionSlot::LoadedDebugInfo(_)
                                     | SectionSlot::MergeStrings(_) => Some(
                                         object
                                             .section_part_id(
@@ -2491,6 +2492,25 @@ fn write_rela_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let target_sec_idx = object::SectionIndex(header.sh_info(e) as usize);
     let target_is_singleton = object.sections[target_sec_idx.0].singleton().is_some();
     let relax_deltas = object.section_relax_deltas.get(target_sec_idx.0);
+    let target_part_id = object.section_part_id(target_sec_idx, &layout.symbol_db.section_part_ids);
+    let should_reverse = should_reverse_contents(
+        target_sec_idx,
+        target_part_id,
+        object.object,
+        &layout.output_sections,
+    );
+    let target_header = object.object.section(target_sec_idx)?;
+    let target_is_exec = target_header.sh_flags(e).contains(shf::EXECINSTR);
+    let target_bytes = if target_is_exec && target_header.sh_type(e) != object::elf::SHT_NOBITS {
+        object.object.raw_section_data(target_header)?
+    } else {
+        &[]
+    };
+    let target_size = if should_reverse {
+        target_header.sh_size(e).into()
+    } else {
+        0u64
+    };
 
     let section_address = if target_is_singleton {
         0
@@ -2605,12 +2625,43 @@ fn write_rela_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             .flatten()
             .unwrap_or(addend);
 
-        let rel_offset = opt_input_to_output(relax_deltas, rel.offset());
+        let can_relax = target_is_exec
+            && sym.is_some_and(|s| {
+                let symbol_id = object.symbol_id_range.input_to_id(s);
+                let flags = layout.flags_for_symbol(symbol_id);
+                let output_kind = layout.symbol_db.output_kind;
+                let relax_enabled = layout.args().relax
+                    || (output_kind.is_static_executable()
+                        && output_kind.is_position_independent());
+                relax_enabled
+                    && elf::can_relax_symbol(flags, output_kind, flags.is_linker_script_symbol())
+                    && !flags.is_interposable()
+                    && !flags.is_ifunc()
+            });
+        let relaxed = A::relaxed_relocation(
+            rel.raw_type(),
+            rel.offset(),
+            target_bytes,
+            relax_deltas,
+            can_relax,
+            rel.addend(),
+        );
+        let rel_offset = if should_reverse {
+            target_size.saturating_sub(rel.offset() + C::ADDRESS_SIZE)
+        } else {
+            opt_input_to_output(relax_deltas, rel.offset())
+                .saturating_add_signed(relaxed.offset_delta)
+        };
+        let sym_idx = if relaxed.clear_symbol { 0 } else { sym_idx };
+        let addend = relaxed.addend.unwrap_or(addend);
 
-        let raw_type = A::relaxed_relocation_type(rel.raw_type(), rel.offset(), relax_deltas);
         out.set_offset(section_address + rel_offset)?;
         out.set_addend(addend)?;
-        out.set_info(sym_idx, raw_type)?;
+        out.set_info(sym_idx, relaxed.r_type)?;
+    }
+
+    if should_reverse {
+        out_relas.reverse();
     }
 
     Ok(())

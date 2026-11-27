@@ -5571,8 +5571,8 @@ impl<'data> SymbolCopyInfo<'data> {
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
         let must_keep = symbol_state.contains(ValueFlags::GROUP_SIGNATURE)
-            || ((symbol_db.args.should_output_partial_object() || symbol_db.args.emit_relocs())
-                && symbol_state.has_resolution());
+            || (symbol_db.args.should_output_partial_object() && symbol_state.has_resolution())
+            || symbol_db.args.emit_relocs();
 
         if !must_keep && symbol_db.args.discard_all() && sym.is_local() {
             return None;
@@ -6360,6 +6360,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
                             relocs,
                             existing_deltas,
                             &mut resolve_symbol,
+                            symbol_db.args.emit_relocs(),
                         );
 
                         if let Some(margin) = min_margin {

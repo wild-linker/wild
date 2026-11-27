@@ -50,6 +50,7 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::relaxation::RelaxedRelocation;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use object::Endianness;
@@ -248,6 +249,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        _emit_relocs: bool,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.
@@ -297,12 +299,17 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Fill `buf` with NOP padding.
     fn fill_nop_padding(_buf: &mut [u8]) {}
 
-    fn relaxed_relocation_type(
+    /// Returns the relaxed relocation to emit under `--emit-relocs` when a relocation
+    /// may have been relaxed.
+    fn relaxed_relocation(
         raw_type: <Self::Platform as Platform>::RelocationInfo,
         _input_offset: u64,
+        _section_bytes: &[u8],
         _relax_deltas: Option<&SectionRelaxDeltas>,
-    ) -> <Self::Platform as Platform>::RelocationInfo {
-        raw_type
+        _can_relax: bool,
+        _addend: i64,
+    ) -> RelaxedRelocation<<Self::Platform as Platform>::RelocationInfo> {
+        RelaxedRelocation::unchanged(raw_type)
     }
 
     fn process_riscv_attributes<'data>(
