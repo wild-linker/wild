@@ -1814,7 +1814,8 @@ fn resolve_section<'data, P: Platform>(
             )?;
             return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
         }
-        SectionRuleOutcome::Custom => {
+        outcome @ (SectionRuleOutcome::Custom | SectionRuleOutcome::CustomKeep) => {
+            must_load |= matches!(outcome, SectionRuleOutcome::CustomKeep);
             part_id = PartId::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
             unloaded_section.start_stop_eligible = !section_name.starts_with(b".");

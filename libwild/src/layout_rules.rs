@@ -131,6 +131,9 @@ pub(crate) enum SectionRuleOutcome {
     Section(SectionOutputInfo),
     Discard,
     Custom,
+    /// As `Custom`, but the section is kept even if nothing references it, like `KEEP` in a
+    /// linker script.
+    CustomKeep,
     EhFrame,
     NoteGnuProperty,
     NoteGnuStack,
@@ -686,6 +689,19 @@ impl<'data> SectionRule<'data> {
             outcome,
             from_linker_script: false,
         }
+    }
+
+    /// Like `new`, but for a built-in rule that only applies to input files whose names match
+    /// `input_file_pattern`.
+    pub(crate) fn new_built_in(
+        pattern: &'data [u8],
+        input_file_pattern: &'data [u8],
+        outcome: SectionRuleOutcome,
+    ) -> Result<Self> {
+        Ok(Self {
+            from_linker_script: false,
+            ..Self::new(pattern, Some(input_file_pattern), outcome)?
+        })
     }
 }
 
