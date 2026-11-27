@@ -50,6 +50,7 @@ derive_more = { version = "2.0.1", default-features = false, features = [
 ] }
 dhat = { version = "0.3.3", default-features = false }
 diff = { version = "0.1.13", default-features = false }
+fixedbitset = { version = "0.5.7", default-features = false }
 flate2 = { version = "1.1.0", default-features = false, features = ["zlib-rs"] }
 zlib-rs = { version = "0.6.4", default-features = false, features = [
   "rust-allocator",
@@ -58,7 +59,6 @@ foldhash = { version = "0.2.0", default-features = false, features = ["std"] }
 gimli = { version = "0.34.0", default-features = false, features = [
   "read-all",
 ] }
-glob = { version = "0.3.2", default-features = false }
 hashbrown = { version = "0.17.1", default-features = false, features = [
   "default-hasher",
   "inline-more",
@@ -116,7 +116,13 @@ rand = { version = "0.10.2", default-features = false, features = [
   "thread_rng",
 ] }
 rayon = { version = "1.5.1", default-features = false }
-regex = { version = "1.12.0", default-features = false, features = ["std"] }
+regex = { version = "1.13", default-features = false, features = ["std"] }
+regex-automata = { version = "0.4.19", default-features = false, features = [
+  "std",
+  "meta",
+  "hybrid",
+] }
+regex-syntax = { version = "0.8.12", default-features = false }
 serde = { version = "1.0.225", default-features = false, features = ["derive"] }
 serde-keyvalue = { version = "0.1.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }

@@ -1,6 +1,7 @@
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::glob_match::compile_macho_glob_pattern;
+use crate::glob_match::GlobSyntax;
+use crate::glob_match::compile_pattern;
 use crate::hash::PreHashed;
 use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
@@ -48,7 +49,7 @@ impl<'data> ExportList<'data> {
             let matcher = if line == b"*" {
                 SymbolMatcher::MatchesAll
             } else if memchr::memchr3(b'*', b'?', b'[', line).is_some() {
-                let pattern = compile_macho_glob_pattern(line)
+                let pattern = compile_pattern(line, GlobSyntax::MachO)
                     .map_err(|error| crate::error!("{error}"))
                     .with_context(|| {
                         format!("Failed to parse symbol export list line {}", line_index + 1)

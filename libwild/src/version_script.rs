@@ -8,8 +8,10 @@ use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::glob_match::GlobPatternType;
+use crate::glob_match::GlobSyntax;
+use crate::glob_match::Pattern;
 use crate::glob_match::analyze_glob_pattern;
-use crate::glob_match::compile_glob_pattern;
+use crate::glob_match::compile_pattern;
 use crate::glob_match::unescape_pattern;
 use crate::hash::PassThroughHasher;
 use crate::hash::PreHashed;
@@ -17,7 +19,6 @@ use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use crate::timing_phase;
-use glob::Pattern;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use symbolic_demangle::Demangle;
@@ -29,19 +30,19 @@ use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct MatchRules<'data> {
     pub(crate) general: BasicMatchRules<'data>,
     pub(crate) cxx: BasicMatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct VersionBody<'data> {
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct Version<'data> {
     pub(crate) name: &'data [u8],
     pub(crate) parent_index: Option<u16>,
@@ -49,7 +50,7 @@ pub(crate) struct Version<'data> {
 }
 
 /// A general version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct RegularVersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
@@ -64,7 +65,7 @@ pub(crate) struct RustVersionScript<'data> {
     pub(crate) global: Vec<&'data [u8]>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 /// Possibly specialized version script.
 /// See `RegularVersionScript` for the general case.
 pub(crate) enum VersionScript<'data> {
@@ -78,12 +79,12 @@ impl Default for VersionScript<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
-    // Exact match with escape sequences that need unescaping.
-    EscapedExact(&'data [u8]),
+    // Exact match with escape sequences already unescaped.
+    EscapedExact(Vec<u8>),
     // A glob pattern with a '*' token.
     StarGlob(Pattern),
     // A glob pattern without any '*' token.
@@ -92,7 +93,7 @@ pub(crate) enum SymbolMatcher<'data> {
     MatchesAll,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
@@ -118,8 +119,7 @@ impl<'data> BasicMatchRules<'data> {
             SymbolMatcher::Exact(exact) => {
                 self.exact.insert(UnversionedSymbolName::prehashed(exact));
             }
-            SymbolMatcher::EscapedExact(escaped) => {
-                let unescaped = unescape_pattern(escaped);
+            SymbolMatcher::EscapedExact(unescaped) => {
                 self.escaped_exact.insert(unescaped);
             }
         }
@@ -183,9 +183,9 @@ impl<'data> BasicMatchRules<'data> {
         }
 
         let name = if mangled {
-            lookup.get_demangled_name()
+            lookup.get_demangled_name().as_bytes()
         } else {
-            lookup.get_name_string()
+            lookup.name.bytes()
         };
 
         globs.any(|pattern| pattern.matches(name))
@@ -419,6 +419,10 @@ impl<'data> VersionScript<'data> {
         parse_version_script
             .parse(BStr::new(data.raw))
             .context("Failed to parse version script")
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        matches!(self, Self::Regular(script) if script.versions.is_empty())
     }
 
     pub(crate) fn version_count(&self) -> u16 {
@@ -709,23 +713,24 @@ pub(crate) fn parse_matcher<'data>(
         } else {
             let glob_type = analyze_glob_pattern(token);
 
-            let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
-                compile_glob_pattern(token).map_err(|e| {
-                    ContextError::from_external_error(
-                        input,
-                        match e {
-                            "Invalid UTF-8 string" => VersionScriptError::InvalidUtf8String,
-                            _ => VersionScriptError::InvalidGlobPattern,
-                        },
-                    )
-                })
+            let invalid_glob = |reason| {
+                ContextError::from_external_error(
+                    input,
+                    VersionScriptError::InvalidGlobPattern(reason),
+                )
             };
 
             match glob_type {
                 GlobPatternType::Exact => SymbolMatcher::Exact(token),
-                GlobPatternType::EscapedExact => SymbolMatcher::EscapedExact(token),
-                GlobPatternType::Star => SymbolMatcher::StarGlob(create_pattern(token)?),
-                GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(create_pattern(token)?),
+                GlobPatternType::EscapedExact => {
+                    SymbolMatcher::EscapedExact(unescape_pattern(token).map_err(invalid_glob)?)
+                }
+                GlobPatternType::Star => SymbolMatcher::StarGlob(
+                    compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?,
+                ),
+                GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(
+                    compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?,
+                ),
             }
         },
     ))
@@ -744,8 +749,7 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
 #[derive(Debug)]
 enum VersionScriptError {
     UnknownParentVersion,
-    InvalidUtf8String,
-    InvalidGlobPattern,
+    InvalidGlobPattern(&'static str),
     UnexpectedExtern(String),
     UnsupportedExtern(String),
 }
@@ -755,8 +759,9 @@ impl std::error::Error for VersionScriptError {}
 impl std::fmt::Display for VersionScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VersionScriptError::InvalidGlobPattern => write!(f, "Invalid glob pattern"),
-            VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
+            VersionScriptError::InvalidGlobPattern(reason) => {
+                write!(f, "Invalid glob pattern: {reason}")
+            }
             VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
             VersionScriptError::UnexpectedExtern(s) => {
                 write!(f, "Unexpected extern \"{s}\" in parsing")
@@ -838,8 +843,8 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
-            ["bar*", "best_*_fn*", "*_wrapper"],
+                .map(Pattern::source),
+            [b"bar*".as_slice(), b"best_*_fn*", b"*_wrapper"],
         );
 
         assert!(is_matching_global(&script, "main_wrapper"));
@@ -887,8 +892,8 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
-            ["old*"],
+                .map(Pattern::source),
+            [b"old*".as_slice()],
         );
 
         let version = &script.versions[2];
@@ -953,8 +958,8 @@ mod tests {
                 .cxx
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
-            ["ns::*"],
+                .map(Pattern::source),
+            [b"ns::*".as_slice()],
         );
 
         assert!(!is_matching_global(&script, "foo"));
@@ -1137,26 +1142,26 @@ mod tests {
         assert!(escaped_patterns.contains(&b"baz?"[..]));
         assert!(escaped_patterns.contains(&b"foo1\\foo2"[..]));
 
-        let star_patterns: Vec<&str> = version_body
+        let star_patterns: Vec<&[u8]> = version_body
             .globals
             .general
             .star_globs
             .iter()
-            .map(|glob| glob.as_str())
+            .map(Pattern::source)
             .collect();
 
-        assert!(star_patterns.contains(&"b*"));
-        assert!(star_patterns.contains(&"foo3?foo4*"));
+        assert!(star_patterns.contains(&b"b*".as_slice()));
+        assert!(star_patterns.contains(&b"foo3?foo4*".as_slice()));
 
-        let nonstar_patterns: Vec<&str> = version_body
+        let nonstar_patterns: Vec<&[u8]> = version_body
             .globals
             .general
             .nonstar_globs
             .iter()
-            .map(|glob| glob.as_str())
+            .map(Pattern::source)
             .collect();
 
-        assert!(nonstar_patterns.contains(&"f?"));
+        assert!(nonstar_patterns.contains(&b"f?".as_slice()));
     }
 
     #[test]

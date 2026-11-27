@@ -214,6 +214,9 @@ allow_unsafe = true
 [pkg.symbolic-common]
 allow_unsafe = true
 
+[pkg.fixedbitset]
+allow_unsafe = true
+
 [pkg.regex-automata]
 allow_unsafe = true
 
@@ -317,9 +320,6 @@ allow_apis = ["fs"]
 allow_apis = ["fs"]
 
 [pkg.linker-diff]
-allow_apis = ["fs"]
-
-[pkg.glob]
 allow_apis = ["fs"]
 
 [pkg.proc-macro-crate]
