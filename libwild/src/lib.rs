@@ -346,7 +346,8 @@ impl<F: FileSystem> Linker<F> {
     ) -> error::Result<(LinkerOutput<'data>, F::Output)> {
         let mut plugin = P::maybe_init_lto(args, &self.linker_plugin_arena, &self.herd)?;
 
-        let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
+        let loaded =
+            file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin, &self.herd);
 
         args.common().save_dir.finish(file_loader, args)?;
 
