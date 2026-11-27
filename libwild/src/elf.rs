@@ -2579,6 +2579,26 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         rules.extend(LINKER_REPLACED_SECTION_RULES.iter().cloned());
 
+        // Like GNU ld's default linker script, keep the C runtime's .ctors/.dtors marker words
+        // (the -1 and 0 that start and end the lists) out of .init_array/.fini_array, where they'd
+        // be called as functions. They stay in .ctors/.dtors, and like KEEP in GNU ld's script,
+        // they're kept even if nothing references them, since the C runtime walks from one marker
+        // to the other. These rules must come before the general .ctors/.dtors rules in
+        // DEFAULT_SECTION_PLACEMENT_RULES.
+        for section in [secnames::CTORS_SECTION_NAME, secnames::DTORS_SECTION_NAME] {
+            for file in [
+                b"*crtbegin.o".as_slice(),
+                b"*crtbegin?.o",
+                b"*crtend.o",
+                b"*crtend?.o",
+            ] {
+                rules.push(
+                    SectionRule::new_built_in(section, file, SectionRuleOutcome::CustomKeep)
+                        .expect("Built-in file patterns are valid"),
+                );
+            }
+        }
+
         if args.gdb_index {
             rules.push(SectionRule::exact(
                 secnames::DEBUG_GNU_PUBNAMES,
