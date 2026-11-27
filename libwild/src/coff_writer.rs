@@ -884,9 +884,43 @@ fn write_prelude<A: Arch<Platform = Coff>>(
         from_bytes_mut(buffers.get_mut(part_id::NT_HEADER))
             .map_err(|_| insufficient_allocation("NT header"))?;
     populate_nt_header::<A>(layout, &prelude.header_info, nt_header)?;
-    // TODO: `object` doesn't include this in `coff::NtHeader`, so just wipe remaining bytes for
-    // now.
-    data_directory_bytes.fill(0);
+
+    // TODO: Create helper. Dedicated TableWriter?
+    let data_directory: &mut [object::pe::ImageDataDirectory] =
+        slice_from_all_bytes_mut(data_directory_bytes);
+    for (i, data_directory) in data_directory.iter_mut().enumerate() {
+        let (mut address, mut size) = (0, 0);
+        if i == 1 {
+            if let Some(section) = layout
+                .output_sections
+                .init_fini_by_priority
+                .get(&(
+                    output_section_id::IDATA,
+                    crate::coff::parse_priority_suffix(b"2").unwrap(),
+                ))
+                .map(|&id| layout.section_layouts.get(id))
+            {
+                address = va_to_rva(section.mem_offset, layout).try_into()?;
+                size = section.mem_size;
+            }
+        } else if i == 12
+            && let Some(section) = layout
+                .output_sections
+                .init_fini_by_priority
+                .get(&(
+                    output_section_id::IDATA,
+                    crate::coff::parse_priority_suffix(b"5").unwrap(),
+                ))
+                .map(|&id| layout.section_layouts.get(id))
+        {
+            address = va_to_rva(section.mem_offset, layout).try_into()?;
+            size = section.mem_size;
+        }
+        data_directory
+            .virtual_address
+            .set(LittleEndian, u32::try_from(address)?);
+        data_directory.size.set(LittleEndian, u32::try_from(size)?);
+    }
 
     write_section_headers(table_writer, layout)?;
 
@@ -1181,12 +1215,30 @@ fn populate_nt_header<A: Arch<Platform = Coff>>(
 
 fn write_epilogue<A: Arch<Platform = Coff>>(
     _epilogue: &EpilogueLayout<Coff>,
-    _buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     _table_writer: &mut TableWriter<'_, '_>,
-    _layout: &CoffLayout<'_>,
-    _trace: &TraceOutput,
+    layout: &CoffLayout<'_>,
+    trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
+
+    for sorted_section in &layout.script_sorted_sections {
+        let FileLayout::Object(object) = layout.file_layout(sorted_section.file_id) else {
+            unreachable!();
+        };
+
+        if let SectionSlot::Sorted(sec) = &object.sections[sorted_section.section_index.as_usize()]
+        {
+            write_object_section::<A>(
+                object,
+                layout,
+                sec.section,
+                sorted_section.section_index.into(),
+                buffers,
+                trace,
+            )?;
+        }
+    }
 
     Ok(())
 }

@@ -7521,6 +7521,14 @@ pub(crate) struct InputSortedSection {
     pub(crate) alignment: Alignment,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct HarvestedSortedSection<'data> {
+    pub(crate) section_name: &'data [u8],
+    pub(crate) archive_name: Option<&'data [u8]>,
+    pub(crate) member_name: Option<&'data [u8]>,
+    pub(crate) section: InputSortedSection,
+}
+
 fn harvest_and_sort_script_sections<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &OutputSections<P>,
@@ -7552,28 +7560,33 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                         let part_id =
                             obj.section_part_id(sorted_section.index.into(), section_part_ids);
                         let capacity = sec.section.capacity(part_id, output_sections);
-                        sections_out.push((
-                            obj.object
+                        let entry = obj.input.entry;
+                        sections_out.push(HarvestedSortedSection {
+                            section_name: obj
+                                .object
                                 .section_name(sorted_section.index.into())
                                 .unwrap_or_default(),
-                            InputSortedSection {
+                            archive_name: entry
+                                .map(|_| obj.input.file.filename.as_os_str().as_encoded_bytes()),
+                            member_name: entry.map(|entry| entry.identifier.as_slice()),
+                            section: InputSortedSection {
                                 file_id: obj.file_id,
                                 section_index: sorted_section.index,
                                 part_id,
                                 size: capacity,
                                 alignment: part_id.alignment(output_sections),
                             },
-                        ));
+                        });
                     }
                 }
             }
         }
     }
 
-    sections_out.sort_by_key(|a| a.0);
+    P::sort_sorted_sections(&mut sections_out);
     sections_out
         .into_iter()
-        .map(|(_, harvested)| harvested)
+        .map(|harvested| harvested.section)
         .collect()
 }
 

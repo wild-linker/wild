@@ -1762,6 +1762,7 @@ fn resolve_section<'data, P: Platform>(
             must_load |= output_info.must_keep;
 
             unloaded_section = UnloadedSection::new();
+            unloaded_section.needs_sorting = P::should_sort_sorted_section(section_name);
         }
         SectionRuleOutcome::Discard => {
             return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));

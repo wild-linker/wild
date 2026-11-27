@@ -5493,6 +5493,11 @@ impl LinkCommand {
                             cross_arch,
                         )?;
                         command = Command::new(c_compiler);
+                    } else if config.platform == PlatformKind::MinGW {
+                        // TODO: This is a hack
+                        let c_compiler =
+                            get_c_compiler(&config.compiler, linker_driver.c_language(), None)?;
+                        command = Command::new(c_compiler);
                     } else {
                         command = Command::new(linker_driver.name());
                     }
