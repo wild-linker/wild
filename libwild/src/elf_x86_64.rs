@@ -180,8 +180,6 @@ impl crate::platform::Arch for ElfX86_64 {
             return RelaxedRelocation {
                 r_type: object::elf::R_X86_64_PC32,
                 offset_delta: -1,
-                clear_symbol: false,
-                addend: None,
             };
         }
         RelaxedRelocation::unchanged(raw_type)

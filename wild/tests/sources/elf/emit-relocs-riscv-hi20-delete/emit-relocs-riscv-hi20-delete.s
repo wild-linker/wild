@@ -3,13 +3,15 @@
 //#CompArgs:-march=rv64gc
 //#LinkArgs:-static --emit-relocs --relax
 //#Object:value.s
-//#ReferenceLinkers:bfd
+//#ReferenceLinkers:
 //#RunEnabled:false
 //#DiffEnabled:false
-// BFD deletes LUI and rewrites R_RISCV_LO12_I/S to 69/70.
-//#ExpectSym:_start size=10
-//#ExpectReloc:.text at=_start,target=abs_sym,type=69,addend=0
-//#ExpectReloc:.text offset=4,target=abs_sym,type=70,addend=0
+// Wild disables LUI deletion under --emit-relocs, retaining standard HI20/LO12 relocations.
+//#ExpectSym:_start size=18
+//#ExpectReloc:.text at=_start,target=abs_sym,type=26,addend=0
+//#ExpectReloc:.text offset=4,target=abs_sym,type=27,addend=0
+//#ExpectReloc:.text offset=8,target=abs_sym,type=26,addend=0
+//#ExpectReloc:.text offset=12,target=abs_sym,type=28,addend=0
 */
 
 .option relax

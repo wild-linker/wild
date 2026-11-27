@@ -2653,8 +2653,6 @@ fn write_rela_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             opt_input_to_output(relax_deltas, rel.offset())
                 .saturating_add_signed(relaxed.offset_delta)
         };
-        let sym_idx = if relaxed.clear_symbol { 0 } else { sym_idx };
-        let addend = relaxed.addend.unwrap_or(addend);
 
         out.set_offset(section_address + rel_offset)?;
         out.set_addend(addend)?;

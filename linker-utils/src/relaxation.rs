@@ -238,8 +238,6 @@ impl RelaxDeltaMap {
 pub struct RelaxedRelocation<R> {
     pub r_type: R,
     pub offset_delta: i64,
-    pub clear_symbol: bool,
-    pub addend: Option<i64>,
 }
 
 impl<R> RelaxedRelocation<R> {
@@ -247,8 +245,6 @@ impl<R> RelaxedRelocation<R> {
         Self {
             r_type,
             offset_delta: 0,
-            clear_symbol: false,
-            addend: None,
         }
     }
 }
