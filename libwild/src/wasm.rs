@@ -1503,10 +1503,15 @@ fn classify_object_data_segments<'data>(
                             raw_name,
                             &mut builtin_counts,
                         )
+                    } else if let Some(name) = raw_name {
+                        SegmentBucket::Custom {
+                            memory_index: output_memory_index,
+                            name,
+                        }
                     } else {
                         SegmentBucket::Unmerged {
                             memory_index: output_memory_index,
-                            name: raw_name,
+                            name: None,
                         }
                     }
                 }
