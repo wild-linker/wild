@@ -329,6 +329,15 @@
 //! ExpectMinAllocAddress: {address} Asserts the minimum address of all sections with the alloc
 //! flag.
 //!
+//! ExpectReloc:{section_name} [properties] Checks that the specified section contains a
+//! relocation matching the properties. Properties:
+//!   target=name: Asserts the relocation references the specified symbol or section.
+//!   at=symbol_name: Asserts the relocation is at the address of the specified symbol.
+//!   offset=int: Asserts the relocation is at the specified byte offset within the section
+//!   (mutually exclusive with `at`).
+//!   type=int: Asserts the ELF relocation type.
+//!   addend=int: Asserts the relocation addend.
+//!
 //! DriverMode:{mode} Links using a non-standard mode. See Driver Modes section below.
 //!
 //! ## Driver Modes
@@ -2406,6 +2415,7 @@ struct Assertions {
     absent_program_headers: Vec<ProgramHeaderType>,
     skip_overlap_segments_check: bool,
     min_alloc_address: Option<u64>,
+    expected_relocs: Vec<ExpectedReloc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2426,6 +2436,23 @@ struct ExpectedSectionBytes {
     section_name: String,
     expected_bytes: Vec<u8>,
     match_range: Option<Range<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedReloc {
+    section_name: String,
+    assertions: RelocationAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelocationAssertions {
+    at: Option<String>,
+    offset: Option<u64>,
+    target: String,
+    #[serde(rename = "type")]
+    r_type: Option<u32>,
+    addend: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3290,6 +3317,21 @@ fn process_directive(
             };
             config.assertions.expected_sections.push(ExpectedSection {
                 section_name: name.to_owned(),
+                assertions,
+            });
+        }
+        "ExpectReloc" => {
+            let (section_name, props) = arg
+                .trim()
+                .split_once(char::is_whitespace)
+                .context("ExpectReloc requires a section name and properties")?;
+            let assertions: RelocationAssertions = serde_keyvalue::from_key_values(props.trim())?;
+            ensure!(
+                assertions.at.is_some() != assertions.offset.is_some(),
+                "ExpectReloc requires exactly one of `at` or `offset`"
+            );
+            config.assertions.expected_relocs.push(ExpectedReloc {
+                section_name: section_name.to_owned(),
                 assertions,
             });
         }
@@ -6343,6 +6385,7 @@ impl Assertions {
         self.verify_elf_entry(&obj)?;
         Self::verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(&obj)?;
+        self.verify_expected_relocs(&obj)?;
         self.verify_absent_sections(&obj)?;
         self.verify_section_bytes(&obj)?;
         self.verify_min_alloc_address(&obj)?;
@@ -6729,6 +6772,78 @@ impl Assertions {
                     actual_size
                 );
             }
+        }
+        Ok(())
+    }
+
+    fn verify_expected_relocs(&self, obj: &object::File) -> Result {
+        for expected in &self.expected_relocs {
+            let section = obj
+                .section_by_name(&expected.section_name)
+                .with_context(|| format!("Section `{}` not found", expected.section_name))?;
+            let expected_offset = if let Some(offset) = expected.assertions.offset {
+                section.address() + offset
+            } else {
+                let name = expected
+                    .assertions
+                    .at
+                    .as_deref()
+                    .expect("validated location");
+                obj.symbols()
+                    .find(|s| s.name() == Ok(name))
+                    .with_context(|| format!("ExpectReloc symbol `{name}` not found"))?
+                    .address()
+            };
+            let mut actual = Vec::new();
+            let mut found = false;
+            for (offset, reloc) in section.relocations() {
+                let target_name = match reloc.target() {
+                    object::RelocationTarget::Symbol(sym_idx) => {
+                        let symbol = obj.symbol_by_index(sym_idx)?;
+                        if symbol.kind() == object::SymbolKind::Section {
+                            obj.section_by_index(
+                                symbol
+                                    .section_index()
+                                    .context("Section symbol has no section")?,
+                            )?
+                            .name()?
+                        } else {
+                            symbol.name()?
+                        }
+                    }
+                    _ => continue,
+                };
+
+                if target_name == expected.assertions.target {
+                    let r_type = match reloc.flags() {
+                        object::RelocationFlags::Elf { r_type } => Some(r_type.0),
+                        _ => None,
+                    };
+                    if offset == expected_offset
+                        && expected.assertions.r_type.is_none_or(|t| r_type == Some(t))
+                        && expected
+                            .assertions
+                            .addend
+                            .is_none_or(|a| reloc.addend() == a)
+                    {
+                        found = true;
+                        break;
+                    } else {
+                        actual.push(format!(
+                            "{offset:#x} -> {target_name}, type={r_type:?}, addend={}",
+                            reloc.addend()
+                        ));
+                    }
+                }
+            }
+
+            ensure!(
+                found,
+                "Expected relocation in `{}` at {expected_offset:#x} matching {:?}, got: {:?}",
+                expected.section_name,
+                expected.assertions,
+                actual,
+            );
         }
         Ok(())
     }

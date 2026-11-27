@@ -301,11 +301,12 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 
     fill_padding_for_sections::<C, A>(layout, padding);
 
-    let sym_index_map = if layout.args().should_output_partial_object() {
-        build_sym_index_map(layout)
-    } else {
-        Vec::new()
-    };
+    let sym_index_map =
+        if layout.args().should_output_partial_object() || layout.args().emit_relocs() {
+            build_sym_index_map(layout)
+        } else {
+            Vec::new()
+        };
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
@@ -2008,10 +2009,19 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     && input_header.sh_type(LittleEndian) == object::elf::SHT_GROUP
                 {
                     write_group_section::<C, A>(object, *sec, section_index, buffers, layout)?;
-                } else if layout.args().should_output_partial_object()
+                } else if (layout.args().should_output_partial_object()
+                    || layout.args().emit_relocs())
                     && input_header.sh_type(LittleEndian) == object::elf::SHT_RELA
                 {
-                    write_rela_section(
+                    let target_sec_idx =
+                        object::SectionIndex(input_header.sh_info(LittleEndian) as usize);
+                    if matches!(
+                        object.sections[target_sec_idx.0],
+                        SectionSlot::FrameData(..)
+                    ) {
+                        continue;
+                    }
+                    write_rela_section::<C, A>(
                         object,
                         *sec,
                         section_index,
@@ -2035,7 +2045,15 @@ fn write_object<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                 write_debug_section::<C, A>(object, layout, *sec, section_index, buffers)?;
             }
             SectionSlot::FrameData(section_index) => {
-                write_eh_frame_data::<C, A>(object, *section_index, layout, table_writer, trace)?;
+                write_eh_frame_data::<C, A>(
+                    object,
+                    *section_index,
+                    buffers,
+                    layout,
+                    sym_index_map,
+                    table_writer,
+                    trace,
+                )?;
             }
             _ => (),
         }
@@ -2208,84 +2226,142 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
             let mut group_local_base = group.symtab_local_start_index;
 
             for file in &group.files {
-                let FileLayout::Object(object) = file else {
-                    continue;
-                };
-
-                for ((sym_index, sym), flags) in object
-                    .object
-                    .enumerate_symbols()
-                    .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
-                {
-                    let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-
-                    if sym.st_type() == object::elf::STT_SECTION
-                        && let Ok(Some(input_section_index)) =
-                            object.object.symbol_section(sym, sym_index)
-                    {
-                        if let Some(singleton) = object.sections[input_section_index.0].singleton()
+                match file {
+                    FileLayout::Object(object) => {
+                        for ((sym_index, sym), flags) in object
+                            .object
+                            .enumerate_symbols()
+                            .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
                         {
-                            map[symbol_id.as_usize() - start_symbol_index] =
-                                Some(singleton_section_sym_base + singleton.ordinal);
-                        } else if let Some(output_section_id) =
-                            match object.sections[input_section_index.0] {
-                                SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
-                                    object
-                                        .section_part_id(
-                                            input_section_index,
-                                            &layout.symbol_db.section_part_ids,
-                                        )
-                                        .output_section_id::<elf::Elf<C>>(),
-                                ),
-                                SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
-                                _ => None,
+                            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+
+                            if sym.st_type() == object::elf::STT_SECTION
+                                && let Ok(Some(input_section_index)) =
+                                    object.object.symbol_section(sym, sym_index)
+                            {
+                                if let Some(singleton) =
+                                    object.sections[input_section_index.0].singleton()
+                                {
+                                    map[symbol_id.as_usize() - start_symbol_index] =
+                                        Some(singleton_section_sym_base + singleton.ordinal);
+                                } else if let Some(output_section_id) = match object.sections
+                                    [input_section_index.0]
+                                {
+                                    SectionSlot::Loaded(_)
+                                    | SectionSlot::Sorted(_)
+                                    | SectionSlot::LoadedDebugInfo(_)
+                                    | SectionSlot::MergeStrings(_) => Some(
+                                        object
+                                            .section_part_id(
+                                                input_section_index,
+                                                &layout.symbol_db.section_part_ids,
+                                            )
+                                            .output_section_id::<elf::Elf<C>>(),
+                                    ),
+                                    SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
+                                    _ => None,
+                                } {
+                                    let primary_id = layout
+                                        .output_sections
+                                        .primary_output_section(output_section_id);
+                                    let sym_idx = section_sym_indices.get(primary_id);
+                                    map[symbol_id.as_usize() - start_symbol_index] = Some(*sym_idx);
+                                }
                             }
+
+                            if SymbolCopyInfo::new(
+                                object.object,
+                                sym_index,
+                                sym,
+                                symbol_id,
+                                &layout.symbol_db,
+                                flags.get(),
+                                &object.sections,
+                            )
+                            .is_some()
+                            {
+                                if flags.get().is_symtab_local(sym) {
+                                    map[symbol_id.as_usize() - start_symbol_index] =
+                                        Some(group_local_base);
+                                    group_local_base += 1;
+                                } else {
+                                    map[symbol_id.as_usize() - start_symbol_index] =
+                                        Some(group_global_base);
+                                    group_global_base += 1;
+                                }
+                            }
+                        }
+
+                        for (sym_index, sym) in object.object.symbols.enumerate() {
+                            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+                            if SymbolCopyInfo::for_undefined(
+                                object.object,
+                                sym_index,
+                                sym,
+                                symbol_id,
+                                &layout.symbol_db,
+                                &object.section_groups,
+                            )
+                            .is_some()
+                            {
+                                map[symbol_id.as_usize() - start_symbol_index] =
+                                    Some(group_global_base);
+                                group_global_base += 1;
+                            }
+                        }
+                    }
+                    FileLayout::Dynamic(object) => {
+                        if layout.args().emit_relocs() {
+                            for ((symbol_id, resolution), _symbol) in layout
+                                .resolutions_in_range(object.symbol_id_range)
+                                .zip(object.object.symbols.iter())
+                            {
+                                if resolution.is_some() {
+                                    map[symbol_id.as_usize() - start_symbol_index] =
+                                        Some(group_global_base);
+                                    group_global_base += 1;
+                                }
+                            }
+                        }
+                    }
+                    FileLayout::Prelude(prelude) => {
+                        let mut local_base = if layout.args().should_output_partial_object()
+                            || layout.args().emit_relocs()
                         {
-                            let primary_id = layout
-                                .output_sections
-                                .primary_output_section(output_section_id);
-                            let sym_idx = section_sym_indices.get(primary_id);
-                            map[symbol_id.as_usize() - start_symbol_index] = Some(*sym_idx);
-                        }
-                    }
-
-                    if SymbolCopyInfo::new(
-                        object.object,
-                        sym_index,
-                        sym,
-                        symbol_id,
-                        &layout.symbol_db,
-                        flags.get(),
-                        &object.sections,
-                    )
-                    .is_some()
-                    {
-                        if flags.get().is_symtab_local(sym) {
-                            map[symbol_id.as_usize() - start_symbol_index] = Some(group_local_base);
-                            group_local_base += 1;
+                            singleton_section_sym_base
                         } else {
-                            map[symbol_id.as_usize() - start_symbol_index] =
-                                Some(group_global_base);
-                            group_global_base += 1;
-                        }
+                            1
+                        };
+                        assign_internal_symbol_indices(
+                            &prelude.internal_symbols,
+                            layout,
+                            map,
+                            start_symbol_index,
+                            &mut local_base,
+                            &mut group_global_base,
+                        );
                     }
-                }
-
-                for (sym_index, sym) in object.object.symbols.enumerate() {
-                    let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-                    if SymbolCopyInfo::for_undefined(
-                        object.object,
-                        sym_index,
-                        sym,
-                        symbol_id,
-                        &layout.symbol_db,
-                        &object.section_groups,
-                    )
-                    .is_some()
-                    {
-                        map[symbol_id.as_usize() - start_symbol_index] = Some(group_global_base);
-                        group_global_base += 1;
+                    FileLayout::SyntheticSymbols(syn) => {
+                        assign_internal_symbol_indices(
+                            &syn.internal_symbols,
+                            layout,
+                            map,
+                            start_symbol_index,
+                            &mut group_local_base,
+                            &mut group_global_base,
+                        );
                     }
+                    FileLayout::LinkerScript(script) => {
+                        assign_internal_symbol_indices(
+                            &script.internal_symbols,
+                            layout,
+                            map,
+                            start_symbol_index,
+                            &mut group_local_base,
+                            &mut group_global_base,
+                        );
+                    }
+                    _ => {}
                 }
             }
         });
@@ -2293,23 +2369,76 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
     map
 }
 
+fn active_internal_symbols<'a, C: ElfClass>(
+    internal_symbols: &'a InternalSymbols<elf::Elf<C>>,
+    layout: &'a ElfLayout<C>,
+) -> impl Iterator<
+    Item = (
+        SymbolId,
+        &'a InternalSymDefInfo<'a, elf::Elf<C>>,
+        Resolution<elf::Elf<C>>,
+        bool,
+    ),
+> + 'a {
+    internal_symbols
+        .symbol_definitions
+        .iter()
+        .enumerate()
+        .filter_map(move |(local_index, def_info)| {
+            if def_info.name.is_empty() {
+                return None;
+            }
+            let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
+            if !layout.symbol_db.is_canonical(symbol_id) {
+                return None;
+            }
+            let resolution = *layout.local_symbol_resolution(symbol_id)?;
+            let is_local = platform::Symbol::is_hidden(&def_info.symbol);
+            Some((symbol_id, def_info, resolution, is_local))
+        })
+}
+
+fn assign_internal_symbol_indices<C: ElfClass>(
+    internal_symbols: &InternalSymbols<elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    map: &mut [Option<u32>],
+    start_symbol_index: usize,
+    local_base: &mut u32,
+    group_global_base: &mut u32,
+) {
+    for (symbol_id, _, _, is_local) in active_internal_symbols(internal_symbols, layout) {
+        if is_local {
+            map[symbol_id.as_usize() - start_symbol_index] = Some(*local_base);
+            *local_base += 1;
+        } else {
+            map[symbol_id.as_usize() - start_symbol_index] = Some(*group_global_base);
+            *group_global_base += 1;
+        }
+    }
+}
+
+fn emitted_section_symbols<'a, C: ElfClass>(
+    layout: &'a ElfLayout<C>,
+) -> impl Iterator<Item = (OutputSectionId, u32)> + 'a {
+    (&layout.output_order).into_iter().filter_map(|event| {
+        let OrderEvent::Section(section_id) = event else {
+            return None;
+        };
+        let shndx = layout.output_sections.output_index_of_section(section_id)?;
+        if !layout
+            .output_sections
+            .will_emit_section_symbol_for_partial_objects(section_id)
+        {
+            return None;
+        }
+        Some((section_id, shndx))
+    })
+}
+
 fn build_section_sym_indices<C: ElfClass>(layout: &ElfLayout<C>) -> (OutputSectionMap<u32>, u32) {
     let mut map = OutputSectionMap::with_size(layout.output_sections.num_sections());
     let mut next_sym_idx: u32 = 1;
-    for event in &layout.output_order {
-        let OrderEvent::Section(section_id) = event else {
-            continue;
-        };
-        if layout
-            .output_sections
-            .output_index_of_section(section_id)
-            .is_none()
-            || !layout
-                .output_sections
-                .will_emit_section_symbol_for_partial_objects(section_id)
-        {
-            continue;
-        }
+    for (section_id, _) in emitted_section_symbols(layout) {
         *map.get_mut(section_id) = next_sym_idx;
         next_sym_idx += 1;
     }
@@ -2347,7 +2476,7 @@ fn write_group_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     Ok(())
 }
 
-fn write_rela_section<'data, C: ElfClass>(
+fn write_rela_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     object: &ObjectLayout<'data, elf::Elf<C>>,
     section: Section,
     sec_idx: object::SectionIndex,
@@ -2362,6 +2491,26 @@ fn write_rela_section<'data, C: ElfClass>(
 
     let target_sec_idx = object::SectionIndex(header.sh_info(e) as usize);
     let target_is_singleton = object.sections[target_sec_idx.0].singleton().is_some();
+    let relax_deltas = object.section_relax_deltas.get(target_sec_idx.0);
+    let target_part_id = object.section_part_id(target_sec_idx, &layout.symbol_db.section_part_ids);
+    let should_reverse = should_reverse_contents(
+        target_sec_idx,
+        target_part_id,
+        object.object,
+        &layout.output_sections,
+    );
+    let target_header = object.object.section(target_sec_idx)?;
+    let target_is_exec = target_header.sh_flags(e).contains(shf::EXECINSTR);
+    let target_bytes = if target_is_exec && target_header.sh_type(e) != object::elf::SHT_NOBITS {
+        object.object.raw_section_data(target_header)?
+    } else {
+        &[]
+    };
+    let target_size = if should_reverse {
+        target_header.sh_size(e).into()
+    } else {
+        0u64
+    };
 
     let section_address = if target_is_singleton {
         0
@@ -2425,26 +2574,93 @@ fn write_rela_section<'data, C: ElfClass>(
             .unwrap_or(0);
 
         let addend = sym
-            .and_then(|s| {
-                let sym_entry = object.object.symbol(s).ok()?;
+            .map(|s| -> Result<Option<i64>> {
+                let sym_entry = object.object.symbol(s)?;
 
                 if sym_entry.st_type() != object::elf::STT_SECTION {
-                    return None;
+                    return Ok(None);
                 }
 
-                let sec_idx = object.object.symbol_section(sym_entry, s).ok()??;
+                let Some(sec_idx) = object.object.symbol_section(sym_entry, s)? else {
+                    return Ok(None);
+                };
 
                 if object.sections[sec_idx.0].singleton().is_some() {
-                    Some(0)
+                    Ok(Some(addend))
+                } else if matches!(object.sections[sec_idx.0], SectionSlot::MergeStrings(..)) {
+                    let Some(addr) =
+                        crate::string_merging::get_merged_string_output_address::<elf::Elf<C>>(
+                            s,
+                            addend,
+                            object.object,
+                            &object.sections,
+                            &layout.symbol_db.section_part_ids,
+                            object.section_id_range,
+                            &layout.merged_strings,
+                            &layout.merged_string_start_addresses,
+                            false,
+                        )?
+                    else {
+                        return Ok(None);
+                    };
+                    let part_id =
+                        object.section_part_id(sec_idx, &layout.symbol_db.section_part_ids);
+                    let output_sec_id = part_id.output_section_id::<elf::Elf<C>>();
+                    let primary_id = layout.output_sections.primary_output_section(output_sec_id);
+                    let base_addr = layout.section_layouts.get(primary_id).mem_offset;
+                    Ok(Some(addr.saturating_sub(base_addr) as i64))
                 } else {
-                    object.section_resolutions[sec_idx.0].address()
+                    let Some(sec_addr) = object.section_resolutions[sec_idx.0].address() else {
+                        return Ok(None);
+                    };
+                    let part_id =
+                        object.section_part_id(sec_idx, &layout.symbol_db.section_part_ids);
+                    let output_sec_id = part_id.output_section_id::<elf::Elf<C>>();
+                    let primary_id = layout.output_sections.primary_output_section(output_sec_id);
+                    let base_addr = layout.section_layouts.get(primary_id).mem_offset;
+                    Ok(Some(addend + sec_addr.saturating_sub(base_addr) as i64))
                 }
             })
-            .map_or(addend, |offset| addend + offset as i64);
+            .transpose()?
+            .flatten()
+            .unwrap_or(addend);
 
-        out.set_offset(section_address + rel.offset())?;
+        let can_relax = !layout.args().should_output_partial_object()
+            && target_is_exec
+            && sym.is_some_and(|s| {
+                let symbol_id = object.symbol_id_range.input_to_id(s);
+                let flags = layout.flags_for_symbol(symbol_id);
+                let output_kind = layout.symbol_db.output_kind;
+                let relax_enabled = layout.args().relax
+                    || (output_kind.is_static_executable()
+                        && output_kind.is_position_independent());
+                relax_enabled
+                    && elf::can_relax_symbol(flags, output_kind, flags.is_linker_script_symbol())
+                    && !flags.is_interposable()
+                    && !flags.is_ifunc()
+            });
+        let relaxed = A::relaxed_relocation(
+            rel.raw_type(),
+            rel.offset(),
+            target_bytes,
+            relax_deltas,
+            can_relax,
+            rel.addend(),
+        );
+        let rel_offset = if should_reverse {
+            target_size.saturating_sub(rel.offset() + C::ADDRESS_SIZE)
+        } else {
+            opt_input_to_output(relax_deltas, rel.offset())
+                .saturating_add_signed(relaxed.offset_delta)
+        };
+
+        out.set_offset(section_address + rel_offset)?;
         out.set_addend(addend)?;
-        out.set_info(sym_idx, rel.raw_type())?;
+        out.set_info(sym_idx, relaxed.r_type)?;
+    }
+
+    if should_reverse {
+        out_relas.reverse();
     }
 
     Ok(())
@@ -2460,7 +2676,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     trace: &TraceOutput,
 ) -> Result {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    if layout.args().should_output_partial_object() {
+    if layout.args().should_output_partial_object() || layout.args().emit_relocs() {
         let input_header = object.object.section(section_index)?;
         let input_type = input_header.sh_type(LittleEndian);
         if input_type == object::elf::SHT_RELA || input_type == object::elf::SHT_REL {
@@ -2832,7 +3048,7 @@ fn write_symbols<'data, C: ElfClass>(
         }
     }
 
-    if layout.args().should_output_partial_object() {
+    if layout.args().should_output_partial_object() || layout.args().emit_relocs() {
         for (sym_index, sym) in object.object.symbols.enumerate() {
             let symbol_id = object.symbol_id_range.input_to_id(sym_index);
             let Some(info) = SymbolCopyInfo::for_undefined(
@@ -3402,7 +3618,9 @@ mod debug_relocation_shard_tests {
 fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     object: &ObjectLayout<'data, elf::Elf<C>>,
     eh_frame_section_index: object::SectionIndex,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &ElfLayout<'data, C>,
+    sym_index_map: &[Option<u32>],
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
@@ -3411,25 +3629,55 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         return Ok(());
     }
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
+    let rela_out: Option<&mut [elf::Rela<C>]> = if layout.args().emit_relocs()
+        && let Some(rela_sec_idx) = <elf::Elf<C> as Platform>::relocation_section(
+            &object.relocations,
+            eh_frame_section_index,
+        )
+        && let SectionSlot::Loaded(rela_sec) = object.sections[rela_sec_idx.0]
+    {
+        let part_id = object.section_part_id(rela_sec_idx, &layout.symbol_db.section_part_ids);
+        let allocation_size = rela_sec.capacity(part_id, &layout.output_sections) as usize;
+        let num_relocs = object
+            .relocations(eh_frame_section_index)?
+            .num_relocations();
+        let num_bytes = num_relocs * C::RELA_ENTRY_SIZE as usize;
+        let part_buf = buffers.get_mut(part_id);
+        let out_buf = part_buf
+            .split_off_mut(..allocation_size)
+            .with_context(|| format!("Insufficient buffer for rela section {rela_sec_idx:?}"))?;
+        let (out_buf, padding) = out_buf.split_at_mut_checked(num_bytes).with_context(|| {
+            format!("Insufficient allocation for rela section {rela_sec_idx:?}")
+        })?;
+        padding.fill(0);
+        Some(slice_from_all_bytes_mut(out_buf))
+    } else {
+        None
+    };
+
     match object.relocations(eh_frame_section_index)? {
         elf::RelocationList::Rela(relocations) => {
             write_eh_frame_relocations::<C, A, elf::ElfRela<C>>(
                 object,
                 layout,
+                sym_index_map,
                 table_writer,
                 trace,
                 eh_frame_section,
                 relocations.iter().copied().map(elf::ElfRela::new),
+                rela_out,
             )
         }
         elf::RelocationList::Crel(relocations) => {
             write_eh_frame_relocations::<C, A, elf::ElfCrel<C>>(
                 object,
                 layout,
+                sym_index_map,
                 table_writer,
                 trace,
                 eh_frame_section,
                 relocations.filter_map(|r| r.ok().map(elf::ElfCrel::new)),
+                rela_out,
             )
         }
     }
@@ -3443,10 +3691,12 @@ fn write_eh_frame_relocations<
 >(
     object: &ObjectLayout<'data, elf::Elf<C>>,
     layout: &ElfLayout<'data, C>,
+    sym_index_map: &[Option<u32>],
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
     eh_frame_section: &elf::SectionHeader<C>,
     relocations: impl Iterator<Item = R> + Clone,
+    mut rela_out: Option<&mut [elf::Rela<C>]>,
 ) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
@@ -3455,6 +3705,7 @@ fn write_eh_frame_relocations<
     let mut relocations = elf::ordered_eh_frame_relocations(relocations).peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
+    let mut rela_idx = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
 
@@ -3588,6 +3839,21 @@ fn write_eh_frame_relocations<
                         display_relocation::<C, A, R>(object, rel, layout)
                     )
                 })?;
+                if let Some(rela_out) = &mut rela_out {
+                    let out = &mut rela_out[rela_idx];
+                    rela_idx += 1;
+                    let target_offset = table_writer.eh_frame_start_address
+                        + output_pos as u64
+                        + (rel_offset - input_pos as u64);
+                    write_eh_frame_reloc::<C, R>(
+                        object,
+                        layout,
+                        sym_index_map,
+                        rel,
+                        target_offset,
+                        out,
+                    )?;
+                }
                 relocations.next();
             }
             output_pos = next_output_pos;
@@ -3595,6 +3861,13 @@ fn write_eh_frame_relocations<
             // We're ignoring this entry, skip any relocations for it.
             while let Some(rel) = relocations.peek() {
                 if rel.offset() < next_input_pos as u64 {
+                    if let Some(rela_out) = &mut rela_out {
+                        let out = &mut rela_out[rela_idx];
+                        rela_idx += 1;
+                        out.set_offset(table_writer.eh_frame_start_address)?;
+                        out.set_addend(0)?;
+                        out.set_info(0, object::elf::RelocationType(0))?;
+                    }
                     relocations.next();
                 } else {
                     break;
@@ -3614,8 +3887,63 @@ fn write_eh_frame_relocations<
         output_pos += remaining;
     }
 
+    if let Some(rela_out) = &mut rela_out {
+        for _ in relocations {
+            let out = &mut rela_out[rela_idx];
+            rela_idx += 1;
+            out.set_offset(table_writer.eh_frame_start_address)?;
+            out.set_addend(0)?;
+            out.set_info(0, object::elf::RelocationType(0))?;
+        }
+    }
+
     table_writer.eh_frame_start_address += output_pos as u64;
 
+    Ok(())
+}
+
+fn write_eh_frame_reloc<'data, C: ElfClass, R: Relocation<Platform = elf::Elf<C>>>(
+    object: &ObjectLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<'data, C>,
+    sym_index_map: &[Option<u32>],
+    rel: &R,
+    target_offset: u64,
+    out: &mut elf::Rela<C>,
+) -> Result {
+    let sym = rel.symbol();
+    let sym_idx = sym
+        .and_then(|s| {
+            let symbol_id = object.symbol_id_range.input_to_id(s);
+            if let Some(idx) = sym_index_map.get(symbol_id.as_usize()).copied().flatten() {
+                return Some(idx);
+            }
+            let canonical_id = layout.symbol_db.definition(symbol_id);
+            sym_index_map
+                .get(canonical_id.as_usize())
+                .copied()
+                .flatten()
+        })
+        .unwrap_or(0);
+
+    let addend = sym
+        .and_then(|s| {
+            let sym_entry = object.object.symbol(s).ok()?;
+            if sym_entry.st_type() != object::elf::STT_SECTION {
+                return None;
+            }
+            let sec_idx = object.object.symbol_section(sym_entry, s).ok()??;
+            let sec_addr = object.section_resolutions[sec_idx.0].address()?;
+            let part_id = object.section_part_id(sec_idx, &layout.symbol_db.section_part_ids);
+            let output_sec_id = part_id.output_section_id::<elf::Elf<C>>();
+            let primary_id = layout.output_sections.primary_output_section(output_sec_id);
+            let base_addr = layout.section_layouts.get(primary_id).mem_offset;
+            Some(rel.addend() + sec_addr.saturating_sub(base_addr) as i64)
+        })
+        .unwrap_or_else(|| rel.addend());
+
+    out.set_offset(target_offset)?;
+    out.set_addend(addend)?;
+    out.set_info(sym_idx, rel.raw_type())?;
     Ok(())
 }
 
@@ -5084,7 +5412,7 @@ fn write_symbol_table_entries<C: ElfClass>(
     // Define symbol 0. This needs to be a null placeholder.
     symbol_writer.undefined_symbol(true, &[])?;
 
-    if layout.args().should_output_partial_object() {
+    if layout.args().should_output_partial_object() || layout.args().emit_relocs() {
         write_section_symbols(symbol_writer, layout)?;
     }
 
@@ -5098,20 +5426,15 @@ fn write_section_symbols<C: ElfClass>(
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
     layout: &ElfLayout<C>,
 ) -> Result {
-    for event in &layout.output_order {
-        let OrderEvent::Section(section_id) = event else {
-            continue;
+    let is_partial = layout.args().should_output_partial_object();
+    for (section_id, shndx) in emitted_section_symbols(layout) {
+        let address = if is_partial {
+            0
+        } else {
+            layout.section_layouts.get(section_id).mem_offset
         };
-        let Some(shndx) = layout.output_sections.output_index_of_section(section_id) else {
-            continue;
-        };
-        if !layout
-            .output_sections
-            .will_emit_section_symbol_for_partial_objects(section_id)
-        {
-            continue;
-        }
-        let entry = symbol_writer.define_symbol(true, SymbolSection::Index(shndx), 0, 0, None)?;
+        let entry =
+            symbol_writer.define_symbol(true, SymbolSection::Index(shndx), address, 0, None)?;
         entry.set_binding_and_type(object::elf::STB_LOCAL, object::elf::STT_SECTION);
     }
 
@@ -6208,18 +6531,9 @@ fn write_internal_symbols<C: ElfClass>(
     layout: &ElfLayout<C>,
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
 ) -> Result {
-    for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
-        if def_info.name.is_empty() {
-            continue;
-        }
-        let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
-        if !layout.symbol_db.is_canonical(symbol_id) {
-            continue;
-        }
-        let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
-            continue;
-        };
-
+    for (symbol_id, def_info, resolution, is_local) in
+        active_internal_symbols(internal_symbols, layout)
+    {
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
         let (shndx, st_type) = get_internal_symbol_attributes(layout, def_info)?;
@@ -6231,24 +6545,18 @@ fn write_internal_symbols<C: ElfClass>(
         }
 
         // PROVIDE_HIDDEN symbols should be local, not global
-        let st_bind = if platform::Symbol::is_hidden(&def_info.symbol) {
+        let st_bind = if is_local {
             object::elf::STB_LOCAL
         } else {
             object::elf::STB_GLOBAL
         };
 
         let entry = symbol_writer
-            .define_symbol(
-                st_bind == object::elf::STB_LOCAL,
-                shndx,
-                address,
-                0,
-                Some(symbol_name.bytes()),
-            )
+            .define_symbol(is_local, shndx, address, 0, Some(symbol_name.bytes()))
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
         entry.set_binding_and_type(st_bind, st_type);
-        if platform::Symbol::is_hidden(&def_info.symbol) {
+        if is_local {
             entry.set_other(object::elf::STV_HIDDEN.into());
         }
     }
@@ -6905,34 +7213,48 @@ fn write_section_headers<C: ElfClass>(
             flags = flags.without(shf::COMPRESSED);
         }
 
+        let is_custom_rela = (layout.args().should_output_partial_object()
+            || layout.args().emit_relocs())
+            && section_type == sht::RELA
+            && section_id.is_custom::<elf::Elf<C>>();
+
+        if is_custom_rela {
+            flags = flags.with(shf::INFO_LINK);
+        }
+
         entry.set_flags(flags)?;
 
         let mut info_value = *info_values.get(section_id);
 
-        if layout.args().should_output_partial_object()
-            && section_type == sht::RELA
-            && section_id.is_custom::<elf::Elf<C>>()
-        {
+        if is_custom_rela {
             if let Some(symtab_idx) =
                 output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
             {
                 link = symtab_idx;
             }
-            if let Some(target_name) = name.bytes().strip_prefix(b".rela")
-                && let Some(rela_identity) = output_sections.identity(section_id)
-                && let Some(target_id) =
-                    output_sections.custom_identity_to_id(SectionIdentity::new(
-                        SectionName(target_name),
-                        rela_identity.format_specific().relocation_target(),
-                    ))
-                && let Some(target_idx) = output_sections.output_index_of_section(target_id)
-            {
-                info_value = target_idx;
+            if let Some(target_name) = name.bytes().strip_prefix(b".rela") {
+                let target_id = output_sections
+                    .identity(section_id)
+                    .and_then(|rela_identity| {
+                        output_sections.custom_identity_to_id(SectionIdentity::new(
+                            SectionName(target_name),
+                            rela_identity.format_specific().relocation_target(),
+                        ))
+                    })
+                    .or_else(|| output_sections.section_id_by_name(SectionName(target_name)));
+                if let Some(target_idx) =
+                    target_id.and_then(|id| output_sections.output_index_of_section(id))
+                {
+                    info_value = target_idx;
+                }
             }
         }
 
         entry.set_address(
-            if section_type == sht::NULL || layout.symbol_db.args.should_output_partial_object() {
+            if section_type == sht::NULL
+                || layout.symbol_db.args.should_output_partial_object()
+                || !flags.is_alloc()
+            {
                 0
             } else {
                 section_layout.mem_offset
@@ -7283,30 +7605,48 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                         ValueFlags::empty(),
                     )?;
                 }
-                elf::ImportedSymbolKind::Undefined if !only_keep_debug => {
-                    // Writes to allocatable .dynsym/.dynstr and version tables.
-                    let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
+                elf::ImportedSymbolKind::Undefined => {
+                    if !only_keep_debug {
+                        // Writes to allocatable .dynsym/.dynstr and version tables.
+                        let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
 
-                    let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
-                        // An undefined reference to an IFUNC needs to be emitted as type FUNC.
-                        object::elf::STT_FUNC
-                    } else {
-                        symbol.st_type()
-                    };
+                        let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
+                            // An undefined reference to an IFUNC needs to be emitted as type FUNC.
+                            object::elf::STT_FUNC
+                        } else {
+                            symbol.st_type()
+                        };
 
-                    // Note, for undefined symbols, we always use default visibility.
-                    entry.set_binding_and_type(symbol.st_bind(), symbol_type);
+                        // Note, for undefined symbols, we always use default visibility.
+                        entry.set_binding_and_type(symbol.st_bind(), symbol_type);
 
-                    if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                        copy_symbol_version(
-                            object.object.symbol_versions(),
-                            object.symbol_id_range.id_to_offset(symbol_id),
-                            &object.format_specific.version_mapping,
-                            versym,
-                        )?;
+                        if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                            copy_symbol_version(
+                                object.object.symbol_versions(),
+                                object.symbol_id_range.id_to_offset(symbol_id),
+                                &object.format_specific.version_mapping,
+                                versym,
+                            )?;
+                        }
+                    }
+
+                    if layout.args().emit_relocs() {
+                        let symtab_name = RawSymbolName::parse(name).name;
+                        let entry = table_writer
+                            .debug_symbol_writer
+                            .undefined_symbol(false, symtab_name)?;
+                        entry.set_binding_and_type(symbol.st_bind(), symbol.st_type());
                     }
                 }
-                _ => {}
+                elf::ImportedSymbolKind::CanonicalPlt => {
+                    if layout.args().emit_relocs() {
+                        let symtab_name = RawSymbolName::parse(name).name;
+                        let entry = table_writer
+                            .debug_symbol_writer
+                            .undefined_symbol(false, symtab_name)?;
+                        entry.set_binding_and_type(symbol.st_bind(), object::elf::STT_FUNC);
+                    }
+                }
             }
 
             table_writer

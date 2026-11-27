@@ -50,6 +50,7 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::relaxation::RelaxedRelocation;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use object::Endianness;
@@ -248,6 +249,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        _emit_relocs: bool,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.
@@ -296,6 +298,19 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Fill `buf` with NOP padding.
     fn fill_nop_padding(_buf: &mut [u8]) {}
+
+    /// Returns the relaxed relocation to emit under `--emit-relocs` when a relocation
+    /// may have been relaxed.
+    fn relaxed_relocation(
+        raw_type: <Self::Platform as Platform>::RelocationInfo,
+        _input_offset: u64,
+        _section_bytes: &[u8],
+        _relax_deltas: Option<&SectionRelaxDeltas>,
+        _can_relax: bool,
+        _addend: i64,
+    ) -> RelaxedRelocation<<Self::Platform as Platform>::RelocationInfo> {
+        RelaxedRelocation::unchanged(raw_type)
+    }
 
     fn process_riscv_attributes<'data>(
         _object: &<Self::Platform as Platform>::File<'data>,
@@ -1350,6 +1365,13 @@ pub(crate) trait Platform:
         _output_sections: &mut OutputSections<'_, Self>,
     ) {
     }
+
+    fn relocation_section(
+        _relocations: &Self::RelocationSections,
+        _target_section: object::SectionIndex,
+    ) -> Option<object::SectionIndex> {
+        None
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -1629,6 +1651,18 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
 
     fn is_null(&self) -> bool {
         false
+    }
+
+    fn is_rela(&self) -> bool {
+        false
+    }
+
+    fn is_crel(&self) -> bool {
+        false
+    }
+
+    fn relocation_target(&self) -> Option<object::SectionIndex> {
+        None
     }
 }
 
@@ -2127,6 +2161,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
             other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
         }
         Ok(())
+    }
+
+    fn emit_relocs(&self) -> bool {
+        false
     }
 
     fn should_output_partial_object(&self) -> bool {

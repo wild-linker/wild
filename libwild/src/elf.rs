@@ -2172,8 +2172,17 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 ImportedSymbolKind::Undefined => {
                     common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                     common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
+                    if owned_by_dynamic_object && symbol_db.args.emit_relocs {
+                        common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
+                        common.allocate(part_id::STRTAB, name.len() as u64 + 1);
+                    }
                 }
-                ImportedSymbolKind::CanonicalPlt => {}
+                ImportedSymbolKind::CanonicalPlt => {
+                    if owned_by_dynamic_object && symbol_db.args.emit_relocs {
+                        common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
+                        common.allocate(part_id::STRTAB, name.len() as u64 + 1);
+                    }
+                }
             }
         }
 
@@ -2307,7 +2316,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     num_globals += 1;
                 }
                 strings_size += symtab_name_for_strtab(info.name).len() + 1;
-            } else if symbol_db.args.should_output_partial_object
+            } else if (symbol_db.args.should_output_partial_object || symbol_db.args.emit_relocs)
                 && let Some(info) = SymbolCopyInfo::for_undefined(
                     state.object,
                     sym_index,
@@ -3547,6 +3556,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         Some(SectionIdentity::new(name, ElfSectionIdentity::NONE))
     }
 
+    fn relocation_section(
+        relocations: &Self::RelocationSections,
+        target_section: object::SectionIndex,
+    ) -> Option<object::SectionIndex> {
+        relocations.get(target_section)
+    }
+
     fn apply_linker_script_attributes(
         linker_script_attributes: &linker_script::SectionAttributes,
         mut output_attributes: Self::SectionAttributes,
@@ -4750,6 +4766,22 @@ macro_rules! impl_section_header {
 
             fn is_null(&self) -> bool {
                 self.sh_type(LittleEndian) == sht::NULL
+            }
+
+            fn is_rela(&self) -> bool {
+                self.sh_type(LittleEndian) == sht::RELA
+            }
+
+            fn is_crel(&self) -> bool {
+                self.sh_type(LittleEndian) == object::elf::SHT_CREL
+            }
+
+            fn relocation_target(&self) -> Option<object::SectionIndex> {
+                if self.sh_type(LittleEndian) == sht::RELA {
+                    Some(object::SectionIndex(self.sh_info(LittleEndian) as usize))
+                } else {
+                    None
+                }
             }
         }
     };

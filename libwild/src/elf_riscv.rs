@@ -22,6 +22,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RiscVInstruction;
 use linker_utils::elf::riscv_rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::relaxation::RelaxedRelocation;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::riscv::JAL_RANGE;
@@ -215,6 +216,32 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
             .is_ok_and(|sym| sym.st_other().contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
+    fn relaxed_relocation(
+        raw_type: object::elf::RelocationType,
+        input_offset: u64,
+        _section_bytes: &[u8],
+        relax_deltas: Option<&SectionRelaxDeltas>,
+        _can_relax: bool,
+        _addend: i64,
+    ) -> RelaxedRelocation<object::elf::RelocationType> {
+        if let Some(deltas) = relax_deltas
+            && matches!(
+                raw_type,
+                object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT
+            )
+        {
+            let new_type = if C::ADDRESS_SIZE == 4 && deltas.delta_bytes_at(input_offset + 2) == 6 {
+                object::elf::R_RISCV_RVC_JUMP
+            } else if deltas.delta_bytes_at(input_offset + 4) == 4 {
+                object::elf::R_RISCV_JAL
+            } else {
+                raw_type
+            };
+            return RelaxedRelocation::unchanged(new_type);
+        }
+        RelaxedRelocation::unchanged(raw_type)
+    }
+
     #[inline(always)]
     fn new_relaxation(
         relocation_kind: object::elf::RelocationType,
@@ -341,6 +368,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
         relocations: RelocationList<C>,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+        emit_relocs: bool,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
             RelocationList::Rela(rela_list) => collect_relaxation_deltas::<C, _>(
@@ -349,6 +377,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
                 rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                emit_relocs,
             ),
             RelocationList::Crel(crel_iter) => collect_relaxation_deltas::<C, _>(
                 section_output_address,
@@ -356,6 +385,7 @@ impl<C: ElfClass> crate::platform::Arch for ElfRiscV<C> {
                 crel_iter.flatten().map(ElfCrel::new),
                 existing_deltas,
                 &mut resolve_symbol,
+                emit_relocs,
             ),
         }
     }
@@ -444,6 +474,7 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+    emit_relocs: bool,
 ) -> (Vec<(u64, u32)>, Option<u64>) {
     let mut raw_deltas = Vec::new();
     let mut min_unrelaxed_margin: Option<u64> = None;
@@ -563,10 +594,10 @@ fn collect_relaxation_deltas<C: ElfClass, R: Relocation<Platform = Elf<C>>>(
                             u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
                         let rd = (lui_word >> 7) & 0x1f;
                         let value = (output_address as i64 + addend) as u64;
-                        if RelaxationKind::hi20_is_zero(value) {
+                        if !emit_relocs && RelaxationKind::hi20_is_zero(value) {
                             raw_deltas.push((hi20_offset, 4));
                             new_cumulative_delta += 4;
-                        } else if RelaxationKind::rd_valid_for_clui(rd) {
+                        } else if !emit_relocs && RelaxationKind::rd_valid_for_clui(rd) {
                             if RelaxationKind::hi20_fits_clui(value) {
                                 raw_deltas.push((hi20_offset + 2, 2));
                                 new_cumulative_delta += 2;

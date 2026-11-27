@@ -121,6 +121,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
             &mut symbol_db.section_part_ids,
             output_sections,
             symbol_db.args,
+            symbol_db.herd,
         );
 
         let start_stop_sections =
@@ -926,6 +927,7 @@ fn assign_section_ids<'data, P: Platform>(
     section_part_ids: &mut [PartId],
     output_sections: &mut OutputSections<'data, P>,
     args: &P::Args,
+    herd: &'data bumpalo_herd::Herd,
 ) {
     timing_phase!("Assign section IDs");
 
@@ -943,14 +945,75 @@ fn assign_section_ids<'data, P: Platform>(
         return assign_section_ids_partial(resolved, section_part_ids, output_sections, args);
     }
 
-    for group in resolved {
+    let allocator = herd.get();
+
+    for group in resolved.iter_mut() {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
                 let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
 
                 for custom in &s.custom_sections {
-                    obj_part_ids[custom.index.as_usize()] =
-                        output_sections.get_or_create_custom_section_part(args, custom);
+                    let Ok(input_header) = s.common.object.section(custom.index.into()) else {
+                        continue;
+                    };
+                    if args.emit_relocs() && input_header.is_rela() {
+                        let Some(target_sec_idx) = input_header.relocation_target() else {
+                            obj_part_ids[custom.index.as_usize()] = part_id::UNMAPPED;
+                            continue;
+                        };
+                        let Some(target_output_sec_id) = (match s.sections.get(target_sec_idx.0) {
+                            Some(SectionSlot::FrameData(..)) => P::EH_FRAME_SECTION_ID,
+                            _ => obj_part_ids
+                                .get(target_sec_idx.0)
+                                .copied()
+                                .filter(|&part_id| part_id != part_id::UNMAPPED)
+                                .map(|part_id| part_id.output_section_id::<P>()),
+                        }) else {
+                            obj_part_ids[custom.index.as_usize()] = part_id::UNMAPPED;
+                            continue;
+                        };
+                        let primary_target_sec_id =
+                            output_sections.primary_output_section(target_output_sec_id);
+                        let Some(primary_target_name) = output_sections.name(primary_target_sec_id)
+                        else {
+                            obj_part_ids[custom.index.as_usize()] = part_id::UNMAPPED;
+                            continue;
+                        };
+
+                        let mut full_name =
+                            Vec::with_capacity(5 + primary_target_name.bytes().len());
+                        full_name.extend_from_slice(b".rela");
+                        full_name.extend_from_slice(primary_target_name.bytes());
+                        let name_bytes: &'data [u8] = allocator.alloc_slice_copy(&full_name);
+
+                        let Some(identity) = P::section_identity_from_name(SectionName(name_bytes))
+                        else {
+                            obj_part_ids[custom.index.as_usize()] = part_id::UNMAPPED;
+                            continue;
+                        };
+
+                        let section_id = output_sections.get_or_create_named_section(
+                            identity,
+                            custom.alignment,
+                            None,
+                            None,
+                            None,
+                            Vec::new(),
+                            None,
+                            false,
+                        );
+
+                        let rela_part_id = if section_id.is_regular::<P>() {
+                            section_id.part_id_with_alignment::<P>(custom.alignment)
+                        } else {
+                            section_id.base_part_id::<P>()
+                        };
+
+                        obj_part_ids[custom.index.as_usize()] = rela_part_id;
+                    } else {
+                        obj_part_ids[custom.index.as_usize()] =
+                            output_sections.get_or_create_custom_section_part(args, custom);
+                    }
                 }
 
                 apply_init_fini_secondaries(
@@ -1710,6 +1773,10 @@ fn resolve_section<'data, P: Platform>(
 
     let rule_outcome = if args.should_output_partial_object() {
         P::lookup_for_partial_link(section_name, input_section, args)
+    } else if args.emit_relocs() && input_section.is_crel() {
+        bail!("CREL with --emit-relocs isn't yet supported: {obj}");
+    } else if args.emit_relocs() && input_section.is_rela() {
+        SectionRuleOutcome::Custom
     } else {
         layout_rules
             .section_rules

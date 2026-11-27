@@ -19,6 +19,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
+use linker_utils::relaxation::RelaxedRelocation;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 use linker_utils::x86_64::relocation_from_raw;
@@ -159,6 +160,29 @@ impl crate::platform::Arch for ElfX86_64 {
 
     fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[]
+    }
+
+    fn relaxed_relocation(
+        raw_type: object::elf::RelocationType,
+        input_offset: u64,
+        section_bytes: &[u8],
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        can_relax: bool,
+        addend: i64,
+    ) -> RelaxedRelocation<object::elf::RelocationType> {
+        let offset = input_offset as usize;
+        if can_relax
+            && raw_type == object::elf::R_X86_64_GOTPCRELX
+            && addend == -4
+            && offset >= 2
+            && section_bytes.get(offset - 2..offset) == Some(&[0xff, 0x25])
+        {
+            return RelaxedRelocation {
+                r_type: object::elf::R_X86_64_PC32,
+                offset_delta: -1,
+            };
+        }
+        RelaxedRelocation::unchanged(raw_type)
     }
 
     #[inline(always)]
