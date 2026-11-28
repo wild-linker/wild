@@ -3,6 +3,7 @@
 
 use crate::InputLinkerScript;
 use crate::OutputKind;
+use crate::alignment::Alignment;
 use crate::bail;
 use crate::error;
 use crate::error::Context as _;
@@ -100,6 +101,10 @@ pub struct SymbolDb<'data, P: Platform> {
     entry: Option<&'data [u8]>,
 
     pub(crate) output_kind: OutputKind,
+    /// For common symbols whose declarations disagree on alignment, the strictest alignment among
+    /// them, if it's stricter than that of the selected declaration. Keyed by the selected
+    /// declaration.
+    pub(crate) common_alignments: HashMap<SymbolId, Alignment>,
     pub(crate) herd: &'data bumpalo_herd::Herd,
 
     /// The next input section ID to assign. Updated by `create_groups` so that subsequent calls
@@ -376,6 +381,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             retain_symbols,
             entry: None,
             output_kind,
+            common_alignments: HashMap::new(),
             herd,
             section_part_ids: Vec::new(),
             next_input_section_id: crate::input_section_id::InputSectionId::from_usize(0),
@@ -692,6 +698,40 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::LtoInputs(lto_objects) => {
                 lto_objects[file_id.file()].symbol_visibility(symbol_id)
             }
+        }
+    }
+
+    /// Returns the common-symbol details of the input symbol `symbol_id`, if it's a common symbol.
+    pub(crate) fn input_common_symbol(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Option<platform::CommonSymbol> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        let Group::Objects(parsed_input_objects) = &self.groups[file_id.group()] else {
+            return None;
+        };
+        let obj = &parsed_input_objects[file_id.file()];
+        let local_index = symbol_id.to_input(obj.symbol_id_range);
+        obj.parsed.object.symbol(local_index).ok()?.as_common()
+    }
+
+    /// Returns `common`, the selected declaration of `symbol_id`, with the strictest alignment
+    /// among all of the symbol's common declarations, if that's stricter than its own.
+    pub(crate) fn merged_common_symbol(
+        &self,
+        symbol_id: SymbolId,
+        common: platform::CommonSymbol,
+    ) -> platform::CommonSymbol {
+        let Some(&alignment) = self.common_alignments.get(&symbol_id) else {
+            return common;
+        };
+        platform::CommonSymbol {
+            size: alignment.align_up(common.size),
+            part_id: common
+                .part_id
+                .output_section_id::<P>()
+                .part_id_with_alignment::<P>(alignment),
+            alignment,
         }
     }
 
@@ -1274,6 +1314,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
     let atomic_symbol_db = symbol_db.borrow_atomic();
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     let error_queue = SegQueue::new();
+    let common_alignments = SegQueue::new();
 
     buckets.par_iter_mut().for_each(|bucket| {
         verbose_timing_phase!("Resolve alternative for bucket");
@@ -1281,6 +1322,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
         process_alternatives(
             &bucket.alternative_definitions,
             &error_queue,
+            &common_alignments,
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
             resolved,
@@ -1290,6 +1332,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
         process_alternatives(
             &bucket.alternative_versioned_definitions,
             &error_queue,
+            &common_alignments,
             &atomic_symbol_db,
             &atomic_per_symbol_flags,
             resolved,
@@ -1317,6 +1360,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
     }
 
     symbol_db.buckets = buckets;
+    symbol_db.common_alignments = common_alignments.into_iter().collect();
 
     Ok(())
 }
@@ -1331,6 +1375,7 @@ pub(crate) enum Visibility {
 fn process_alternatives<'data, P: Platform>(
     alternative_definitions: &HashMap<SymbolId, Vec<SymbolId>>,
     error_queue: &SegQueue<Error>,
+    common_alignments: &SegQueue<(SymbolId, Alignment)>,
     symbol_db: &AtomicSymbolDb<'data, '_, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resolved: &[ResolvedGroup<'data, P>],
@@ -1364,6 +1409,19 @@ fn process_alternatives<'data, P: Platform>(
 
                 for &alt in alternatives {
                     symbol_db.update_definition(alt, selected);
+                }
+                // Like GNU ld and lld, a common symbol must satisfy the alignment of all its common
+                // declarations, which needn't be the largest one we selected.
+                if let Some(selected_common) = symbol_db.db.input_common_symbol(selected) {
+                    let max_alignment = std::iter::once(first)
+                        .chain(alternatives.iter().copied())
+                        .filter_map(|id| symbol_db.db.input_common_symbol(id))
+                        .map(|common| common.alignment)
+                        .max()
+                        .unwrap_or(selected_common.alignment);
+                    if max_alignment > selected_common.alignment {
+                        common_alignments.push((selected, max_alignment));
+                    }
                 }
 
                 if visibility != Visibility::Default {

@@ -1758,6 +1758,7 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
 pub(crate) struct CommonSymbol {
     pub(crate) size: u64,
     pub(crate) part_id: PartId,
+    pub(crate) alignment: Alignment,
 }
 
 pub(crate) trait Relocation: Send + Sync + Copy + 'static {

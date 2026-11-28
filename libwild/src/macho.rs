@@ -910,6 +910,7 @@ impl platform::Symbol for SymtabEntry {
         Some(platform::CommonSymbol {
             size: alignment.align_up(self.n_value.get(LE)),
             part_id: output_section_id::COMMON.part_id_with_alignment::<MachO>(alignment),
+            alignment,
         })
     }
 

@@ -1106,7 +1106,11 @@ impl platform::Symbol for SymtabEntry {
         let output_section_id = output_section_id::BSS;
         let part_id = output_section_id.part_id_with_alignment::<Coff>(alignment);
 
-        Some(CommonSymbol { size, part_id })
+        Some(CommonSymbol {
+            size,
+            part_id,
+            alignment,
+        })
     }
 
     fn is_undefined(&self) -> bool {

@@ -1508,6 +1508,9 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for ObjectLayoutState<'d
                     gc_unit,
                 )));
         } else if let Some(common_symbol) = local_symbol.as_common() {
+            let common_symbol = resources
+                .symbol_db
+                .merged_common_symbol(symbol_id, common_symbol);
             common.allocate(common_symbol.part_id, common_symbol.size);
         }
 
@@ -5435,6 +5438,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         )? {
             ObjectSymbolValue::Value(value) => value,
             ObjectSymbolValue::Common(common) => {
+                let common = resources.symbol_db.merged_common_symbol(symbol_id, common);
                 let offset = memory_offsets.get_mut(common.part_id);
                 let address = *offset;
                 *offset += common.size;
