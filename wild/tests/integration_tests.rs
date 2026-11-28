@@ -7051,10 +7051,6 @@ impl Assertions {
         obj: &impl object::Object<'data>,
         linker_used: &Linker,
     ) -> Result {
-        if obj.kind() == ObjectKind::Relocatable {
-            return Ok(());
-        }
-
         // Verify that the linker identity string is null-terminated.
         let comment_section = obj.section_by_name(".comment");
         if let Some(section) = comment_section {
@@ -7064,7 +7060,7 @@ impl Assertions {
             }
         }
 
-        if self.expected_comments.is_empty() {
+        if self.expected_comments.is_empty() && obj.kind() != ObjectKind::Relocatable {
             match linker_used {
                 Linker::Wild => {
                     if !was_linked_with_wild(obj) {
@@ -9128,9 +9124,13 @@ fn was_linked_with_wild<'data>(obj: &impl object::Object<'data>) -> bool {
 fn read_comments<'data>(
     obj: &impl object::Object<'data>,
 ) -> Result<Vec<std::borrow::Cow<'data, str>>> {
-    let comment_section = obj
-        .section_by_name(".comment")
-        .context("Missing .comment section")?;
+    let Some(comment_section) = obj.section_by_name(".comment") else {
+        if obj.kind() == ObjectKind::Relocatable {
+            return Ok(vec![]);
+        } else {
+            bail!("Missing .comment section");
+        }
+    };
     let data = comment_section.data()?;
     Ok(data
         .split(|b| *b == 0)
