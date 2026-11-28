@@ -1,0 +1,7 @@
+{
+    global:
+        "a:b";
+        "a/b~c=d+e";
+    local:
+        *;
+};

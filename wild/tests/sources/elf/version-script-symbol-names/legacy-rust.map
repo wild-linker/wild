@@ -1,0 +1,7 @@
+{
+    global:
+        _ZN4core3ptr13drop_in_place$LT$u8$GT$17h0123456789abcdefE;
+        _ZN3foo3bar.llvm.123E;
+    local:
+        *;
+};

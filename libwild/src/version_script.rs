@@ -11,6 +11,7 @@ use crate::glob_match::GlobPatternType;
 use crate::glob_match::GlobSyntax;
 use crate::glob_match::Pattern;
 use crate::glob_match::analyze_glob_pattern;
+use crate::glob_match::classify_glob_pattern;
 use crate::glob_match::compile_pattern;
 use crate::glob_match::unescape_pattern;
 use crate::hash::PassThroughHasher;
@@ -591,6 +592,20 @@ impl<'data> From<RawVersionBody<'data>> for VersionBody<'data> {
     }
 }
 
+#[inline(always)]
+fn skip_ws_fast(input: &mut &BStr) -> winnow::Result<()> {
+    let bytes = &**input;
+    let mut i = 0;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    *input = BStr::new(&bytes[i..]);
+    if bytes.get(i) == Some(&b'#') || bytes[i..].starts_with(b"/*") {
+        skip_comments_and_whitespace(input)?;
+    }
+    Ok(())
+}
+
 fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVersionBody<'data>> {
     let mut section = None;
 
@@ -599,10 +614,10 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVe
     '{'.parse_next(input)?;
 
     loop {
-        skip_comments_and_whitespace(input)?;
+        skip_ws_fast(input)?;
 
         if try_take(input, b"}") {
-            skip_comments_and_whitespace(input)?;
+            skip_ws_fast(input)?;
             break;
         }
 
@@ -611,7 +626,7 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVe
         } else if try_take(input, b"local:") {
             section = Some(VersionRuleSection::Local);
         } else {
-            let matcher = parse_matcher(input, false)?;
+            let matcher = parse_matcher(input, false, true)?;
 
             match section {
                 Some(VersionRuleSection::Global) | None => {
@@ -627,9 +642,139 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVe
     Ok(out)
 }
 
+const CLASS_SAFE: u8 = 0;
+const CLASS_GLOB: u8 = 1;
+const CLASS_COLON: u8 = 2;
+const CLASS_INVALID: u8 = 4;
+
+/// Identifying and classifying a single byte according to the set of characters LLD accepts in
+/// unquoted version script symbol names (`:` is valid only when paired as `::`).
+const fn classify_byte(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9'
+        | b'A'..=b'Z'
+        | b'a'..=b'z'
+        | b'_'
+        | b'.'
+        | b'$'
+        | b'/'
+        | b'~'
+        | b'='
+        | b'+'
+        | b'-'
+        | b'!'
+        | b'^' => CLASS_SAFE,
+        b'*' | b'?' | b'[' | b']' | b'\\' => CLASS_GLOB,
+        b':' => CLASS_COLON,
+        _ => CLASS_INVALID,
+    }
+}
+
+const BYTE_CLASS: [u8; 256] = {
+    let mut table = [CLASS_INVALID; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = classify_byte(i as u8);
+        i += 1;
+    }
+    table
+};
+
+fn colons_are_paired(name: &[u8]) -> bool {
+    let mut bytes = name.iter();
+    while let Some(&byte) = bytes.next() {
+        if byte == b':' && bytes.next() != Some(&b':') {
+            return false;
+        }
+    }
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnquotedClass {
+    Exact,
+    HasGlob,
+    Invalid,
+}
+
+// LLD allowed list of validation symbols
+fn classify_unquoted_scalar(slice: &[u8]) -> UnquotedClass {
+    let mut flags = 0u8;
+    for &byte in slice {
+        flags |= BYTE_CLASS[usize::from(byte)];
+    }
+    if flags & CLASS_INVALID != 0 {
+        return UnquotedClass::Invalid;
+    }
+    if flags & CLASS_COLON != 0 && !colons_are_paired(slice) {
+        return UnquotedClass::Invalid;
+    }
+    if flags & CLASS_GLOB != 0 {
+        UnquotedClass::HasGlob
+    } else {
+        UnquotedClass::Exact
+    }
+}
+
+#[inline(always)]
+fn is_fast_plain_byte(byte: u8) -> bool {
+    (byte | 0x20).wrapping_sub(b'a') < 26
+        || byte.wrapping_sub(b'0') < 10
+        || byte == b'_'
+        || byte == b'.'
+        || byte == b'$'
+}
+
+#[inline(always)]
+fn chunk_all_plain(chunk: &[u8; 32]) -> bool {
+    chunk
+        .iter()
+        .fold(true, |all, &byte| all & is_fast_plain_byte(byte))
+}
+
+fn find_non_plain_offset(token: &[u8]) -> Option<usize> {
+    let (chunks, rem) = token.as_chunks::<32>();
+    for (i, chunk) in chunks.iter().enumerate() {
+        if !chunk_all_plain(chunk) {
+            return Some(i * 32);
+        }
+    }
+    if !rem.is_empty() {
+        let tail: &[u8; 32] = token[token.len() - 32..].try_into().unwrap();
+        if !chunk_all_plain(tail) {
+            return Some(chunks.len() * 32);
+        }
+    }
+    None
+}
+
+fn build_glob_matcher<'data>(
+    token: &'data [u8],
+    glob_type: GlobPatternType,
+    input: &'data BStr,
+) -> winnow::Result<SymbolMatcher<'data>> {
+    let invalid_glob = |reason| {
+        ContextError::from_external_error(&input, VersionScriptError::InvalidGlobPattern(reason))
+    };
+
+    Ok(match glob_type {
+        GlobPatternType::Exact => SymbolMatcher::Exact(token),
+        GlobPatternType::EscapedExact => {
+            SymbolMatcher::EscapedExact(unescape_pattern(token).map_err(invalid_glob)?)
+        }
+        GlobPatternType::Star => {
+            SymbolMatcher::StarGlob(compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?)
+        }
+        GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(
+            compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?,
+        ),
+    })
+}
+
 pub(crate) fn parse_matcher<'data>(
     input: &mut &'data BStr,
-    without_semicolon: bool, // e.g. symbol to export passed via CLI arg
+    without_semicolon: bool,     // e.g. symbol to export passed via CLI arg
+    validate_symbol_names: bool, // e.g. names from a version script
 ) -> winnow::Result<ParsedSymbolMatcher<'data>> {
     if try_take(input, b"extern ") {
         let mut matchers = Vec::new();
@@ -644,14 +789,14 @@ pub(crate) fn parse_matcher<'data>(
                 VersionScriptError::UnsupportedExtern(unsupported_extern),
             ));
         };
-        skip_comments_and_whitespace(input)?;
+        skip_ws_fast(input)?;
         '{'.parse_next(input)?;
 
         loop {
-            skip_comments_and_whitespace(input)?;
+            skip_ws_fast(input)?;
 
             if try_take(input, b"};") {
-                skip_comments_and_whitespace(input)?;
+                skip_ws_fast(input)?;
                 break;
             }
 
@@ -665,7 +810,7 @@ pub(crate) fn parse_matcher<'data>(
                 }
             };
 
-            let matcher = parse_matcher(input, !expect_semicolon)?;
+            let matcher = parse_matcher(input, !expect_semicolon, validate_symbol_names)?;
             let ParsedSymbolMatcher::Single(matcher) = matcher else {
                 let unexpected_extern = if matches!(matcher, ParsedSymbolMatcher::CxxMatchers(_)) {
                     "C++"
@@ -687,53 +832,75 @@ pub(crate) fn parse_matcher<'data>(
         return Ok(ParsedSymbolMatcher::Multiple(matchers));
     }
 
+    let token_start = *input;
+
     let token = if without_semicolon {
-        if input.contains(&b'}') {
+        let raw = if input.contains(&b'}') {
             take_until(1.., b'}').parse_next(input)?
         } else {
             // TODO: Clippy bug
             #[allow(clippy::needless_borrow)]
             &input
-        }
+        };
+        skip_comments_and_whitespace(input)?;
+        try_take(input, b";");
+        raw
     } else {
-        take_until(1.., b';').parse_next(input)?
+        let bytes = &**input;
+        let Some(semi) = memchr::memchr(b';', bytes) else {
+            return Err(ContextError::new());
+        };
+        if semi == 0 {
+            return Err(ContextError::new());
+        }
+        *input = BStr::new(&bytes[semi + 1..]);
+        &bytes[..semi]
     };
-
-    skip_comments_and_whitespace(input)?;
-
-    try_take(input, b";");
 
     let token = token.trim_ascii_end();
 
-    Ok(ParsedSymbolMatcher::Single(
-        if let Some(unquoted) = token.strip_circumfix(b"\"", b"\"") {
-            SymbolMatcher::Exact(unquoted)
-        } else if token == b"*" {
-            SymbolMatcher::MatchesAll
-        } else {
-            let glob_type = analyze_glob_pattern(token);
+    if let Some(unquoted) = token.strip_circumfix(b"\"", b"\"") {
+        return Ok(ParsedSymbolMatcher::Single(SymbolMatcher::Exact(unquoted)));
+    }
+    if token == b"*" {
+        return Ok(ParsedSymbolMatcher::Single(SymbolMatcher::MatchesAll));
+    }
 
-            let invalid_glob = |reason| {
-                ContextError::from_external_error(
-                    input,
-                    VersionScriptError::InvalidGlobPattern(reason),
-                )
-            };
-
-            match glob_type {
-                GlobPatternType::Exact => SymbolMatcher::Exact(token),
-                GlobPatternType::EscapedExact => {
-                    SymbolMatcher::EscapedExact(unescape_pattern(token).map_err(invalid_glob)?)
-                }
-                GlobPatternType::Star => SymbolMatcher::StarGlob(
-                    compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?,
-                ),
-                GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(
-                    compile_pattern(token, GlobSyntax::Gnu).map_err(invalid_glob)?,
-                ),
+    if validate_symbol_names {
+        let (class, glob_offset) = if token.len() >= 32 {
+            match find_non_plain_offset(token) {
+                None => (UnquotedClass::Exact, token.len()),
+                Some(offset) => (classify_unquoted_scalar(&token[offset..]), offset),
             }
-        },
-    ))
+        } else {
+            (classify_unquoted_scalar(token), 0)
+        };
+
+        return match class {
+            UnquotedClass::Exact => Ok(ParsedSymbolMatcher::Single(SymbolMatcher::Exact(token))),
+            UnquotedClass::HasGlob => {
+                let glob_type = classify_glob_pattern(&token[glob_offset..]);
+                Ok(ParsedSymbolMatcher::Single(build_glob_matcher(
+                    token, glob_type, input,
+                )?))
+            }
+            UnquotedClass::Invalid => {
+                //Error handling
+                *input = token_start;
+                Err(ContextError::from_external_error(
+                    input,
+                    VersionScriptError::InvalidSymbolName(
+                        String::from_utf8_lossy(token).into_owned(),
+                    ),
+                ))
+            }
+        };
+    }
+
+    let glob_type = analyze_glob_pattern(token);
+    Ok(ParsedSymbolMatcher::Single(build_glob_matcher(
+        token, glob_type, input,
+    )?))
 }
 
 /// Consumes `exact` from `input` or returns false if that's not what is next.
@@ -752,6 +919,7 @@ enum VersionScriptError {
     InvalidGlobPattern(&'static str),
     UnexpectedExtern(String),
     UnsupportedExtern(String),
+    InvalidSymbolName(String),
 }
 
 impl std::error::Error for VersionScriptError {}
@@ -767,6 +935,12 @@ impl std::fmt::Display for VersionScriptError {
                 write!(f, "Unexpected extern \"{s}\" in parsing")
             }
             VersionScriptError::UnsupportedExtern(s) => write!(f, "Unsupported extern \"{s}\""),
+            VersionScriptError::InvalidSymbolName(s) => {
+                write!(
+                    f,
+                    "Symbol name \"{s}\" contains characters that require quoting"
+                )
+            }
         }
     }
 }
@@ -1182,5 +1356,333 @@ mod tests {
 
         assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);
         assert_eq!(script.find_match(&sym(b"fxxx")).unwrap().0, 2);
+    }
+
+    #[test]
+    fn test_parse_unquoted_invalid_symbol_name() {
+        for name in [
+            "wasi:cli/run@0.2.4#run",
+            "foo@VER",
+            "foo bar",
+            "foo(int)",
+            "a:b",
+            ":ab",
+            "ab:",
+            "a:::b",
+        ] {
+            let script = format!("{{ global: {name}; local: *; }};");
+            let error = VersionScript::parse(ScriptData {
+                raw: script.as_bytes(),
+            })
+            .unwrap_err();
+            assert!(
+                format!("{error:?}").contains("contains characters that require quoting"),
+                "{name}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_quoted_and_valid_symbol_names() {
+        let script = br#"{ global: "wasi:cli/run@0.2.4#run"; "foo(int)"; ns::foo*; a::::b; _ZN3foo3barEv; local: *; };"#;
+        let script = RegularVersionScript::parse(ScriptData { raw: script }).unwrap();
+        assert!(is_matching_global(&script, "wasi:cli/run@0.2.4#run"));
+        assert!(is_matching_global(&script, "_ZN3foo3barEv"));
+    }
+
+    #[test]
+    fn test_parse_matcher_does_not_validate_symbol_names() {
+        let mut input = BStr::new("wasi:cli/run@0.2.4#run");
+        assert!(parse_matcher(&mut input, true, false).is_ok());
+    }
+
+    #[test]
+    fn test_parse_unquoted_name_whitespace() {
+        for name in ["foo ", "foo\t", "a::b ", "foo"] {
+            let script = format!("{name};");
+            let mut input = BStr::new(&script);
+            assert!(
+                parse_matcher(&mut input, false, true).is_ok(),
+                "{name:?} should be accepted"
+            );
+        }
+
+        for name in ["foo bar ", "a: ", "a :b "] {
+            let script = format!("{name};");
+            let mut input = BStr::new(&script);
+            assert!(
+                parse_matcher(&mut input, false, true).is_err(),
+                "{name:?} should be rejected"
+            );
+        }
+    }
+
+    fn ref_is_valid_unquoted_symbol_name(name: &[u8]) -> bool {
+        let mut after_colon = false;
+        for &byte in name {
+            if after_colon {
+                if byte != b':' {
+                    return false;
+                }
+                after_colon = false;
+                continue;
+            }
+            if byte == b':' {
+                after_colon = true;
+                continue;
+            }
+            if !byte.is_ascii_alphanumeric()
+                && !matches!(
+                    byte,
+                    b'_' | b'.'
+                        | b'$'
+                        | b'/'
+                        | b'\\'
+                        | b'~'
+                        | b'='
+                        | b'+'
+                        | b'['
+                        | b']'
+                        | b'*'
+                        | b'?'
+                        | b'-'
+                        | b'!'
+                        | b'^'
+                )
+            {
+                return false;
+            }
+        }
+        !after_colon
+    }
+
+    #[test]
+    fn test_byte_classification_tables_exhaustive() {
+        let mut safe_count = 0usize;
+        let mut glob_count = 0usize;
+        let mut colon_count = 0usize;
+        let mut invalid_count = 0usize;
+
+        for byte in 0u8..=255 {
+            let class = BYTE_CLASS[usize::from(byte)];
+            assert_eq!(class, classify_byte(byte), "byte {byte:#x}");
+
+            let expected_plain = byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'$');
+            assert_eq!(
+                is_fast_plain_byte(byte),
+                expected_plain,
+                "is_fast_plain_byte mismatch for byte {byte:#x}"
+            );
+            if expected_plain {
+                assert_eq!(class, CLASS_SAFE);
+            }
+
+            let ref_valid_single = byte != b':' && ref_is_valid_unquoted_symbol_name(&[byte]);
+            let is_glob = matches!(byte, b'*' | b'?' | b'[' | b']' | b'\\');
+            match class {
+                CLASS_SAFE => {
+                    assert!(ref_valid_single && !is_glob, "byte {byte:#x}");
+                    safe_count += 1;
+                }
+                CLASS_GLOB => {
+                    assert!(ref_valid_single && is_glob, "byte {byte:#x}");
+                    glob_count += 1;
+                }
+                CLASS_COLON => {
+                    assert_eq!(byte, b':');
+                    colon_count += 1;
+                }
+                CLASS_INVALID => {
+                    assert!(!ref_valid_single && byte != b':');
+                    invalid_count += 1;
+                }
+                other => panic!("unexpected class {other} for byte {byte:#x}"),
+            }
+        }
+
+        assert_eq!(safe_count, 72);
+        assert_eq!(glob_count, 5);
+        assert_eq!(colon_count, 1);
+        assert_eq!(invalid_count, 178);
+    }
+
+    #[test]
+    fn test_unquoted_validation_against_reference() {
+        fn check_token(token: &[u8]) {
+            let expected_valid = ref_is_valid_unquoted_symbol_name(token);
+            let expected_glob = analyze_glob_pattern(token);
+
+            let scalar_class = classify_unquoted_scalar(token);
+            assert_eq!(
+                scalar_class != UnquotedClass::Invalid,
+                expected_valid,
+                "scalar validity mismatch for {:?}",
+                String::from_utf8_lossy(token)
+            );
+            if expected_valid {
+                let got_glob = match scalar_class {
+                    UnquotedClass::Exact => GlobPatternType::Exact,
+                    UnquotedClass::HasGlob => classify_glob_pattern(token),
+                    UnquotedClass::Invalid => unreachable!(),
+                };
+                assert_eq!(
+                    std::mem::discriminant(&got_glob),
+                    std::mem::discriminant(&expected_glob),
+                    "scalar glob mismatch for {:?}",
+                    String::from_utf8_lossy(token)
+                );
+            }
+
+            if token.len() >= 32 {
+                let (fast_class, glob_offset) = match find_non_plain_offset(token) {
+                    None => (UnquotedClass::Exact, token.len()),
+                    Some(offset) => (classify_unquoted_scalar(&token[offset..]), offset),
+                };
+                assert_eq!(
+                    fast_class,
+                    scalar_class,
+                    "fast path class mismatch for {:?}",
+                    String::from_utf8_lossy(token)
+                );
+                if fast_class == UnquotedClass::HasGlob {
+                    let got_glob = classify_glob_pattern(&token[glob_offset..]);
+                    assert_eq!(
+                        std::mem::discriminant(&got_glob),
+                        std::mem::discriminant(&expected_glob),
+                        "fast path glob mismatch for {:?}",
+                        String::from_utf8_lossy(token)
+                    );
+                }
+            }
+        }
+
+        for len in [
+            0, 1, 2, 15, 16, 17, 31, 32, 33, 63, 64, 65, 96, 128, 4095, 4096, 4097,
+        ] {
+            let plain = vec![b'a'; len];
+            check_token(&plain);
+
+            let legacy: Vec<u8> = (0..len)
+                .map(|i| match i % 5 {
+                    0 => b'Z',
+                    1 => b'9',
+                    2 => b'_',
+                    3 => b'.',
+                    _ => b'$',
+                })
+                .collect();
+            check_token(&legacy);
+
+            for &pos in &[0, 15, 16, 17, 31, 32, 33, 63, 64, 65, len.saturating_sub(1)] {
+                if pos >= len {
+                    continue;
+                }
+                for &inject in &[b':', b'*', b'?', b'[', b'\\', b'@', b' ', b'"', 0xC3, b'/'] {
+                    let mut buf = legacy.clone();
+                    buf[pos] = inject;
+                    check_token(&buf);
+                }
+                for run in [2usize, 3, 4] {
+                    if pos + run <= len {
+                        let mut buf = legacy.clone();
+                        buf[pos..pos + run].fill(b':');
+                        check_token(&buf);
+                    }
+                }
+                if pos + 2 <= len {
+                    let mut buf = legacy.clone();
+                    buf[pos] = b'\\';
+                    buf[pos + 1] = b'*';
+                    check_token(&buf);
+                }
+                if pos + 3 <= len {
+                    let mut buf = legacy.clone();
+                    buf[pos] = b'\\';
+                    buf[pos + 1] = b'\\';
+                    buf[pos + 2] = b'*';
+                    check_token(&buf);
+                }
+            }
+        }
+
+        for sample in [
+            b"".as_slice(),
+            b":",
+            b"::",
+            b":::",
+            b"::::",
+            b"a:",
+            b":a",
+            b"a::b",
+            b"a:::b",
+            b"ns000::cls000::method_00000",
+            b"ns000::r8n0::f000*",
+            b"/leading/slash",
+            b"a/b~c=d+e-f!g^h",
+            b"foo\\*bar",
+            b"a\"b",
+            b"caf\xC3\xA9",
+        ] {
+            check_token(sample);
+        }
+    }
+
+    #[test]
+    fn test_unquoted_symbol_edge_cases() {
+        let mut input = BStr::new(";");
+        assert!(parse_matcher(&mut input, false, true).is_err());
+
+        let mut input = BStr::new(r#""" ;"#);
+        assert!(matches!(
+            parse_matcher(&mut input, false, true).unwrap(),
+            ParsedSymbolMatcher::Single(SymbolMatcher::Exact(b""))
+        ));
+
+        let mut input = BStr::new(r#"" ;"#);
+        assert!(parse_matcher(&mut input, false, true).is_err());
+
+        let mut input = BStr::new(r#""foo"bar;"#);
+        assert!(parse_matcher(&mut input, false, true).is_err());
+
+        let script = VersionScript::parse(ScriptData {
+            raw: b"{ global: /leading/slash; _ZN3foo$LT$bar$GT$17h1234567890abcdefE; local: *; };",
+        })
+        .unwrap();
+        let VersionScript::Rust(rust_script) = script else {
+            panic!("Expected Rust-style version script");
+        };
+        assert_eq!(
+            rust_script.global,
+            vec![
+                b"/leading/slash".as_slice(),
+                b"_ZN3foo$LT$bar$GT$17h1234567890abcdefE".as_slice(),
+            ]
+        );
+
+        let invalid_extern = VersionScript::parse(ScriptData {
+            raw: b"{ extern \"C\" { bad:name }; };",
+        });
+        assert!(invalid_extern.is_err());
+
+        let valid_extern = VersionScript::parse(ScriptData {
+            raw: b"{ extern \"C\" { good::name }; };",
+        });
+        assert!(valid_extern.is_ok());
+
+        let long_escaped = format!("{}foo\\*bar", "a".repeat(40));
+        let script_src = format!("{{ global: {long_escaped}; local: *; }};");
+        let parsed = RegularVersionScript::parse(ScriptData {
+            raw: script_src.as_bytes(),
+        })
+        .unwrap();
+        let expected_unescaped = format!("{}foo*bar", "a".repeat(40));
+        assert!(
+            parsed.versions[0]
+                .version_body
+                .globals
+                .general
+                .escaped_exact
+                .contains(expected_unescaped.as_bytes())
+        );
     }
 }
