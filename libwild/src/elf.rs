@@ -4841,7 +4841,11 @@ impl<T: ElfSymbol> platform::Symbol for T {
 
         let part_id = output_section_id.part_id_with_alignment::<Elf<T::Class>>(alignment);
 
-        Some(CommonSymbol { size, part_id })
+        Some(CommonSymbol {
+            size,
+            part_id,
+            alignment,
+        })
     }
 
     fn is_undefined(&self) -> bool {
