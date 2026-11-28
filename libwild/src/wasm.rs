@@ -226,6 +226,14 @@ impl WasmSegmentInfo<'_> {
             || self.name.starts_with(".tdata")
             || self.name.starts_with(".tbss")
     }
+
+    fn is_bss(self) -> bool {
+        self.name == ".bss" || self.name.starts_with(".bss.")
+    }
+
+    fn is_tbss(self) -> bool {
+        self.name == ".tbss" || self.name.starts_with(".tbss.")
+    }
 }
 
 /// One entry of the Wasm tool-conventions `target_features` custom section.
@@ -355,28 +363,36 @@ pub(crate) struct WasmDataSegment<'data> {
     pub(crate) encoded_size: u32,
 }
 
-/// Layout for one data segment within an input object.
+/// One input data chunk placed inside an `OutputDataSegment`.
 #[derive(Debug)]
-pub(crate) struct WasmDataSegmentLayout<'data> {
-    /// Index of this segment within the object's data section.
-    pub(crate) segment_index: u32,
+pub(crate) struct OutputDataChunk<'data> {
+    pub(crate) object_index: u32,
     pub(crate) data: &'data [u8],
-    /// Range into the owning object's data-relocation list.
     pub(crate) reloc_range: Range<u32>,
-    /// Section-payload offset of the first data byte.
     pub(crate) payload_start: u32,
-    /// Output memory index after index remapping. Unused for passive segments.
+    pub(crate) offset_in_segment: u32,
+}
+
+/// One merged or unmerged segment emitted to the Wasm `data` section.
+#[derive(Debug)]
+pub(crate) struct OutputDataSegment<'data> {
+    pub(crate) name: Option<&'data str>,
     pub(crate) output_memory_index: u32,
-    /// Byte offset within linear memory, or within the TLS block for a shared-memory template.
     pub(crate) output_memory_offset: u32,
-    /// Encoded size of this segment within the output data section payload.
+    pub(crate) size: u32,
     pub(crate) encoded_output_size: u32,
-    /// Passive segments are not placed in linear memory.
     pub(crate) passive: bool,
-    /// Shared-memory TLS initialization image.
     pub(crate) tls_template: bool,
-    /// Ordinary data kept passive so another shared-memory instance does not reapply it.
     pub(crate) shared_init: bool,
+    pub(crate) zero_filled_bss: bool,
+    pub(crate) chunk_range: Range<u32>,
+}
+
+/// Linear memory range zero-initialized by `memory.fill` in `__wasm_init_memory`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MemoryFillRange {
+    pub(crate) offset: u32,
+    pub(crate) len: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -997,7 +1013,9 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) data_end: u32,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
-    pub(crate) object_data_layouts: Vec<Vec<WasmDataSegmentLayout<'data>>>,
+    pub(crate) output_data_segments: Vec<OutputDataSegment<'data>>,
+    pub(crate) output_data_chunks: Vec<OutputDataChunk<'data>>,
+    pub(crate) shared_bss_fills: Vec<MemoryFillRange>,
     pub(crate) object_code_relocations: Vec<Vec<object::wasm::Relocation>>,
     pub(crate) object_data_relocations: Vec<Vec<object::wasm::Relocation>>,
     pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
@@ -1324,13 +1342,6 @@ fn data_segment_original_index(input: &WasmObjectLayoutInput<'_>, filtered_idx: 
         .unwrap_or(filtered_idx as u32)
 }
 
-fn data_segment_alignment(input: &WasmObjectLayoutInput<'_>, original_index: u32) -> Alignment {
-    input
-        .segment_infos
-        .get(original_index as usize)
-        .map_or(crate::alignment::MIN, |info| info.alignment)
-}
-
 fn data_segment_is_tls(input: &WasmObjectLayoutInput<'_>, original_index: u32) -> bool {
     if let Some(info) = input.segment_infos.get(original_index as usize) {
         return info.is_tls();
@@ -1362,20 +1373,6 @@ fn input_has_shared_init_segment(input: &WasmObjectLayoutInput<'_>) -> bool {
         })
 }
 
-fn max_tls_alignment(inputs: &[WasmObjectLayoutInput<'_>]) -> Alignment {
-    inputs
-        .iter()
-        .flat_map(|input| {
-            (0..input.data_segments.len()).filter_map(|i| {
-                let original_index = data_segment_original_index(input, i);
-                data_segment_is_tls(input, original_index)
-                    .then(|| data_segment_alignment(input, original_index))
-            })
-        })
-        .max()
-        .unwrap_or(crate::alignment::MIN)
-}
-
 pub(crate) fn tls_reloc_value(addr: WasmDataAddress, tls_base: u32, addend: i64) -> Result<u32> {
     let offset = match addr {
         WasmDataAddress::Missing => return Ok(0),
@@ -1392,120 +1389,749 @@ pub(crate) fn tls_reloc_value(addr: WasmDataAddress, tls_base: u32, addend: i64)
     Ok(value as u32)
 }
 
-fn layout_object_data<'data>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum BuiltInSegmentKind {
+    Rodata = 0,
+    Data = 1,
+    Tdata = 2,
+    Tbss = 3,
+    Bss = 4,
+}
+
+const NUM_BUILTIN_SEGMENT_KINDS: usize = 5;
+
+enum SegmentBucket<'data> {
+    BuiltIn(BuiltInSegmentKind),
+    Custom {
+        memory_index: u32,
+        name: &'data str,
+    },
+    Unmerged {
+        memory_index: u32,
+        name: Option<&'data str>,
+    },
+    InputPassive {
+        name: Option<&'data str>,
+    },
+    BssOtherMemory {
+        memory_index: u32,
+    },
+}
+
+struct ClassifiedInputSegment<'data> {
+    original_index: u32,
+    data: &'data [u8],
+    reloc_range: Range<u32>,
+    payload_start: u32,
+    alignment: Alignment,
+    bucket: SegmentBucket<'data>,
+}
+
+struct ObjectClassifiedSegments<'data> {
+    entries: Vec<ClassifiedInputSegment<'data>>,
+    builtin_counts: [usize; NUM_BUILTIN_SEGMENT_KINDS],
+    has_tls: bool,
+    max_tls_align: Alignment,
+    table_len: usize,
+}
+
+struct DataSegmentLayoutResult<'data> {
+    output_segments: Vec<OutputDataSegment<'data>>,
+    output_chunks: Vec<OutputDataChunk<'data>>,
+    shared_bss_fills: Vec<MemoryFillRange>,
+    per_object_segment_places: Vec<Vec<SegmentPlace>>,
+    per_object_output_segment_indices: Vec<Vec<Option<u32>>>,
+    tls_base: u32,
+    tls_size: u32,
+    tls_align: u32,
+    main_thread_tls: Option<u32>,
+}
+
+fn classify_object_data_segments<'data>(
     input: &WasmObjectLayoutInput<'data>,
     index_map: &WasmObjectIndexMap,
-    memory_cursor: &mut u32,
-    want_tls: bool,
-    shared_passive_init: bool,
-    mut tls_cursor: Option<&mut u32>,
-) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
+    merge_data_segments: bool,
+) -> Result<ObjectClassifiedSegments<'data>> {
     let segment_reloc_ranges =
         classify_data_reloc_ranges(&input.data_segments, &input.data_relocations);
-    let mut segments = Vec::with_capacity(input.data_segments.len());
+    let mut entries = Vec::with_capacity(input.data_segments.len());
+    let mut builtin_counts = [0usize; NUM_BUILTIN_SEGMENT_KINDS];
+    let mut has_tls = false;
+    let mut max_tls_align = crate::alignment::MIN;
+    let mut max_original_index = 0usize;
+
     for (filtered_idx, segment) in input.data_segments.iter().enumerate() {
         let original_index = data_segment_original_index(input, filtered_idx);
-        if data_segment_is_tls(input, original_index) != want_tls {
-            continue;
-        }
-        let (output_memory_index, output_memory_offset, passive, tls_template, shared_init) =
-            if let Some(tls_cursor) = tls_cursor.as_deref_mut() {
-                let output_memory_offset = if segment.data.is_empty() {
-                    *tls_cursor
-                } else {
-                    let align = data_segment_alignment(input, original_index);
-                    *tls_cursor = u32::try_from(align.align_up(u64::from(*tls_cursor)))
-                        .context("Wasm TLS alignment overflow")?;
-                    let output_memory_offset = *tls_cursor;
-                    *tls_cursor = tls_cursor
-                        .checked_add(
-                            u32::try_from(segment.data.len())
-                                .context("Wasm TLS segment too large")?,
-                        )
-                        .context("Wasm TLS size overflow")?;
-                    output_memory_offset
-                };
-                (0, output_memory_offset, true, true, false)
-            } else {
-                match segment.kind {
-                    DataKind::Passive => (0, 0, true, false, false),
-                    DataKind::Active { memory_index, .. } => {
-                        let output_memory_index =
-                            remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
-                        // Linking `SegmentInfo.alignment` is a power-of-two exponent.
-                        let align = data_segment_alignment(input, original_index);
-                        *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
-                            .context("Wasm data segment alignment overflow")?;
-                        let output_memory_offset = *memory_cursor;
-                        *memory_cursor = memory_cursor
-                            .checked_add(
-                                u32::try_from(segment.data.len())
-                                    .context("Wasm data segment too large")?,
-                            )
-                            .context("Wasm output memory offset overflow")?;
-                        let shared_init = shared_passive_init && !segment.data.is_empty();
-                        (
-                            output_memory_index,
-                            output_memory_offset,
-                            shared_init,
-                            false,
-                            shared_init,
-                        )
-                    }
-                }
-            };
-        let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
-            segment.data.len(),
-            output_memory_offset,
-            output_memory_index,
-            passive,
-        )?;
+        max_original_index = max_original_index.max(original_index as usize);
         let (reloc_range, payload_start) = segment_reloc_ranges
             .get(filtered_idx)
             .cloned()
             .unwrap_or((0..0, 0));
-        segments.push(WasmDataSegmentLayout {
-            segment_index: original_index,
+        let info = input.segment_infos.get(original_index as usize).copied();
+        let alignment = info.map_or(crate::alignment::MIN, |i| i.alignment);
+        let raw_name = info.map(|i| i.name).filter(|n| !n.is_empty());
+
+        let bucket = if data_segment_is_tls(input, original_index) {
+            has_tls = true;
+            max_tls_align = max_tls_align.max(alignment);
+            let kind = if info.is_some_and(WasmSegmentInfo::is_tbss) && reloc_range.is_empty() {
+                BuiltInSegmentKind::Tbss
+            } else {
+                BuiltInSegmentKind::Tdata
+            };
+            builtin_counts[kind as usize] += 1;
+            SegmentBucket::BuiltIn(kind)
+        } else {
+            match segment.kind {
+                DataKind::Passive => SegmentBucket::InputPassive { name: raw_name },
+                DataKind::Active { memory_index, .. } => {
+                    let output_memory_index =
+                        remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
+                    if info.is_some_and(WasmSegmentInfo::is_bss) && reloc_range.is_empty() {
+                        if output_memory_index == 0 {
+                            builtin_counts[BuiltInSegmentKind::Bss as usize] += 1;
+                            SegmentBucket::BuiltIn(BuiltInSegmentKind::Bss)
+                        } else {
+                            SegmentBucket::BssOtherMemory {
+                                memory_index: output_memory_index,
+                            }
+                        }
+                    } else if merge_data_segments {
+                        classify_merged_active_segment(
+                            output_memory_index,
+                            raw_name,
+                            &mut builtin_counts,
+                        )
+                    } else if let Some(name) = raw_name {
+                        SegmentBucket::Custom {
+                            memory_index: output_memory_index,
+                            name,
+                        }
+                    } else {
+                        SegmentBucket::Unmerged {
+                            memory_index: output_memory_index,
+                            name: None,
+                        }
+                    }
+                }
+            }
+        };
+
+        entries.push(ClassifiedInputSegment {
+            original_index,
             data: segment.data,
             reloc_range,
             payload_start,
-            output_memory_index,
-            output_memory_offset,
-            encoded_output_size,
-            passive,
-            tls_template,
-            shared_init,
+            alignment,
+            bucket,
         });
     }
-    Ok(segments)
+
+    let table_len = if entries.is_empty() {
+        0
+    } else {
+        max_original_index + 1
+    };
+
+    Ok(ObjectClassifiedSegments {
+        entries,
+        builtin_counts,
+        has_tls,
+        max_tls_align,
+        table_len,
+    })
 }
 
-/// Original data-segment index to output index. Missing entries were removed by GC.
-fn output_data_segment_indices(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-) -> Result<Vec<Vec<Option<u32>>>> {
-    let mut next = 0u32;
-    let mut maps = Vec::with_capacity(object_data_layouts.len());
-    for segments in object_data_layouts {
-        let mut by_original = Vec::new();
-        for segment in segments {
-            let slot = segment.segment_index as usize;
-            if slot >= by_original.len() {
-                by_original.resize(slot + 1, None);
-            }
-            ensure!(
-                by_original[slot].is_none(),
-                "duplicate Wasm data segment index {}",
-                segment.segment_index
-            );
-            by_original[slot] = Some(next);
-            next = next
-                .checked_add(1)
-                .ok_or_else(|| crate::error!("Wasm data segment count overflow"))?;
+fn classify_merged_active_segment<'data>(
+    memory_index: u32,
+    raw_name: Option<&'data str>,
+    builtin_counts: &mut [usize; NUM_BUILTIN_SEGMENT_KINDS],
+) -> SegmentBucket<'data> {
+    let Some(name) = raw_name else {
+        return SegmentBucket::Unmerged {
+            memory_index,
+            name: None,
+        };
+    };
+    if name == ".rodata" || name.starts_with(".rodata.") {
+        if memory_index == 0 {
+            builtin_counts[BuiltInSegmentKind::Rodata as usize] += 1;
+            return SegmentBucket::BuiltIn(BuiltInSegmentKind::Rodata);
         }
-        maps.push(by_original);
+        return SegmentBucket::Custom {
+            memory_index,
+            name: ".rodata",
+        };
     }
-    Ok(maps)
+    if name == ".data" || name.starts_with(".data.") {
+        if memory_index == 0 {
+            builtin_counts[BuiltInSegmentKind::Data as usize] += 1;
+            return SegmentBucket::BuiltIn(BuiltInSegmentKind::Data);
+        }
+        return SegmentBucket::Custom {
+            memory_index,
+            name: ".data",
+        };
+    }
+    SegmentBucket::Custom { memory_index, name }
+}
+
+fn emit_merged_active_group<'data>(
+    name: Option<&'data str>,
+    memory_index: u32,
+    group: Vec<(u32, ClassifiedInputSegment<'data>)>,
+    shared_memory: bool,
+    memory_cursor: &mut u32,
+    output_segments: &mut Vec<OutputDataSegment<'data>>,
+    output_chunks: &mut Vec<OutputDataChunk<'data>>,
+    per_object_segment_places: &mut [Vec<SegmentPlace>],
+    per_object_output_segment_indices: &mut [Vec<Option<u32>>],
+) -> Result {
+    if group.is_empty() {
+        return Ok(());
+    }
+
+    let max_align = group
+        .iter()
+        .map(|(_, item)| item.alignment)
+        .max()
+        .unwrap_or(crate::alignment::MIN);
+    *memory_cursor = u32::try_from(max_align.align_up(u64::from(*memory_cursor)))
+        .context("Wasm data segment alignment overflow")?;
+    let seg_start = *memory_cursor;
+
+    let has_bytes = group.iter().any(|(_, item)| !item.data.is_empty());
+    let output_seg_idx = has_bytes
+        .then(|| u32::try_from(output_segments.len()).context("Wasm data segment count overflow"))
+        .transpose()?;
+
+    let chunk_start = u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+    let mut offset_in_seg = 0u32;
+    for (obj_idx, item) in group {
+        offset_in_seg = u32::try_from(item.alignment.align_up(u64::from(offset_in_seg)))
+            .context("Wasm data segment alignment overflow")?;
+        let addr = seg_start
+            .checked_add(offset_in_seg)
+            .context("Wasm output memory offset overflow")?;
+        per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+            SegmentPlace::Active(addr);
+        if let Some(seg_idx) = output_seg_idx {
+            per_object_output_segment_indices[obj_idx as usize][item.original_index as usize] =
+                Some(seg_idx);
+        }
+        if !item.data.is_empty() {
+            let len = u32::try_from(item.data.len()).context("Wasm data segment too large")?;
+            output_chunks.push(OutputDataChunk {
+                object_index: obj_idx,
+                data: item.data,
+                reloc_range: item.reloc_range,
+                payload_start: item.payload_start,
+                offset_in_segment: offset_in_seg,
+            });
+            offset_in_seg = offset_in_seg
+                .checked_add(len)
+                .context("Wasm data segment size overflow")?;
+        }
+    }
+
+    *memory_cursor = seg_start
+        .checked_add(offset_in_seg)
+        .context("Wasm output memory offset overflow")?;
+
+    if offset_in_seg > 0 {
+        let chunk_end = u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+        let passive = shared_memory;
+        let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
+            offset_in_seg as usize,
+            seg_start,
+            memory_index,
+            passive,
+        )?;
+        output_segments.push(OutputDataSegment {
+            name,
+            output_memory_index: memory_index,
+            output_memory_offset: seg_start,
+            size: offset_in_seg,
+            encoded_output_size,
+            passive,
+            tls_template: false,
+            shared_init: shared_memory,
+            zero_filled_bss: false,
+            chunk_range: chunk_start..chunk_end,
+        });
+    }
+
+    Ok(())
+}
+
+fn layout_bss_group<'data>(
+    name: &'static str,
+    memory_index: u32,
+    group: Vec<(u32, ClassifiedInputSegment<'data>)>,
+    shared_memory: bool,
+    omit_bss_from_data: bool,
+    memory_cursor: &mut u32,
+    output_segments: &mut Vec<OutputDataSegment<'data>>,
+    shared_bss_fills: &mut Vec<MemoryFillRange>,
+    per_object_segment_places: &mut [Vec<SegmentPlace>],
+) -> Result {
+    if group.is_empty() {
+        return Ok(());
+    }
+
+    let max_align = group
+        .iter()
+        .map(|(_, item)| item.alignment)
+        .max()
+        .unwrap_or(crate::alignment::MIN);
+    *memory_cursor = u32::try_from(max_align.align_up(u64::from(*memory_cursor)))
+        .context("Wasm BSS alignment overflow")?;
+    let bss_start = *memory_cursor;
+
+    let mut offset_in_seg = 0u32;
+    for (obj_idx, item) in group {
+        offset_in_seg = u32::try_from(item.alignment.align_up(u64::from(offset_in_seg)))
+            .context("Wasm BSS alignment overflow")?;
+        let addr = bss_start
+            .checked_add(offset_in_seg)
+            .context("Wasm BSS offset overflow")?;
+        per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+            SegmentPlace::Active(addr);
+        let len = u32::try_from(item.data.len()).context("Wasm BSS segment too large")?;
+        offset_in_seg = offset_in_seg
+            .checked_add(len)
+            .context("Wasm BSS size overflow")?;
+    }
+
+    *memory_cursor = bss_start
+        .checked_add(offset_in_seg)
+        .context("Wasm BSS offset overflow")?;
+
+    if offset_in_seg == 0 {
+        return Ok(());
+    }
+
+    if shared_memory {
+        shared_bss_fills.push(MemoryFillRange {
+            offset: bss_start,
+            len: offset_in_seg,
+        });
+    } else if !omit_bss_from_data {
+        let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
+            offset_in_seg as usize,
+            bss_start,
+            memory_index,
+            false,
+        )?;
+        output_segments.push(OutputDataSegment {
+            name: Some(name),
+            output_memory_index: memory_index,
+            output_memory_offset: bss_start,
+            size: offset_in_seg,
+            encoded_output_size,
+            passive: false,
+            tls_template: false,
+            shared_init: false,
+            zero_filled_bss: true,
+            chunk_range: 0..0,
+        });
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct DataLayoutConfig {
+    merge_data_segments: bool,
+    shared_memory: bool,
+    shared_memory_tls: bool,
+    import_memory: bool,
+}
+
+fn layout_data_segments<'data>(
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    object_index_maps: &[WasmObjectIndexMap],
+    data_start: u32,
+    memory_cursor: &mut u32,
+    config: DataLayoutConfig,
+) -> Result<DataSegmentLayoutResult<'data>> {
+    let DataLayoutConfig {
+        merge_data_segments,
+        shared_memory,
+        shared_memory_tls,
+        import_memory,
+    } = config;
+    let classified: Vec<ObjectClassifiedSegments<'data>> = {
+        verbose_timing_phase!("Classify Wasm data segments");
+        layout_inputs
+            .par_iter()
+            .zip(object_index_maps.par_iter())
+            .map(|(input, index_map)| {
+                classify_object_data_segments(input, index_map, merge_data_segments)
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    let mut total_builtin = [0usize; NUM_BUILTIN_SEGMENT_KINDS];
+    let mut has_tls = false;
+    let mut max_tls_align = crate::alignment::MIN;
+    let mut total_entries = 0usize;
+    let mut per_object_segment_places = Vec::with_capacity(classified.len());
+    let mut per_object_output_segment_indices = Vec::with_capacity(classified.len());
+
+    for obj in &classified {
+        for (dst, &count) in total_builtin.iter_mut().zip(&obj.builtin_counts) {
+            *dst += count;
+        }
+        has_tls |= obj.has_tls;
+        if obj.has_tls {
+            max_tls_align = max_tls_align.max(obj.max_tls_align);
+        }
+        total_entries += obj.entries.len();
+        per_object_segment_places.push(vec![SegmentPlace::Absent; obj.table_len]);
+        per_object_output_segment_indices.push(vec![None; obj.table_len]);
+    }
+
+    let mut rodata = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Rodata as usize]);
+    let mut data = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Data as usize]);
+    let mut tdata = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Tdata as usize]);
+    let mut tbss = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Tbss as usize]);
+    let mut bss = Vec::with_capacity(total_builtin[BuiltInSegmentKind::Bss as usize]);
+    type ClassifiedSegmentEntry<'a> = (u32, ClassifiedInputSegment<'a>);
+    let mut custom_group_indices: HashMap<(u32, &'data str), usize> = HashMap::new();
+    let mut custom_groups: Vec<((u32, &'data str), Vec<ClassifiedSegmentEntry<'data>>)> =
+        Vec::new();
+    let mut unmerged: Vec<ClassifiedSegmentEntry<'data>> = Vec::new();
+    let mut input_passive: Vec<ClassifiedSegmentEntry<'data>> = Vec::new();
+    let mut bss_other_mem_indices: HashMap<u32, usize> = HashMap::new();
+    let mut bss_other_mem: Vec<(u32, Vec<ClassifiedSegmentEntry<'data>>)> = Vec::new();
+
+    for (obj_idx, obj) in classified.into_iter().enumerate() {
+        let obj_idx = u32::try_from(obj_idx).context("too many Wasm objects")?;
+        for item in obj.entries {
+            match item.bucket {
+                SegmentBucket::BuiltIn(BuiltInSegmentKind::Rodata) => rodata.push((obj_idx, item)),
+                SegmentBucket::BuiltIn(BuiltInSegmentKind::Data) => data.push((obj_idx, item)),
+                SegmentBucket::BuiltIn(BuiltInSegmentKind::Tdata) => tdata.push((obj_idx, item)),
+                SegmentBucket::BuiltIn(BuiltInSegmentKind::Tbss) => tbss.push((obj_idx, item)),
+                SegmentBucket::BuiltIn(BuiltInSegmentKind::Bss) => bss.push((obj_idx, item)),
+                SegmentBucket::Custom { memory_index, name } => {
+                    let key = (memory_index, name);
+                    if let Some(&idx) = custom_group_indices.get(&key) {
+                        custom_groups[idx].1.push((obj_idx, item));
+                    } else {
+                        let idx = custom_groups.len();
+                        custom_group_indices.insert(key, idx);
+                        custom_groups.push((key, vec![(obj_idx, item)]));
+                    }
+                }
+                SegmentBucket::Unmerged { .. } => unmerged.push((obj_idx, item)),
+                SegmentBucket::InputPassive { .. } => input_passive.push((obj_idx, item)),
+                SegmentBucket::BssOtherMemory { memory_index } => {
+                    if let Some(&idx) = bss_other_mem_indices.get(&memory_index) {
+                        bss_other_mem[idx].1.push((obj_idx, item));
+                    } else {
+                        let idx = bss_other_mem.len();
+                        bss_other_mem_indices.insert(memory_index, idx);
+                        bss_other_mem.push((memory_index, vec![(obj_idx, item)]));
+                    }
+                }
+            }
+        }
+    }
+
+    let omit_bss_from_data = shared_memory || !import_memory;
+    let estimated_chunks = total_entries.saturating_sub(bss.len() + tbss.len());
+    let mut output_segments = Vec::new();
+    let mut output_chunks = Vec::with_capacity(estimated_chunks);
+    let mut shared_bss_fills = Vec::new();
+
+    emit_merged_active_group(
+        Some(".rodata"),
+        0,
+        rodata,
+        shared_memory,
+        memory_cursor,
+        &mut output_segments,
+        &mut output_chunks,
+        &mut per_object_segment_places,
+        &mut per_object_output_segment_indices,
+    )?;
+    emit_merged_active_group(
+        Some(".data"),
+        0,
+        data,
+        shared_memory,
+        memory_cursor,
+        &mut output_segments,
+        &mut output_chunks,
+        &mut per_object_segment_places,
+        &mut per_object_output_segment_indices,
+    )?;
+    for ((memory_index, name), group) in custom_groups {
+        emit_merged_active_group(
+            Some(name),
+            memory_index,
+            group,
+            shared_memory,
+            memory_cursor,
+            &mut output_segments,
+            &mut output_chunks,
+            &mut per_object_segment_places,
+            &mut per_object_output_segment_indices,
+        )?;
+    }
+
+    for (obj_idx, item) in unmerged {
+        let SegmentBucket::Unmerged { memory_index, name } = item.bucket else {
+            unreachable!()
+        };
+        *memory_cursor = u32::try_from(item.alignment.align_up(u64::from(*memory_cursor)))
+            .context("Wasm data segment alignment overflow")?;
+        let addr = *memory_cursor;
+        let len = u32::try_from(item.data.len()).context("Wasm data segment too large")?;
+        *memory_cursor = memory_cursor
+            .checked_add(len)
+            .context("Wasm output memory offset overflow")?;
+        per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+            SegmentPlace::Active(addr);
+        if len > 0 {
+            let seg_idx =
+                u32::try_from(output_segments.len()).context("Wasm data segment count overflow")?;
+            per_object_output_segment_indices[obj_idx as usize][item.original_index as usize] =
+                Some(seg_idx);
+            let chunk_start =
+                u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+            output_chunks.push(OutputDataChunk {
+                object_index: obj_idx,
+                data: item.data,
+                reloc_range: item.reloc_range,
+                payload_start: item.payload_start,
+                offset_in_segment: 0,
+            });
+            let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
+                len as usize,
+                addr,
+                memory_index,
+                shared_memory,
+            )?;
+            output_segments.push(OutputDataSegment {
+                name,
+                output_memory_index: memory_index,
+                output_memory_offset: addr,
+                size: len,
+                encoded_output_size,
+                passive: shared_memory,
+                tls_template: false,
+                shared_init: shared_memory,
+                zero_filled_bss: false,
+                chunk_range: chunk_start..chunk_start + 1,
+            });
+        }
+    }
+
+    let mut tls_base = data_start;
+    let mut tls_size = 0u32;
+    let mut tls_align = u32::from(shared_memory_tls);
+    let mut main_thread_tls = None;
+
+    if has_tls {
+        if shared_memory_tls {
+            tls_align =
+                u32::try_from(max_tls_align.value()).context("Wasm TLS alignment overflow")?;
+            tls_base = 0;
+            let mut tls_cursor = 0u32;
+
+            let has_tdata_bytes = tdata.iter().any(|(_, item)| !item.data.is_empty());
+            let tdata_seg_idx = has_tdata_bytes
+                .then(|| {
+                    u32::try_from(output_segments.len()).context("Wasm data segment count overflow")
+                })
+                .transpose()?;
+            let chunk_start =
+                u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+
+            for (obj_idx, item) in tdata {
+                if !item.data.is_empty() {
+                    tls_cursor = u32::try_from(item.alignment.align_up(u64::from(tls_cursor)))
+                        .context("Wasm TLS alignment overflow")?;
+                }
+                let offset = tls_cursor;
+                per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+                    SegmentPlace::Tls(offset);
+                if let Some(seg_idx) = tdata_seg_idx {
+                    per_object_output_segment_indices[obj_idx as usize]
+                        [item.original_index as usize] = Some(seg_idx);
+                }
+                if !item.data.is_empty() {
+                    let len =
+                        u32::try_from(item.data.len()).context("Wasm TLS segment too large")?;
+                    output_chunks.push(OutputDataChunk {
+                        object_index: obj_idx,
+                        data: item.data,
+                        reloc_range: item.reloc_range,
+                        payload_start: item.payload_start,
+                        offset_in_segment: offset,
+                    });
+                    tls_cursor = tls_cursor
+                        .checked_add(len)
+                        .context("Wasm TLS size overflow")?;
+                }
+            }
+
+            let tdata_size = tls_cursor;
+            if tdata_size > 0 {
+                let chunk_end =
+                    u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+                let encoded_output_size = crate::wasm_writer::output_data_segment_encoded_size(
+                    tdata_size as usize,
+                    0,
+                    0,
+                    true,
+                )?;
+                output_segments.push(OutputDataSegment {
+                    name: Some(".tdata"),
+                    output_memory_index: 0,
+                    output_memory_offset: 0,
+                    size: tdata_size,
+                    encoded_output_size,
+                    passive: true,
+                    tls_template: true,
+                    shared_init: false,
+                    zero_filled_bss: false,
+                    chunk_range: chunk_start..chunk_end,
+                });
+            }
+
+            // Trailing .tbss is omitted from the passive template because `__wasm_init_tls`
+            // zeroes `0..tls_size` with `memory.fill` before copying `.tdata`.
+            for (obj_idx, item) in tbss {
+                if !item.data.is_empty() {
+                    tls_cursor = u32::try_from(item.alignment.align_up(u64::from(tls_cursor)))
+                        .context("Wasm TLS alignment overflow")?;
+                }
+                let offset = tls_cursor;
+                per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+                    SegmentPlace::Tls(offset);
+                let len = u32::try_from(item.data.len()).context("Wasm TLS segment too large")?;
+                tls_cursor = tls_cursor
+                    .checked_add(len)
+                    .context("Wasm TLS size overflow")?;
+            }
+
+            tls_size = tls_cursor;
+            // The main thread exists before any code that could allocate its block runs,
+            // so reserve it in static memory.
+            *memory_cursor = u32::try_from(max_tls_align.align_up(u64::from(*memory_cursor)))
+                .context("Wasm TLS alignment overflow")?;
+            main_thread_tls = Some(*memory_cursor);
+            *memory_cursor = memory_cursor
+                .checked_add(tls_size)
+                .context("Wasm TLS block overflow")?;
+        } else {
+            *memory_cursor = u32::try_from(max_tls_align.align_up(u64::from(*memory_cursor)))
+                .context("Wasm TLS alignment overflow")?;
+            tls_base = *memory_cursor;
+            emit_merged_active_group(
+                Some(".tdata"),
+                0,
+                tdata,
+                false,
+                memory_cursor,
+                &mut output_segments,
+                &mut output_chunks,
+                &mut per_object_segment_places,
+                &mut per_object_output_segment_indices,
+            )?;
+            layout_bss_group(
+                ".tbss",
+                0,
+                tbss,
+                false,
+                omit_bss_from_data,
+                memory_cursor,
+                &mut output_segments,
+                &mut shared_bss_fills,
+                &mut per_object_segment_places,
+            )?;
+        }
+    }
+
+    layout_bss_group(
+        ".bss",
+        0,
+        bss,
+        shared_memory,
+        omit_bss_from_data,
+        memory_cursor,
+        &mut output_segments,
+        &mut shared_bss_fills,
+        &mut per_object_segment_places,
+    )?;
+    for (memory_index, group) in bss_other_mem {
+        layout_bss_group(
+            ".bss",
+            memory_index,
+            group,
+            shared_memory,
+            omit_bss_from_data,
+            memory_cursor,
+            &mut output_segments,
+            &mut shared_bss_fills,
+            &mut per_object_segment_places,
+        )?;
+    }
+
+    for (obj_idx, item) in input_passive {
+        let SegmentBucket::InputPassive { name } = item.bucket else {
+            unreachable!()
+        };
+        let seg_idx =
+            u32::try_from(output_segments.len()).context("Wasm data segment count overflow")?;
+        per_object_segment_places[obj_idx as usize][item.original_index as usize] =
+            SegmentPlace::Passive;
+        per_object_output_segment_indices[obj_idx as usize][item.original_index as usize] =
+            Some(seg_idx);
+        let len = u32::try_from(item.data.len()).context("Wasm data segment too large")?;
+        let chunk_start = u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+        if len > 0 {
+            output_chunks.push(OutputDataChunk {
+                object_index: obj_idx,
+                data: item.data,
+                reloc_range: item.reloc_range,
+                payload_start: item.payload_start,
+                offset_in_segment: 0,
+            });
+        }
+        let chunk_end = u32::try_from(output_chunks.len()).context("Wasm data chunk overflow")?;
+        let encoded_output_size =
+            crate::wasm_writer::output_data_segment_encoded_size(len as usize, 0, 0, true)?;
+        output_segments.push(OutputDataSegment {
+            name,
+            output_memory_index: 0,
+            output_memory_offset: 0,
+            size: len,
+            encoded_output_size,
+            passive: true,
+            tls_template: false,
+            shared_init: false,
+            zero_filled_bss: false,
+            chunk_range: chunk_start..chunk_end,
+        });
+    }
+
+    Ok(DataSegmentLayoutResult {
+        output_segments,
+        output_chunks,
+        shared_bss_fills,
+        per_object_segment_places,
+        per_object_output_segment_indices,
+        tls_base,
+        tls_size,
+        tls_align,
+        main_thread_tls,
+    })
 }
 
 struct DataIndexImm {
@@ -1659,9 +2285,8 @@ fn apply_data_index_fixups(
 fn remap_data_segment_immediates(
     bodies: &mut [WasmFunctionBody<'_>],
     object_code_relocations: &mut [Vec<object::wasm::Relocation>],
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+    output_indices: &[Vec<Option<u32>>],
 ) -> Result<bool> {
-    let output_indices = output_data_segment_indices(object_data_layouts)?;
     let mut referenced = false;
     for body in bodies.iter_mut() {
         let object_index = body.object_index;
@@ -4758,7 +5383,7 @@ fn emit_reserved_linker_definitions(
             });
         }
         if indices.init_tls_func.is_some() || indices.init_memory_func.is_some() {
-            let copies = passive_init_copies(&layout.object_data_layouts)?;
+            let copies = passive_init_copies(&layout.output_data_segments)?;
             if indices.init_tls_func.is_some() {
                 let tls_base_global = indices
                     .tls_base_global
@@ -4787,6 +5412,7 @@ fn emit_reserved_linker_definitions(
                 bodies.push(linker_function_body(encode_init_memory_body(
                     flag,
                     &copies.shared,
+                    &layout.shared_bss_fills,
                     main_tls,
                 )?));
                 layout.start_function = Some(init_memory_func);
@@ -4960,31 +5586,23 @@ struct PassiveInitCopies {
     shared: Vec<PassiveSegmentCopy>,
 }
 
-fn passive_init_copies(
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
-) -> Result<PassiveInitCopies> {
+fn passive_init_copies(output_segments: &[OutputDataSegment<'_>]) -> Result<PassiveInitCopies> {
     let mut tls = Vec::new();
     let mut shared = Vec::new();
-    let mut index = 0u32;
-    for segments in object_data_layouts {
-        for segment in segments {
-            if !segment.data.is_empty() {
-                let len =
-                    u32::try_from(segment.data.len()).context("Wasm data segment too large")?;
-                let copy = PassiveSegmentCopy {
-                    segment_index: index,
-                    offset: segment.output_memory_offset,
-                    len,
-                };
-                if segment.tls_template {
-                    tls.push(copy);
-                } else if segment.shared_init {
-                    shared.push(copy);
-                }
-            }
-            index = index
-                .checked_add(1)
-                .context("Wasm data segment count overflow")?;
+    for (index, segment) in output_segments.iter().enumerate() {
+        if segment.size == 0 {
+            continue;
+        }
+        let segment_index = u32::try_from(index).context("Wasm data segment count overflow")?;
+        let copy = PassiveSegmentCopy {
+            segment_index,
+            offset: segment.output_memory_offset,
+            len: segment.size,
+        };
+        if segment.tls_template {
+            tls.push(copy);
+        } else if segment.shared_init {
+            shared.push(copy);
         }
     }
     Ok(PassiveInitCopies { tls, shared })
@@ -5069,6 +5687,7 @@ struct MainThreadTls {
 fn encode_init_memory_body(
     flag: u32,
     copies: &[PassiveSegmentCopy],
+    zero_fills: &[MemoryFillRange],
     main_tls: Option<MainThreadTls>,
 ) -> Result<Vec<u8>> {
     let flag = i32::try_from(flag).context("Wasm init-memory flag out of range")?;
@@ -5102,6 +5721,15 @@ fn encode_init_memory_body(
         ins.i32_const(0);
         ins.i32_const(len);
         ins.memory_init(0, copy.segment_index);
+    }
+
+    for fill in zero_fills {
+        let dest = i32::try_from(fill.offset).context("Wasm BSS address out of range")?;
+        let len = i32::try_from(fill.len).context("Wasm BSS size too large")?;
+        ins.i32_const(dest);
+        ins.i32_const(0);
+        ins.i32_const(len);
+        ins.memory_fill(0);
     }
 
     // Only the main thread runs this. Set up its TLS block if needed.
@@ -5800,13 +6428,12 @@ where
         layout.memory_base,
     )?;
     let mut memory_cursor = data_start;
-    {
+    let (per_object_segment_places, per_object_output_segment_indices) = {
         timing_phase!("Merge Wasm object layouts");
         let n_objects = object_index_maps.len();
         layout.object_index_maps = object_index_maps;
         layout.per_object_symbols.reserve(n_objects);
         layout.per_object_data.reserve(n_objects);
-        layout.object_data_layouts.reserve(n_objects);
         layout.object_code_relocations.reserve(n_objects);
         layout.object_data_relocations.reserve(n_objects);
 
@@ -5875,65 +6502,25 @@ where
         }
         {
             timing_phase!("Layout Wasm data segments");
-            let n_objects = layout_inputs.len();
-            layout.object_data_layouts = (0..n_objects).map(|_| Vec::new()).collect();
-            for (obj_idx, input) in layout_inputs.iter().enumerate() {
-                layout.object_data_layouts[obj_idx] = layout_object_data(
-                    input,
-                    &layout.object_index_maps[obj_idx],
-                    &mut memory_cursor,
-                    false,
+            let data_layout = layout_data_segments(
+                &layout_inputs,
+                &layout.object_index_maps,
+                data_start,
+                &mut memory_cursor,
+                DataLayoutConfig {
+                    merge_data_segments: symbol_db.args.merge_data_segments,
                     shared_memory,
-                    None,
-                )?;
-            }
-            if layout_inputs.iter().any(input_has_tls_segments) {
-                if layout.shared_memory_tls {
-                    layout.tls_align = u32::try_from(max_tls_alignment(&layout_inputs).value())
-                        .context("Wasm TLS alignment overflow")?;
-                    layout.tls_base = 0;
-                    let mut tls_cursor = 0u32;
-                    for (obj_idx, input) in layout_inputs.iter().enumerate() {
-                        let tls_segments = layout_object_data(
-                            input,
-                            &layout.object_index_maps[obj_idx],
-                            &mut memory_cursor,
-                            true,
-                            false,
-                            Some(&mut tls_cursor),
-                        )?;
-                        layout.object_data_layouts[obj_idx].extend(tls_segments);
-                    }
-                    layout.tls_size = tls_cursor;
-                    // The main thread exists before any code that could allocate its block runs,
-                    // so reserve it in static memory.
-                    let tls_align = max_tls_alignment(&layout_inputs);
-                    memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
-                        .context("Wasm TLS alignment overflow")?;
-                    layout.main_thread_tls = Some(memory_cursor);
-                    memory_cursor = memory_cursor
-                        .checked_add(layout.tls_size)
-                        .context("Wasm TLS block overflow")?;
-                } else {
-                    let tls_align = max_tls_alignment(&layout_inputs);
-                    memory_cursor = u32::try_from(tls_align.align_up(u64::from(memory_cursor)))
-                        .context("Wasm TLS alignment overflow")?;
-                    layout.tls_base = memory_cursor;
-                    for (obj_idx, input) in layout_inputs.iter().enumerate() {
-                        let tls_segments = layout_object_data(
-                            input,
-                            &layout.object_index_maps[obj_idx],
-                            &mut memory_cursor,
-                            true,
-                            false,
-                            None,
-                        )?;
-                        layout.object_data_layouts[obj_idx].extend(tls_segments);
-                    }
-                }
-            } else {
-                layout.tls_base = data_start;
-            }
+                    shared_memory_tls: layout.shared_memory_tls,
+                    import_memory: import_memory.is_some(),
+                },
+            )?;
+            layout.output_data_segments = data_layout.output_segments;
+            layout.output_data_chunks = data_layout.output_chunks;
+            layout.shared_bss_fills = data_layout.shared_bss_fills;
+            layout.tls_base = data_layout.tls_base;
+            layout.tls_size = data_layout.tls_size;
+            layout.tls_align = data_layout.tls_align;
+            layout.main_thread_tls = data_layout.main_thread_tls;
             for input in &mut layout_inputs {
                 layout
                     .object_code_relocations
@@ -5942,15 +6529,19 @@ where
                     .object_data_relocations
                     .push(std::mem::take(&mut input.data_relocations));
             }
+            (
+                data_layout.per_object_segment_places,
+                data_layout.per_object_output_segment_indices,
+            )
         }
-    }
+    };
 
     {
         timing_phase!("Remap Wasm data segment immediates");
         layout.code_references_data_segment = remap_data_segment_immediates(
             &mut layout.function_bodies,
             &mut layout.object_code_relocations,
-            &layout.object_data_layouts,
+            &per_object_output_segment_indices,
         )?;
     }
 
@@ -6029,7 +6620,7 @@ where
         compute_data_addresses(
             &mut layout.object_index_maps,
             &layout.per_object_symbols,
-            &layout.object_data_layouts,
+            &per_object_segment_places,
             &layout_inputs,
             symbol_db,
             &file_id_to_index,
@@ -6229,7 +6820,7 @@ where
         layout.code_section_size =
             crate::wasm_writer::compute_code_section_size(&layout.function_bodies);
         layout.data_section_size =
-            crate::wasm_writer::compute_data_section_size(&layout.object_data_layouts);
+            crate::wasm_writer::compute_data_section_size(&layout.output_data_segments);
     }
     let encoded_metadata =
         crate::wasm_writer::encode_metadata_sections(&layout, emit_name, emit_target_features)?;
@@ -6438,18 +7029,21 @@ pub(crate) fn deferred_tls_template_pointer(
 
 fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerFixup>> {
     let mut fixups = Vec::new();
-    for (segments, (relocs, index_map)) in layout.object_data_layouts.iter().zip(
-        layout
-            .object_data_relocations
-            .iter()
-            .zip(layout.object_index_maps.iter()),
-    ) {
-        for segment in segments {
-            if !segment.tls_template {
+    for segment in &layout.output_data_segments {
+        if !segment.tls_template {
+            continue;
+        }
+        let chunks = &layout.output_data_chunks
+            [segment.chunk_range.start as usize..segment.chunk_range.end as usize];
+        for chunk in chunks {
+            if chunk.reloc_range.is_empty() {
                 continue;
             }
-            let start = segment.reloc_range.start as usize;
-            let end = segment.reloc_range.end as usize;
+            let obj_idx = chunk.object_index as usize;
+            let relocs = &layout.object_data_relocations[obj_idx];
+            let index_map = &layout.object_index_maps[obj_idx];
+            let start = chunk.reloc_range.start as usize;
+            let end = chunk.reloc_range.end as usize;
             let segment_relocs = relocs.get(start..end).ok_or_else(|| {
                 crate::error!("Wasm TLS template relocation range {start}..{end} is out of range")
             })?;
@@ -6459,10 +7053,10 @@ fn collect_tls_pointer_fixups(layout: &WasmLayout<'_>) -> Result<Vec<TlsPointerF
                 };
                 let at = reloc
                     .r_offset
-                    .checked_sub(segment.payload_start)
+                    .checked_sub(chunk.payload_start)
                     .context("Wasm TLS relocation offset is before the segment payload")?;
-                let dest = segment
-                    .output_memory_offset
+                let dest = chunk
+                    .offset_in_segment
                     .checked_add(at)
                     .context("Wasm TLS relocation offset overflow")?;
                 fixups.push(TlsPointerFixup { dest, offset });
@@ -6512,24 +7106,6 @@ enum SegmentPlace {
     Passive,
     // Offset from the start of the shared-memory TLS block.
     Tls(u32),
-}
-
-fn data_segment_places(object_data_layout: &[WasmDataSegmentLayout<'_>]) -> Vec<SegmentPlace> {
-    let mut by_original = Vec::new();
-    for segment in object_data_layout {
-        let slot = segment.segment_index as usize;
-        if slot >= by_original.len() {
-            by_original.resize(slot + 1, SegmentPlace::Absent);
-        }
-        by_original[slot] = if segment.tls_template {
-            SegmentPlace::Tls(segment.output_memory_offset)
-        } else if segment.passive && !segment.shared_init {
-            SegmentPlace::Passive
-        } else {
-            SegmentPlace::Active(segment.output_memory_offset)
-        };
-    }
-    by_original
 }
 
 /// Address of a defined data symbol. `Missing` when its segment was GC'd.
@@ -6675,7 +7251,7 @@ impl WasmLinkerSymbol {
 fn compute_data_addresses(
     object_index_maps: &mut [WasmObjectIndexMap],
     per_object_symbols: &[&[WasmSymbol]],
-    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
+    segment_places_by_object: &[Vec<SegmentPlace>],
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
@@ -6685,52 +7261,51 @@ fn compute_data_addresses(
     heap_end: Option<u32>,
     stack_first: bool,
 ) -> Result {
-    let segment_places_by_object: Vec<Vec<SegmentPlace>> = object_data_layouts
-        .iter()
-        .map(|layout| data_segment_places(layout))
-        .collect();
-
-    for (obj_idx, (index_map, symbols)) in object_index_maps
-        .iter_mut()
-        .zip(per_object_symbols.iter())
+    object_index_maps
+        .par_iter_mut()
+        .zip(per_object_symbols.par_iter())
         .enumerate()
-    {
-        let mut data_addresses = vec![WasmDataAddress::Missing; symbols.len()];
-        for (sym_idx, sym) in symbols.iter().enumerate() {
-            if sym.kind != object::wasm::SYM_TYPE_DATA {
-                continue;
-            }
-            let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
-
-            let def_id = symbol_db.definition(symbol_id);
-            let def_file_id = symbol_db.file_id_for_symbol(def_id);
-
-            if let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) {
-                let def_input = &layout_inputs[def_obj_idx];
-                let def_sym =
-                    per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
-                if !def_sym.is_undefined() {
-                    data_addresses[sym_idx] = try_data_symbol_memory_address(
-                        &segment_places_by_object[def_obj_idx],
-                        &def_sym,
-                    )?;
+        .try_for_each(|(obj_idx, (index_map, symbols))| -> Result {
+            let mut data_addresses = vec![WasmDataAddress::Missing; symbols.len()];
+            for (sym_idx, sym) in symbols.iter().enumerate() {
+                if sym.kind != object::wasm::SYM_TYPE_DATA {
                     continue;
                 }
-            }
+                let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
-            if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
-                && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
-                    &def_info.placement
-                && let Some(address) =
-                    known.data_address(data_start, data_end, stack_size, heap_end, stack_first)?
-            {
-                data_addresses[sym_idx] = WasmDataAddress::Placed(address);
-            }
-        }
-        index_map.data_addresses = data_addresses;
-    }
+                let def_id = symbol_db.definition(symbol_id);
+                let def_file_id = symbol_db.file_id_for_symbol(def_id);
 
-    Ok(())
+                if let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) {
+                    let def_input = &layout_inputs[def_obj_idx];
+                    let def_sym = per_object_symbols[def_obj_idx]
+                        [def_id.to_offset(def_input.symbol_id_range)];
+                    if !def_sym.is_undefined() {
+                        data_addresses[sym_idx] = try_data_symbol_memory_address(
+                            &segment_places_by_object[def_obj_idx],
+                            &def_sym,
+                        )?;
+                        continue;
+                    }
+                }
+
+                if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
+                    && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
+                        &def_info.placement
+                    && let Some(address) = known.data_address(
+                        data_start,
+                        data_end,
+                        stack_size,
+                        heap_end,
+                        stack_first,
+                    )?
+                {
+                    data_addresses[sym_idx] = WasmDataAddress::Placed(address);
+                }
+            }
+            index_map.data_addresses = data_addresses;
+            Ok(())
+        })
 }
 
 fn allocate_wasm_object_index_bases(
