@@ -1,9 +1,6 @@
-[submodule "external_test_suites/mold"]
-	path = external_test_suites/mold
-	url = https://github.com/rui314/mold
 [submodule "wild/tests/bins"]
 	path = wild/tests/bins
 	url = https://github.com/wild-linker/test-files
-[submodule "external_test_suites/lld"]
-	path = external_test_suites/lld
-	url = https://github.com/wild-linker/lld-tests
+[submodule "external_test_suites/lld-tests"]
+	path = external_test_suites
+	url = https://github.com/wild-linker/lld-tests.git

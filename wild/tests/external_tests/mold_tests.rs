@@ -70,7 +70,7 @@ pub(crate) fn collect_tests(
 
     let third_party = using_third_party_linker();
     let linker_name = external_linker_name();
-    let test_dir_path = crate::base_dir().join("../external_test_suites/mold/test");
+    let test_dir_path = crate::base_dir().join("../external_test_suites/mold-tests");
     let dir = std::fs::read_dir(&test_dir_path)
         .with_context(|| format!("Failed to read directory {}", test_dir_path.display()))?;
 
