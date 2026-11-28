@@ -1,0 +1,7 @@
+{
+    global:
+        ns::f;
+        ns::g*;
+    local:
+        *;
+};

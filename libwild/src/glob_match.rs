@@ -56,6 +56,7 @@ impl Pattern {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum GlobPatternType {
     Exact,
     EscapedExact,
@@ -71,6 +72,10 @@ pub(crate) fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
         return GlobPatternType::Exact;
     }
 
+    classify_glob_pattern(pattern)
+}
+
+pub(crate) fn classify_glob_pattern(pattern: &[u8]) -> GlobPatternType {
     let mut pattern_type = GlobPatternType::Exact;
     let mut it = pattern.iter();
 

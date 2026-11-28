@@ -1,0 +1,6 @@
+{
+    global:
+        wasi:cli/run@0.2.4#run;
+    local:
+        *;
+};
