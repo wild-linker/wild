@@ -3,5 +3,4 @@
 	url = https://github.com/wild-linker/test-files
 [submodule "external_test_suites/lld-tests"]
 	path = external_test_suites
-	url = https://github.com/marxin/lld-tests.git
-	branch = include-mold-tests
+	url = https://github.com/wild-linker/lld-tests.git
